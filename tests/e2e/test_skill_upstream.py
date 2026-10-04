@@ -191,10 +191,34 @@ async def test_the_listing_is_capped_and_mounted_ahead_of_a_skill_name(boot: Any
 
 
 async def test_a_listing_with_no_budget_left_is_refused(boot: Any, gh: FakeRepos) -> None:
-    """An import of this two-file skill is seven calls, which is the whole budget of seven."""
+    """An import of this two-file skill is six calls (repository, branch, tree, two files, its
+    history), leaving one of seven; a check is three, refused at its second."""
     async with boot([], env={**ENV, "FELIX_SKILL_IMPORT_CALLS_PER_HOUR": "7"}) as app:
         assert (await app.client.post("/skill-library/-/import", json={"source": SOURCE})).status_code == 201
         refused = await app.client.get("/skill-library/-/upstream")
         assert (refused.status_code, refused.json()["error"]) == (429, "rate_limited")
         checked = await app.client.get(f"/skill-library/{NAME}/-/upstream")
         assert (checked.status_code, checked.json()["error"]) == (429, "rate_limited")
+
+
+async def test_naming_another_ref_needs_skills_write(boot: Any, gh: FakeRepos) -> None:
+    """A reader checks the stored ref and reads its diff; pointing the check at another ref is a
+    choice of what the deployment's token fetches, and needs the write scope."""
+    keys = {
+        "sk-e2e-reader": {"tenant_id": "default", "sub": "reader", "scopes": ["skills:read"]},
+        "sk-e2e-writer": {"tenant_id": "default", "sub": "writer", "scopes": ["skills:write"]},
+    }
+    env = {**ENV, "FELIX_AUTH_MODE": "api_key", "FELIX_AUTH_API_KEYS": json.dumps(keys)}
+    reader, writer = ({"Authorization": f"Bearer sk-e2e-{k}"} for k in ("reader", "writer"))
+    gh.tag("acme/skills", "v1", gh.repos["acme/skills"].refs["main"])
+    async with boot([], env=env) as app:
+        imported = await app.client.post("/skill-library/-/import", json={"source": SOURCE}, headers=writer)
+        assert imported.status_code == 201, imported.text
+        url = f"/skill-library/{NAME}/-/upstream"
+
+        assert (await app.client.get(url, headers=reader)).status_code == 200
+        before = len(gh.requests)
+        refused = await app.client.get(url, params={"ref": "v1"}, headers=reader)
+        assert refused.status_code == 403 and "skills:write" in refused.text, refused.text
+        assert len(gh.requests) == before, "refused before GitHub is asked"
+        assert (await app.client.get(url, params={"ref": "v1"}, headers=writer)).status_code == 200

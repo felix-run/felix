@@ -671,10 +671,14 @@ async def reader(
 
 async def resolve(gh: GitHubReader, source: GitHubSource, ref: str | None) -> Resolved:
     """The commit ``ref`` names -- or, with none, the default branch's tip, resolved as the branch
-    it is (`refs/heads/<default>`), so a default branch named like a commit id is still a branch."""
+    it is (`refs/heads/<default>`), so a default branch named like a commit id is still a branch.
+
+    A ``ref`` that *is* the default branch's name resolves as that branch too. An import with no
+    ref stores the default branch's name as its ref, and every later check and update names it:
+    a tag of that name (a `main` tag, say) must not turn the stored ref ambiguous, or into the tag."""
     meta = await gh.repo(source)
     requested = ref or meta.default_branch
-    wanted = ref if ref else f"refs/heads/{meta.default_branch}"
+    wanted = ref if ref and ref != meta.default_branch else f"refs/heads/{meta.default_branch}"
     commit = await gh.commit(source, wanted, default_branch=meta.default_branch)
     return Resolved(source, requested, commit, meta.license, await gh.tree(source, commit))
 

@@ -66,6 +66,8 @@ def upgrade() -> None:
         ORDER BY tenant_id, name, created_at DESC, version DESC
         """
     )
+    # Off again at once: nothing after the copy in this transaction may read across tenants.
+    op.execute("SELECT set_config('app.rls_bypass', 'off', true)")
     # Same policy shape as every other tenant table (`0006_tenant_rls`, `0026`).
     op.execute(f'ALTER TABLE "{_TABLE}" ENABLE ROW LEVEL SECURITY')
     op.execute(f'ALTER TABLE "{_TABLE}" FORCE ROW LEVEL SECURITY')

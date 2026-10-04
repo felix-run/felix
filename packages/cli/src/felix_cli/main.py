@@ -588,6 +588,29 @@ def _capability_findings(settings: Settings) -> list[Finding]:
     ]
 
 
+def _skill_import_check_notes(settings: Settings) -> list[str]:
+    """Notes, never failures, on the worker's periodic skill-import checks
+    (`FELIX_SKILL_IMPORT_CHECK_HOURS`). The sweep runs in the worker with the worker's own
+    environment, so an allowlist or a token set only on the API is one the sweep never sees --
+    and doctor, run on either, can only say what this process has."""
+    if not settings.skill_import_check_hours:
+        return []
+    notes = [
+        f"skill import checks every {settings.skill_import_check_hours}h run in the worker: give it "
+        "the same FELIX_SKILL_IMPORT_SOURCES and FELIX_SKILL_IMPORT_GITHUB_TOKEN as the API"
+    ]
+    if not settings.skill_import_sources.strip():
+        notes.append(
+            "no FELIX_SKILL_IMPORT_SOURCES here: checks re-resolve any GitHub origin an import stored"
+        )
+    if not settings.skill_import_github_token:
+        notes.append(
+            "no FELIX_SKILL_IMPORT_GITHUB_TOKEN here: checks read GitHub anonymously, 60 calls an hour "
+            "for the whole server, and private origins are not found"
+        )
+    return notes
+
+
 def _posture_findings(settings: Settings) -> list[Finding]:
     """What doctor says about the deployment's posture.
 
@@ -715,6 +738,8 @@ def doctor_cmd() -> None:
     # judgement, while "this is switched on and cannot work" is true in any environment.
     for row in _capability_findings(settings) + _posture_findings(settings):
         check(row.label, row.passed, row.detail, remedy=row.remedy)
+    for note in _skill_import_check_notes(settings):
+        rprint(f"  [yellow]note[/yellow]  {note}")
     if settings.environment == "development":
         rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")
     from felix.security.stdio_policy import allowed_commands, describe_allowlist

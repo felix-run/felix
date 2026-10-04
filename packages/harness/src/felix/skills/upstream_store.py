@@ -51,9 +51,13 @@ class SkillUpstreamStore(Protocol):
         """Drop the skill's row: it is no longer an import."""
         ...
 
-    async def due(self, *, checked_by: int, limit: int) -> list[dict[str, Any]]:
-        """Up to ``limit`` rows of any tenant never checked or last checked at or before
-        ``checked_by``: never-checked first, then oldest check, then by tenant and name."""
+    async def due(
+        self, *, checked_by: int, limit: int, exclude: Collection[str] = ()
+    ) -> list[dict[str, Any]]:
+        """Up to ``limit`` rows of any tenant but those in ``exclude``, never checked or last
+        checked at or before ``checked_by``: never-checked first, then oldest check, then by tenant
+        and name. ``exclude`` is how a sweep leaves out a tenant whose budget is spent, so that
+        tenant's backlog does not fill every batch."""
         ...
 
 
@@ -85,9 +89,17 @@ class InMemorySkillUpstreamStore:
     async def forget(self, tenant_id: str, name: str) -> None:
         self._rows.pop((tenant_id, name), None)
 
-    async def due(self, *, checked_by: int, limit: int) -> list[dict[str, Any]]:
+    async def due(
+        self, *, checked_by: int, limit: int, exclude: Collection[str] = ()
+    ) -> list[dict[str, Any]]:
+        left_out = set(exclude)
         rows = sorted(
-            (r for r in self._rows.values() if r["checked_at"] is None or r["checked_at"] <= checked_by),
+            (
+                r
+                for r in self._rows.values()
+                if r["tenant_id"] not in left_out
+                and (r["checked_at"] is None or r["checked_at"] <= checked_by)
+            ),
             # Never-checked first, then the oldest check; ties by the key, as the table orders them.
             key=lambda r: (r["checked_at"] is not None, r["checked_at"] or 0, r["tenant_id"], r["name"]),
         )
@@ -150,7 +162,9 @@ class PostgresSkillUpstreamStore:
             await db.execute(delete(R).where(R.tenant_id == tenant_id, R.name == name))
             await db.commit()
 
-    async def due(self, *, checked_by: int, limit: int) -> list[dict[str, Any]]:
+    async def due(
+        self, *, checked_by: int, limit: int, exclude: Collection[str] = ()
+    ) -> list[dict[str, Any]]:
         from sqlalchemy import collate, or_, select
 
         from felix.db.models import SkillUpstreamRow
@@ -160,6 +174,7 @@ class PostgresSkillUpstreamStore:
         stmt = (
             select(R)
             .where(or_(R.checked_at.is_(None), R.checked_at <= checked_by))
+            .where(R.tenant_id.not_in(sorted(set(exclude))) if exclude else R.tenant_id.is_not(None))
             # "C" so ties order as the memory twin's codepoint order, whatever the collation; the
             # last key by the model's own name, where `test_ordering_rule` can see it is the key.
             .order_by(

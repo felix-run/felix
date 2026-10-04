@@ -245,12 +245,12 @@ async def _recorded_upstream(
     its newest version that was not rejected; None when that version was not imported. Read from
     the record alone: a detail never asks GitHub."""
     from felix.skills.library_store import is_rejected
-    from felix.skills.upstream import describe
+    from felix.skills.upstream import describe, is_import_head
     from felix.skills.upstream_store import get_upstream_store
 
     head = library.newest_version(v["version"] for v in versions if not is_rejected(v))
     row = next((v for v in versions if v["version"] == head), None)
-    if row is None or row.get("source") != "import":
+    if row is None or not is_import_head(row):
         return None
     state = (await get_upstream_store(ctx.settings).get(ctx.tenant_id, [name])).get(name)
     days = (await load_publish_policy(ctx.settings, ctx.tenant_id)).policy.import_min_age_days

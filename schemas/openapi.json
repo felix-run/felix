@@ -12601,7 +12601,7 @@
     },
     "/skill-library/{name}/-/upstream": {
       "get": {
-        "description": "An imported skill against its origin now: the commit the ref names, whether the kept files\nmoved, when this tenant first saw them and when the cooldown lets them in, and a per-file diff\nagainst the live version (the newest when nothing is live). Only changed files are fetched.\n\nChecking records the sighting, as a browse does: asking about an update starts its cooldown.\nThe diff is third-party text, redacted as a file read is. 409 `not_imported` for a skill whose\nnewest version was not imported; a `ref` passes the same allowlist and rules as an import's.",
+        "description": "An imported skill against its origin now: the commit the ref names, whether the kept files\nmoved, when this tenant first saw them and when the cooldown lets them in, and a per-file diff\nagainst the live version (the newest when nothing is live). Only changed files are fetched.\n\nChecking records the sighting, as a browse does: asking about an update starts its cooldown.\nThe diff is third-party text, redacted as a file read is. 409 `not_imported` for a skill whose\nnewest version was not imported; a `ref` passes the same allowlist and rules as an import's.\n\nThe stored ref is a read (`skills:read`). Naming another `ref` needs `skills:write`: it points\nthe deployment's token, and the budget, at any branch, tag or commit of the source -- a choice\nof what to fetch, as an import is.",
         "operationId": "check_upstream_skill_library__name____upstream_get",
         "parameters": [
           {

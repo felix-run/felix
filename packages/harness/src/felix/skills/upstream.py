@@ -27,18 +27,20 @@ the CLI strips control characters from it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Any
 
 from felix.config import Settings
 from felix.skills import importer, library
 from felix.skills.binary import decode_base64, is_binary_asset_path
-from felix.skills.bundle_diff import Content, DiffBuilder, diff_bundles, git_blob_id
+from felix.skills.bundle_diff import MAX_DIFF_INPUT_BYTES, Content, DiffBuilder, diff_bundles, git_blob_id
 from felix.skills.github import (
     ImportBudgetExhausted,
+    ImportRateLimited,
     Resolved,
     SkillImportError,
     SkillNotImported,
@@ -56,7 +58,8 @@ MAX_OUTDATED = 25
 # No check of a listing starts this long after its first: each has its own deadline
 # (`importer.DEADLINE_SECONDS`), and the whole listing must answer before a client gives up.
 LISTING_SECONDS = 30.0
-# Skills the sweep checks per tick, oldest check first, across every tenant.
+# Skills the sweep tries per tick, oldest check first, across every tenant. A tenant whose budget
+# share is spent is left out of the rest of the tick, so it cannot hold the batch for the others.
 SWEEP_BATCH = 50
 # The fraction of each hourly budget the sweep may spend: the rest is for people asking.
 SWEEP_SHARE = 0.5
@@ -95,7 +98,8 @@ async def diff_versions(
     """The files that differ between two saved versions, from the stores alone."""
     old = await _stored_files(settings, tenant_id, name, old_version, object_store)
     new = await _stored_files(settings, tenant_id, name, new_version, object_store)
-    return {"compared_with": old_version, **diff_bundles(old, new)}
+    # Off the event loop: difflib is synchronous, and bounded by its input only per file.
+    return {"compared_with": old_version, **await asyncio.to_thread(diff_bundles, old, new)}
 
 
 async def _diff_upstream(
@@ -118,7 +122,9 @@ async def _diff_upstream(
             builder.add(path, old, None)
         elif stored is not None and git_blob_id(stored, entry.sha) == entry.sha:
             continue
-        elif is_binary_asset_path(path):
+        elif is_binary_asset_path(path) or entry.size > MAX_DIFF_INPUT_BYTES:
+            # Sizes only: a binary asset never has a diff, and a text past the input bound would
+            # not get one, so neither is fetched.
             builder.add(path, old, Content(entry.size))
         else:
             to_read.append(entry)
@@ -133,18 +139,26 @@ async def _diff_upstream(
                 continue
             data = texts.get(entry.path)
             if data != stored:
-                builder.add(entry.path, old, Content.of(entry.path, data) if data is not None else None)
+                new = Content.of(entry.path, data) if data is not None else None
+                await asyncio.to_thread(builder.add, entry.path, old, new)
     return {"compared_with": base_version, **builder.result()}
 
 
 async def _read_text(session: Any, batch: list[TreeEntry]) -> dict[str, bytes]:
     """The text files of ``batch`` as an import would store them; one that is not UTF-8 is absent."""
-    bodies = await importer._gather_limited((lambda e=e: session.gh.blob(session.source, e)) for e in batch)
+    bodies = await importer.gather_limited((lambda e=e: session.gh.blob(session.source, e)) for e in batch)
     texts, _ = importer.sanitize_bundle(dict(zip((e.path for e in batch), bodies, strict=True)))
     return {path: text.encode("utf-8") for path, text in texts.items()}
 
 
 # -- what the library holds ----------------------------------------------------------------------
+
+
+def is_import_head(row: Mapping[str, Any] | None) -> bool:
+    """Whether a skill's newest version that was not rejected names an origin to check: it was
+    imported, and carries the source. The one rule the check, the update, the listing, the sweep
+    and the library detail share."""
+    return row is not None and row.get("source") == "import" and bool(row.get("origin_source"))
 
 
 async def imported_head(
@@ -159,7 +173,7 @@ async def imported_head(
         raise library.SkillNotFound(f"{name} is not in the library")
     newest = library.newest_version((await lib.buildable_versions(tenant_id, [name])).get(name, []))
     head = await lib.get_version(tenant_id, name, newest) if newest is not None else None
-    if head is None or head.get("source") != "import" or not head.get("origin_source"):
+    if head is None or not is_import_head(head):
         raise SkillNotImported(f"{name} was not imported, so it has no origin to check")
     return skill, head
 
@@ -175,10 +189,12 @@ async def _imported_page(
     while True:
         page = await lib.list_skills(tenant_id, limit=_LIBRARY_PAGE, after=cursor)
         buildable = await lib.buildable_versions(tenant_id, [s["name"] for s in page])
+        newest = {n: library.newest_version(vs) for n, vs in buildable.items()}
+        # One read for the page's heads, not one per skill.
+        heads = await lib.get_versions(tenant_id, [(n, v) for n, v in newest.items() if v is not None])
         for skill in page:
-            newest = library.newest_version(buildable.get(skill["name"], []))
-            head = await lib.get_version(tenant_id, skill["name"], newest) if newest is not None else None
-            if head is not None and head.get("source") == "import" and head.get("origin_source"):
+            head = heads.get((skill["name"], newest.get(skill["name"]) or ""))
+            if head is not None and is_import_head(head):
                 found.append((skill, head))
                 if len(found) == limit:
                     return found, skill["name"]
@@ -242,18 +258,18 @@ async def check_upstream(
     other_ref = ref if ref and ref != head["origin_ref"] else None
     base_version = skill.get("live_version") or head["version"]
     base = await _stored_files(settings, tenant_id, name, base_version, deps.object_store)
-    async with importer._github_session(
+    async with importer.github_session(
         settings, tenant_id, head["origin_source"], other_ref or head["origin_ref"], deps
     ) as session:
         snap = await importer.snapshot(settings, tenant_id, session)
-        importer._check_caps(snap.kept, session.source.canonical)
+        importer.check_caps(snap.kept, session.source.canonical)
         committed_at = await session.gh.last_changed(
             session.source, snap.resolved.commit, session.source.path
         )
         diff = await _diff_upstream(session, snap.kept, base, base_version)
     cooldown = session.cooldown
     if other_ref is None:
-        await importer._record(settings, tenant_id, session.source, snap, cooldown.now)
+        await importer.record_upstream(settings, tenant_id, session.source, snap, cooldown.now)
     eligible_at = cooldown.eligible_at(snap.first_seen)
     return {
         "name": name,
@@ -311,15 +327,18 @@ async def _check_one(
     resolved: dict[tuple[str, str, str | None], Resolved],
 ) -> dict[str, Any]:
     """Check one imported skill's stored origin without a diff, and record it. ``resolved`` is
-    shared by the checks of one listing: skills from one repository and ref resolve once."""
-    async with importer._github_session(
+    shared by the checks of one listing, or of one tenant in a sweep: skills from one repository
+    and ref resolve once. A folder past the import caps is refused (`source_too_large`) rather than
+    reported as an update no import could take."""
+    async with importer.github_session(
         settings, tenant_id, head["origin_source"], head["origin_ref"], deps
     ) as session:
         key = (session.source.owner, session.source.repo, session.ref)
         if key not in resolved:
             resolved[key] = await resolve(session.gh, session.source, session.ref)
         snap = await importer.snapshot(settings, tenant_id, session, resolved[key])
-    await importer._record(settings, tenant_id, session.source, snap, session.cooldown.now)
+        importer.check_caps(snap.kept, session.source.canonical)
+    await importer.record_upstream(settings, tenant_id, session.source, snap, session.cooldown.now)
     return {
         "upstream_commit": snap.resolved.commit,
         "upstream_tree_hash": snap.tree_hash,
@@ -332,15 +351,18 @@ async def _check_one(
 async def _record_failure(
     settings: Settings, tenant_id: str, head: Mapping[str, Any], exc: SkillImportError, now: int
 ) -> dict[str, Any]:
-    """A failed check: when, and the refusal's code. The last good upstream state is kept."""
+    """A failed check: when, and the refusal's code. The last good upstream state is kept.
+    Never raises, as `importer.record_upstream` does not: a lost record is the next check's."""
+    name = str(head["name"])
     state = {"checked_at": now, "error": exc.code}
-    store = get_upstream_store(settings)
-    await store.record(
-        tenant_id,
-        str(head["name"]),
-        {"origin_source": head["origin_source"], "origin_ref": head["origin_ref"], **state},
-    )
-    return (await store.get(tenant_id, [str(head["name"])])).get(str(head["name"]), state)
+    try:
+        store = get_upstream_store(settings)
+        origin = {"origin_source": head["origin_source"], "origin_ref": head["origin_ref"]}
+        await store.record(tenant_id, name, {**origin, **state})
+        return (await store.get(tenant_id, [name])).get(name, state)
+    except Exception:
+        logger.warning("recording the failed check of %s/%s failed", tenant_id, name, exc_info=True)
+        return state
 
 
 async def _check_page(
@@ -388,13 +410,13 @@ async def outdated(
 
     heads, next_cursor = await _imported_page(settings, tenant_id, after, max(1, min(limit, MAX_OUTDATED)))
     days = (await load_publish_policy(settings, tenant_id)).policy.import_min_age_days
-    recorded = await get_upstream_store(settings).get(tenant_id, [str(h["name"]) for _, h in heads])
     stopped: str | None = None
     if refresh:
         states, stopped = await _check_page(settings, tenant_id, heads, deps)
         if stopped is not None:
             heads, next_cursor = heads[: len(states)], str(heads[len(states) - 1][1]["name"])
     else:
+        recorded = await get_upstream_store(settings).get(tenant_id, [str(h["name"]) for _, h in heads])
         states = [recorded.get(str(h["name"])) for _, h in heads]
     now = deps.clock()
     items = [
@@ -441,61 +463,126 @@ async def run_upstream_checks(
     deps: importer.ImportDeps | None = None,
     batch: int = SWEEP_BATCH,
 ) -> dict[str, int]:
-    """Check up to ``batch`` imported skills whose last check is older than
-    `FELIX_SKILL_IMPORT_CHECK_HOURS` (never-checked first), across tenants, recording each. Off
+    """Try up to ``batch`` imported skills whose last check is at least
+    `FELIX_SKILL_IMPORT_CHECK_HOURS` old (never-checked first), across tenants, recording each. Off
     when the setting is 0.
 
     Each check stamps a sighting, so a skill's cooldown runs whether or not anyone asks. Each is
-    charged to its tenant's budget and the deployment's, at `SWEEP_SHARE` of each: a tenant past
-    its share is skipped for the rest of the tick, and the deployment's share ends the tick. One
-    sweep at a time across workers (`quality_store.sweep_lock`, its own lease row), renewed before
-    every check. A skill that is no longer an import is forgotten."""
+    charged to its tenant's budget and the deployment's, at `SWEEP_SHARE` of each. A tenant past
+    its share is left out of the rest of the tick -- the due rows are read again without it, so its
+    backlog cannot fill the batch and starve every other tenant -- and the deployment's share, or
+    GitHub's own rate limit, ends the tick. One sweep at a time across workers
+    (`quality_store.sweep_lock`, its own lease row), renewed before every check.
+
+    A skill that is no longer an import keeps its row, marked `not_imported`, so it is checked
+    again once its head is an import again (a rejected operator draft, say)."""
     from felix.skills.quality_store import sweep_lock
 
-    counts = {"checked": 0, "updates": 0, "failed": 0, "forgotten": 0, "budget_stopped": 0, "skipped": 0}
+    counts = {
+        "checked": 0,
+        "updates": 0,
+        "failed": 0,
+        "not_imported": 0,
+        "budget_stopped": 0,
+        "skipped": 0,
+    }
     hours = settings.skill_import_check_hours
     if not hours:
         return counts
     clock = deps.clock if deps is not None else importer.now_ms
     limiter = limiter or _limiter(settings)
-    store = get_upstream_store(settings)
     async with sweep_lock(settings, name=SWEEP_LEASE, lease_ms=SWEEP_LEASE_MS) as lease:
         if lease is None:
             counts["skipped"] = 1
             return counts
-        spent: set[str] = set()
-        for row in await store.due(checked_by=clock() - hours * HOUR_MS, limit=batch):
-            tenant_id, name = str(row["tenant_id"]), str(row["name"])
+        tick = _Tick(limiter, deps, clock)
+        await _sweep(settings, lease, tick, clock() - hours * HOUR_MS, batch, counts)
+    return counts
+
+
+@dataclass(slots=True, frozen=True)
+class _Tick:
+    """What every check of one sweep tick shares: the budget's limiter store, the caller's seams
+    (whose `charge` the sweep replaces with its own), and the clock."""
+
+    limiter: Any
+    deps: importer.ImportDeps | None
+    clock: Callable[[], int]
+
+
+async def _sweep(
+    settings: Settings, lease: Any, tick: _Tick, checked_by: int, batch: int, counts: dict[str, int]
+) -> None:
+    """The body of one tick, under its lease: re-read the due rows, without spent tenants, until
+    ``batch`` skills were tried or none is left."""
+    store = get_upstream_store(settings)
+    spent: set[str] = set()
+    tried: set[tuple[str, str]] = set()
+    resolved: dict[str, dict[tuple[str, str, str | None], Resolved]] = {}
+    while len(tried) < batch:
+        rows = await store.due(checked_by=checked_by, limit=batch, exclude=spent)
+        # Filtered here as well as in the store, so a read that brings back only rows already
+        # tried, or of spent tenants, ends the tick rather than reading again for ever.
+        fresh = [
+            r
+            for r in rows
+            if (str(r["tenant_id"]), str(r["name"])) not in tried and str(r["tenant_id"]) not in spent
+        ]
+        if not fresh:
+            return
+        for row in fresh[: batch - len(tried)]:
+            tenant_id = str(row["tenant_id"])
             if tenant_id in spent:
                 continue
+            tried.add((tenant_id, str(row["name"])))
             if not await lease.renew():
                 logger.warning("skill_upstream: the sweep lease was taken over; stopping after %s", counts)
-                break
-            try:
-                _, head = await imported_head(settings, tenant_id, name)
-            except library.SkillNotFound, SkillNotImported:
-                await store.forget(tenant_id, name)
-                counts["forgotten"] += 1
-                continue
-            # Always the real budget, whatever ``deps`` carried: the sweep is never free.
-            charge = importer.github_call_budget(limiter, settings, tenant_id, share=SWEEP_SHARE)
-            checked = replace(deps, charge=charge) if deps is not None else importer.ImportDeps(charge=charge)
-            try:
-                state = await _check_one(settings, tenant_id, head, checked, {})
-            except ImportBudgetExhausted as exc:
+                return
+            outcome = await _sweep_one(settings, row, tick, resolved.setdefault(tenant_id, {}))
+            if outcome in counts:
+                counts[outcome] += 1
+            if outcome == "updates":
+                counts["checked"] += 1
+            if outcome == "tenant_spent":
                 counts["budget_stopped"] += 1
-                if exc.deployment:
-                    break
                 spent.add(tenant_id)
-                continue
-            except SkillImportError as exc:
-                logger.info("skill_upstream: %s/%s refused: %s", tenant_id, name, exc.code)
-                await _record_failure(settings, tenant_id, head, exc, clock())
-                counts["failed"] += 1
-                continue
-            counts["checked"] += 1
-            counts["updates"] += state["upstream_tree_hash"] != head.get("origin_tree_hash")
-    return counts
+            if outcome == "stop":
+                counts["budget_stopped"] += 1
+                return
+
+
+async def _sweep_one(
+    settings: Settings,
+    row: Mapping[str, Any],
+    tick: _Tick,
+    resolved: dict[tuple[str, str, str | None], Resolved],
+) -> str:
+    """Check one due row. What happened: `checked`, `updates` (checked, and an update waits),
+    `failed`, `not_imported`, `tenant_spent`, or `stop` (the tick must end)."""
+    tenant_id, name = str(row["tenant_id"]), str(row["name"])
+    try:
+        _, head = await imported_head(settings, tenant_id, name)
+    except (library.SkillNotFound, SkillNotImported) as exc:
+        await _record_failure(
+            settings, tenant_id, {**row, "name": name}, SkillNotImported(str(exc)), tick.clock()
+        )
+        return "not_imported"
+    # Always the real budget, whatever ``deps`` carried: the sweep is never free.
+    charge = importer.github_call_budget(tick.limiter, settings, tenant_id, share=SWEEP_SHARE)
+    checked = replace(tick.deps, charge=charge) if tick.deps else importer.ImportDeps(charge=charge)
+    try:
+        state = await _check_one(settings, tenant_id, head, checked, resolved)
+    except ImportBudgetExhausted as exc:
+        return "stop" if exc.deployment else "tenant_spent"
+    except ImportRateLimited:
+        # GitHub's own limit on the shared token: every tenant's next call would meet it too.
+        logger.warning("skill_upstream: GitHub's rate limit is spent; ending the tick")
+        return "stop"
+    except SkillImportError as exc:
+        logger.info("skill_upstream: %s/%s refused: %s", tenant_id, name, exc.code)
+        await _record_failure(settings, tenant_id, head, exc, tick.clock())
+        return "failed"
+    return "updates" if state["upstream_tree_hash"] != head.get("origin_tree_hash") else "checked"
 
 
 __all__ = [
@@ -508,6 +595,7 @@ __all__ = [
     "describe",
     "diff_versions",
     "imported_head",
+    "is_import_head",
     "outdated",
     "run_upstream_checks",
     "update_skill",

@@ -132,7 +132,11 @@ def test_outdated_diff_and_update_follow_an_imported_skill(served: FakeRepos) ->
     diff = _run("diff", "invoice-triage")
     assert diff.exit_code == 0, diff.output
     assert "added\treferences/q.md\t- -> 24 bytes" in diff.output
-    assert "+++ b/references/q.md\n@@ -0,0 +1,4 @@\n+# Queues\n+\n+finance\n+legal\n" in diff.output
+    assert "compared with 0.1.0" in diff.output
+    assert (
+        "--- /dev/null\n+++ b/references/q.md\n  @@ -0,0 +1,4 @@\n  +# Queues\n  +\n  +finance\n  +legal\n"
+        in diff.output
+    )
 
     updated = _run("update", "invoice-triage")
     assert updated.exit_code == 0, updated.output
@@ -155,7 +159,24 @@ def test_a_diff_reaches_the_terminal_without_its_control_characters_but_keeps_it
 
     assert diff.exit_code == 0, diff.output
     assert not any(c in diff.output for c in "\x1b\x07\x9b")
-    assert "+one]0;owned\n+two31m\n" in diff.output
+    assert "  +one]0;owned\n  +two31m\n" in diff.output
+
+
+def test_a_files_own_text_cannot_pass_for_a_file_header(served: FakeRepos) -> None:
+    """A line `++ b/SKILL.md` in the file is the diff line `+++ b/SKILL.md`: printed indented, it
+    never reads as the header of a SKILL.md change that is not there."""
+    assert _run("add", SOURCE).exit_code == 0
+    _moved(served, b"++ b/SKILL.md\n-- a/SKILL.md\n")
+
+    diff = _run("diff", "invoice-triage")
+
+    assert diff.exit_code == 0, diff.output
+    lines = diff.output.splitlines()
+    assert [line for line in lines if line.startswith(("+++ ", "--- "))] == [
+        "--- /dev/null",
+        "+++ b/references/q.md",
+    ]
+    assert "  +++ b/SKILL.md" in lines and "  +-- a/SKILL.md" in lines
 
 
 def test_a_diff_of_a_skill_that_was_not_imported_says_so(served: FakeRepos) -> None:
@@ -172,3 +193,6 @@ def test_clean_strips_bidi_and_zero_width_characters() -> None:
     # The Arabic letter mark, word joiner and invisible operators, a soft hyphen, and the line and
     # paragraph separators.
     assert clean("a\u061cb\u2060c\u2064d\xade\u2028f\u2029g") == "abcdefg"
+    # Blank-rendering fillers and separators, and the tag characters that hide an ASCII copy.
+    hidden = "".join(chr(0xE0000 + ord(c)) for c in "evil") + "\U000e007f"
+    assert clean(f"a\u180eb\u115fc\u1160d\u3164e{hidden}f\U000e0001g") == "abcdefg"

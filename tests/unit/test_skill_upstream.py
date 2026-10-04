@@ -182,6 +182,53 @@ def test_text_that_was_not_read_is_listed_without_a_diff() -> None:
     assert (x["diff"], x["truncated"], x["new_size"]) == (None, True, 9)
 
 
+def test_a_side_past_the_input_bound_is_never_diffed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The output caps bound the answer, not difflib's work: an over-size side is not read."""
+    from felix.skills import bundle_diff
+
+    read: list[str] = []
+    real = bundle_diff.difflib.unified_diff
+
+    def spy(a: Any, b: Any, **kw: Any) -> Any:
+        read.append(kw["tofile"])
+        return real(a, b, **kw)
+
+    monkeypatch.setattr(bundle_diff.difflib, "unified_diff", spy)
+    wide = b"y" * (bundle_diff.MAX_DIFF_INPUT_BYTES + 1)
+    long = b"x\n" * bundle_diff.MAX_DIFF_INPUT_LINES
+    old = {"references/wide.md": b"a\n", "references/long.md": long, "references/small.md": b"a\n"}
+    new = {"references/wide.md": wide, "references/long.md": b"b\n", "references/small.md": b"b\n"}
+
+    result = diff_bundles(old, new)
+
+    assert read == ["b/references/small.md"], "only the small file reached difflib"
+    by_path = {f["path"]: f for f in result["files"]}
+    for path, size in (("references/wide.md", len(wide)), ("references/long.md", 2)):
+        assert (by_path[path]["diff"], by_path[path]["truncated"], by_path[path]["new_size"]) == (
+            None,
+            True,
+            size,
+        )
+    assert result["diff_truncated"] is True
+
+
+async def test_a_check_never_fetches_a_text_past_the_input_bound(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    from felix.skills.bundle_diff import MAX_DIFF_INPUT_BYTES
+
+    await _import(settings, store, gh)
+    big = b"z" * (MAX_DIFF_INPUT_BYTES + 1)
+    gh.push(REPO, _tree({NAME: {**_files(), "references/big.md": big}}))
+    before = len(gh.requests)
+
+    found = await _check(settings, store, gh)
+
+    assert _blob_reads(gh, before) == []
+    (entry,) = found["diff"]["files"]
+    assert (entry["path"], entry["diff"], entry["new_size"]) == ("references/big.md", None, len(big))
+
+
 def test_a_git_blob_id_is_computed_in_the_trees_object_format() -> None:
     data = b"# Queues\n"
     assert git_blob_id(data, "0" * 40) == blob_sha(data)
@@ -310,17 +357,17 @@ async def test_a_check_of_the_stored_ref_is_recorded_and_one_of_another_ref_is_n
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
     await _import(settings, store, gh, clock=lambda: T0)
-    imported = (await get_upstream_store(settings).get("acme", [NAME]))[NAME]
+    imported = await _row(settings, "acme", NAME)
     side = gh.push(REPO, _tree({NAME: _files(queues=b"side\n")}), ref="next")
     gh.repos[REPO].history.remove(side)
     gh.repos[REPO].history.insert(0, side)  # an ancestor of main, as a merged branch is
 
     other = await _check(settings, store, gh, ref="next", clock=lambda: T0 + 1)
     assert other["upstream"]["commit"] == side and other["upstream"]["ref"] == "next"
-    assert (await get_upstream_store(settings).get("acme", [NAME]))[NAME] == imported, "a what-if"
+    assert await _row(settings, "acme", NAME) == imported, "a what-if"
 
     await _check(settings, store, gh, clock=lambda: T0 + 2)
-    assert (await get_upstream_store(settings).get("acme", [NAME]))[NAME]["checked_at"] == T0 + 2
+    assert (await _row(settings, "acme", NAME))["checked_at"] == T0 + 2
 
 
 async def test_a_ref_named_for_a_check_is_judged_as_an_imports(
@@ -347,6 +394,35 @@ async def test_every_github_call_of_a_check_is_charged(
     before = len(gh.requests)
     await _check(settings, store, gh, charge=charge)
     assert len(charged) == len(gh.requests) - before > 0
+
+
+async def test_an_unchanged_import_of_another_ref_leaves_the_record_alone(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    await _import(settings, store, gh, clock=lambda: T0)
+    gh.tag(REPO, "v1", gh.repos[REPO].refs["main"])
+
+    again = await _import(settings, store, gh, ref="v1", clock=lambda: T0 + 5)
+
+    assert again.unchanged is True
+    row = await _row(settings, "acme", NAME)
+    assert (row["origin_ref"], row["checked_at"]) == ("main", T0), "a v1 import is not main's state"
+
+
+async def test_a_stored_default_branch_stays_the_branch_beside_a_tag_of_its_name(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """Imported with no ref, the skill stores `main`. A tag named `main` added later must neither
+    make that ambiguous nor stand in for the branch."""
+    await _import(settings, store, gh)
+    old = gh.repos[REPO].refs["main"]
+    tip = gh.push(REPO, _tree({NAME: _files(queues=b"# Queues\n\nlegal\n")}))
+    gh.tag(REPO, "main", old)
+
+    found = await _check(settings, store, gh)
+    assert (found["upstream"]["commit"], found["update_available"]) == (tip, True)
+    result, _ = await _update(settings, store, gh)
+    assert result.version["origin_commit"] == tip and result.version["origin_ref"] == "main"
 
 
 # -- the update ----------------------------------------------------------------------------------
@@ -509,7 +585,7 @@ async def test_a_refused_check_is_listed_with_its_code_and_the_last_good_state(
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
     await _import(settings, store, gh, clock=lambda: T0)
-    good = (await get_upstream_store(settings).get("acme", [NAME]))[NAME]
+    good = await _row(settings, "acme", NAME)
     gh.rate_limited = True
 
     listing = await _outdated(settings, gh, clock=lambda: T0 + 5)
@@ -526,15 +602,34 @@ def _swept(hours: int = 6, **kw: Any) -> Settings:
     return Settings(database_url="memory://skill-upstream", skill_import_check_hours=hours, **kw)
 
 
-async def _sweep(settings: Settings, gh: FakeRepos, *, at: int, limiter: Any = None) -> dict[str, int]:
+async def _sweep(
+    settings: Settings, gh: FakeRepos, *, at: int, limiter: Any = None, batch: int = upstream.SWEEP_BATCH
+) -> dict[str, int]:
     from felix.security.rate_limit import InMemoryRateLimiter
 
     async with gh.client() as http:
         # Uncharged here, and replaced by the sweep's own budget all the same.
         deps = importer.ImportDeps(http=http, clock=lambda: at, charge=importer.uncharged())
         return await upstream.run_upstream_checks(
-            settings, limiter=limiter or InMemoryRateLimiter(), deps=deps
+            settings, limiter=limiter or InMemoryRateLimiter(), deps=deps, batch=batch
         )
+
+
+async def _spread(settings: Settings, store: Any, gh: FakeRepos, skills: dict[str, tuple[str, ...]]) -> None:
+    """Each skill in a repository of its own (`acme/<name>`), imported into its tenant at T0: no
+    two checks share a resolve, so every check costs its own three calls."""
+    for tenant, names in skills.items():
+        for n in names:
+            gh.push(f"acme/{n}", _tree({n: _files(name=n)}))
+            await _import(
+                settings, store, gh, source=f"github:acme/{n}/skills/{n}", tenant=tenant, clock=lambda: T0
+            )
+
+
+async def _row(settings: Settings, tenant: str, name: str) -> dict[str, Any]:
+    rows = await get_upstream_store(settings).get(tenant, [name])
+    assert name in rows, f"{tenant}/{name} has no upstream row"
+    return rows[name]
 
 
 async def test_the_sweep_is_off_at_zero(settings: Settings, store: MemoryObjectStore, gh: FakeRepos) -> None:
@@ -554,7 +649,7 @@ async def test_the_sweep_checks_what_is_due_and_records_it(
     counts = await _sweep(_swept(6), gh, at=T0 + 6 * 3_600_000)
 
     assert (counts["checked"], counts["updates"]) == (1, 1)
-    row = (await get_upstream_store(settings).get("acme", [NAME]))[NAME]
+    row = await _row(settings, "acme", NAME)
     assert (row["upstream_commit"], row["checked_at"], row["error"]) == (commit, T0 + 6 * 3_600_000, None)
 
 
@@ -567,7 +662,7 @@ async def test_a_sighting_the_sweep_stamps_is_the_one_a_later_import_counts_from
 
     await _sweep(cooled, gh, at=T0)
 
-    row = (await get_upstream_store(cooled).get("acme", [NAME]))[NAME]
+    row = await _row(cooled, "acme", NAME)
     assert row["first_seen_at"] == T0
     with pytest.raises(github.ImportTooRecent):
         await _update(cooled, store, gh, clock=lambda: T0 + 7 * DAY - 1)
@@ -576,30 +671,30 @@ async def test_a_sighting_the_sweep_stamps_is_the_one_a_later_import_counts_from
 
 
 async def test_the_sweep_spends_half_the_budget_and_stops(store: MemoryObjectStore, gh: FakeRepos) -> None:
-    """Four calls a check. A tenant's share of 10 is 5: acme's alpha is checked, beta's second
-    call is refused and acme is skipped; globex goes on until the deployment's share of 16 (8)
-    ends the tick, and neither delta nor initech's epsilon is tried."""
+    """Three calls a check (repository, default branch, tree). A tenant's share of 10 is 5: acme's
+    alpha is checked, beta's third call is refused and acme is left out; globex's delta is checked,
+    and gamma's first call meets the deployment's share of 16 (8) and ends the tick, so initech's
+    epsilon is never tried."""
     from felix.security.rate_limit import InMemoryRateLimiter
 
     settings = _swept(1, skill_import_calls_per_hour=10, skill_import_calls_per_hour_total=16)
-    names = {"acme": ("alpha", "beta"), "globex": ("gamma", "delta"), "initech": ("epsilon",)}
-    gh.push(REPO, _tree({n: _files(name=n) for ns in names.values() for n in ns}))
-    for tenant, ns in names.items():
-        for n in ns:
-            await _import(
-                settings, store, gh, source=f"github:{REPO}/skills/{n}", tenant=tenant, clock=lambda: T0
-            )
+    await _spread(
+        settings,
+        store,
+        gh,
+        {"acme": ("alpha", "beta"), "globex": ("gamma", "delta"), "initech": ("epsilon",)},
+    )
     limiter = InMemoryRateLimiter()
     before = len(gh.requests)
 
     counts = await _sweep(settings, gh, at=T0 + 3_600_000, limiter=limiter)
 
-    assert (counts["checked"], counts["budget_stopped"]) == (1, 2)
-    assert len(gh.requests) - before == 4 + 1 + 3, "every call charged, and none sent past a refusal"
-    rows = get_upstream_store(settings)
-    assert (await rows.get("acme", ["alpha"]))["alpha"]["checked_at"] == T0 + 3_600_000
-    assert (await rows.get("globex", ["delta"]))["delta"]["checked_at"] == T0, "the tick ended before it"
-    assert (await rows.get("initech", ["epsilon"]))["epsilon"]["checked_at"] == T0, "another tenant too"
+    assert (counts["checked"], counts["budget_stopped"]) == (2, 2)
+    assert len(gh.requests) - before == 3 + 2 + 3, "every call charged, and none sent past a refusal"
+    assert (await _row(settings, "acme", "alpha"))["checked_at"] == T0 + 3_600_000
+    assert (await _row(settings, "globex", "delta"))["checked_at"] == T0 + 3_600_000
+    assert (await _row(settings, "globex", "gamma"))["checked_at"] == T0, "the tick ended before it"
+    assert (await _row(settings, "initech", "epsilon"))["checked_at"] == T0, "another tenant too"
 
     # A person still has the rest of acme's hour: 5 of its 10 calls.
     budget = importer.github_call_budget(limiter, settings, "acme")
@@ -609,10 +704,37 @@ async def test_the_sweep_spends_half_the_budget_and_stops(store: MemoryObjectSto
         await budget()
 
 
-async def test_the_sweep_keeps_tenants_apart(store: MemoryObjectStore, gh: FakeRepos) -> None:
-    """A check stamps a sighting for the skill's own tenant only, and is judged against that
-    tenant's allowlist: rebind a repository to another tenant and the check is refused before
-    GitHub is asked."""
+async def test_a_tenant_past_its_share_does_not_starve_the_others(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    """acme has more due skills than a tick tries and a share (4) of one check; the tick, three
+    wide, still reaches globex -- whose skills sort after all of acme's."""
+    settings = _swept(1, skill_import_calls_per_hour=8)
+    await _spread(settings, store, gh, {"acme": ("a1", "a2", "a3", "a4"), "globex": ("g1",)})
+
+    counts = await _sweep(settings, gh, at=T0 + 3_600_000, batch=3)
+
+    assert (counts["checked"], counts["budget_stopped"]) == (2, 1)
+    assert (await _row(settings, "globex", "g1"))["checked_at"] == T0 + 3_600_000
+    assert [(await _row(settings, "acme", n))["checked_at"] for n in ("a2", "a3", "a4")] == [T0] * 3
+
+
+async def test_a_sweep_resolves_a_repository_once_per_tenant(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    gh.push(REPO, _tree({n: _files(name=n) for n in ("alpha", "beta")}))
+    for tenant, n in (("acme", "alpha"), ("acme", "beta"), ("globex", "alpha")):
+        await _import(
+            settings, store, gh, source=f"github:{REPO}/skills/{n}", tenant=tenant, clock=lambda: T0
+        )
+    before = len(gh.requests)
+
+    assert (await _sweep(_swept(1), gh, at=T0 + 3_600_000))["checked"] == 3
+    trees = [p for p in gh.paths()[before:] if "/git/trees/" in p]
+    assert len(trees) == 2, "acme's two skills share one resolve; globex resolves its own"
+
+
+async def test_the_sweep_keeps_tenants_sightings_apart(store: MemoryObjectStore, gh: FakeRepos) -> None:
     from felix.skills.sighting_store import InMemorySightingStore
 
     plain = Settings(database_url="memory://skill-upstream")
@@ -631,18 +753,52 @@ async def test_the_sweep_keeps_tenants_apart(store: MemoryObjectStore, gh: FakeR
     seen = {(tenant, at) for (tenant, source, _), at in sightings._rows.items() if source == SOURCE}
     assert seen == {("acme", T0), ("acme", T0 + 3_600_000)}, "globex never saw acme's files"
 
-    rebound = _swept(1, skill_import_sources="acme=github:globex/*,globex=github:acme/*")
+
+async def test_an_origin_taken_off_the_allowlist_is_refused_without_a_call(
+    store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    plain = Settings(database_url="memory://skill-upstream")
+    await _import(plain, store, gh, clock=lambda: T0)
+    rebound = _swept(1, skill_import_sources="globex=github:acme/*")
     before = len(gh.requests)
-    counts = await _sweep(rebound, gh, at=T0 + 3 * 3_600_000)
 
-    assert (counts["checked"], counts["failed"]) == (0, 2)
+    counts = await _sweep(rebound, gh, at=T0 + 3_600_000)
+
+    assert (counts["checked"], counts["failed"]) == (0, 1)
     assert gh.requests[before:] == [], "refused by the allowlist before any call"
-    for tenant, name in (("acme", NAME), ("globex", "refunds")):
-        row = (await get_upstream_store(plain).get(tenant, [name]))[name]
-        assert (row["error"], row["checked_at"]) == ("source_not_allowed", T0 + 3 * 3_600_000)
+    row = await _row(plain, "acme", NAME)
+    assert (row["error"], row["checked_at"]) == ("source_not_allowed", T0 + 3_600_000)
 
 
-async def test_the_sweep_forgets_a_skill_that_is_no_longer_an_import(
+async def test_githubs_own_rate_limit_ends_the_tick(store: MemoryObjectStore, gh: FakeRepos) -> None:
+    settings = _swept(1)
+    await _spread(settings, store, gh, {"acme": ("alpha",), "globex": ("gamma",)})
+    gh.rate_limited = True
+    before = len(gh.requests)
+
+    counts = await _sweep(settings, gh, at=T0 + 3_600_000)
+
+    assert len(gh.requests) - before == 1, "the shared token's limit is everyone's: no second try"
+    assert (counts["failed"], counts["budget_stopped"]) == (0, 1)
+    assert (await _row(settings, "globex", "gamma"))["checked_at"] == T0
+
+
+async def test_a_folder_past_the_import_caps_is_refused_not_offered(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _import(settings, store, gh, clock=lambda: T0)
+    gh.push(REPO, _tree({NAME: _files(queues=b"moved\n")}))
+    monkeypatch.setattr(importer, "MAX_BUNDLE_FILES", 1)
+
+    counts = await _sweep(_swept(1), gh, at=T0 + 3_600_000)
+
+    assert counts["failed"] == 1
+    listing = await _outdated(settings, gh, refresh=False)
+    (item,) = listing["items"]
+    assert (item["error"], item["update_available"]) == ("source_too_large", False)
+
+
+async def test_a_skill_that_stops_being_an_import_keeps_its_row_and_comes_back(
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
     await _import(settings, store, gh, clock=lambda: T0)
@@ -650,7 +806,7 @@ async def test_the_sweep_forgets_a_skill_that_is_no_longer_an_import(
     await library.save_draft(
         settings,
         "acme",
-        files=files,
+        files={**files, "references/queues.md": "# Queues\n\nours\n"},
         provenance=library.DraftProvenance(source="operator", author="ops"),
         name=NAME,
         parent="0.1.0",
@@ -658,8 +814,15 @@ async def test_the_sweep_forgets_a_skill_that_is_no_longer_an_import(
     )
     before = len(gh.requests)
     counts = await _sweep(_swept(1), gh, at=T0 + 3_600_000)
-    assert counts["forgotten"] == 1 and gh.requests[before:] == []
-    assert await get_upstream_store(settings).get("acme", [NAME]) == {}
+    assert counts["not_imported"] == 1 and gh.requests[before:] == []
+    assert (await _row(settings, "acme", NAME))["error"] == "not_imported"
+
+    # The operator's draft is rejected: the import is the head again, and the sweep checks it.
+    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="no")
+    counts = await _sweep(_swept(1), gh, at=T0 + 2 * 3_600_000)
+    assert counts["checked"] == 1
+    row = await _row(settings, "acme", NAME)
+    assert (row["error"], row["checked_at"]) == (None, T0 + 2 * 3_600_000)
 
 
 async def test_one_sweep_runs_at_a_time(settings: Settings, store: MemoryObjectStore, gh: FakeRepos) -> None:

@@ -6,6 +6,12 @@ a line boundary past a per-file cap and past what is left of a total; once the t
 text file is listed without one -- and the caller need not read it at all. A binary asset
 (`binary.is_binary_asset_path`) carries its sizes only.
 
+The caps above bound the answer; they do not bound the work, since `difflib` reads both whole
+sides before a character is cut. So a side past `MAX_DIFF_INPUT_BYTES` or `MAX_DIFF_INPUT_LINES`
+is never diffed: the file is listed by size, `truncated`, as a binary one is. A bundle file may be
+5 MiB, and shuffled multi-megabyte sides took difflib seconds. The callers run the diff off the
+event loop (`asyncio.to_thread`) as well.
+
 The text is whatever the bundle holds -- a third party's, for an import -- so the caller redacts it
 on the way out, as a file read is, and a terminal strips its control characters.
 """
@@ -23,6 +29,9 @@ from felix.skills.binary import is_binary_asset_path
 # A unified diff's characters: per file, and over one whole answer.
 MAX_FILE_DIFF_CHARS = 16 * 1024
 MAX_DIFF_CHARS = 128 * 1024
+# The most of either side a text diff reads; past either it is not computed at all.
+MAX_DIFF_INPUT_BYTES = 256 * 1024
+MAX_DIFF_INPUT_LINES = 4_000
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,7 +84,8 @@ class DiffBuilder:
         )
 
     def _text(self, path: str, old: Content | None, new: Content | None) -> tuple[str | None, bool]:
-        if self.exhausted or any(side is not None and side.text is None for side in (old, new)):
+        sides = [side for side in (old, new) if side is not None]
+        if self.exhausted or any(side.text is None or too_large_to_diff(side) for side in sides):
             self.truncated = True
             return None, True
         lines = difflib.unified_diff(
@@ -96,6 +106,13 @@ class DiffBuilder:
     def result(self) -> dict[str, Any]:
         """``{files, diff_truncated}``, the files by path."""
         return {"files": sorted(self._files, key=lambda f: f["path"]), "diff_truncated": self.truncated}
+
+
+def too_large_to_diff(side: Content) -> bool:
+    """Whether a text side is past the input bound: never handed to difflib."""
+    if side.size > MAX_DIFF_INPUT_BYTES:
+        return True
+    return side.text is not None and side.text.count("\n") >= MAX_DIFF_INPUT_LINES
 
 
 def diff_bundles(old: Mapping[str, bytes], new: Mapping[str, bytes], **caps: int) -> dict[str, Any]:
@@ -121,4 +138,14 @@ def git_blob_id(data: bytes, like: str) -> str:
     return digest(f"blob {len(data)}\0".encode() + data, usedforsecurity=False).hexdigest()
 
 
-__all__ = ["MAX_DIFF_CHARS", "MAX_FILE_DIFF_CHARS", "Content", "DiffBuilder", "diff_bundles", "git_blob_id"]
+__all__ = [
+    "MAX_DIFF_CHARS",
+    "MAX_DIFF_INPUT_BYTES",
+    "MAX_DIFF_INPUT_LINES",
+    "MAX_FILE_DIFF_CHARS",
+    "Content",
+    "DiffBuilder",
+    "diff_bundles",
+    "git_blob_id",
+    "too_large_to_diff",
+]

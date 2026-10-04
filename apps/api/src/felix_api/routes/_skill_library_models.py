@@ -380,8 +380,9 @@ class FileChangeOut(BaseModel):
     binary: bool
     old_size: int | None
     new_size: int | None
-    # A unified diff of a text file; null for a binary asset, and for a text file past the
-    # answer's diff budget (`truncated` is then true).
+    # A unified diff of a text file, at most 16,384 characters; null for a binary asset, for a
+    # text file past the answer's 131,072-character total, and for one with a side over 256 KiB
+    # or 4,000 lines, which is never diffed (`truncated` is then true).
     diff: str | None
     # The diff was cut short at a line boundary, or left out.
     truncated: bool

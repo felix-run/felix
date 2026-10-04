@@ -619,6 +619,41 @@ async def test_upstream_rows_fall_due_across_tenants_oldest_check_first(store_se
 
 
 @parametrized
+async def test_a_spent_tenant_is_left_out_of_the_due_rows(store_settings: Any) -> None:
+    """How a sweep keeps one tenant's backlog from filling every batch: read again without it."""
+    from felix.skills.upstream_store import get_upstream_store
+
+    upstream = get_upstream_store(store_settings)
+    origin = {"origin_source": "github:a/b", "origin_ref": "main", "checked_at": 1}
+    for tenant, name in (("acme", "a1"), ("acme", "a2"), ("acme", "a3"), ("globex", "g1"), ("initech", "i1")):
+        await upstream.record(tenant, name, origin)
+
+    assert [r["name"] for r in await upstream.due(checked_by=10, limit=2)] == ["a1", "a2"]
+    rest = await upstream.due(checked_by=10, limit=2, exclude={"acme"})
+    assert [(r["tenant_id"], r["name"]) for r in rest] == [("globex", "g1"), ("initech", "i1")]
+    assert await upstream.due(checked_by=10, limit=5, exclude=["acme", "globex", "initech"]) == []
+
+
+@parametrized
+async def test_versions_are_read_by_key_in_one_call(store_settings: Any) -> None:
+    store = get_skill_library_store(store_settings)
+    await _save(store, "0.1.0", at=1)
+    await _save(store, "0.1.1", at=2)
+    await _save(store, "0.1.0", at=3, tenant="globex")
+
+    found = await store.get_versions(
+        "acme", [("invoice-triage", "0.1.1"), ("invoice-triage", "9.9.9"), ("other", "0.1.0")]
+    )
+    assert (
+        list(found) == [("invoice-triage", "0.1.1")] and found[("invoice-triage", "0.1.1")]["created_at"] == 2
+    )
+    assert await store.get_versions("acme", []) == {}
+    assert set(
+        await store.get_versions("globex", [("invoice-triage", "0.1.0"), ("invoice-triage", "0.1.1")])
+    ) == {("invoice-triage", "0.1.0")}, "another tenant's version is not read"
+
+
+@parametrized
 async def test_two_sweeps_hold_two_leases(store_settings: Any) -> None:
     from felix.skills.quality_store import SWEEP_LEASE, get_sweep_lease_store
 

@@ -44,9 +44,13 @@ _REF = typer.Option(None, "--ref", help="Branch, tag or commit; the repository's
 # (U+202A-202E, U+2066-2069), which reorder what an operator reads -- a source that displays as
 # one repository and is another -- the Arabic letter mark (U+061C), zero-width and invisible
 # characters (U+200B-200F, U+2060-2064, U+FEFF, the soft hyphen U+00AD) that hide text, and the
-# line and paragraph separators (U+2028, U+2029) that break a line where none shows.
+# line and paragraph separators (U+2028, U+2029) that break a line where none shows. Then what
+# renders as nothing or as blank space while still being a character: the Mongolian vowel
+# separator (U+180E), the Hangul fillers (U+115F, U+1160, U+3164), and the tag characters
+# (U+E0000-E007F), which carry an invisible copy of ASCII text.
 _CONTROL = re.compile(
-    r"[\x00-\x08\x0a-\x1f\x7f-\x9f\xad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"
+    r"[\x00-\x08\x0a-\x1f\x7f-\x9f\xad\u061c\u115f\u1160\u180e\u200b-\u200f\u2028-\u202e"
+    r"\u2060-\u2064\u2066-\u2069\u3164\ufeff\U000e0000-\U000e007f]"
 )
 
 
@@ -151,20 +155,39 @@ def _short(commit: Any) -> str:
     return clean(commit)[:12] if commit else "-"
 
 
+def _hunks(diff: str) -> list[str]:
+    """The hunk lines of one file's unified diff, cleaned, without the server's own `---`/`+++`
+    header lines: those are printed from the path, never from the diff text."""
+    lines = clean_text(diff).rstrip("\n").split("\n")
+    if len(lines) >= 2 and lines[0].startswith("--- ") and lines[1].startswith("+++ "):
+        lines = lines[2:]
+    return lines
+
+
 def _print_diff(diff: dict[str, Any]) -> None:
-    """Each changed file, and its unified diff -- third-party text, cleaned of control characters."""
+    """Each changed file, and its unified diff -- third-party text, cleaned of control characters.
+
+    The file headers are written here from the path; every hunk line is indented two spaces, so a
+    line of the file's own text can never stand at the margin as a `---`/`+++` header of a file
+    that did not change."""
+    base = clean(diff.get("compared_with") or "nothing")
+    typer.echo(f"compared with {base}", err=True)
     files = diff.get("files") or []
     if not files:
-        typer.echo(f"no file differs from {clean(diff.get('compared_with') or 'nothing')}", err=True)
+        typer.echo(f"no file differs from {base}", err=True)
         return
     for item in files:
+        path, change = clean(item["path"]), clean(item["change"])
         sizes = f"{item.get('old_size') if item.get('old_size') is not None else '-'} -> "
         sizes += f"{item.get('new_size') if item.get('new_size') is not None else '-'} bytes"
-        typer.echo(f"{clean(item['change'])}\t{clean(item['path'])}\t{sizes}")
+        typer.echo(f"{change}\t{path}\t{sizes}")
         if item.get("diff"):
-            typer.echo(clean_text(item["diff"]).rstrip("\n"))
+            typer.echo("--- /dev/null" if change == "added" else f"--- a/{path}")
+            typer.echo("+++ /dev/null" if change == "removed" else f"+++ b/{path}")
+            for line in _hunks(item["diff"]):
+                typer.echo(f"  {line}")
         elif not item.get("binary"):
-            typer.echo("(diff left out: past the answer's diff budget)")
+            typer.echo("(no diff: past the answer's diff budget, or too large to diff)")
     if diff.get("diff_truncated"):
         typer.echo("…some diffs were cut short or left out.", err=True)
 

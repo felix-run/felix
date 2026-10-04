@@ -191,8 +191,12 @@ async def check_upstream(
 
     Checking records the sighting, as a browse does: asking about an update starts its cooldown.
     The diff is third-party text, redacted as a file read is. 409 `not_imported` for a skill whose
-    newest version was not imported; a `ref` passes the same allowlist and rules as an import's."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    newest version was not imported; a `ref` passes the same allowlist and rules as an import's.
+
+    The stored ref is a read (`skills:read`). Naming another `ref` needs `skills:write`: it points
+    the deployment's token, and the budget, at any branch, tag or commit of the source -- a choice
+    of what to fetch, as an import is."""
+    ctx = library_request(request, SCOPE_SKILLS_WRITE if ref else SCOPE_SKILLS_READ)
     if not addressable(name):
         return not_found(name)
     try:

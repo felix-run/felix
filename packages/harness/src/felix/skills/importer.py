@@ -154,7 +154,7 @@ def github_call_budget(
     return charge
 
 
-async def _gather_limited[T](calls: Iterable[Callable[[], Awaitable[T]]]) -> list[T]:
+async def gather_limited[T](calls: Iterable[Callable[[], Awaitable[T]]]) -> list[T]:
     """Run each call, at most `_FETCH_CONCURRENCY` at once, in order. A task group, so the first
     failure cancels the rest rather than leaving them fetching for an import already refused."""
     gate = asyncio.Semaphore(_FETCH_CONCURRENCY)
@@ -208,7 +208,7 @@ def _iso(ms: int) -> str:
 
 
 @dataclass(slots=True)
-class _Session:
+class Session:
     source: GitHubSource
     ref: str | None
     cooldown: Cooldown
@@ -216,9 +216,9 @@ class _Session:
 
 
 @asynccontextmanager
-async def _github_session(
+async def github_session(
     settings: Settings, tenant_id: str, source: str, ref: str | None, deps: ImportDeps
-) -> AsyncIterator[_Session]:
+) -> AsyncIterator[Session]:
     """One browse's or import's checked request, cooldown and GitHub reader, under one deadline.
 
     The source and ref are validated and the allowlist judged for ``tenant_id`` before anything
@@ -233,7 +233,7 @@ async def _github_session(
     cooldown = Cooldown(days=days, now=deps.clock())
     try:
         async with reader(settings, deps.http, deps.charge) as gh, asyncio.timeout(DEADLINE_SECONDS):
-            yield _Session(parsed, wanted_ref, cooldown, gh)
+            yield Session(parsed, wanted_ref, cooldown, gh)
     except TimeoutError:
         raise ImportUpstreamError(f"GitHub took longer than {DEADLINE_SECONDS:.0f}s") from None
 
@@ -285,7 +285,7 @@ def _bundle_size(path: str, size: int) -> int:
     return base64_encoded_size(size) if is_binary_asset_path(path) else size
 
 
-def _check_caps(kept: list[TreeEntry], source: str) -> None:
+def check_caps(kept: list[TreeEntry], source: str) -> None:
     """Refuse, before any blob is fetched, a skill the bundle format would refuse anyway."""
     if len(kept) > MAX_BUNDLE_FILES:
         raise ImportSourceTooLarge(f"{source} has {len(kept)} files; a skill may hold {MAX_BUNDLE_FILES}")
@@ -350,7 +350,7 @@ async def browse(
     Every listed skill's files are recorded as seen (`sighting_store`), so the cooldown can count
     from here; each item says when it is first eligible. At most `MAX_BROWSE_SKILLS` are listed;
     `found` says how many there were."""
-    async with _github_session(settings, tenant_id, source, ref, deps) as session:
+    async with github_session(settings, tenant_id, source, ref, deps) as session:
         parsed, cooldown, gh = session.source, session.cooldown, session.gh
         resolved = await resolve(gh, parsed, session.ref)
         roots = (*DEFAULT_ROOTS, parsed.path) if parsed.path else DEFAULT_ROOTS
@@ -363,7 +363,7 @@ async def browse(
         ]
         listed = found[:MAX_BROWSE_SKILLS]
         by_path = {e.path: e for e in resolved.tree}
-        metas = await _gather_limited(
+        metas = await gather_limited(
             (lambda d=d: _listing_meta(gh, parsed, by_path[d.skill_md_path])) for d in listed
         )
     sources = {d.source_path: parsed.at(d.source_path).canonical for d in listed}
@@ -457,7 +457,7 @@ async def _prior(
 
 
 async def snapshot(
-    settings: Settings, tenant_id: str, session: _Session, resolved: Resolved | None = None
+    settings: Settings, tenant_id: str, session: Session, resolved: Resolved | None = None
 ) -> Snapshot:
     """Resolve (unless ``resolved`` is given) and list the skill folder, and record the sighting
     of its kept files -- before anything judges them, whatever the cooldown: a refused attempt,
@@ -478,7 +478,7 @@ async def snapshot(
 
 
 async def _fetch(
-    settings: Settings, tenant_id: str, session: _Session
+    settings: Settings, tenant_id: str, session: Session
 ) -> tuple[Snapshot, _Fetched | ImportResult]:
     """List the skill folder, record the sighting, and download it -- unless it is inside the
     cooldown (refused before any file is read), or the library already holds exactly these
@@ -486,11 +486,11 @@ async def _fetch(
     source, gh = session.source, session.gh
     snap = await snapshot(settings, tenant_id, session)
     session.cooldown.check(source.canonical, snap.first_seen)
-    _check_caps(snap.kept, source.canonical)
+    check_caps(snap.kept, source.canonical)
     unchanged, parent = await _prior(settings, tenant_id, _slug(source), source.canonical, snap.tree_hash)
     if unchanged is not None:
         return snap, ImportResult(version=unchanged, unchanged=True)
-    bodies = await _gather_limited((lambda e=e: gh.blob(source, e)) for e in snap.kept)
+    bodies = await gather_limited((lambda e=e: gh.blob(source, e)) for e in snap.kept)
     files, dropped = sanitize_bundle(dict(zip((e.path for e in snap.kept), bodies, strict=True)))
     dropped = sorted({*dropped, *(e.path for e in snap.entries if not keeps_path(e.path))})
     return snap, _Fetched(
@@ -519,11 +519,14 @@ async def import_skill(
     import age, judged at ``deps.clock()``. ``action`` is what the draft's reason -- and so its
     `skill_draft_saved` audit event -- calls it: an `update` re-imports a skill from its origin.
     Either way what the origin holds is recorded (`upstream_store`): an import is a check too."""
-    async with _github_session(settings, tenant_id, source, ref, deps) as session:
+    async with github_session(settings, tenant_id, source, ref, deps) as session:
         snap, fetched = await _fetch(settings, tenant_id, session)
     parsed, resolved = session.source, snap.resolved
     if isinstance(fetched, ImportResult):
-        await _record(settings, tenant_id, parsed, snap, session.cooldown.now)
+        # The newest version already holds these files. Recorded only when this is the ref that
+        # version names: an import of another ref is not the stored origin's state.
+        if fetched.version.get("origin_ref") == resolved.ref:
+            await record_upstream(settings, tenant_id, parsed, snap, session.cooldown.now)
         return fetched
     verb = "updated" if action == "update" else "imported"
     saved = await library.save_draft(
@@ -561,13 +564,16 @@ async def import_skill(
         resolved.commit,
         len(fetched.dropped),
     )
-    await _record(settings, tenant_id, parsed, snap, session.cooldown.now)
+    await record_upstream(settings, tenant_id, parsed, snap, session.cooldown.now)
     return ImportResult(version=saved, unchanged=False, dropped_files=fetched.dropped, parent=fetched.parent)
 
 
-async def _record(settings: Settings, tenant_id: str, source: GitHubSource, snap: Snapshot, now: int) -> None:
-    """What the skill's origin holds now, for the upstream listing and the library detail. After
-    the save, and never failing it: a lost record is refreshed by the next check."""
+async def record_upstream(
+    settings: Settings, tenant_id: str, source: GitHubSource, snap: Snapshot, now: int
+) -> None:
+    """What the skill's stored origin holds now, for the upstream listing and the library detail
+    (`upstream_store`). The caller decides that ``snap`` is of the stored ref. Never raises: it
+    runs after a save it must not fail, and a lost record is refreshed by the next check."""
     from felix.skills.upstream_store import get_upstream_store
 
     try:
@@ -597,11 +603,16 @@ __all__ = [
     "Cooldown",
     "ImportDeps",
     "ImportResult",
+    "Session",
     "Snapshot",
     "browse",
+    "check_caps",
+    "gather_limited",
     "github_call_budget",
+    "github_session",
     "import_skill",
     "keeps_path",
+    "record_upstream",
     "sanitize_bundle",
     "snapshot",
     "uncharged",
