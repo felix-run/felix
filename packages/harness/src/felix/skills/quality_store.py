@@ -432,20 +432,21 @@ def sweep_lease_ms(settings: Settings | None) -> int:
 
 @runtime_checkable
 class SweepLeaseStore(Protocol):
-    """The sweep's lease. Each call is one statement in a transaction of its own, so it holds
-    behind a transaction-mode pooler, where consecutive statements reach different server
-    sessions and nothing tied to a session (an advisory lock) survives between them."""
+    """A sweep's lease, one per ``name`` (`SWEEP_LEASE` unless named). Each call is one statement
+    in a transaction of its own, so it holds behind a transaction-mode pooler, where consecutive
+    statements reach different server sessions and nothing tied to a session (an advisory lock)
+    survives between them."""
 
-    async def acquire(self, token: str, *, now: int, lease_ms: int) -> bool:
+    async def acquire(self, token: str, *, now: int, lease_ms: int, name: str = SWEEP_LEASE) -> bool:
         """Take the lease for ``token`` until ``now + lease_ms``: when nobody holds it, its
         holder's lease lapsed, or ``token`` already holds it."""
         ...
 
-    async def renew(self, token: str, *, now: int, lease_ms: int) -> bool:
+    async def renew(self, token: str, *, now: int, lease_ms: int, name: str = SWEEP_LEASE) -> bool:
         """Extend it to ``now + lease_ms``, only while ``token`` is still the holder."""
         ...
 
-    async def release(self, token: str) -> bool:
+    async def release(self, token: str, *, name: str = SWEEP_LEASE) -> bool:
         """Lapse it at once, only while ``token`` is still the holder."""
         ...
 
@@ -459,34 +460,35 @@ class InMemorySweepLease:
     def clear(self) -> None:
         self._rows.clear()
 
-    async def acquire(self, token: str, *, now: int, lease_ms: int) -> bool:
-        row = self._rows.get(SWEEP_LEASE)
+    async def acquire(self, token: str, *, now: int, lease_ms: int, name: str = SWEEP_LEASE) -> bool:
+        row = self._rows.get(name)
         if row is not None and row[0] != token and row[1] >= now:
             return False
-        self._rows[SWEEP_LEASE] = (token, now + lease_ms)
+        self._rows[name] = (token, now + lease_ms)
         return True
 
-    async def renew(self, token: str, *, now: int, lease_ms: int) -> bool:
-        return self._set(token, now + lease_ms)
+    async def renew(self, token: str, *, now: int, lease_ms: int, name: str = SWEEP_LEASE) -> bool:
+        return self._set(name, token, now + lease_ms)
 
-    async def release(self, token: str) -> bool:
-        return self._set(token, 0)
+    async def release(self, token: str, *, name: str = SWEEP_LEASE) -> bool:
+        return self._set(name, token, 0)
 
-    def _set(self, token: str, until: int) -> bool:
-        row = self._rows.get(SWEEP_LEASE)
+    def _set(self, name: str, token: str, until: int) -> bool:
+        row = self._rows.get(name)
         if row is None or row[0] != token:
             return False
-        self._rows[SWEEP_LEASE] = (token, until)
+        self._rows[name] = (token, until)
         return True
 
 
 class PostgresSweepLease:
-    """The `skill_job_lease` row (`0024`). No tenant and no RLS: one row is the whole sweep."""
+    """The `skill_job_lease` rows (`0024`), one per sweep name. No tenant and no RLS: one row is
+    the whole sweep."""
 
     def __init__(self, settings: Settings) -> None:
         self._url = settings.database_url
 
-    async def acquire(self, token: str, *, now: int, lease_ms: int) -> bool:
+    async def acquire(self, token: str, *, now: int, lease_ms: int, name: str = SWEEP_LEASE) -> bool:
         # Two acquirers racing on an absent row: one inserts, the other conflicts, waits on that
         # row's lock, and re-checks the WHERE against the winner's lease -- which refuses it.
         return await self._one(
@@ -494,19 +496,19 @@ class PostgresSweepLease:
             "ON CONFLICT (name) DO UPDATE SET holder = EXCLUDED.holder, until_ms = EXCLUDED.until_ms "
             "WHERE skill_job_lease.until_ms < :now OR skill_job_lease.holder = :t "
             "RETURNING holder",
-            {"n": SWEEP_LEASE, "t": token, "until": now + lease_ms, "now": now},
+            {"n": name, "t": token, "until": now + lease_ms, "now": now},
         )
 
-    async def renew(self, token: str, *, now: int, lease_ms: int) -> bool:
-        return await self._set(token, now + lease_ms)
+    async def renew(self, token: str, *, now: int, lease_ms: int, name: str = SWEEP_LEASE) -> bool:
+        return await self._set(name, token, now + lease_ms)
 
-    async def release(self, token: str) -> bool:
-        return await self._set(token, 0)
+    async def release(self, token: str, *, name: str = SWEEP_LEASE) -> bool:
+        return await self._set(name, token, 0)
 
-    async def _set(self, token: str, until: int) -> bool:
+    async def _set(self, name: str, token: str, until: int) -> bool:
         return await self._one(
             "UPDATE skill_job_lease SET until_ms = :until WHERE name = :n AND holder = :t RETURNING holder",
-            {"n": SWEEP_LEASE, "t": token, "until": until},
+            {"n": name, "t": token, "until": until},
         )
 
     async def _one(self, sql: str, params: dict[str, Any]) -> bool:
@@ -533,13 +535,16 @@ class SweepLease:
     store: SweepLeaseStore
     token: str
     lease_ms: int
+    name: str = SWEEP_LEASE
 
     async def renew(self) -> bool:
-        return await self.store.renew(self.token, now=now_ms(), lease_ms=self.lease_ms)
+        return await self.store.renew(self.token, now=now_ms(), lease_ms=self.lease_ms, name=self.name)
 
 
 @asynccontextmanager
-async def sweep_lock(settings: Settings | None) -> AsyncIterator[SweepLease | None]:
+async def sweep_lock(
+    settings: Settings | None, *, name: str = SWEEP_LEASE, lease_ms: int | None = None
+) -> AsyncIterator[SweepLease | None]:
     """The one `skill_jobs` sweep slot for the duration, or None, without waiting, when another
     sweep holds it -- across every worker process on Postgres, within this process under
     `memory://`. The cron fires every minute whether or not the last sweep finished; without
@@ -548,30 +553,34 @@ async def sweep_lock(settings: Settings | None) -> AsyncIterator[SweepLease | No
     A lease rather than a lock because it bounds concurrency, not correctness: two sweeps that
     overlap after a lease lapsed still never run one job twice (`claim_next` hands each job to
     one claimer), they only run more model calls at once than one sweep would.
+
+    Another sweep takes a lease of its own by ``name`` (another `skill_job_lease` row), held for
+    ``lease_ms`` between renewals rather than this sweep's job deadline.
     """
     store = get_sweep_lease_store(settings)
-    lease = SweepLease(store, new_token(), sweep_lease_ms(settings))
-    if not await store.acquire(lease.token, now=now_ms(), lease_ms=lease.lease_ms):
+    lease = SweepLease(store, new_token(), lease_ms or sweep_lease_ms(settings), name)
+    if not await store.acquire(lease.token, now=now_ms(), lease_ms=lease.lease_ms, name=name):
         yield None
         return
     try:
         yield lease
     finally:
         try:
-            await store.release(lease.token)
+            await store.release(lease.token, name=name)
         except Exception:
             # Not raised over whatever ended the sweep: an unreleased lease lapses on its own.
-            logger.warning("skill_jobs: releasing the sweep lease failed", exc_info=True)
+            logger.warning("%s: releasing the sweep lease failed", name, exc_info=True)
 
 
 def clear_memory() -> None:
     """Drop every in-memory row of the quality loop. Test seam, matching the other `memory://`
     stores; the feedback and evaluation twins live in their own modules."""
-    from felix.skills import eval_store, feedback_store, sighting_store
+    from felix.skills import eval_store, feedback_store, sighting_store, upstream_store
 
     feedback_store.clear_memory()
     # Import sightings gate the cooldown: one test's sighting would be another's early eligibility.
     sighting_store.clear_memory()
+    upstream_store.clear_memory()
     eval_store.clear_memory()
     _memory_policy.clear()
     _memory_lease.clear()

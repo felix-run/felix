@@ -125,9 +125,22 @@ class ImportRefAmbiguous(SkillImportError):
 
 
 class ImportBudgetExhausted(SkillImportError):
-    """The tenant's, or the deployment's, hourly budget of GitHub calls is spent."""
+    """The tenant's, or the deployment's, hourly budget of GitHub calls is spent. ``deployment``
+    says which: a background sweep moves on to another tenant past a tenant's, and stops past the
+    deployment's."""
 
     code = "rate_limited"
+
+    def __init__(self, message: str, *, deployment: bool = False) -> None:
+        super().__init__(message)
+        self.deployment = deployment
+
+
+class SkillNotImported(SkillImportError):
+    """An upstream check or update named a skill whose newest version that was not rejected did
+    not come from an import: there is no origin to check it against."""
+
+    code = "not_imported"
 
 
 class ImportCommitNotInRepo(SkillImportError):
@@ -658,10 +671,14 @@ async def reader(
 
 async def resolve(gh: GitHubReader, source: GitHubSource, ref: str | None) -> Resolved:
     """The commit ``ref`` names -- or, with none, the default branch's tip, resolved as the branch
-    it is (`refs/heads/<default>`), so a default branch named like a commit id is still a branch."""
+    it is (`refs/heads/<default>`), so a default branch named like a commit id is still a branch.
+
+    A ``ref`` that *is* the default branch's name resolves as that branch too. An import with no
+    ref stores the default branch's name as its ref, and every later check and update names it:
+    a tag of that name (a `main` tag, say) must not turn the stored ref ambiguous, or into the tag."""
     meta = await gh.repo(source)
     requested = ref or meta.default_branch
-    wanted = ref if ref else f"refs/heads/{meta.default_branch}"
+    wanted = ref if ref and ref != meta.default_branch else f"refs/heads/{meta.default_branch}"
     commit = await gh.commit(source, wanted, default_branch=meta.default_branch)
     return Resolved(source, requested, commit, meta.license, await gh.tree(source, commit))
 
@@ -687,6 +704,7 @@ __all__ = [
     "RepoMeta",
     "Resolved",
     "SkillImportError",
+    "SkillNotImported",
     "SourceGrant",
     "TreeEntry",
     "check_allowed",

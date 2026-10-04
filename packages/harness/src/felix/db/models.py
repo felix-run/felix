@@ -327,6 +327,24 @@ class SkillImportSightingRow(Base):
     first_seen_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class SkillUpstreamRow(Base):
+    """What an imported library skill's origin held when Felix last looked
+    (`skills/upstream_store.py`): the upstream listing and the library detail read it rather than
+    asking GitHub."""
+
+    __tablename__ = "skill_upstream"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    origin_source: Mapped[str] = mapped_column(Text, nullable=False)
+    origin_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    upstream_commit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    upstream_tree_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_seen_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    checked_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ManifestRow(Base):
     __tablename__ = "manifests"
 

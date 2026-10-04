@@ -310,3 +310,22 @@ def test_the_otel_rows_are_absent_when_export_is_off() -> None:
     settings = _settings(environment="production", auth_mode="api_key", auth_api_keys="k")
     assert _capability_findings(settings) == []
     assert not [r for r in _posture_findings(settings) if "otel" in r.label]
+
+
+def test_doctor_notes_what_the_worker_needs_for_skill_import_checks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Notes, not failures: the checks run in the worker, on the worker's own environment."""
+    from felix_cli.main import _skill_import_check_notes
+
+    assert _skill_import_check_notes(_settings()) == [], "silent while the checks are off"
+    bare = " ".join(_skill_import_check_notes(_settings(skill_import_check_hours=6)))
+    assert "give it the same FELIX_SKILL_IMPORT_SOURCES and FELIX_SKILL_IMPORT_GITHUB_TOKEN" in bare
+    assert "no FELIX_SKILL_IMPORT_SOURCES here" in bare and "no FELIX_SKILL_IMPORT_GITHUB_TOKEN here" in bare
+    bound = _skill_import_check_notes(
+        _settings(skill_import_check_hours=6, skill_import_sources="acme=github:acme/*")
+    )
+    assert len(bound) == 2 and not any("FELIX_SKILL_IMPORT_SOURCES here" in n for n in bound)
+
+    output = _doctor(monkeypatch, tmp_path, FELIX_SKILL_IMPORT_CHECK_HOURS="6")
+    assert "note skill import checks every 6h run in the worker" in output

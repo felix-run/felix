@@ -329,6 +329,15 @@ raise the bar (`import_min_age_days` in its policy) but not lower it. Every GitH
 against `FELIX_SKILL_IMPORT_CALLS_PER_HOUR` (per tenant, 500) and
 `FELIX_SKILL_IMPORT_CALLS_PER_HOUR_TOTAL` (4000).
 
+An imported skill is checked against its origin with `GET /skill-library/{name}/-/upstream`
+(`felix skills diff`): the commit its ref names now, whether the files moved, when the cooldown
+lets them in, and a per-file diff against the live version. `POST /skill-library/{name}/-/update`
+(`felix skills update`) re-imports it as a new draft, never published; `GET /skill-library/-/upstream`
+(`felix skills outdated`) lists every imported skill's state, 25 at a time.
+`FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, up to 168) has the worker check them on that cadence,
+spending at most half of each budget, so the listing and the library detail can answer without
+asking GitHub.
+
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.
 
