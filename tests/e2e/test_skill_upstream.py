@@ -219,6 +219,7 @@ async def test_naming_another_ref_needs_skills_write(boot: Any, gh: FakeRepos) -
         assert (await app.client.get(url, headers=reader)).status_code == 200
         before = len(gh.requests)
         refused = await app.client.get(url, params={"ref": "v1"}, headers=reader)
-        assert refused.status_code == 403 and "skills:write" in refused.text, refused.text
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"] == "missing scopes: skills:write"
         assert len(gh.requests) == before, "refused before GitHub is asked"
         assert (await app.client.get(url, params={"ref": "v1"}, headers=writer)).status_code == 200

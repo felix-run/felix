@@ -16,7 +16,6 @@ from felix.skills import github, importer, library, upstream
 from felix.skills.bundle_diff import Content, DiffBuilder, diff_bundles, git_blob_id
 from felix.skills.format import MAX_DESCRIPTION_CHARS
 from felix.skills.library_store import get_skill_library_store
-from felix.skills.sighting_store import get_sighting_store
 from felix.skills.upstream_store import get_upstream_store
 from felix.storage import MemoryObjectStore
 
@@ -199,9 +198,14 @@ def test_a_side_past_the_input_bound_is_never_diffed(monkeypatch: pytest.MonkeyP
     old = {"references/wide.md": b"a\n", "references/long.md": long, "references/small.md": b"a\n"}
     new = {"references/wide.md": wide, "references/long.md": b"b\n", "references/small.md": b"b\n"}
 
+    edge = b"e" * bundle_diff.MAX_DIFF_INPUT_BYTES
+    old["references/edge.md"], new["references/edge.md"] = b"a\n", edge
+
     result = diff_bundles(old, new)
 
-    assert read == ["b/references/small.md"], "only the small file reached difflib"
+    assert read == ["b/references/edge.md", "b/references/small.md"], (
+        "only the small file, and the one exactly at the byte bound, reached difflib"
+    )
     by_path = {f["path"]: f for f in result["files"]}
     for path, size in (("references/wide.md", len(wide)), ("references/long.md", 2)):
         assert (by_path[path]["diff"], by_path[path]["truncated"], by_path[path]["new_size"]) == (
@@ -564,15 +568,16 @@ async def test_a_spent_budget_ends_a_listing_part_way_or_refuses_it(
     for n in ("alpha", "beta", "gamma"):
         gh.push(f"acme/{n}", _tree({n: _files(name=n)}))
         await _import(settings, store, gh, source=f"github:acme/{n}/skills/{n}")
-    left = [4]
+    left = [3]
 
     async def charge() -> None:
         if left[0] <= 0:
             raise github.ImportBudgetExhausted("spent")
         left[0] -= 1
 
-    # One check of a bare ref in a repository of its own is four calls (repository, tag, branch,
-    # tree); the second skill's first call is refused.
+    # One check of the stored `main` in a repository of its own is three calls: the repository,
+    # `refs/heads/main` (the default branch resolves as the branch), and the tree. A budget of
+    # three is exactly the first check; the second skill's first call is refused.
     listing = await _outdated(settings, gh, charge=charge)
     assert [i["name"] for i in listing["items"]] == ["alpha"]
     assert (listing["stopped"], listing["next_cursor"]) == ("rate_limited", "alpha")
@@ -670,6 +675,30 @@ async def test_a_sighting_the_sweep_stamps_is_the_one_a_later_import_counts_from
     assert result.unchanged is False, "the sweep's sighting started the clock nobody asked for"
 
 
+# `signal`, not the suite's `thread`: a regression here loops for ever, and must end as a FAILED
+# test rather than a dump and a killed run.
+@pytest.mark.timeout(10, method="signal")
+async def test_a_row_that_stays_due_is_tried_once_a_tick(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upstream store refuses every write, so a checked row is still due when the sweep reads
+    again: it must not be checked again in the same tick (nor for ever)."""
+    from felix.skills import upstream_store
+
+    await _import(settings, store, gh, clock=lambda: T0)
+
+    async def unwritable(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("the store is down")
+
+    monkeypatch.setattr(upstream_store.get_upstream_store(settings), "record", unwritable)
+    before = len(gh.requests)
+
+    counts = await _sweep(_swept(1), gh, at=T0 + 3_600_000)
+
+    assert counts["checked"] == 1
+    assert len(gh.requests) - before == 3, "one check's calls: repository, branch, tree"
+
+
 async def test_the_sweep_spends_half_the_budget_and_stops(store: MemoryObjectStore, gh: FakeRepos) -> None:
     """Three calls a check (repository, default branch, tree). A tenant's share of 10 is 5: acme's
     alpha is checked, beta's third call is refused and acme is left out; globex's delta is checked,
@@ -710,12 +739,14 @@ async def test_a_tenant_past_its_share_does_not_starve_the_others(
     """acme has more due skills than a tick tries and a share (4) of one check; the tick, three
     wide, still reaches globex -- whose skills sort after all of acme's."""
     settings = _swept(1, skill_import_calls_per_hour=8)
-    await _spread(settings, store, gh, {"acme": ("a1", "a2", "a3", "a4"), "globex": ("g1",)})
+    await _spread(settings, store, gh, {"acme": ("a1", "a2", "a3", "a4"), "globex": ("g1", "g2")})
 
     counts = await _sweep(settings, gh, at=T0 + 3_600_000, batch=3)
 
     assert (counts["checked"], counts["budget_stopped"]) == (2, 1)
     assert (await _row(settings, "globex", "g1"))["checked_at"] == T0 + 3_600_000
+    # a1 checked, a2 refused, g1 checked: three tried, and the batch holds across the re-read.
+    assert (await _row(settings, "globex", "g2"))["checked_at"] == T0, "past the batch of three"
     assert [(await _row(settings, "acme", n))["checked_at"] for n in ("a2", "a3", "a4")] == [T0] * 3
 
 
@@ -735,23 +766,29 @@ async def test_a_sweep_resolves_a_repository_once_per_tenant(
 
 
 async def test_the_sweep_keeps_tenants_sightings_apart(store: MemoryObjectStore, gh: FakeRepos) -> None:
-    from felix.skills.sighting_store import InMemorySightingStore
-
+    """Both tenants import the same source. Only acme's row is due at T1, so acme's sweep check sees
+    the moved files then; globex's is due at T2. globex's cooldown counts from T2 -- its own first
+    sighting -- not from acme's at T1."""
     plain = Settings(database_url="memory://skill-upstream")
+    cooled = _swept(1, skill_import_min_age_days=7)
+    hour = 3_600_000
     await _import(plain, store, gh, clock=lambda: T0)
-    gh.push("globex/skills", _tree({"refunds": _files(name="refunds")}))
-    await _import(
-        plain, store, gh, source="github:globex/skills/skills/refunds", tenant="globex", clock=lambda: T0
-    )
-    gh.push(REPO, _tree({NAME: _files(queues=b"moved\n")}))
+    await _import(plain, store, gh, tenant="globex", clock=lambda: T0 + hour // 2)
+    gh.push(REPO, _tree({NAME: _files(queues=b"# Queues\n\nlegal\n")}))
+    t1, t2 = T0 + hour, T0 + 2 * hour
 
-    counts = await _sweep(_swept(1), gh, at=T0 + 3_600_000)
+    first = await _sweep(cooled, gh, at=t1)
+    assert first["checked"] == 1, "only acme's row was due at T1"
+    assert (await _row(plain, "acme", NAME))["first_seen_at"] == t1
+    assert (await _row(plain, "globex", NAME))["checked_at"] == T0 + hour // 2, "not checked at T1"
 
-    assert counts["checked"] == 2
-    sightings = get_sighting_store(plain)
-    assert isinstance(sightings, InMemorySightingStore)
-    seen = {(tenant, at) for (tenant, source, _), at in sightings._rows.items() if source == SOURCE}
-    assert seen == {("acme", T0), ("acme", T0 + 3_600_000)}, "globex never saw acme's files"
+    await _sweep(cooled, gh, at=t2)
+
+    assert (await _row(plain, "globex", NAME))["first_seen_at"] == t2, "globex's own first sighting"
+    with pytest.raises(github.ImportTooRecent):
+        await _update(cooled, store, gh, tenant="globex", clock=lambda: t1 + 7 * DAY)
+    result, _ = await _update(cooled, store, gh, clock=lambda: t1 + 7 * DAY)
+    assert result.unchanged is False, "acme's clock did start at T1"
 
 
 async def test_an_origin_taken_off_the_allowlist_is_refused_without_a_call(
