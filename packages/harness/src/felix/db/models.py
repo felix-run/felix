@@ -682,6 +682,31 @@ class PushSubscriptionRow(Base):
     failures: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
+class GitHubConnectionRow(Base):
+    """One person's GitHub connection in a tenant: their refresh token, sealed.
+
+    Both tokens are AES-GCM sealed with FELIX_GITHUB_TOKEN_KEY, the tenant, the user id and the
+    column bound in, so a value copied to another row or column does not open
+    (`felix.auth.github_connections`). `status` is `active` or `revoked` (GitHub refused a
+    refresh); a removed connection is a deleted row.
+    """
+
+    __tablename__ = "github_connections"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    github_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    github_login: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token_sealed: Mapped[str] = mapped_column(Text, nullable=False)
+    # Epoch ms; 0 when GitHub did not say.
+    refresh_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    access_token_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    principal_subj: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 __all__ = [
     "A2ATask",
     "Approval",
@@ -694,6 +719,7 @@ __all__ = [
     "EvalDatasetItem",
     "EvalRun",
     "Fiber",
+    "GitHubConnectionRow",
     "Job",
     "JobRun",
     "ManifestActive",

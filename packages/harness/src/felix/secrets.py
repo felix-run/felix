@@ -88,6 +88,11 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
         "skill_import_github_token",
         "felix/skill_import_github_token",
     ),
+    # GitHub sign-in by redirect: the App's client secret, and the key that seals the sign-in
+    # cookies and every stored GitHub token. Hydrated after `Settings` validates, which is why
+    # `felix.auth.github.redirect_enabled` is asked per request rather than decided at boot.
+    "github_client_secret": ("GITHUB_CLIENT_SECRET", "github_client_secret", "felix/github_client_secret"),
+    "github_token_key": ("GITHUB_TOKEN_KEY", "github_token_key", "felix/github_token_key"),
 }
 
 

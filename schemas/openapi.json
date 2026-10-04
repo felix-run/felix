@@ -79,10 +79,15 @@
           "github_device": {
             "title": "Github Device",
             "type": "boolean"
+          },
+          "github_redirect": {
+            "title": "Github Redirect",
+            "type": "boolean"
           }
         },
         "required": [
           "github_device",
+          "github_redirect",
           "bearer_required"
         ],
         "title": "AuthMethodsOut",
@@ -823,6 +828,88 @@
           "new_thread_id"
         ],
         "title": "ForkRequest",
+        "type": "object"
+      },
+      "GitHubConnectionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GitHubConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "GitHubConnectionList",
+        "type": "object"
+      },
+      "GitHubConnectionOut": {
+        "description": "Who the connection is for and whether it still works. Never a token.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "github_login": {
+            "title": "Github Login",
+            "type": "string"
+          },
+          "github_user_id": {
+            "title": "Github User Id",
+            "type": "integer"
+          },
+          "refresh_expires_at": {
+            "title": "Refresh Expires At",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "github_user_id",
+          "github_login",
+          "status",
+          "created_at",
+          "updated_at",
+          "refresh_expires_at"
+        ],
+        "title": "GitHubConnectionOut",
+        "type": "object"
+      },
+      "GitHubConnectionState": {
+        "properties": {
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitHubConnectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "connected"
+        ],
+        "title": "GitHubConnectionState",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -5406,6 +5493,129 @@
         ]
       }
     },
+    "/auth/github/authorize": {
+      "get": {
+        "description": "Send a browser to GitHub to sign in, returning to `return_to` (an allowed origin).\n\n`state` and the PKCE verifier live in a sealed HttpOnly cookie, so only the browser that\nstarted this sign-in can finish it: a callback carrying someone else's `state` is refused.",
+        "operationId": "start_github_redirect_auth_github_authorize_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "return_to",
+            "required": true,
+            "schema": {
+              "title": "Return To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Start Github Redirect Auth Github Authorize Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Github Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/github/callback": {
+      "get": {
+        "description": "GitHub's return. Checks `state` against this browser's flow cookie, exchanges the code,\nmints, and redirects back to the app with the token waiting in a one-load cookie.",
+        "operationId": "finish_github_redirect_auth_github_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Error",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Finish Github Redirect Auth Github Callback Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Github Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/auth/github/device": {
       "post": {
         "operationId": "start_github_login_auth_github_device_post",
@@ -5492,6 +5702,38 @@
           }
         },
         "summary": "Start Github Login",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/github/exchange": {
+      "post": {
+        "description": "The app collects the token its sign-in left waiting, once. The cookie is cleared whether\nor not it opened, so a second call \u2014 a reload, a replay \u2014 finds nothing.",
+        "operationId": "collect_github_redirect_auth_github_exchange_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginTokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "summary": "Collect Github Redirect",
         "tags": [
           "Auth"
         ]
@@ -5610,7 +5852,7 @@
     },
     "/auth/methods": {
       "get": {
-        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
+        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
         "operationId": "auth_methods_auth_methods_get",
         "responses": {
           "200": {
@@ -7549,6 +7791,99 @@
         "summary": "Get File",
         "tags": [
           "Files"
+        ]
+      }
+    },
+    "/github/connection": {
+      "delete": {
+        "description": "Forget your GitHub connection here and withdraw the App's authorization at GitHub.\nSigning out of chat-ui calls this. Your Felix token is unaffected until it expires.",
+        "operationId": "remove_my_github_connection_github_connection_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Remove My Github Connection",
+        "tags": [
+          "Auth"
+        ]
+      },
+      "get": {
+        "description": "Whether Felix holds a GitHub connection for you in this tenant.",
+        "operationId": "my_github_connection_github_connection_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubConnectionState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "My Github Connection",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/github/connections": {
+      "get": {
+        "description": "Every stored GitHub connection in your tenant (`github:admin`).",
+        "operationId": "list_github_connections_github_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubConnectionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Github Connections",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/github/connections/{github_user_id}": {
+      "delete": {
+        "description": "Revoke anyone's GitHub connection in your tenant (`github:admin`).",
+        "operationId": "remove_github_connection_github_connections__github_user_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "github_user_id",
+            "required": true,
+            "schema": {
+              "title": "Github User Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Github Connection",
+        "tags": [
+          "Auth"
         ]
       }
     },

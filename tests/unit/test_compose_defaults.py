@@ -38,6 +38,7 @@ PASSED_THROUGH = {
     "FELIX_GITHUB_DEVICE_STARTS_PER_HOUR": "github_device_starts_per_hour",
     "FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL": "github_device_starts_per_hour_total",
     "FELIX_GITHUB_OIDC_TTL_SECONDS": "github_oidc_ttl_seconds",
+    "FELIX_GITHUB_CALLBACK_PATH": "github_callback_path",
 }
 
 # A tracing backend is something Felix sends to, so pointing at one must not require
@@ -156,6 +157,9 @@ API_ONLY = (
     "FELIX_GITHUB_CLIENT_ID",
     "FELIX_GITHUB_ORG_TENANTS",
     "FELIX_GITHUB_OIDC_AUDIENCE",
+    "FELIX_GITHUB_CLIENT_SECRET",
+    "FELIX_GITHUB_TOKEN_KEY",
+    "FELIX_GITHUB_REDIRECT_ORIGINS",
 )
 # Read by every process. Without them the setting exists and Compose never delivers it,
 # which is how GitHub login and Web Push shipped unreachable from every Compose deployment.
