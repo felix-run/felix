@@ -88,6 +88,34 @@
         "title": "AuthMethodsOut",
         "type": "object"
       },
+      "BrowseItemOut": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "path",
+          "source"
+        ],
+        "title": "BrowseItemOut",
+        "type": "object"
+      },
       "BundleIssueOut": {
         "properties": {
           "message": {
@@ -793,6 +821,40 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "publish": {
+            "default": false,
+            "title": "Publish",
+            "type": "boolean"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "source": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "ImportIn",
         "type": "object"
       },
       "JobUpsert": {
@@ -1530,6 +1592,28 @@
             "title": "Name",
             "type": "string"
           },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
           "origin_manifest_id": {
             "anyOf": [
               {
@@ -1540,6 +1624,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -1594,7 +1711,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -1852,6 +1970,55 @@
           "live_version"
         ],
         "title": "SkillArchivedOut",
+        "type": "object"
+      },
+      "SkillBrowseOut": {
+        "description": "The skills a repository offers at one commit.",
+        "properties": {
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BrowseItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "License"
+          },
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "ref",
+          "commit",
+          "license",
+          "items",
+          "truncated"
+        ],
+        "title": "SkillBrowseOut",
         "type": "object"
       },
       "SkillDetailOut": {
@@ -2419,6 +2586,275 @@
         "title": "SkillFileOut",
         "type": "object"
       },
+      "SkillImportOut": {
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "decision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Note"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "dropped_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dropped Files",
+            "type": "array"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/SkillFileMetaOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
+          "origin_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
+          },
+          "parent_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Version"
+          },
+          "publish_blocked": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkillLibraryErrorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "quality_score": {
+            "title": "Quality Score",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "review_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewCheckOut"
+            },
+            "title": "Review Checks",
+            "type": "array"
+          },
+          "security_issues": {
+            "items": {
+              "$ref": "#/components/schemas/SecurityIssueOut"
+            },
+            "title": "Security Issues",
+            "type": "array"
+          },
+          "security_status": {
+            "enum": [
+              "pass",
+              "advisory",
+              "fail"
+            ],
+            "title": "Security Status",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "shadows_operator_upload": {
+            "title": "Shadows Operator Upload",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "agent",
+              "operator",
+              "import"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "published",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unchanged": {
+            "title": "Unchanged",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "parent_version",
+          "status",
+          "source",
+          "author",
+          "origin_manifest_id",
+          "session_id",
+          "reason",
+          "description",
+          "quality_score",
+          "security_status",
+          "decided_by",
+          "decision_note",
+          "created_at",
+          "decided_at",
+          "published_at",
+          "review_checks",
+          "security_issues",
+          "files",
+          "shadows_operator_upload",
+          "published",
+          "unchanged",
+          "dropped_files"
+        ],
+        "title": "SkillImportOut",
+        "type": "object"
+      },
       "SkillLibraryErrorOut": {
         "description": "Every refusal. `issues` accompanies `invalid_bundle`; `reasons` accompanies `publish_blocked`.",
         "properties": {
@@ -2832,6 +3268,28 @@
             "title": "Name",
             "type": "string"
           },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
           "origin_manifest_id": {
             "anyOf": [
               {
@@ -2842,6 +3300,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -2914,7 +3405,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -3011,6 +3503,28 @@
             "title": "Name",
             "type": "string"
           },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
           "origin_manifest_id": {
             "anyOf": [
               {
@@ -3021,6 +3535,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -3075,7 +3622,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -3174,6 +3722,28 @@
             "title": "Name",
             "type": "string"
           },
+          "origin_commit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Commit"
+          },
+          "origin_license": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin License"
+          },
           "origin_manifest_id": {
             "anyOf": [
               {
@@ -3184,6 +3754,39 @@
               }
             ],
             "title": "Origin Manifest Id"
+          },
+          "origin_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Ref"
+          },
+          "origin_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Source"
+          },
+          "origin_tree_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Tree Hash"
           },
           "parent_version": {
             "anyOf": [
@@ -3270,7 +3873,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -3633,7 +4237,8 @@
           "source": {
             "enum": [
               "agent",
-              "operator"
+              "operator",
+              "import"
             ],
             "title": "Source",
             "type": "string"
@@ -8627,7 +9232,7 @@
             }
           },
           {
-            "description": "Who wrote the newest version.",
+            "description": "Who wrote the newest version (`import`: fetched from GitHub).",
             "in": "query",
             "name": "source",
             "required": false,
@@ -8636,7 +9241,8 @@
                 {
                   "enum": [
                     "agent",
-                    "operator"
+                    "operator",
+                    "import"
                   ],
                   "type": "string"
                 },
@@ -8644,7 +9250,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Who wrote the newest version.",
+              "description": "Who wrote the newest version (`import`: fetched from GitHub).",
               "title": "Source"
             }
           },
@@ -8688,6 +9294,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -8769,6 +9385,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -8821,6 +9447,133 @@
           }
         },
         "summary": "Create Library Skill",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/-/browse": {
+      "get": {
+        "description": "The skills a GitHub repository offers at one commit: every directory with a `SKILL.md`\nunder the usual roots (`skills/`, `.claude/skills/`, Claude Code plugin layouts, \u2026), with the\nname and description its frontmatter declares. Each item's `source` is what to import it by.",
+        "operationId": "browse_source_skill_library___browse_get",
+        "parameters": [
+          {
+            "description": "`github:owner/repo[/path]`.",
+            "in": "query",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "description": "`github:owner/repo[/path]`.",
+              "maxLength": 512,
+              "minLength": 1,
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Branch, tag or commit; default branch if omitted.",
+            "in": "query",
+            "name": "ref",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Branch, tag or commit; default branch if omitted.",
+              "title": "Ref"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillBrowseOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Browse Source",
         "tags": [
           "Skill library"
         ]
@@ -8888,6 +9641,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -8989,6 +9752,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9082,6 +9855,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9139,6 +9922,118 @@
         ]
       }
     },
+    "/skill-library/-/import": {
+      "post": {
+        "description": "Fetch the skill at `source`, pinned to the commit `ref` resolves to, and save it as a draft.\n\nA new skill starts at 0.1.0. A skill the library already imported from the same source gets\na new version -- unless its files are unchanged, which answers 200 with `unchanged: true`\nand the existing version, saving nothing (and publishing nothing). A name the library holds\nfrom anywhere else is 409 `origin_mismatch`. `dropped_files` lists what the import left out.",
+        "operationId": "import_from_source_skill_library___import_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillImportOut"
+                }
+              }
+            },
+            "description": "Unchanged: the newest version already holds these files, and nothing was saved."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillImportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          }
+        },
+        "summary": "Import From Source",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
     "/skill-library/-/policy": {
       "delete": {
         "description": "Drop the tenant's own policy, so the settings alone decide; returns the policy now in force.",
@@ -9153,6 +10048,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -9223,6 +10128,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -9303,6 +10218,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -9407,6 +10332,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9490,6 +10425,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9570,6 +10515,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -9700,6 +10655,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -9791,6 +10756,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -9927,6 +10902,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10017,6 +11002,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10111,6 +11106,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10203,6 +11208,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10294,6 +11309,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10396,6 +11421,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10487,6 +11522,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10597,6 +11642,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -10698,6 +11753,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -10807,6 +11872,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {

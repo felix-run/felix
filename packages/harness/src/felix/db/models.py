@@ -187,10 +187,17 @@ class SkillVersionRow(Base):
     # Set the first time this version goes live, and never cleared. What separates a version
     # a rollback may return to from a draft that was rejected: both are `archived`.
     published_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Where an imported version came from (`skills/importer.py`); null unless `source` is
+    # `import`. The tree hash is what a re-import compares to decide nothing changed.
+    origin_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_commit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_tree_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_license: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
-        CheckConstraint("source IN ('agent', 'operator')", name="ck_skill_version_source"),
+        CheckConstraint("source IN ('agent', 'operator', 'import')", name="ck_skill_version_source"),
     )
 
 

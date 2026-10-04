@@ -50,6 +50,7 @@ from felix_api.routes import (
     openai_compat,
     plans,
     push,
+    skill_import,
     skill_library,
     skill_quality,
     skills,
@@ -312,6 +313,7 @@ def create_app(
     app.include_router(memory.router, prefix="/memory")
     app.include_router(documents.router, prefix="/documents")
     app.include_router(skills.router, prefix="/skills")
+    app.include_router(skill_import.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_library.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_quality.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(a2a.router, prefix="/a2a")

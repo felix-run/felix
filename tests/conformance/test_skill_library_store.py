@@ -467,3 +467,32 @@ async def test_buildable_versions_leave_out_rejected_drafts_only(store_settings:
     }
     assert await store.buildable_versions("globex", ["invoice-triage"]) == {"invoice-triage": ["0.1.0"]}
     assert await store.buildable_versions("acme", []) == {}
+
+
+ORIGIN = {
+    "origin_source": "github:acme/skills/skills/invoice-triage",
+    "origin_ref": "main",
+    "origin_commit": "c" * 40,
+    "origin_tree_hash": "d" * 64,
+    "origin_license": "MIT",
+}
+
+
+@parametrized
+async def test_an_imported_version_keeps_its_origin_and_others_read_back_null(store_settings: Any) -> None:
+    """The `import` source and its five origin columns: written and read back alike on both arms
+    (the check constraint admits the source), and null -- not missing -- on a version that is
+    not an import, as Postgres returns them."""
+    store = get_skill_library_store(store_settings)
+    row = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN}
+    await store.insert_version("acme", row, FILES, created_by="ops", at=1)
+    await _save(store, "0.1.1", at=2)
+
+    imported = await store.get_version("acme", "invoice-triage", "0.1.0")
+    assert imported is not None and imported["source"] == "import"
+    assert {k: imported[k] for k in ORIGIN} == ORIGIN
+    agent = await store.get_version("acme", "invoice-triage", "0.1.1")
+    assert agent is not None and {k: agent[k] for k in ORIGIN} == dict.fromkeys(ORIGIN)
+    newest, oldest = await store.list_versions("acme", "invoice-triage")
+    assert oldest["origin_commit"] == "c" * 40 and newest["origin_commit"] is None
+    assert await store.count_pending("acme", "contributor") == 1, "an import is not an agent draft"

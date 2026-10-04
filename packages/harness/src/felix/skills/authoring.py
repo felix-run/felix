@@ -74,7 +74,7 @@ class _ComposeError(Exception):
 class _Composed(BaseModel):
     files: dict[str, str]
     parent: str | None = None
-    # Whether an operator wrote the parent, live or not. An agent's edit of an operator's
+    # Whether an operator wrote or imported the parent, live or not. An agent's edit of such a
     # skill is review material in any mode (`make_skill_authoring_tools`).
     edits_operator_skill: bool = False
     # The parent's files the save keeps unchanged, as `{path, sha256}`: what an approver is
@@ -220,7 +220,7 @@ class _SkillAuthor:
         return _Composed(
             files=files,
             parent=parent,
-            edits_operator_skill=parent_row.get("source") == "operator",
+            edits_operator_skill=parent_row.get("source") in {"operator", "import"},
             inherited=inherited,
         )
 
@@ -231,7 +231,8 @@ class _SkillAuthor:
             return {
                 **_draft_result(row, "draft"),
                 "review_required": (
-                    "the version this edits was written by an operator; a person must publish this"
+                    "the version this edits was written or imported by an operator; "
+                    "a person must publish this"
                 ),
             }
         try:

@@ -309,6 +309,16 @@ bounded per call (`FELIX_SKILL_EVAL_MAX_TOKENS`, `FELIX_SKILL_IMPROVE_MAX_TOKENS
 (`FELIX_SKILL_JOB_DEADLINE_SECONDS`) and per tenant (`FELIX_SKILL_JOBS_MAX_QUEUED`,
 `FELIX_SKILL_JOBS_DAILY_LIMIT`).
 
+Skills published on GitHub come in the same way: `GET /skill-library/-/browse?source=github:owner/repo`
+lists the skills a repository offers (`skills/*`, `.claude/skills/*`, Claude Code plugin layouts and
+the other common roots) at one resolved commit, and `POST /skill-library/-/import` (or
+`felix skills add github:owner/repo/path`) fetches one as a draft, pinned to that commit, with its
+source, ref, commit and license on the version. A re-import saves a new version only when the
+skill's files changed. Imported text is third-party instructions, so an advisory scan blocks its
+publish whatever the policy says. `FELIX_SKILL_IMPORT_SOURCES` (empty = any GitHub source) limits
+which repositories may be named, and `FELIX_SKILL_IMPORT_GITHUB_TOKEN` (optional) reaches private
+ones and lifts the anonymous rate limit.
+
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.
 

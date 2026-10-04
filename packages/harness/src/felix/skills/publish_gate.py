@@ -114,29 +114,48 @@ def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> Publish
     return replace(effective, source="tenant" if effective == tenant else "tenant+settings")
 
 
+# Who wrote a version, when its own text could steer the test it is graded on: an agent, or a
+# third party whose skill was imported. Neither's generated or default scenarios count.
+_UNTRUSTED_AUTHORS = {"agent": "an agent wrote this version", "import": "this version was imported"}
+
+
 def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, Any]) -> tuple[bool, str]:
     """Whether ``evaluation`` can satisfy `require_eval` and `min_eval_uplift` for a version
     written by ``version_source``, and why not when it cannot.
 
-    For an agent's version only an evaluation on the bundle's own scenarios counts. Generated
-    and default scenarios are written from the skill's text -- the text the agent wrote -- so an
-    agent could steer the test it is graded on. A bundle's `evals/` files come only from an
-    operator's save: an agent's save may only carry them unchanged from its parent
-    (`library.save_draft`).
+    For an agent's or an imported version only an evaluation on the bundle's own scenarios
+    counts. Generated and default scenarios are written from the skill's text -- the text the
+    agent, or the third party, wrote -- so its author could steer the test it is graded on. A
+    bundle's `evals/` files come only from an operator's save: an agent's save may only carry
+    them unchanged from its parent (`library.save_draft`), and an import drops them
+    (`importer.sanitize_bundle`).
     """
     if evaluation.get("status") != "succeeded":
         return False, f"the evaluation has not succeeded (it is {evaluation.get('status')})"
-    if version_source == "agent" and evaluation.get("scenario_source") != "bundle":
+    who = _UNTRUSTED_AUTHORS.get(version_source or "")
+    if who is not None and evaluation.get("scenario_source") != "bundle":
         return False, (
-            f"an agent wrote this version, and these scenarios were {evaluation.get('scenario_source')}: "
-            "only the bundle's own evals/ scenarios count for an agent's version"
+            f"{who}, and these scenarios were {evaluation.get('scenario_source')}: "
+            "only the bundle's own evals/ scenarios count for it"
         )
     return True, "counts toward the publish policy"
 
 
 def gate_scenario_source(version_source: str | None) -> str | None:
     """The scenario source an evaluation must have to count for this version, or None for any."""
-    return "bundle" if version_source == "agent" else None
+    return "bundle" if version_source in _UNTRUSTED_AUTHORS else None
+
+
+def policy_for_source(policy: PublishPolicy, version_source: str | None) -> PublishPolicy:
+    """``policy`` as it applies to a version written by ``version_source``: only ever tighter.
+
+    An imported version is third-party instructions nobody in the tenant wrote, so an advisory
+    scan (an executable link, remote content piped to a shell) blocks it whatever the tenant's
+    policy says about advisories -- the bar a public registry holds mirrored skills to.
+    """
+    if version_source == "import" and not policy.block_on_advisory:
+        return replace(policy, block_on_advisory=True)
+    return policy
 
 
 @dataclass(slots=True, frozen=True)
@@ -241,6 +260,7 @@ __all__ = [
     "eval_counts_for_gate",
     "evaluate_files",
     "gate_scenario_source",
+    "policy_for_source",
     "policy_reasons",
     "publish_policy",
 ]

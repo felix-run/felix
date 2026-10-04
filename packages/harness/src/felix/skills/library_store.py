@@ -177,6 +177,11 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     "decision_note": None,
     "decided_at": None,
     "published_at": None,
+    "origin_source": None,
+    "origin_ref": None,
+    "origin_commit": None,
+    "origin_tree_hash": None,
+    "origin_license": None,
 }
 
 

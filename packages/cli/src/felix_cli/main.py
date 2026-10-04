@@ -1,4 +1,4 @@
-"""Felix CLI — migrate, eval, mint-jwt, login, ingest-docs, bundle-manifests, version."""
+"""Felix CLI — migrate, eval, mint-jwt, login, ingest-docs, skills, bundle-manifests, version."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import typer
 from rich import print as rprint
 
 from felix_cli import __version__
+from felix_cli.skills import skills_app
 
 if TYPE_CHECKING:
     from felix.config import Settings
@@ -420,6 +421,10 @@ def ingest_docs(
     )
     if result.failed:
         raise typer.Exit(1)
+
+
+# `felix skills browse|add`: their own module, since they talk to a server, as `ingest-docs` does.
+app.add_typer(skills_app, name="skills")
 
 
 @app.command("bundle-manifests")

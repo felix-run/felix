@@ -43,14 +43,27 @@ from felix.skills.library_store import (
     is_rejected,
     library_object_key,
 )
-from felix.skills.publish_gate import PublishPolicy, Verdict, assess, evaluate_files, gate_scenario_source
+from felix.skills.publish_gate import (
+    PublishPolicy,
+    Verdict,
+    assess,
+    evaluate_files,
+    gate_scenario_source,
+    policy_for_source,
+)
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
 
 logger = logging.getLogger("felix.skills.library")
 
 now_ms = lambda: int(time.time() * 1000)
 
-SkillSourceKind = Literal["agent", "operator"]
+# `import`: fetched from an external source (`skills/importer.py`) at a person's request.
+# Third-party text, so the gate treats it at least as strictly as an agent's draft
+# (`publish_gate.policy_for_source`, `publish_gate.gate_scenario_source`).
+SkillSourceKind = Literal["agent", "operator", "import"]
+
+# The `skill_version` columns an import's origin fills; null on every other version.
+ORIGIN_COLUMNS = ("origin_source", "origin_ref", "origin_commit", "origin_tree_hash", "origin_license")
 
 # Strict `major.minor.patch`: a version is interpolated into an object key, and the loader's
 # own key-segment rule (`loader._VERSION_RE`) is looser than this.
@@ -144,6 +157,29 @@ class SkillVersionCorrupt(SkillLibraryError):
 
 
 @dataclass(slots=True, frozen=True)
+class ImportOrigin:
+    """Where an imported version came from: the canonical source (`github:owner/repo/path`),
+    the ref that was asked for, the commit it resolved to, a digest of the skill folder's tree
+    at that commit (what decides whether a re-import changed anything), and the repository's
+    SPDX license, when it declares one."""
+
+    source: str
+    ref: str
+    commit: str
+    tree_hash: str
+    license: str | None = None
+
+    def as_row(self) -> dict[str, Any]:
+        return dict(
+            zip(
+                ORIGIN_COLUMNS,
+                (self.source, self.ref, self.commit, self.tree_hash, self.license),
+                strict=True,
+            )
+        )
+
+
+@dataclass(slots=True, frozen=True)
 class DraftProvenance:
     """Who saved a draft, from where, and why.
 
@@ -158,6 +194,15 @@ class DraftProvenance:
     origin_manifest_id: str | None = None
     session_id: str | None = None
     principal: str | None = None
+    # Set exactly when ``source="import"``.
+    origin: ImportOrigin | None = None
+
+
+class SkillOriginMismatch(SkillLibraryError):
+    """An import named a skill the library holds from somewhere else: another source, or a
+    version an agent or an operator wrote. An import never takes over a name."""
+
+    code = "origin_mismatch"
 
 
 class SkillPublishBlocked(SkillLibraryError):
@@ -196,6 +241,7 @@ def _audit(
         "author": row.get("author"),
         "quality_score": row.get("quality_score"),
         "security_status": row.get("security_status"),
+        **{k: row[k] for k in ORIGIN_COLUMNS if row.get(k) is not None},
         **extra,
     }
     record_offline_event(
@@ -444,6 +490,8 @@ async def save_draft(
     the audit event records too. It is a warning, not a refusal: the loader decides who
     answers each ref, and that decision is the reviewer's to know about.
     """
+    if (provenance.source == "import") != (provenance.origin is not None):
+        raise ValueError("an import's provenance carries its origin, and only an import's does")
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid or validation.frontmatter is None:
         raise SkillBundleInvalid(validation.errors)
@@ -469,6 +517,7 @@ async def save_draft(
         "session_id": provenance.session_id,
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
+        **(provenance.origin.as_row() if provenance.origin else {}),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
     }
@@ -616,15 +665,18 @@ async def evaluate_version(
         from felix.skills.policy import load_publish_policy
 
         policy = (await load_publish_policy(settings, tenant_id)).policy
+    # Who wrote the version can only tighten the policy (`policy_for_source`), and decides which
+    # evaluations count (`publish_gate.eval_counts_for_gate`).
+    row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
+    source = (row or {}).get("source")
+    policy = policy_for_source(policy, source)
     latest_eval = None
     if policy.needs_eval:
-        # Only a policy that reads the evaluation pays for the lookup. Which evaluations count
-        # depends on who wrote the version (`publish_gate.eval_counts_for_gate`).
+        # Only a policy that reads the evaluation pays for the lookup.
         from felix.skills.eval_store import get_skill_eval_store
 
-        row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
         latest_eval = await get_skill_eval_store(settings).latest_succeeded(
-            tenant_id, name, version, scenario_source=gate_scenario_source((row or {}).get("source"))
+            tenant_id, name, version, scenario_source=gate_scenario_source(source)
         )
     try:
         files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
@@ -799,14 +851,17 @@ async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: st
 
 __all__ = [
     "MUST_NOT_EXIST",
+    "ORIGIN_COLUMNS",
     "VERSION_RE",
     "DraftProvenance",
+    "ImportOrigin",
     "SkillBundleInvalid",
     "SkillExists",
     "SkillLibraryError",
     "SkillLiveChanged",
     "SkillNameShadowed",
     "SkillNotFound",
+    "SkillOriginMismatch",
     "SkillParentChanged",
     "SkillParentRejected",
     "SkillPendingCapReached",

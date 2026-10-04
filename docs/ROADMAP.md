@@ -373,6 +373,26 @@ First, because everything else governs it.
          version they expect. Open: the inline card was verified against a scripted model only.
       6. [x] (web#329, web#332) felix-web docs: concepts, manifest reference, management API,
          persistence, governance, deploy and observability.
+- [ ] **Skill import from GitHub** — a skill someone already published should not have to be
+      pasted into the editor. Imports land as library drafts through the existing gate; nothing
+      resolves a GitHub ref at manifest compile time (`spec.skills` and the loader are untouched),
+      so a compile never depends on GitHub being up. Ported from Skillist's mirror sync.
+      1. [ ] `felix/skills/{github,importer}.py`, `GET /skill-library/-/browse`,
+         `POST /skill-library/-/import`, `felix skills browse|add`, migration `0026` (source
+         `import` plus origin source / ref / commit / tree digest / license on the version).
+         `github:owner/repo[/path]` plus a separate ref, resolved to one commit SHA and every file
+         read at it by blob SHA (checked against its git object id), through the egress-pinned
+         client to `api.github.com` only. A re-import saves a new version only when the skill
+         folder's tree digest moved, not on any new commit; a name held from another origin, an
+         agent or an operator is `origin_mismatch`. An import is held to a stricter gate: an
+         advisory scan blocks whatever the policy says, `evals/` are dropped and only bundle
+         scenarios count, and an agent's edit of an imported skill needs a person.
+         `FELIX_SKILL_IMPORT_SOURCES` (allowlist) and `FELIX_SKILL_IMPORT_GITHUB_TOKEN`. Open: a
+         tree GitHub truncates (past ~100k entries) is refused rather than walked; browse reads
+         at most 200 SKILL.md files; the token has no per-tenant scoping beyond the allowlist.
+      2. [ ] An explicit update check (route + `felix skills outdated`/`diff`): what the source's
+         tree digest is now against the live version, with a file diff before re-importing; and
+         the felix-web docs (management API, concepts, deploy settings).
 
 ### B. Close the durable loop
 

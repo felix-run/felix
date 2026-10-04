@@ -98,6 +98,14 @@ class SkillVersionOut(BaseModel):
     created_at: int
     decided_at: int | None
     published_at: int | None
+    # Where an imported version came from (`source: import`); null on every other version. The
+    # canonical source (`github:owner/repo/path`), the ref asked for, the commit it resolved to,
+    # a digest of the skill folder's tree there, and the repository's SPDX license, if declared.
+    origin_source: str | None = None
+    origin_ref: str | None = None
+    origin_commit: str | None = None
+    origin_tree_hash: str | None = None
+    origin_license: str | None = None
 
 
 class SkillFileMetaOut(BaseModel):
@@ -307,6 +315,40 @@ class SkillWriteOut(SkillVersionDetailOut):
     publish_blocked: SkillLibraryErrorOut | None = None
 
 
+class SkillImportOut(SkillWriteOut):
+    # True when the library's newest version already holds exactly these files (the skill
+    # folder's tree is unchanged): nothing was saved, and this is that version.
+    unchanged: bool
+    # Files of the skill folder the import left out: anything outside `SKILL.md`, `plugin.json`,
+    # `scripts/`, `references/` and `assets/` (an `evals/` included), dot-paths, a binary file
+    # outside `assets/`, and text that is not UTF-8.
+    dropped_files: list[str]
+
+
+class BrowseItemOut(BaseModel):
+    # From the SKILL.md frontmatter; the directory name when it names none.
+    name: str
+    description: str
+    # The skill's directory in the repository.
+    path: str
+    # What to import it by: `github:owner/repo/path`.
+    source: str
+
+
+class SkillBrowseOut(BaseModel):
+    """The skills a repository offers at one commit."""
+
+    source: str
+    # The ref asked for, or the repository's default branch.
+    ref: str
+    # The commit `ref` resolved to; every listed SKILL.md was read at it.
+    commit: str
+    license: str | None
+    items: list[BrowseItemOut]
+    # More skills were found than one browse lists; name a path to narrow it.
+    truncated: bool
+
+
 class SkillArchivedOut(BaseModel):
     name: str
     live_version: str | None
@@ -342,6 +384,19 @@ class NewVersionIn(BundleIn):
         if self.version is not None and self.bump is not None:
             raise ValueError("give `version` or `bump`, not both")
         return self
+
+
+class ImportIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # `github:owner/repo[/path]`: the directory holding the skill's SKILL.md.
+    source: str = Field(min_length=1, max_length=512)
+    # A branch, tag or commit; the repository's default branch when omitted. Resolved to a
+    # commit once, and every file is read at that commit.
+    ref: str | None = Field(default=None, min_length=1, max_length=200)
+    # Publish in the same request, through the same gate as `POST .../publish` -- where an
+    # imported version's advisory scan blocks too. The draft is saved either way.
+    publish: bool = False
 
 
 class MakeLiveIn(BaseModel):
@@ -397,12 +452,14 @@ __all__ = [
     "REASON_LIMIT",
     "VERSION_PATTERN",
     "AcceptFeedbackIn",
+    "BrowseItemOut",
     "BundleIn",
     "BundleIssueOut",
     "CreateSkillIn",
     "EvalScenarioOut",
     "EvalScenarioResultOut",
     "FeedbackIn",
+    "ImportIn",
     "MakeLiveIn",
     "NewVersionIn",
     "PolicyPatchIn",
@@ -412,6 +469,7 @@ __all__ = [
     "ReviewQueueOut",
     "SecurityIssueOut",
     "SkillArchivedOut",
+    "SkillBrowseOut",
     "SkillDetailOut",
     "SkillEvalListOut",
     "SkillEvalOut",
@@ -419,6 +477,7 @@ __all__ = [
     "SkillFeedbackOut",
     "SkillFileMetaOut",
     "SkillFileOut",
+    "SkillImportOut",
     "SkillLibraryErrorOut",
     "SkillListOut",
     "SkillPolicyOut",

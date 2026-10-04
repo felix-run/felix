@@ -48,7 +48,7 @@ from felix_api.routes._skill_library_http import (
     library_request,
     not_found,
     refusal,
-    refusal_body,
+    written_version,
 )
 from felix_api.routes._skill_library_models import (
     BundleIn,
@@ -124,8 +124,8 @@ async def list_library(
         default=None,
         description="`live`: has a live version. `draft`: has drafts awaiting review. `archived`: neither.",
     ),
-    source: Literal["agent", "operator"] | None = Query(
-        default=None, description="Who wrote the newest version."
+    source: Literal["agent", "operator", "import"] | None = Query(
+        default=None, description="Who wrote the newest version (`import`: fetched from GitHub)."
     ),
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=64),
@@ -350,25 +350,7 @@ async def _saved(
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)
-    name, version = str(saved["name"]), str(saved["version"])
-    published, blocked = False, None
-    if body.publish:
-        try:
-            await library.publish(ctx.settings, ctx.tenant_id, name, version, by=by, object_store=ctx.store)
-            published = True
-        except library.SkillLibraryError as exc:
-            # The draft is saved either way; the refusal says why it did not also go live.
-            blocked = refusal_body(exc)
-    # Read back, so the response carries every column the store defaults, as a later GET would.
-    row = await ctx.lib.get_version(ctx.tenant_id, name, version) or saved
-    files = await ctx.lib.list_files(ctx.tenant_id, name, version)
-    return {
-        **ctx.redact(row),
-        "files": files,
-        "shadows_operator_upload": saved["shadows_operator_upload"],
-        "published": published,
-        "publish_blocked": blocked,
-    }
+    return await written_version(ctx, by, saved, publish=body.publish)
 
 
 @router.post("", status_code=201, response_model=SkillWriteOut, responses=ERRORS)

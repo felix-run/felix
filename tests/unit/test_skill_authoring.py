@@ -678,6 +678,31 @@ async def test_publish_mode_never_auto_publishes_an_edit_of_an_operators_skill(
     assert skill is not None and skill["live_version"] == "0.1.0"
 
 
+async def test_publish_mode_never_auto_publishes_an_edit_of_an_imported_skill(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """An operator chose to bring the imported skill in; an agent's edit of it goes back to a person."""
+    origin = library.ImportOrigin(
+        source="github:acme/skills/x", ref="main", commit="c" * 40, tree_hash="d" * 64
+    )
+    row = await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="import", author="ops", origin=origin),
+        object_store=store,
+    )
+    await library.publish(settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store)
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
+    )
+    assert result["status"] == "draft" and "imported" in result["review_required"]
+    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] == "0.1.0"
+
+
 def _spec(**spec: Any) -> dict[str, Any]:
     return {
         "apiVersion": "felix/v1",
