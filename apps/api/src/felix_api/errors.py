@@ -48,11 +48,13 @@ def _relayable() -> tuple[type[BaseException], ...]:
     Resolved on call rather than at import so this module stays importable from
     anywhere in the app without ordering constraints.
     """
+    from felix.manifests.governance import GovernanceError
     from felix.manifests.inbound_auth import InboundAuthError
     from felix.manifests.loader import ManifestParseError
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
     from felix.secrets import SecretNotFoundError
+    from felix_ai.output_schema import InvalidOutputSchema
     from felix_ai.providers.base import ProviderConfigError
     from felix_ai.types import MessageFormatError
 
@@ -72,6 +74,13 @@ def _relayable() -> tuple[type[BaseException], ...]:
         # Rendered by felix.manifests.loader without the offending value, precisely so it
         # can travel: the whole point of the refusal is that an operator can read it.
         ManifestParseError,
+        # What a manifest violates, by field, written for the operator who submitted it: a
+        # plaintext-secret refusal names the key (`….env.TOKEN looks like a plaintext secret`),
+        # never the value.
+        GovernanceError,
+        # Names what is wrong with the caller's own `response_format` / `output_schema`, and
+        # carries no server state: "the reason a client can act on" is its stated purpose.
+        InvalidOutputSchema,
         # Names the offending part of the caller's own message by index
         # (`tool_calls[1]: arguments are not valid JSON`), never its content.
         MessageFormatError,

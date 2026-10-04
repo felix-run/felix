@@ -25,7 +25,10 @@ from felix.auth.mgmt import (
     tenant_id_from_request,
 )
 from felix.documents.chunking import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS
+from felix.documents.store import DocumentTooLarge
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from felix_api.errors import client_safe_message
 
 router = APIRouter(tags=["Documents"])
 
@@ -203,10 +206,14 @@ async def ingest_document(request: Request, body: DocumentIngestRequest) -> dict
             max_chars=body.max_chars,
             overlap_chars=body.overlap_chars,
         )
-    except ValueError as exc:
+    except DocumentTooLarge as exc:
         # The store's chunk ceiling. A 400 rather than a 500: the caller sent something the
-        # corpus will not hold, and the message says which limit it hit.
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+        # corpus will not hold, and the message says which limit it hit. Caught by its own type:
+        # this used to catch every ValueError, so whatever one rose from below next would have
+        # been relayed to the caller word for word.
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from None
     return {"doc_id": doc_id, "chunks": chunks}
 
 

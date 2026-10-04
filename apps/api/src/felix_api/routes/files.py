@@ -13,6 +13,7 @@ well-formed is not a caller's business; and both endpoints are scope-gated.
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -23,6 +24,10 @@ from felix.auth.mgmt import (
     tenant_id_from_request,
 )
 from pydantic import BaseModel, Field
+
+from felix_api.errors import client_safe_message
+
+logger = logging.getLogger("felix_api.files")
 
 router = APIRouter(tags=["Files"])
 
@@ -48,7 +53,9 @@ async def upload_file(body: UploadRequest, request: Request) -> dict[str, Any]:
     except AttachmentError as exc:
         # 400 here, unlike a bad *reference*: the caller sent this content in this request
         # and can fix it, and saying which of size or type was wrong is the whole value.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
 
     settings = request.app.state.settings
     try:
@@ -63,10 +70,14 @@ async def upload_file(body: UploadRequest, request: Request) -> dict[str, Any]:
     except QuotaExceeded as exc:
         # 409, not 413: the request is a fine size and the account is full. A 413 would send
         # the caller off to shrink an image that was never the problem.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
     except AttachmentError as exc:
-        # No object store configured is the deployment's problem, not the caller's.
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # No object store configured is the deployment's problem, not the caller's -- so the
+        # caller is told that much, and the setting to fix is in the log, for the operator.
+        logger.error("file upload unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="file storage is not available on this server") from exc
 
     return {
         "file_id": stored.file_id,
