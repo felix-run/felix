@@ -2118,6 +2118,10 @@
             "title": "Commit",
             "type": "string"
           },
+          "found": {
+            "title": "Found",
+            "type": "integer"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/BrowseItemOut"
@@ -2160,6 +2164,7 @@
           "commit",
           "license",
           "items",
+          "found",
           "truncated"
         ],
         "title": "SkillBrowseOut",

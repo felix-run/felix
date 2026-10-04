@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from felix.auth.mgmt import require_mgmt_scopes, tenant_id_from_request
 from felix.skills import library
 from felix.skills.format import is_valid_skill_name
+from felix.skills.github import SkillImportError
 from felix.skills.library_store import SkillLibraryStore, get_skill_library_store
 from felix.skills.quality_store import Cursor
 
@@ -71,6 +72,10 @@ STATUS: dict[str, int] = {
     "source_too_large": 422,
     # The ref names a commit outside the repository's own history (a fork's, say).
     "commit_not_in_repo": 422,
+    # A bare ref that is both a tag and a branch; name refs/tags/... or refs/heads/....
+    "ambiguous_ref": 422,
+    # The tenant's or the deployment's hourly budget of GitHub calls is spent; waiting refills it.
+    "rate_limited": 429,
     # An import is a draft for review; publishing it is a separate request after that review.
     "publish_not_allowed": 422,
     # ...the deployment's FELIX_SKILL_IMPORT_SOURCES does not cover it, or this tenant first saw
@@ -87,12 +92,18 @@ STATUS: dict[str, int] = {
     "egress_blocked": 502,
 }
 
-# Statuses only the import routes (`skill_import.py`) answer with a library code: GitHub failing,
-# and the allowlist and cooldown refusals. Every other library route documents neither.
-_IMPORT_ONLY_STATUSES = frozenset({403, 502})
+
+def _codes(cls: type[library.SkillLibraryError]) -> set[str]:
+    return {cls.code} | {c for sub in cls.__subclasses__() for c in _codes(sub)}
+
+
+# Codes only the import routes (`skill_import.py`) answer with: every `SkillImportError`, and the
+# publish refusal. Split by code, not status, so a status the library shares (422, 409) stays on
+# every route while one only an import reaches (403, 502) is documented there alone.
+IMPORT_ONLY_CODES = frozenset(_codes(SkillImportError) | {"publish_not_allowed"})
 ERRORS: dict[int | str, dict[str, Any]] = {
     status: {"model": SkillLibraryErrorOut}
-    for status in sorted({*STATUS.values(), 422} - _IMPORT_ONLY_STATUSES)
+    for status in sorted({s for code, s in STATUS.items() if code not in IMPORT_ONLY_CODES} | {422})
 }
 IMPORT_ERRORS: dict[int | str, dict[str, Any]] = {
     status: {"model": SkillLibraryErrorOut} for status in sorted({*STATUS.values(), 422})
@@ -282,6 +293,7 @@ def row_page(ctx: LibraryRequest, rows: list[dict[str, Any]], limit: int) -> dic
 __all__ = [
     "ERRORS",
     "IMPORT_ERRORS",
+    "IMPORT_ONLY_CODES",
     "ROW_ID_RE",
     "STATUS",
     "STRUCTURAL_FIELDS",

@@ -1418,6 +1418,31 @@ def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> N
     record_counter("felix_untrusted_tools_unscreened", {"manifest_id": m.metadata.name})
 
 
+def _warn_imported_skills_are_unscreened(m: Manifest, catalog: Any) -> None:
+    """Say so when a skill built on an import is in the catalog and nothing screens it.
+
+    What `activate_skill`, `read_skill_file` and `list_skills` return of such a skill is marked as
+    relayed from an untrusted author, but only content screening reads that mark -- off, the third
+    party's text reaches the model as a trusted tool's would. The same warning, for the same
+    reason, as `_warn_untrusted_tools_are_unscreened`. Keyed on the catalog rather than on the
+    skill tools being bound: those are bound on every manifest with skills, and a warning that
+    fires on every bundled manifest is noise.
+    """
+    if m.spec.content_screening.enabled:
+        return
+    imported = sorted(s.name for s in catalog.skills.values() if s.untrusted)
+    if not imported:
+        return
+    logger.warning(
+        "manifest %r offers imported skill(s) %s with content_screening disabled, so what the skill "
+        "tools return of them reaches the model unscreened",
+        m.metadata.name,
+        _summarise(imported),
+        extra={"manifest_id": m.metadata.name},
+    )
+    record_counter("felix_imported_skills_unscreened", {"manifest_id": m.metadata.name})
+
+
 def bind_decider(spec: DeciderSpec, settings: Any) -> MeteredDecider | None:
     """`spec.decider`, built once per compile, or None when the manifest names none.
 
@@ -1850,6 +1875,7 @@ async def build_agent(
             for name, tool in skill_tools.items():
                 if name not in have and (m.spec.skills or authoring or name == "read_skill_file"):
                     resolved.append(tool)
+            _warn_imported_skills_are_unscreened(m, catalog)
             if authoring:
                 _bind_skill_authoring(resolved, m, deps, tenant_id, catalog)
             if m.spec.skill_suggestion.enabled and decider is not None and catalog.list_public():

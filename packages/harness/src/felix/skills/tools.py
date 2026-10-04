@@ -192,7 +192,7 @@ def make_skill_tools(
             logger.warning("skill library versions read failed", exc_info=True)
             return {}
 
-    async def _list(_args: dict[str, Any] | None = None, _ctx: ToolInvocationCtx | None = None) -> str:
+    async def _list(_args: dict[str, Any] | None = None, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         active = await activation_store.get_active(tenant_id, manifest_id)
         public = catalog.list_public()
         newest = await _newest([s.name for s in public if s.source == "library"])
@@ -208,7 +208,10 @@ def make_skill_tools(
             for s in public
         ]
         # Also surface disable_model_invocation skills as inactive-only via list? skip per spec.
-        return json.dumps(payload)
+        # An imported skill's description is a third party's text: the listing is screened as
+        # relayed output when it carries one.
+        text = json.dumps(payload)
+        return untrusted_output(text) if any(s.untrusted for s in public) else text
 
     async def _activate(args: _SkillNameArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         skill = catalog.get(args.name)
@@ -286,6 +289,7 @@ def make_skill_tools(
             name="list_skills",
             description="List available skills for this agent (name, description, active).",
             handler=_list,
+            relays_untrusted=True,
         ),
         define_tool(
             name="activate_skill",
