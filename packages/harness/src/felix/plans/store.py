@@ -22,6 +22,7 @@ def _plan_dict(row: Plan | dict[str, Any]) -> dict[str, Any]:
             "id": row["id"],
             "tenant_id": row["tenant_id"],
             "manifest_id": row.get("manifest_id", ""),
+            "thread_id": row.get("thread_id", ""),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "expires_at": row.get("expires_at"),
@@ -31,6 +32,7 @@ def _plan_dict(row: Plan | dict[str, Any]) -> dict[str, Any]:
         "id": row.id,
         "tenant_id": row.tenant_id,
         "manifest_id": row.manifest_id,
+        "thread_id": row.thread_id,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "expires_at": row.expires_at,
@@ -38,9 +40,22 @@ def _plan_dict(row: Plan | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def list_plans(settings: Settings, tenant_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
+async def list_plans(
+    settings: Settings, tenant_id: str, *, limit: int = 50, thread_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Plans for a tenant, most recently updated first.
+
+    `thread_id` (the stored `{tenant}:{suffix}` form) narrows to one conversation, and `''`
+    to plans written outside one; `None` is every plan. Applied before `LIMIT`, on both
+    arms: filtering a returned page would let other threads' newer plans push this
+    thread's off it, which is the bug `approvals.list_approvals` documents.
+    """
     if _use_memory(settings):
-        items = [_plan_dict(row) for (t, _), row in _memory_plans.items() if t == tenant_id]
+        items = [
+            _plan_dict(row)
+            for (t, _), row in _memory_plans.items()
+            if t == tenant_id and (thread_id is None or row.get("thread_id", "") == thread_id)
+        ]
         # Ending on the id, byte order on both arms: a tie on `updated_at` must cut the page in
         # the same place on Postgres as on the twin.
         items.sort(key=lambda r: (r["updated_at"], r["id"]), reverse=True)
@@ -48,13 +63,11 @@ async def list_plans(settings: Settings, tenant_id: str, *, limit: int = 50) -> 
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
+        stmt = select(Plan).where(Plan.tenant_id == tenant_id)
+        if thread_id is not None:
+            stmt = stmt.where(Plan.thread_id == thread_id)
         rows = (
-            await db.scalars(
-                select(Plan)
-                .where(Plan.tenant_id == tenant_id)
-                .order_by(Plan.updated_at.desc(), collate(Plan.id, "C").desc())
-                .limit(limit)
-            )
+            await db.scalars(stmt.order_by(Plan.updated_at.desc(), collate(Plan.id, "C").desc()).limit(limit))
         ).all()
         return [_plan_dict(r) for r in rows]
 
@@ -100,13 +113,14 @@ async def put_plan(
     *,
     plan: dict[str, Any],
     manifest_id: str | _Keep = KEEP,
+    thread_id: str | _Keep = KEEP,
     expires_at: int | _Keep | None = KEEP,
     expected_updated_at: int | None = None,
 ) -> dict[str, Any]:
     """Create or replace a plan.
 
-    ``manifest_id`` and ``expires_at`` default to ``KEEP``: a caller that does not
-    name them leaves them as stored. They used to default to ``""`` and ``None``
+    ``manifest_id``, ``thread_id`` and ``expires_at`` default to ``KEEP``: a caller
+    that does not name them leaves them as stored. They used to default to ``""`` and ``None``
     and were assigned on every write, so replacing only the plan body detached the
     row from its manifest and exempted it from retention.
 
@@ -130,6 +144,7 @@ async def put_plan(
             "id": plan_id,
             "tenant_id": tenant_id,
             "manifest_id": _resolve(manifest_id, existing.get("manifest_id", "") if existing else ""),
+            "thread_id": _resolve(thread_id, existing.get("thread_id", "") if existing else ""),
             "created_at": existing["created_at"] if existing else ts,
             "updated_at": max(ts, existing["updated_at"] + 1) if existing else ts,
             "expires_at": _resolve(expires_at, existing.get("expires_at") if existing else None),
@@ -152,6 +167,7 @@ async def put_plan(
                 tenant_id=tenant_id,
                 id=plan_id,
                 manifest_id=_resolve(manifest_id, ""),
+                thread_id=_resolve(thread_id, ""),
                 created_at=ts,
                 updated_at=ts,
                 expires_at=_resolve(expires_at, None),
@@ -160,6 +176,7 @@ async def put_plan(
             db.add(current)
         else:
             current.manifest_id = _resolve(manifest_id, current.manifest_id)
+            current.thread_id = _resolve(thread_id, current.thread_id)
             current.updated_at = max(ts, current.updated_at + 1)
             current.expires_at = _resolve(expires_at, current.expires_at)
             current.plan_json = plan

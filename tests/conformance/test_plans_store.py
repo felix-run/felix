@@ -31,3 +31,24 @@ async def test_plans_updated_in_one_millisecond_page_the_same_on_both_arms(
     full = [p["id"] for p in await plans.list_plans(store_settings, TENANT, limit=100)]
     assert full == sorted(ids, reverse=True), "newest first, then by id in byte order"
     assert [p["id"] for p in await plans.list_plans(store_settings, TENANT, limit=2)] == full[:2]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_thread_filter_applies_before_the_limit_on_both_arms(store_settings: Any) -> None:
+    # `0025_plan_thread_id`: the Postgres arm filters in SQL, so a page cut by `limit`
+    # cannot drop this thread's plan behind newer ones from other threads.
+    tenant = "conformance-threads"
+    await plans.put_plan(store_settings, tenant, "mine", plan={}, thread_id=f"{tenant}:a")
+    for i in range(3):
+        await plans.put_plan(store_settings, tenant, f"other{i}", plan={}, thread_id=f"{tenant}:b")
+    await plans.put_plan(store_settings, tenant, "loose", plan={})
+
+    mine = await plans.list_plans(store_settings, tenant, limit=1, thread_id=f"{tenant}:a")
+    assert [p["id"] for p in mine] == ["mine"]
+    assert mine[0]["thread_id"] == f"{tenant}:a"
+    loose = await plans.list_plans(store_settings, tenant, thread_id="")
+    assert [p["id"] for p in loose] == ["loose"]
+    # A write that does not name the thread leaves it, on both arms.
+    kept = await plans.put_plan(store_settings, tenant, "mine", plan={"v": 2})
+    assert kept["thread_id"] == f"{tenant}:a"
