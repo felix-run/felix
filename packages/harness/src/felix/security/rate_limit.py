@@ -204,7 +204,9 @@ def build_rate_limiter_backend(settings: Any) -> RateLimiterBackend:
     bucket kept beside the 60 s per-client one was evicted by the next unrelated request
     after a minute of idleness, so "10 an hour" was 10 a minute.
     """
-    url = (getattr(settings, "redis_url", "") or "").strip()
+    from felix.config import redis_url_in_use
+
+    url = redis_url_in_use(settings)
     if url:
         try:
             from redis.asyncio import Redis
@@ -212,7 +214,28 @@ def build_rate_limiter_backend(settings: Any) -> RateLimiterBackend:
             return ResilientRateLimiter(primary=RedisRateLimiter(redis=Redis.from_url(url)))
         except Exception:
             logger.warning("redis rate limiter unavailable; using in-process limits", exc_info=True)
+    else:
+        _note_per_process_limits()
     return InMemoryRateLimiter()
+
+
+_per_process_noted = False
+
+
+def _note_per_process_limits() -> None:
+    """Say once per process that limits are per process because no Redis is in use.
+
+    This is configuration, not an outage, so it is not the ERROR `ResilientRateLimiter`
+    raises for a configured Redis that is down -- and one app builds several limiters.
+    """
+    global _per_process_noted
+    if _per_process_noted:
+        return
+    _per_process_noted = True
+    logger.info(
+        "no Redis in use (FELIX_REDIS_URL empty, or unset under memory://); rate limits are "
+        "per process (the effective ceiling is limit x replicas)"
+    )
 
 
 def build_rate_limit_config(settings: Any) -> RateLimitConfig:

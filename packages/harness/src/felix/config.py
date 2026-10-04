@@ -992,6 +992,29 @@ def get_settings() -> Settings:
     return Settings()
 
 
+def redis_url_in_use(settings: Any) -> str:
+    """The Redis this deployment uses, or "" when it has none to use.
+
+    One rule for `/ready`, `felix doctor` and the rate limiter, so they cannot disagree about
+    whether a Redis is required. An empty `FELIX_REDIS_URL` is no Redis, as it always was. So
+    is the field's *default* under `memory://`: there every store is process-local, nothing
+    crosses processes for Redis to carry, and the `localhost:6379` placeholder names a server
+    nobody configured -- which held `/ready` at `not_ready` in the documented
+    no-infrastructure mode. A URL that was set (environment, `.env`, or a constructor
+    argument) is a configured Redis on every database, and a down one still fails `/ready`.
+    """
+    url = (getattr(settings, "redis_url", "") or "").strip()
+    if not url:
+        return ""
+    database_url = getattr(settings, "database_url", "") or ""
+    # An object that is not a `Settings` cannot say what was set, so its URL counts as set.
+    fields_set = getattr(settings, "model_fields_set", None)
+    defaulted = fields_set is not None and "redis_url" not in fields_set
+    if defaulted and database_url.startswith("memory://"):
+        return ""
+    return url
+
+
 # Logical model routes. Providers are registered descriptors (see felix_ai.providers);
 # these are just the ids Felix ships pre-mapped. Anything else is FELIX_MODEL_ROUTES.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {

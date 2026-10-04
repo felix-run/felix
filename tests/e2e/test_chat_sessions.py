@@ -94,7 +94,7 @@ async def test_reading_an_unknown_thread_does_not_add_it_to_the_session_list(boo
         assert held.status_code == 200, held.text
         released = await app.client.post(
             "/chat/sessions/lease/release",
-            json={"thread_id": unknown, "holder_id": "holder-a"},
+            json={"thread_id": unknown, "holder_id": "holder-a", "token": held.json()["token"]},
         )
         assert released.status_code == 200, released.text
 
@@ -360,7 +360,7 @@ async def test_an_exclusive_lease_locks_out_a_second_holder_until_released(boot:
 
         released = await app.client.post(
             "/chat/sessions/lease/release",
-            json={"thread_id": thread, "holder_id": "holder-a"},
+            json={"thread_id": thread, "holder_id": "holder-a", "token": first.json()["token"]},
         )
         assert released.status_code == 200, released.text
 
@@ -395,12 +395,120 @@ async def test_the_lock_a_lease_takes_is_visible_and_is_given_back(boot: Any) ->
         assert during.status_code == 200, during.text
         assert during.json()["locked"] is True, during.json()
 
-        await app.client.post(
+        released = await app.client.post(
             "/chat/sessions/lease/release",
-            json={"thread_id": thread, "holder_id": "holder-a"},
+            json={"thread_id": thread, "holder_id": "holder-a", "token": held.json()["token"]},
         )
+        assert released.status_code == 200, released.text
         after = await app.client.get(f"/chat/sessions/{thread}")
         assert after.json()["locked"] is False, after.json()
+
+
+def _driving_requests(thread: str) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """Every route that drives or rewrites a thread, with a body it would otherwise accept."""
+    return [
+        (
+            "POST",
+            "/chat",
+            {"manifest": "quick", "thread_id": thread, "messages": [{"role": "user", "content": "x"}]},
+        ),
+        (
+            "POST",
+            "/chat/stream",
+            {"manifest": "quick", "thread_id": thread, "messages": [{"role": "user", "content": "x"}]},
+        ),
+        ("POST", "/chat/continue", {"thread_id": thread, "manifest": "quick"}),
+        ("POST", "/chat/abort", {"thread_id": thread}),
+        ("POST", "/chat/rewind", {"thread_id": thread, "event_id": "e"}),
+        ("POST", "/chat/steer", {"thread_id": thread, "text": "x"}),
+        ("POST", "/chat/tool_result", {"thread_id": thread, "tool_call_id": "c"}),
+        ("POST", "/chat/ui", {"thread_id": thread, "request_id": "r"}),
+        ("POST", "/chat/sessions/custom", {"thread_id": thread, "content": "x"}),
+        ("POST", "/chat/sessions/name", {"thread_id": thread, "name": "taken over"}),
+        ("POST", "/chat/sessions/label", {"thread_id": thread, "event_id": "e", "label": "x"}),
+        ("POST", "/chat/thinking", {"thread_id": thread, "thinking_level": "high"}),
+        ("POST", "/chat/compact", {"thread_id": thread, "manifest": "quick"}),
+        ("DELETE", f"/chat/history/{thread}", None),
+    ]
+
+
+async def test_a_second_tab_observes_a_thread_another_drives_and_cannot_drive_it(boot: Any) -> None:
+    """The observer hold a second tab falls back to: granted, visible, and read-only.
+
+    A `shared` request on an exclusively held thread was `409 lease_held`, so the second tab
+    could not even watch. Now it observes — and an observer that presents its token on a
+    route that drives the thread is refused, so it cannot pass for the holder. A caller that
+    presents no token is not refused: leases were advisory before the header existed.
+    """
+    from felix_api.routes.chat import LEASE_TOKEN_HEADER
+
+    thread = "e2e-lease-observer"
+    async with boot([_answer()]) as app:
+        await _seed(app, thread)
+        a = await app.client.post(
+            "/chat/sessions/lease", json={"thread_id": thread, "holder_id": "tab-a", "mode": "exclusive"}
+        )
+        b = await app.client.post(
+            "/chat/sessions/lease", json={"thread_id": thread, "holder_id": "tab-b", "mode": "shared"}
+        )
+        assert b.status_code == 200, b.text
+        observed = b.json()
+        assert (observed["mode"], observed["held_by_other"]) == ("shared", True), observed
+        assert observed["token"] != a.json()["token"]
+
+        status = await app.client.get(f"/chat/sessions/{thread}/lease")
+        assert status.status_code == 200, status.text
+        assert status.json()["holder_id"] == "tab-a"
+        assert [o["holder_id"] for o in status.json()["observer_holds"]] == ["tab-b"]
+
+        events_before = len((await app.client.get(f"/chat/sessions/{thread}")).json()["transcript"])
+        calls_before = list(app.spy.calls)
+        observer = {LEASE_TOKEN_HEADER: observed["token"]}
+        for method, path, body in _driving_requests(thread):
+            resp = await app.client.request(method, path, json=body, headers=observer)
+            assert resp.status_code == 409, f"{method} {path} let an observer drive: {resp.text}"
+            assert resp.json()["detail"] == "lease_read_only", f"{path}: {resp.text}"
+        assert app.spy.calls == calls_before, "an observer's request reached the model"
+        after = (await app.client.get(f"/chat/sessions/{thread}")).json()
+        assert len(after["transcript"]) == events_before
+        assert after["name"] != "taken over", after["name"]
+
+        holder = {LEASE_TOKEN_HEADER: a.json()["token"]}
+        named = await app.client.post(
+            "/chat/sessions/name", json={"thread_id": thread, "name": "the holder's"}, headers=holder
+        )
+        assert named.status_code == 200, named.text
+        assert (await app.client.get(f"/chat/sessions/{thread}")).json()["name"] == "the holder's"
+        unleased = await app.client.post(
+            "/chat/sessions/name", json={"thread_id": thread, "name": "no lease"}
+        )
+        assert unleased.status_code == 200, unleased.text
+
+
+async def test_a_contended_release_is_a_conflict_not_a_refusal(boot: Any, monkeypatch: Any) -> None:
+    """`lease_contended` means the release lost a race on Redis and may land on a retry.
+
+    Answered as `403` it read as "you do not hold this", which sends a client to give up on a
+    lease it does hold. The Redis transaction is replaced to lose every race; the e2e app has
+    no Redis of its own.
+    """
+    from felix.session import lease
+
+    async def a_client() -> object:
+        return object()
+
+    async def always_contended(client: Any, thread_id: str, transition: Any) -> dict[str, Any]:
+        return {"ok": False, "error": "lease_contended", "status": lease._status(None)}
+
+    async with boot([_answer()]) as app:
+        monkeypatch.setattr(lease, "_get_redis", a_client)
+        monkeypatch.setattr(lease, "_redis_apply", always_contended)
+        resp = await app.client.post(
+            "/chat/sessions/lease/release",
+            json={"thread_id": "e2e-lease-contended", "holder_id": "tab-a", "token": "t"},
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"] == "lease_contended"
 
 
 # --- tenant scoping ------------------------------------------------------------------------

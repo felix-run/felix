@@ -1260,6 +1260,104 @@
         "title": "LabelRequest",
         "type": "object"
       },
+      "LeaseAcquireOut": {
+        "properties": {
+          "held_by_other": {
+            "description": "Another holder drives the thread: a `shared` hold granted here is read-only.",
+            "title": "Held By Other",
+            "type": "boolean"
+          },
+          "mode": {
+            "description": "The mode this hold was granted in.",
+            "enum": [
+              "exclusive",
+              "shared"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "renewed": {
+            "description": "This holder already had this hold; its expiry was extended.",
+            "title": "Renewed",
+            "type": "boolean"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/components/schemas/LeaseStatusOut"
+          },
+          "token": {
+            "description": "This hold's own token. An observer's is never the exclusive one.",
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "renewed",
+          "token",
+          "mode",
+          "held_by_other",
+          "status",
+          "snapshot"
+        ],
+        "title": "LeaseAcquireOut",
+        "type": "object"
+      },
+      "LeaseObserverOut": {
+        "properties": {
+          "expires_at": {
+            "description": "Epoch milliseconds when this observer's own hold lapses.",
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "holder_id": {
+            "title": "Holder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "holder_id",
+          "expires_at"
+        ],
+        "title": "LeaseObserverOut",
+        "type": "object"
+      },
+      "LeaseReleaseOut": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "released": {
+            "title": "Released",
+            "type": "boolean"
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/components/schemas/LeaseStatusOut"
+          }
+        },
+        "required": [
+          "ok",
+          "released",
+          "status",
+          "snapshot"
+        ],
+        "title": "LeaseReleaseOut",
+        "type": "object"
+      },
       "LeaseReleaseRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1344,6 +1442,96 @@
           "holder_id"
         ],
         "title": "LeaseRequest",
+        "type": "object"
+      },
+      "LeaseStatusOut": {
+        "properties": {
+          "attached": {
+            "description": "Anyone holds the thread, exclusively or as an observer.",
+            "title": "Attached",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Epoch ms: the exclusive hold's expiry, or the last observer's when there is none.",
+            "title": "Expires At"
+          },
+          "holder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exclusive holder; null when only observers hold it.",
+            "title": "Holder Id"
+          },
+          "locked": {
+            "description": "An exclusive holder is driving the thread.",
+            "title": "Locked",
+            "type": "boolean"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exclusive",
+                  "shared"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "observer_holds": {
+            "description": "Every live observer, by holder id.",
+            "items": {
+              "$ref": "#/components/schemas/LeaseObserverOut"
+            },
+            "title": "Observer Holds",
+            "type": "array"
+          },
+          "observers": {
+            "description": "How many observer holds are live.",
+            "title": "Observers",
+            "type": "integer"
+          },
+          "token_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exclusive hold's token prefix.",
+            "title": "Token Hint"
+          }
+        },
+        "required": [
+          "locked",
+          "attached",
+          "holder_id",
+          "mode",
+          "observers",
+          "observer_holds",
+          "expires_at",
+          "token_hint"
+        ],
+        "title": "LeaseStatusOut",
         "type": "object"
       },
       "LoginErrorCode": {
@@ -7012,6 +7200,26 @@
       "post": {
         "description": "Run a turn. With an `Idempotency-Key`, run it once per key per principal.\n\nA client that times out and retries otherwise runs the turn twice \u2014 two model\ncalls, two usage rows, two session events. The first request claims the key and\nstores its response on completion; a retry with the same key and body gets that\nresponse back with `Idempotent-Replayed: true`; the same key with a different body\nis `422 idempotency_key_reused`; a retry while the first is still running is\n`409 idempotency_in_progress`. A failed attempt releases the key so the retry runs.",
         "operationId": "chat_chat_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7032,6 +7240,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -7054,6 +7272,26 @@
       "post": {
         "description": "Run a turn. With an `Idempotency-Key`, run it once per key per principal.\n\nA client that times out and retries otherwise runs the turn twice \u2014 two model\ncalls, two usage rows, two session events. The first request claims the key and\nstores its response on completion; a retry with the same key and body gets that\nresponse back with `Idempotent-Replayed: true`; the same key with a different body\nis `422 idempotency_key_reused`; a retry while the first is still running is\n`409 idempotency_in_progress`. A failed attempt releases the key so the retry runs.",
         "operationId": "chat_chat__post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7075,6 +7313,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -7095,6 +7343,26 @@
     "/chat/abort": {
       "post": {
         "operationId": "chat_abort_chat_abort_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7118,6 +7386,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -7138,6 +7416,26 @@
     "/chat/compact": {
       "post": {
         "operationId": "chat_compact_chat_compact_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7161,6 +7459,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -7182,6 +7490,26 @@
       "post": {
         "description": "Resume after abort/error without a new user message (wake-based).",
         "operationId": "chat_continue_chat_continue_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7202,6 +7530,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -7286,6 +7624,24 @@
               "title": "Thread Id",
               "type": "string"
             }
+          },
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
           }
         ],
         "responses": {
@@ -7302,6 +7658,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -7398,6 +7764,26 @@
     "/chat/rewind": {
       "post": {
         "operationId": "chat_rewind_chat_rewind_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7420,6 +7806,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -7510,6 +7906,26 @@
       "post": {
         "description": "Persist a custom (UI/plugin) entry. Set ``in_context`` to include it in the LLM.",
         "operationId": "append_custom_entry_chat_sessions_custom_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7532,6 +7948,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -7597,6 +8023,26 @@
     "/chat/sessions/label": {
       "post": {
         "operationId": "set_session_label_chat_sessions_label_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7620,6 +8066,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -7639,7 +8095,7 @@
     },
     "/chat/sessions/lease": {
       "post": {
-        "description": "Acquire an exclusive or shared lease (maps to snapshot locked/attached).",
+        "description": "Take or renew a hold: `exclusive` drives the thread, `shared` observes it read-only.\n\n`exclusive` is `409 lease_held` while another holder has it. `shared` succeeds with a\ntoken of its own: on a thread someone else drives, `held_by_other` is true. Renewing\neither kind needs that hold's `token` -- the holder id alone is `lease_held` -- and an\nobserver's renewal extends only its own hold.",
         "operationId": "acquire_session_lease_chat_sessions_lease_post",
         "requestBody": {
           "content": {
@@ -7656,13 +8112,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Acquire Session Lease Chat Sessions Lease Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/LeaseAcquireOut"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_held`: another holder has it exclusively, or this renewal did not present the hold's token. `lease_contended`: concurrent changes kept it from landing."
           },
           "422": {
             "content": {
@@ -7683,6 +8147,7 @@
     },
     "/chat/sessions/lease/release": {
       "post": {
+        "description": "Drop the one hold `token` names; every other hold stays. The token is required.\n\n`holder_id`, when sent, must be that hold's holder. Releasing the exclusive hold leaves\nobservers observing -- none is promoted.",
         "operationId": "release_session_lease_chat_sessions_lease_release_post",
         "requestBody": {
           "content": {
@@ -7699,13 +8164,31 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Release Session Lease Chat Sessions Lease Release Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/LeaseReleaseOut"
                 }
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`token_required`, `token_mismatch` or `not_holder`: this caller does not hold what it asked to release."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_contended`: concurrent changes to the lease kept the release from landing. Nothing was released; retry."
           },
           "422": {
             "content": {
@@ -7727,6 +8210,26 @@
     "/chat/sessions/name": {
       "post": {
         "operationId": "set_session_name_chat_sessions_name_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -7749,6 +8252,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -7904,6 +8417,49 @@
           }
         },
         "summary": "Export Session",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/sessions/{thread_id}/lease": {
+      "get": {
+        "description": "Who holds the thread: the exclusive holder, if any, and every observer.",
+        "operationId": "get_session_lease_chat_sessions__thread_id__lease_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaseStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session Lease",
         "tags": [
           "Threads"
         ]
@@ -8111,6 +8667,26 @@
       "post": {
         "description": "Queue a steer (interrupt remaining tools) or follow-up (after idle) message.",
         "operationId": "chat_steer_chat_steer_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8134,6 +8710,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -8154,6 +8740,26 @@
     "/chat/stream": {
       "post": {
         "operationId": "chat_stream_chat_stream_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8172,6 +8778,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {
@@ -8234,6 +8850,26 @@
     "/chat/thinking": {
       "post": {
         "operationId": "chat_thinking_chat_thinking_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8257,6 +8893,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -8278,6 +8924,26 @@
       "post": {
         "description": "Complete a client-executed tool that paused the active agent run.",
         "operationId": "chat_tool_result_chat_tool_result_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8301,6 +8967,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -8322,6 +8998,26 @@
       "post": {
         "description": "Resolve a pending select/confirm/input prompt from the web client.",
         "operationId": "chat_ui_response_chat_ui_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -8344,6 +9040,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
           },
           "422": {
             "content": {

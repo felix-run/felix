@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,12 +33,29 @@ class _MemorySession:
     # per-tenant, so a session only ever reaches the store that made it.
     tenant_id: str = "default"
     _events: list[SessionEvent] = field(default_factory=list)
+    # The store this session joins on its first append, and `None` once it has joined (or
+    # for the id-less session, which never does). See `InMemorySessionStore.open`.
+    _store: InMemorySessionStore | None = field(default=None, repr=False, compare=False)
 
     async def append(self, event: AppendableEvent) -> int | None:
         seqs = await self.append_batch([event])
         return seqs[0] if seqs else None
 
+    def _register(self) -> None:
+        store, self._store = self._store, None
+        if store is None:
+            return
+        store._pending.pop(self.id, None)
+        canonical = store._sessions.setdefault(self.id, self)
+        if canonical is not self:
+            # Another object for this id got there first. Share its log rather than fork
+            # a second one that the store would never hand out again.
+            canonical._events.extend(self._events)
+            self._events = canonical._events
+
     async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
+        if events:
+            self._register()
         now = time.time()
         from felix.secrets import redact_json, redact_text
 
@@ -119,14 +137,25 @@ class InMemorySessionStore:
 
     def __init__(self, *, tenant_id: str) -> None:
         self.tenant_id = tenant_id
+        # Threads that have been written to. Only an append adds one, as only an insert
+        # adds a `session_events` row on Postgres.
         self._sessions: dict[str, _MemorySession] = {}
+        # Opened but never written: held only while a caller holds the session, so that two
+        # opens of one unknown id return the same object (and so one log) without every
+        # snapshot, export or scanner probe of an unknown id growing the store for the life
+        # of the process.
+        self._pending: weakref.WeakValueDictionary[str, _MemorySession] = weakref.WeakValueDictionary()
 
     def open(self, thread_id: str) -> Session:
         if not thread_id:
             return _MemorySession(id="", tenant_id=self.tenant_id)
-        if thread_id not in self._sessions:
-            self._sessions[thread_id] = _MemorySession(id=thread_id, tenant_id=self.tenant_id)
-        return self._sessions[thread_id]
+        session = self._sessions.get(thread_id)
+        if session is None:
+            session = self._pending.get(thread_id)
+        if session is None:
+            session = _MemorySession(id=thread_id, tenant_id=self.tenant_id, _store=self)
+            self._pending[thread_id] = session
+        return session
 
 
 def _drop_search_index(*, tenant_id: str, thread_id: str) -> None:

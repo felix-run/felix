@@ -322,8 +322,10 @@ class RedisIdempotencyStore:
 
 def build_idempotency_store(settings: Any) -> IdempotencyStore:
     """One store per app: Redis-backed when a Redis is configured, in-process otherwise."""
+    from felix.config import redis_url_in_use
+
     ttl = int(settings.idempotency_ttl_seconds)
-    if (getattr(settings, "redis_url", "") or "").strip():
+    if redis_url_in_use(settings):
         return RedisIdempotencyStore(ttl)
     return MemoryIdempotencyStore(ttl)
 
