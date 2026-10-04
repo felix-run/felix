@@ -78,6 +78,15 @@ async def _history(settings: Any, thread: str) -> None:
     assert await session.get_events() == []
 
 
+async def _thread_exists(settings: Any, thread: str) -> None:
+    """`/chat/fork`'s check on its destination, before it writes anything there."""
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import thread_exists
+
+    session = get_session_store(settings, tenant_id=TENANT).open(thread)
+    assert await thread_exists(session, settings=settings, tenant_id=TENANT) is False
+
+
 async def _search(settings: Any, thread: str) -> None:
     from felix.session.search import search_sessions
 
@@ -91,6 +100,7 @@ READS: dict[str, Callable[[Any, str], Awaitable[None]]] = {
     "lease": _lease_then_snapshot,
     "history": _history,
     "search": _search,
+    "thread_exists": _thread_exists,
 }
 
 
@@ -111,6 +121,76 @@ async def test_writing_thread_meta_lists_the_thread(store_settings: Any) -> None
     thread = _unknown_thread()
     await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, phase="aborted")
     assert thread in await _listed(store_settings)
+
+
+# --- does a thread exist: `/chat/fork` refuses a destination that does ----------------------
+#
+# A thread is an event or a metadata row, and either may come without the other: appends write
+# no row, and an abort writes a row and no event. The unknown-id case is `thread_exists` in
+# READS above, which also asserts the check created nothing.
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_thread_with_only_events_exists(store_settings: Any) -> None:
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import thread_exists
+    from felix.session.types import AppendableEvent
+
+    thread = _unknown_thread()
+    session = get_session_store(store_settings, tenant_id=TENANT).open(thread)
+    await session.append(AppendableEvent(kind="message", role="user", content="hi"))
+    assert thread not in await _listed(store_settings), "an append wrote metadata; the case is wrong"
+    assert await thread_exists(session, settings=store_settings, tenant_id=TENANT) is True
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_thread_with_only_metadata_exists(store_settings: Any) -> None:
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import thread_exists, update_thread_meta
+
+    thread = _unknown_thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, phase="aborted")
+    session = get_session_store(store_settings, tenant_id=TENANT).open(thread)
+    assert await session.get_events() == []
+    assert await thread_exists(session, settings=store_settings, tenant_id=TENANT) is True
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_claim_wins_once_and_keeps_what_was_there(store_settings: Any) -> None:
+    from felix.session.thread_state import claim_thread, get_thread_meta, update_thread_meta
+
+    fresh, named = _unknown_thread(), _unknown_thread()
+    assert await claim_thread(
+        settings=store_settings, tenant_id=TENANT, thread_id=fresh, parent_session_id=f"{TENANT}:p"
+    )
+    assert fresh in await _listed(store_settings)
+    meta = await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=fresh)
+    assert meta["parent_session_id"] == f"{TENANT}:p"
+    assert not await claim_thread(settings=store_settings, tenant_id=TENANT, thread_id=fresh)
+
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=named, session_name="Kept")
+    assert not await claim_thread(
+        settings=store_settings, tenant_id=TENANT, thread_id=named, parent_session_id=f"{TENANT}:p"
+    )
+    meta = await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=named)
+    assert (meta["session_name"], meta["parent_session_id"]) == ("Kept", None)
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_concurrent_claims_of_one_id_have_one_winner(store_settings: Any) -> None:
+    import asyncio
+
+    from felix.session.thread_state import claim_thread
+
+    thread = _unknown_thread()
+    won = await asyncio.gather(
+        *(claim_thread(settings=store_settings, tenant_id=TENANT, thread_id=thread) for _ in range(5))
+    )
+    assert sorted(won) == [False, False, False, False, True]
 
 
 # --- Postgres is the source of truth, not a per-process cache ------------------------------

@@ -144,7 +144,10 @@ class ForkRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     thread_id: str = Field(min_length=1, description="Source thread suffix.")
-    new_thread_id: str = Field(min_length=1, description="Destination thread suffix.")
+    new_thread_id: str = Field(
+        min_length=1,
+        description="Destination thread suffix. Must name a thread that does not exist yet (409 otherwise).",
+    )
     from_event_id: str | None = None
 
 
@@ -816,19 +819,38 @@ async def chat_tool_result(body: ToolResultRequest, request: Request) -> dict[st
     }
 
 
-@router.post("/fork")
+class ChatRefusalOut(BaseModel):
+    """A refusal from a chat route: `detail` is a stable code, as every chat refusal's is."""
+
+    detail: str
+
+
+@router.post(
+    "/fork",
+    responses={
+        409: {
+            "model": ChatRefusalOut,
+            "description": "`thread_exists`: `new_thread_id` names a thread that already has events or "
+            "session metadata, or is the source thread itself. Nothing was copied; fork to a fresh id.",
+        }
+    },
+)
 async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
+    """Copy a thread's active branch into a new thread, recording the source as its parent."""
     auth = _auth_from_request(request)
     settings = request.app.state.settings
     source_id = effective_thread_id(auth.tenant_id, body.thread_id)
     dest_id = effective_thread_id(auth.tenant_id, body.new_thread_id)
     if source_id is None or dest_id is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
+    # Refused before the lock even when the source is empty, which the store would not see.
+    if source_id == dest_id:
+        raise HTTPException(status_code=409, detail="thread_exists")
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     from felix.session.branch import fork_and_persist
-    from felix.session.thread_state import update_thread_meta
 
-    # The copy and the destination's stored leaf are one hold of its leaf lock.
+    # The existence check, the parent record, the copy and the destination's stored leaf are
+    # one hold of its leaf lock.
     result = await fork_and_persist(
         store.open(source_id),
         store.open(dest_id),
@@ -836,12 +858,8 @@ async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
         tenant_id=auth.tenant_id,
         from_event_id=body.from_event_id,
     )
-    await update_thread_meta(
-        settings=settings,
-        tenant_id=auth.tenant_id,
-        thread_id=dest_id,
-        parent_session_id=source_id,
-    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error") or "thread_exists")
     return result
 
 

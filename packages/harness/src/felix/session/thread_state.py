@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from felix.db.models import ThreadState
+    from felix.session.types import Session
 
 # The memory arm's store, keyed by the tenant-prefixed thread id (`thread_ids.py` composes
 # every one, and a tenant id cannot contain the delimiter, so the prefix is unambiguous).
@@ -277,6 +278,71 @@ async def get_thread_meta(
     return _row_meta(row.labels_json if row is not None else None)
 
 
+async def thread_exists(
+    session: Session,
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+) -> bool:
+    """Whether ``session``'s thread has anything stored: an event, or session metadata.
+
+    Either alone is a thread. Appends write no metadata row, so a thread with a turn in it
+    may have no row at all; and a rename, an abort or a thinking change writes a row without
+    an event. Reads only, on both arms -- an unknown id gains neither an entry nor a row.
+    """
+    if (await session.head()).get("seq", 0) > 0:
+        return True
+    thread_id = session.id
+    if _use_memory(settings):
+        return thread_id in _meta_by_thread
+    assert settings is not None
+    return await _read_row(settings, tenant_id, thread_id) is not None
+
+
+async def claim_thread(
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    thread_id: str,
+    **fields: Any,
+) -> bool:
+    """Create the thread's metadata with ``fields`` only if it has none; whether this call did.
+
+    The claim is the write itself -- `INSERT … ON CONFLICT DO NOTHING` on Postgres -- so of two
+    replicas claiming one id at once exactly one is told it won, which no in-process lock can
+    say. Says nothing about events: a thread with events and no row is claimable, so a caller
+    that means "new thread" asks `thread_exists` first.
+    """
+    if _use_memory(settings):
+        if thread_id in _meta_by_thread:
+            return False
+        _merge_fields(_mem_meta(thread_id), fields)
+        return True
+    assert settings is not None
+    from sqlalchemy.dialects.postgresql import insert
+
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+
+    meta = _default_meta()
+    _merge_fields(meta, fields)
+    async with tenant_session(settings, tenant_id) as db:
+        inserted = await db.scalar(
+            insert(ThreadState)
+            .values(
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+                leaf_event_id=None,
+                labels_json=meta,
+                updated_at=int(time.time()),
+            )
+            .on_conflict_do_nothing(index_elements=["tenant_id", "thread_id"])
+            .returning(ThreadState.thread_id)
+        )
+        await db.commit()
+    return inserted is not None
+
+
 async def list_thread_metadata(
     *,
     settings: Settings | None,
@@ -327,11 +393,13 @@ def reset_thread_meta_for_tests() -> None:
 __all__ = [
     "LEAF_TRACKED_KEY",
     "LEAF_TRACKED_VERSION",
+    "claim_thread",
     "get_thread_meta",
     "leaf_is_tracked",
     "list_thread_metadata",
     "load_leaf",
     "persist_leaf",
     "reset_thread_meta_for_tests",
+    "thread_exists",
     "update_thread_meta",
 ]

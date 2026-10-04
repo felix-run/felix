@@ -251,6 +251,20 @@
         "title": "ChatCompletionsRequest",
         "type": "object"
       },
+      "ChatRefusalOut": {
+        "description": "A refusal from a chat route: `detail` is a stable code, as every chat refusal's is.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ChatRefusalOut",
+        "type": "object"
+      },
       "ChatRequest": {
         "additionalProperties": false,
         "properties": {
@@ -905,7 +919,7 @@
             "title": "From Event Id"
           },
           "new_thread_id": {
-            "description": "Destination thread suffix.",
+            "description": "Destination thread suffix. Must name a thread that does not exist yet (409 otherwise).",
             "minLength": 1,
             "title": "New Thread Id",
             "type": "string"
@@ -6345,6 +6359,7 @@
     },
     "/chat/fork": {
       "post": {
+        "description": "Copy a thread's active branch into a new thread, recording the source as its parent.",
         "operationId": "chat_fork_chat_fork_post",
         "requestBody": {
           "content": {
@@ -6368,6 +6383,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`thread_exists`: `new_thread_id` names a thread that already has events or session metadata, or is the source thread itself. Nothing was copied; fork to a fresh id."
           },
           "422": {
             "content": {
