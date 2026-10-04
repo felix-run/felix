@@ -188,13 +188,6 @@ _UNTRUSTED_PREAMBLE = (
 )
 
 
-def _looks_injected(text: str) -> bool:
-    """Whether ``text`` carries the markers content screening quarantines tool output for."""
-    from felix.governance.content_screening import _INJECTION
-
-    return any(rx.search(text) for rx in _INJECTION)
-
-
 def skill_catalog_xml(catalog: SkillCatalog) -> str:
     """Progressive-disclosure catalog block for the system prompt (agentskills.io style)."""
     # Named rather than written inline: two adjacent string literals inside a list are
@@ -217,7 +210,7 @@ def skill_catalog_xml(catalog: SkillCatalog) -> str:
             continue
         # A third party's description, in the highest-trust surface there is: fenced as such, and
         # withheld outright when it reads like an injection -- the name still lists the skill.
-        description = "" if _looks_injected(skill.description) else _xml_escape(skill.description)
+        description = _xml_escape(skill.listed_description())
         lines.append(
             f'  <skill name="{name}" untrusted="true">\n'
             f"    <description>{description}</description>\n  </skill>"

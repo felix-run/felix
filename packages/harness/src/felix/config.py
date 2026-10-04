@@ -450,7 +450,7 @@ class Settings(BaseSettings):
     # GitHub calls skill browses and imports may make per hour: one tenant's, and the whole
     # deployment's. Charged per call -- a 50-skill browse is ~55 -- since every call spends the
     # deployment's token and GitHub's own limit (5,000/h with a token, 60/h without).
-    skill_import_calls_per_hour: int = Field(default=1_000, ge=1, le=100_000)
+    skill_import_calls_per_hour: int = Field(default=500, ge=1, le=100_000)
     skill_import_calls_per_hour_total: int = Field(default=4_000, ge=1, le=1_000_000)
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8

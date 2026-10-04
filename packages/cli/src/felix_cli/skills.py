@@ -37,8 +37,12 @@ _REF = typer.Option(None, "--ref", help="Branch, tag or commit; the repository's
 # C0 (but tab), DEL and C1: ESC opens every terminal escape sequence, and C1's CSI (U+009B) is one
 # on its own in terminals that read 8-bit controls. Then bidi embeddings, overrides and isolates
 # (U+202A-202E, U+2066-2069), which reorder what an operator reads -- a source that displays as
-# one repository and is another -- and zero-width characters (U+200B-200F, U+FEFF) that hide text.
-_CONTROL = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+# one repository and is another -- the Arabic letter mark (U+061C), zero-width and invisible
+# characters (U+200B-200F, U+2060-2064, U+FEFF, the soft hyphen U+00AD) that hide text, and the
+# line and paragraph separators (U+2028, U+2029) that break a line where none shows.
+_CONTROL = re.compile(
+    r"[\x00-\x08\x0a-\x1f\x7f-\x9f\xad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"
+)
 
 
 def clean(value: Any) -> str:

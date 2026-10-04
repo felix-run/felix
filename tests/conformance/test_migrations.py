@@ -67,6 +67,35 @@ async def test_upgrade_head_applies_every_revision() -> None:
         await drop_everything(url)
 
 
+async def test_every_index_the_models_declare_exists_after_upgrade() -> None:
+    """An `Index` in `db/models.py` that no revision creates exists only under `create_all`, which
+    nothing in production runs: the query it was written for scans in production. `skill_file`'s
+    digest index (0028) for `holds_imported_file` is the latest; this checks them all by name."""
+    from felix.db.models import Base
+
+    url = _url_or_skip()
+    try:
+        await migrate_to_head(url)
+        declared = {
+            (table.name, index.name) for table in Base.metadata.tables.values() for index in table.indexes
+        }
+        engine = create_async_engine(url, future=True)
+        try:
+            async with engine.connect() as conn:
+                present = {
+                    (r[0], r[1])
+                    for r in (await conn.execute(text("SELECT tablename, indexname FROM pg_indexes"))).all()
+                }
+        finally:
+            await engine.dispose()
+        assert ("skill_file", "idx_skill_file_tenant_sha256") in declared
+        assert declared <= present, (
+            f"declared in the models, created by no revision: {sorted(declared - present)}"
+        )
+    finally:
+        await drop_everything(url)
+
+
 async def test_migration_only_ddl_exists_after_upgrade() -> None:
     """The DDL `create_all` structurally cannot produce.
 

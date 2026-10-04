@@ -203,7 +203,8 @@ class FakeRepos:
             return httpx.Response(200, json={"sha": rest[2], "object": {"type": "commit", "sha": target}})
         if rest[0] == "compare":
             base, _, head = "/".join(rest[1:]).partition("...")
-            return httpx.Response(200, json={"status": state.compare(state.refs[base], head), "files": []})
+            base_sha = state.refs.get(base, base)
+            return httpx.Response(200, json={"status": state.compare(base_sha, head), "files": []})
         if rest == ["commits"]:
             params = request.url.params
             assert params["per_page"] == "1"
@@ -213,8 +214,12 @@ class FakeRepos:
             stamp = datetime.fromtimestamp(state.dates[found] / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             return httpx.Response(200, json=[{"sha": found, "commit": {"committer": {"date": stamp}}}])
         if rest[0] == "commits":
-            # Any commit in the fork network, by full or abbreviated id -- as GitHub answers.
-            matches = [s for s in state.commits if s.startswith(rest[1])]
+            # As GitHub answers: a branch or tag of that name first, then any commit in the fork
+            # network by full or abbreviated id.
+            named = state.refs.get(rest[1]) or state.annotated.get(
+                state.tags.get(rest[1], ""), state.tags.get(rest[1])
+            )
+            matches = [named] if named else [s for s in state.commits if s.startswith(rest[1])]
             if len(matches) != 1:
                 return httpx.Response(422, json={"message": "No commit found"})
             assert request.headers["accept"] == "application/vnd.github.sha"
