@@ -80,6 +80,13 @@ Commit or push **only when the user asks**.
    The body follows `.github/PULL_REQUEST_TEMPLATE.md`: why (not only what), how you tested
    (`make check-ci`, Compose smoke, the exact commands), and any `.env.example` / README updates.
 
+   The `changelog` check reads `## Changelog` up to the next `## ` heading or the end of the body,
+   and every non-blank line there must be a `### <category>` heading, a `- ` entry, an indented
+   continuation, or a leading `none: <reason>`. Anything else fails it as "text outside a `- `
+   entry", and that includes the attribution line. When the changelog is the body's last section,
+   put the attribution above `## Changelog`. Check a body before pushing it:
+   `python3 scripts/changelog.py check --body-file body.md`.
+
    A PR authored by Felix itself (the self-build program, `docs/SELF.md`) is also judged by
    `felix-boundary.yml` running `scripts/felix_boundary.py`: its body must name the ticket it
    implements, and it may not touch the protected paths that script lists.
