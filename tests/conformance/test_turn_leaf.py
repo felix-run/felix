@@ -1,0 +1,422 @@
+"""A turn's appends and its model context follow the leaf the store holds, not this process's.
+
+New events parent on `tree._leaf_by_thread`, and the active branch -- what a session strategy
+renders into the model's context -- is drawn from it. That index is per process. On Postgres a
+replica that had not served the thread parented the next event at nothing, so it became a new
+root and the model saw none of the history; one that had served it before another replica
+rewound extended the branch the rewind abandoned.
+
+`_other_replica()` empties every per-process index, which is the state a replica that has not
+served the thread is in. Turns run through `_ReactAgent` with a real store and strategy, so
+what is asserted is the production hook (`_ReactAgent._run` -> `tree.sync_leaf`), not a helper
+called by hand.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from typing import Any
+
+import pytest
+from felix.patterns.model import ModelChatResult, TokenUsage
+from felix.patterns.types import ChatMessage, InvokeInput
+
+TENANT = "conformance"
+
+postgres_only = pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
+both_arms = pytest.mark.parametrize("store_settings", ["memory", "postgres"], indirect=True)
+
+
+def _thread() -> str:
+    return f"{TENANT}:{uuid.uuid4().hex}"
+
+
+def _other_replica() -> None:
+    from felix.session import tree
+    from felix.session.thread_state import reset_thread_meta_for_tests
+
+    reset_thread_meta_for_tests()
+    tree._leaf_by_thread.clear()
+    tree._label_by_event.clear()
+
+
+class _Model:
+    """Answers every call with ``reply`` and keeps what it was shown."""
+
+    model_id = "claude-sonnet-4-5"
+
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.seen: list[list[ChatMessage]] = []
+
+    async def chat(self, messages: list[ChatMessage], tools: list[Any], opts: Any = None) -> ModelChatResult:
+        self.seen.append(list(messages))
+        return ModelChatResult(
+            message=ChatMessage(role="assistant", content=self.reply),
+            stop_reason="end_turn",
+            usage=TokenUsage(input=10, output=2),
+        )
+
+
+async def _turn(settings: Any, thread: str, text: str) -> _Model:
+    from felix.patterns.react import _ReactAgent
+    from felix.session.store import get_session_store
+    from felix.session.strategies import FullReplaySessionStrategy
+
+    model = _Model(f"re: {text}")
+    agent = _ReactAgent(
+        tools=[],
+        pattern="react",
+        manifest_id="conformance",
+        manifest_version="1",
+        system_prompt="s",
+        model_spec=None,
+        settings=settings,
+        recursion_limit=3,
+        session_store=get_session_store(settings, tenant_id=TENANT),
+        session_strategy=FullReplaySessionStrategy(),
+        tenant_id=TENANT,
+    )
+    agent._resolve_model = lambda _i: model  # type: ignore[method-assign]
+    await agent.invoke(
+        InvokeInput(messages=[ChatMessage(role="user", content=text)], thread_id=thread, tenant_id=TENANT)
+    )
+    return model
+
+
+async def _events(settings: Any, thread: str) -> list[Any]:
+    from felix.session.store import get_session_store
+
+    return await get_session_store(settings, tenant_id=TENANT).open(thread).get_events()
+
+
+def _by_content(events: list[Any], content: str) -> Any:
+    found = [e for e in events if e.content == content]
+    assert len(found) == 1, (content, [e.content for e in events])
+    return found[0]
+
+
+def _seen_text(model: _Model) -> list[str]:
+    return [str(m.content) for m in model.seen[0] if m.role != "system"]
+
+
+async def _row(settings: Any, thread: str) -> Any:
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, TENANT) as db:
+        return await db.get(ThreadState, (TENANT, thread))
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_cold_replica_continues_the_conversation(store_settings: Any) -> None:
+    from felix.session.thread_state import update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    _other_replica()
+
+    model = await _turn(store_settings, thread, "two")
+
+    events = await _events(store_settings, thread)
+    earlier = _by_content(events, "re: one")
+    assert _by_content(events, "two").metadata.get("parent_id") == earlier.metadata["event_id"]
+    # The model's context is the branch: the first turn is in it, not a fresh root.
+    assert _seen_text(model) == ["one", "re: one", "two"]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_warm_replica_takes_the_turn_after_another_replica_rewound(store_settings: Any) -> None:
+    from felix.session import tree
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import persist_leaf, update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    await _turn(store_settings, thread, "two")
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+    a_leaves = dict(tree._leaf_by_thread)
+
+    # Replica B rewinds the thread to the first answer, the way `/chat/rewind` does.
+    _other_replica()
+    result = await tree.rewind_to(get_session_store(store_settings, tenant_id=TENANT).open(thread), target)
+    await persist_leaf(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=result["leaf_id"]
+    )
+
+    # Back on A, which still holds the leaf at the end of "two".
+    tree._leaf_by_thread.clear()
+    tree._leaf_by_thread.update(a_leaves)
+    model = await _turn(store_settings, thread, "three")
+
+    events = await _events(store_settings, thread)
+    assert _by_content(events, "three").metadata.get("parent_id") == target
+    assert _seen_text(model) == ["one", "re: one", "three"]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_legacy_row_yields_to_the_newest_event_and_is_rewritten(
+    store_settings: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A row from before the stored leaf followed appends holds an old rewind target.
+
+    Here the conversation went on elsewhere after it -- a cold replica of that era started a
+    new root -- and the row never heard. Its leaf is not the leaf, the newest event is.
+    """
+    from felix.session.thread_state import update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    old_target = _by_content(await _events(store_settings, thread), "one").metadata["event_id"]
+    _other_replica()
+    await _turn(store_settings, thread, "elsewhere")
+    newest = _by_content(await _events(store_settings, thread), "re: elsewhere").metadata["event_id"]
+    await _make_legacy(store_settings, thread, leaf=old_target)
+    _other_replica()
+
+    # Alembic's `fileConfig` disables every logger that exists when a migration test runs
+    # before this one, so the logger is re-enabled for the turn rather than trusted.
+    store_logger = logging.getLogger("felix.session.store")
+    was_disabled, store_logger.disabled = store_logger.disabled, False
+    try:
+        with caplog.at_level(logging.WARNING, logger="felix.session.store"):
+            await _turn(store_settings, thread, "next")
+    finally:
+        store_logger.disabled = was_disabled
+
+    events = await _events(store_settings, thread)
+    assert _by_content(events, "next").metadata.get("parent_id") == newest
+    assert any(
+        thread in r.getMessage() and "predates leaf tracking" in r.getMessage() for r in caplog.records
+    )
+    from felix.session.thread_state import LEAF_TRACKED_KEY, get_thread_meta, leaf_is_tracked
+
+    row = await _row(store_settings, thread)
+    assert leaf_is_tracked(row.labels_json), row.labels_json
+    assert row.leaf_event_id == _by_content(events, "re: next").metadata["event_id"]
+    # The mark is bookkeeping, not metadata a caller reads back.
+    meta = await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread)
+    assert LEAF_TRACKED_KEY not in meta
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_resolving_a_legacy_row_without_appending_still_rewrites_it(store_settings: Any) -> None:
+    """A fork or an export resolves the leaf and appends nothing to the thread.
+
+    The rewrite is what moves the row then -- so `load_leaf`, which the session snapshot
+    reads, stops answering the stale leaf, and the next turn is one primary-key read.
+    """
+    from felix.session import tree
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import load_leaf, update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    await _turn(store_settings, thread, "two")
+    events = await _events(store_settings, thread)
+    await _make_legacy(store_settings, thread, leaf=_by_content(events, "one").metadata["event_id"])
+    _other_replica()
+
+    store = get_session_store(store_settings, tenant_id=TENANT)
+    await tree.fork_thread(store.open(thread), store.open(_thread()))
+
+    newest = _by_content(events, "re: two").metadata["event_id"]
+    assert await load_leaf(settings=store_settings, tenant_id=TENANT, thread_id=thread) == newest
+    from felix.session.thread_state import leaf_is_tracked
+
+    assert leaf_is_tracked((await _row(store_settings, thread)).labels_json)
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_legacy_row_behind_its_own_branch_yields_to_the_newest_event(store_settings: Any) -> None:
+    """The legacy row's turn *after* its rewind is on the rewind's branch, and still not in the row.
+
+    The leaf is the newest event, not the stored ancestor: taking the ancestor would make the
+    next event a sibling of the turn the user last saw, and drop it from the context.
+    """
+    from felix.session.thread_state import update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    ancestor = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+    await _turn(store_settings, thread, "two")
+    newest = _by_content(await _events(store_settings, thread), "re: two").metadata["event_id"]
+    await _make_legacy(store_settings, thread, leaf=ancestor)
+    _other_replica()
+
+    model = await _turn(store_settings, thread, "three")
+
+    assert _by_content(await _events(store_settings, thread), "three").metadata.get("parent_id") == newest
+    assert _seen_text(model) == ["one", "re: one", "two", "re: two", "three"]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_rewind_survives_a_cold_replica(store_settings: Any) -> None:
+    """After a rewind the newest event is on the abandoned branch; the rewind still wins."""
+    from felix.session import tree
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import persist_leaf, update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    await _turn(store_settings, thread, "two")
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+    result = await tree.rewind_to(get_session_store(store_settings, tenant_id=TENANT).open(thread), target)
+    await persist_leaf(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=result["leaf_id"]
+    )
+    _other_replica()
+
+    model = await _turn(store_settings, thread, "three")
+
+    assert _by_content(await _events(store_settings, thread), "three").metadata.get("parent_id") == target
+    assert _seen_text(model) == ["one", "re: one", "three"]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_rewind_of_a_legacy_row_is_honoured(store_settings: Any) -> None:
+    """The first leaf write a legacy row gets can be a rewind, before any turn has marked it."""
+    from felix.session import tree
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import persist_leaf, update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    await _turn(store_settings, thread, "two")
+    newest = _by_content(await _events(store_settings, thread), "re: two").metadata["event_id"]
+    await _make_legacy(store_settings, thread, leaf=newest)
+    _other_replica()
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+    result = await tree.rewind_to(get_session_store(store_settings, tenant_id=TENANT).open(thread), target)
+    await persist_leaf(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=result["leaf_id"]
+    )
+    _other_replica()
+
+    await _turn(store_settings, thread, "three")
+
+    assert _by_content(await _events(store_settings, thread), "three").metadata.get("parent_id") == target
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_fork_from_a_cold_replica_copies_the_stored_branch(store_settings: Any) -> None:
+    from felix.session import tree
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import persist_leaf, update_thread_meta
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    await _turn(store_settings, thread, "two")
+    store = get_session_store(store_settings, tenant_id=TENANT)
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+    result = await tree.rewind_to(store.open(thread), target)
+    await persist_leaf(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=result["leaf_id"]
+    )
+    _other_replica()
+
+    dest = _thread()
+    forked = await tree.fork_thread(store.open(thread), store.open(dest))
+
+    assert forked["copied"] == 2
+    assert [e.content for e in await _events(store_settings, dest)] == ["one", "re: one"]
+
+
+@both_arms
+@pytest.mark.asyncio
+async def test_an_unknown_thread_has_no_leaf_and_is_not_created(store_settings: Any) -> None:
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import list_thread_metadata
+    from felix.session.tree import sync_leaf
+
+    thread = _thread()
+    assert await sync_leaf(get_session_store(store_settings, tenant_id=TENANT).open(thread)) is None
+    listed = {str(m["id"]) for m in await list_thread_metadata(settings=store_settings, tenant_id=TENANT)}
+    assert thread not in listed
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_the_leaf_is_resolved_once_per_turn(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once per turn, whatever the turn appends -- and one primary-key read on a tracked row."""
+    from felix.session.store import _PostgresSession
+    from felix.session.thread_state import update_thread_meta
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    thread = _thread()
+    await update_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread, session_name="n")
+    await _turn(store_settings, thread, "one")
+    _other_replica()
+
+    calls: list[str] = []
+    statements: list[str] = []
+    real = _PostgresSession.resolve_leaf
+
+    async def counted(self: _PostgresSession) -> str | None:
+        calls.append(self.id)
+        statements.clear()
+        try:
+            return await real(self)
+        finally:
+            # Table reads only: a transaction's `set_config` for RLS is not a query of the store.
+            tables = [t for t in ("thread_state", "session_events") for q in statements if t in q]
+            calls.append(f"read {', '.join(tables)}")
+
+    def record(_conn: Any, _cursor: Any, statement: str, *_a: Any) -> None:
+        statements.append(statement)
+
+    monkeypatch.setattr(_PostgresSession, "resolve_leaf", counted)
+    event.listen(Engine, "before_cursor_execute", record)
+    try:
+        # A turn with a model change appends three times: the change, the user turn, the reply.
+        from felix.patterns.react import _ReactAgent
+
+        original = _ReactAgent.invoke
+
+        async def with_model_change(self: Any, input: InvokeInput) -> Any:
+            input.model_id = "claude-sonnet-4-5"
+            return await original(self, input)
+
+        monkeypatch.setattr(_ReactAgent, "invoke", with_model_change)
+        await _turn(store_settings, thread, "two")
+    finally:
+        event.remove(Engine, "before_cursor_execute", record)
+
+    assert calls == [thread, "read thread_state"], calls
+    kinds = [e.kind for e in await _events(store_settings, thread)]
+    assert kinds.count("model_change") == 1
+
+
+async def _make_legacy(settings: Any, thread: str, *, leaf: str) -> None:
+    """Rewrite a row as code before the stored leaf followed appends left it: no mark, old leaf."""
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+    from felix.session.thread_state import _row_meta
+
+    async with tenant_session(settings, TENANT) as db:
+        row = await db.get(ThreadState, (TENANT, thread))
+        assert row is not None
+        # The metadata a read answers, which carries none of the leaf's bookkeeping.
+        row.labels_json = _row_meta(row.labels_json)
+        row.leaf_event_id = leaf
+        await db.commit()

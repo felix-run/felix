@@ -10,7 +10,8 @@ from felix_ai.types import ImageAttachment
 
 from felix.session.types import AppendableEvent, Session, SessionEvent
 
-# In-process leaf pointers for memory sessions (and cache for postgres).
+# In-process leaf pointers: the store itself for memory sessions; on Postgres this process's
+# working pointer, set from the row by `sync_leaf` at the start of each turn.
 _leaf_by_thread: dict[str, str] = {}
 _label_by_event: dict[str, str] = {}
 
@@ -55,6 +56,21 @@ def set_leaf(thread_id: str, event_id: str | None) -> None:
         _leaf_by_thread.pop(thread_id, None)
     else:
         _leaf_by_thread[thread_id] = event_id
+
+
+async def sync_leaf(session: Session) -> str | None:
+    """Set this process's leaf for ``session`` from the store that keeps it, and return it.
+
+    Call it once per turn, before the first append or branch read: `annotate_and_append`
+    parents new events on the in-process leaf and `active_branch_events` draws the branch
+    from it, and on Postgres that index is per process. A store keeping the leaf durably
+    exposes `resolve_leaf`; one that does not (`memory://`, where the index is the store, or a
+    plugin checkpointer) keeps the index as it is.
+    """
+    resolve = getattr(session, "resolve_leaf", None)
+    if resolve is None:
+        return get_leaf(getattr(session, "id", "") or "")
+    return await resolve()
 
 
 def set_label(event_id: str, label: str | None) -> None:
@@ -166,8 +182,9 @@ async def fork_thread(
     from_event_id: str | None = None,
 ) -> dict[str, Any]:
     """Copy the active branch (or path to ``from_event_id``) into ``dest`` as a new linear tree."""
+    source_leaf = from_event_id or await sync_leaf(source)
     events = await source.get_events()
-    branch = active_branch_events(events, session_id=source.id, leaf_id=from_event_id or get_leaf(source.id))
+    branch = active_branch_events(events, session_id=source.id, leaf_id=source_leaf)
     if from_event_id:
         # Truncate branch at from_event_id
         trimmed: list[SessionEvent] = []
@@ -253,4 +270,5 @@ __all__ = [
     "rewind_to",
     "set_label",
     "set_leaf",
+    "sync_leaf",
 ]

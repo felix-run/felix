@@ -362,6 +362,25 @@ class _ReactAgent:
         except Exception:
             return None
 
+    async def _sync_leaf(self, thread_id: str | None) -> None:
+        """Take the thread's leaf from the store before this turn appends or renders anything.
+
+        Every turn passes through `_run`, whatever surface started it (`/chat`, `/v1`, A2A,
+        MCP, a durable fiber, a scheduled job, an eval), so this is the one place a turn's
+        appends and its rendered branch are pinned to what the store holds rather than to what
+        this process last saw. Once per turn: the turn's own appends move the leaf after it.
+        """
+        if not thread_id or self.session_store is None:
+            return
+        try:
+            from felix.session.tree import sync_leaf
+
+            await sync_leaf(self.session_store.open(thread_id))
+        except Exception:
+            # The turn can still run on this process's leaf; failing it here would turn a
+            # read of the leaf into a lost turn.
+            logger.warning("leaf sync failed for thread=%s", thread_id, exc_info=True)
+
     async def _persist_model_change(self, input: InvokeInput) -> None:
         if not input.model_id or not input.thread_id or self.session_store is None:
             return
@@ -813,6 +832,8 @@ class _ReactAgent:
         called through the streaming path. It does not gate any state change: everything
         that touches the session, the audit log or the budget happens either way.
         """
+        # First: `_persist_model_change` below is already an append.
+        await self._sync_leaf(input.thread_id)
         if not getattr(input, "thinking_level", None) and input.thread_id:
             level = await self._load_thinking_level(input.thread_id)
             if level:

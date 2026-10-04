@@ -27,8 +27,8 @@ from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.session.snapshot import gather_thread_snapshot
 from felix.session.store import get_session_store
-from felix.session.tree import fork_thread, get_leaf, rewind_to
-from felix.session.types import GetEventsOpts
+from felix.session.tree import fork_thread, get_leaf, rewind_to, sync_leaf
+from felix.session.types import GetEventsOpts, Session
 from felix.steer import enqueue
 from felix.thread_ids import effective_thread_id
 from felix.tools.client_bridge import MAX_TOOL_CALL_ID
@@ -816,6 +816,18 @@ async def chat_tool_result(body: ToolResultRequest, request: Request) -> dict[st
     }
 
 
+async def _open_at_stored_leaf(settings: Any, tenant_id: str, thread: str) -> Session:
+    """Open ``thread`` with this process's leaf taken from the store, for a route outside a turn.
+
+    A turn takes it in `_ReactAgent._run`. A route that appends to the thread or reads its
+    branch without running one has to take it itself, or a replica that has not served the
+    thread (or not since another replica rewound it) appends to, or exports, the wrong branch.
+    """
+    session = get_session_store(settings, tenant_id=tenant_id).open(thread)
+    await sync_leaf(session)
+    return session
+
+
 @router.post("/fork")
 async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
     auth = _auth_from_request(request)
@@ -854,14 +866,11 @@ async def chat_rewind(body: RewindRequest, request: Request) -> dict[str, Any]:
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
-    session = store.open(thread)
-    from felix.session.thread_state import load_leaf, persist_leaf, update_thread_meta
-    from felix.session.tree import get_leaf
+    from felix.session.thread_state import persist_leaf, update_thread_meta
 
-    old_leaf = await load_leaf(settings=settings, tenant_id=auth.tenant_id, thread_id=thread) or get_leaf(
-        thread
-    )
+    # The leaf the rewind abandons, which the branch summary describes.
+    session = await _open_at_stored_leaf(settings, auth.tenant_id, thread)
+    old_leaf = get_leaf(thread)
     result = await rewind_to(session, body.event_id)
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error", "rewind_failed"))
@@ -1092,15 +1101,14 @@ async def export_session(thread_id: str, request: Request) -> Any:
     """Export the active branch as JSONL (eval artifacts / sharing)."""
     from fastapi.responses import PlainTextResponse
     from felix.session.export import events_to_jsonl
-    from felix.session.tree import active_branch_events, get_leaf
+    from felix.session.tree import active_branch_events
 
     auth = _auth_from_request(request)
     settings = request.app.state.settings
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
-    events = await store.open(thread).get_events()
+    events = await (await _open_at_stored_leaf(settings, auth.tenant_id, thread)).get_events()
     branch = active_branch_events(events, session_id=thread, leaf_id=get_leaf(thread))
     body = events_to_jsonl(branch)
     return PlainTextResponse(
@@ -1124,9 +1132,8 @@ async def append_custom_entry(body: CustomEntryRequest, request: Request) -> dic
     md = dict(body.metadata or {})
     md["in_context"] = bool(body.in_context)
     md["type"] = "custom"
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
     ids = await annotate_and_append(
-        store.open(thread),
+        await _open_at_stored_leaf(settings, auth.tenant_id, thread),
         [
             AppendableEvent(
                 kind="custom",  # type: ignore[arg-type]
@@ -1192,9 +1199,8 @@ async def set_session_name(body: SessionNameRequest, request: Request) -> dict[s
         thread_id=thread,
         session_name=body.name,
     )
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
     await annotate_and_append(
-        store.open(thread),
+        await _open_at_stored_leaf(settings, auth.tenant_id, thread),
         [
             AppendableEvent(
                 kind="session_info",  # type: ignore[arg-type]
@@ -1224,9 +1230,8 @@ async def set_session_label(body: LabelRequest, request: Request) -> dict[str, A
         thread_id=thread,
         labels={body.event_id: body.label},
     )
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
     await annotate_and_append(
-        store.open(thread),
+        await _open_at_stored_leaf(settings, auth.tenant_id, thread),
         [
             AppendableEvent(
                 kind="label",  # type: ignore[arg-type]
@@ -1442,9 +1447,8 @@ async def chat_thinking(body: ThinkingRequest, request: Request) -> dict[str, An
         thread_id=thread,
         thinking_level=level,
     )
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
     await annotate_and_append(
-        store.open(thread),
+        await _open_at_stored_leaf(settings, auth.tenant_id, thread),
         [
             AppendableEvent(
                 kind="thinking_level_change",  # type: ignore[arg-type]
@@ -1472,8 +1476,7 @@ async def chat_compact(body: CompactRequest, request: Request) -> dict[str, Any]
     from felix.session.compaction import CompactingSessionStrategy
     from felix.session.thread_state import update_thread_meta
 
-    store = get_session_store(settings, tenant_id=auth.tenant_id)
-    session = store.open(thread)
+    session = await _open_at_stored_leaf(settings, auth.tenant_id, thread)
     strategy_spec = getattr(resolved.manifest.spec, "session", None)
 
     def _budget(field: str, default: int) -> int:
