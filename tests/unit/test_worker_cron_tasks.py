@@ -120,7 +120,7 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
     """
     declared = _declared_schedules()
 
-    assert len(declared) == 11, declared
+    assert len(declared) == 12, declared
     for name in EXPECTED_SCHEDULES:
         assert callable(getattr(worker_tasks, name, None)), f"{name} is not exported"
 
