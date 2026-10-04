@@ -34,6 +34,10 @@ PASSED_THROUGH = {
     "FELIX_OTEL_CAPTURE_CONTENT": "otel_capture_content",
     "FELIX_OTEL_CAPTURE_IDENTITY": "otel_capture_identity",
     "FELIX_OTEL_LOGS": "otel_logs",
+    "FELIX_GITHUB_LOGIN_TTL_SECONDS": "github_login_ttl_seconds",
+    "FELIX_GITHUB_DEVICE_STARTS_PER_HOUR": "github_device_starts_per_hour",
+    "FELIX_GITHUB_DEVICE_STARTS_PER_HOUR_TOTAL": "github_device_starts_per_hour_total",
+    "FELIX_GITHUB_OIDC_TTL_SECONDS": "github_oidc_ttl_seconds",
 }
 
 # A tracing backend is something Felix sends to, so pointing at one must not require
@@ -141,3 +145,48 @@ def test_every_model_routing_setting_reaches_the_process(env_var: str, service: 
     env = load_compose(COMPOSE)["services"][service]["environment"]
     assert env_var in env, f"{env_var} does not reach {service}; a route that needs it cannot be configured"
     assert f"${{{env_var}" in str(env[env_var]), f"{service} pins {env_var} to a literal"
+
+
+# Settings that sign a token or turn GitHub login on. The private key mints a token for any
+# tenant, and settings validation mints a probe whenever login is on, so these reach `api`
+# and nothing else: on the worker the key would sit beside agents' tools, and the GitHub
+# settings without the key would stop the worker starting.
+API_ONLY = (
+    "FELIX_JWKS_PRIVATE",
+    "FELIX_GITHUB_CLIENT_ID",
+    "FELIX_GITHUB_ORG_TENANTS",
+    "FELIX_GITHUB_OIDC_AUDIENCE",
+)
+# Read by every process. Without them the setting exists and Compose never delivers it,
+# which is how GitHub login and Web Push shipped unreachable from every Compose deployment.
+EVERY_PROCESS = (
+    "FELIX_JWT_VERIFIERS",
+    "FELIX_JWKS_PUBLIC",
+    "FELIX_ALLOWED_TENANTS",
+    "FELIX_PUSH_VAPID_PRIVATE_KEY",
+    "FELIX_PUSH_VAPID_SUBJECT",
+)
+
+
+def _service_env() -> dict[str, dict[str, object]]:
+    import yaml
+
+    doc = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    return {name: dict(svc.get("environment") or {}) for name, svc in doc["services"].items()}
+
+
+@pytest.mark.parametrize("env_var", API_ONLY)
+def test_signing_and_login_settings_reach_the_api_alone(env_var: str) -> None:
+    env = _service_env()
+    assert env_var in env["api"], f"{env_var} is not passed to the api service"
+    for name, values in env.items():
+        if name != "api":
+            assert env_var not in values, f"{env_var} reaches {name}, which never mints a token"
+
+
+@pytest.mark.parametrize("env_var", EVERY_PROCESS)
+def test_verifying_and_push_settings_reach_every_felix_process(env_var: str) -> None:
+    env = _service_env()
+    for name in ("migrate", "api", "worker", "scheduler"):
+        if name in env:
+            assert env_var in env[name], f"{env_var} does not reach {name}"
