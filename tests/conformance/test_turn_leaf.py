@@ -716,10 +716,13 @@ async def test_a_summarising_rewind_completes_and_its_summary_is_on_the_new_bran
 
 @postgres_only
 @pytest.mark.asyncio
-async def test_a_fork_into_a_live_thread_inside_its_turns_append_is_not_overwritten(
+async def test_a_fork_into_a_live_thread_inside_its_turns_append_is_refused(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`/chat/fork` names its destination, which may be a thread with a turn in flight."""
+    """`/chat/fork` names its destination, which may be a thread with a turn in flight.
+
+    It is refused, and the turn's reply stays the leaf: nothing was copied in under it.
+    """
     from felix.session.branch import fork_and_persist
     from felix.session.store import get_session_store
 
@@ -727,14 +730,91 @@ async def test_a_fork_into_a_live_thread_inside_its_turns_append_is_not_overwrit
     await _seed(store_settings, source)
     await _seed(store_settings, dest)
     store = get_session_store(store_settings, tenant_id=TENANT)
+    results: list[Any] = []
 
-    async def fork() -> Any:
-        return await fork_and_persist(
-            store.open(source), store.open(dest), settings=store_settings, tenant_id=TENANT
+    async def fork() -> None:
+        results.append(
+            await fork_and_persist(
+                store.open(source), store.open(dest), settings=store_settings, tenant_id=TENANT
+            )
         )
 
     await _turn_with_interleave(store_settings, dest, "two", monkeypatch, fork, at_reply=True)
 
+    assert results == [{"ok": False, "error": "thread_exists", "thread_id": dest}]
     leaf = await _assert_row_and_index_agree(store_settings, dest)
-    [forked] = [e for e in await _events(store_settings, dest) if e.metadata.get("event_id") == leaf]
-    assert forked.metadata.get("forked_from"), "the fork's leaf was overwritten by the turn's reply"
+    events = await _events(store_settings, dest)
+    assert leaf == _by_content(events, "re: two").metadata["event_id"]
+    assert not [e for e in events if e.metadata.get("forked_from")], "the fork copied into a live thread"
+
+
+# --- two forks to one new id ----------------------------------------------------------------
+#
+# Each pauses after its existence check has answered "no", so the other's check runs before the
+# first has written anything. On one replica the second check waits on the destination's lock and
+# finds the first fork's thread; across replicas there is no shared lock, and the metadata claim
+# is what refuses the second. Both cases must leave one fork standing and one copy in the log.
+
+
+async def _two_forks_to_one_id(settings: Any, monkeypatch: pytest.MonkeyPatch) -> tuple[list[Any], str]:
+    import asyncio
+
+    from felix.session import thread_state
+    from felix.session.branch import fork_and_persist
+    from felix.session.store import get_session_store
+
+    source, dest = _thread(), _thread()
+    await _seed(settings, source)
+    store = get_session_store(settings, tenant_id=TENANT)
+    real = thread_state.thread_exists
+
+    async def checked_then_paused(*args: Any, **kwargs: Any) -> bool:
+        answer = await real(*args, **kwargs)
+        await asyncio.sleep(0.05)
+        return answer
+
+    monkeypatch.setattr(thread_state, "thread_exists", checked_then_paused)
+    results = await asyncio.gather(
+        *(
+            fork_and_persist(store.open(source), store.open(dest), settings=settings, tenant_id=TENANT)
+            for _ in range(2)
+        )
+    )
+    monkeypatch.setattr(thread_state, "thread_exists", real)
+    return list(results), dest
+
+
+async def _assert_one_fork_landed(settings: Any, results: list[Any], dest: str) -> None:
+    assert sorted(bool(r.get("ok")) for r in results) == [False, True], results
+    [refused] = [r for r in results if not r.get("ok")]
+    assert refused["error"] == "thread_exists"
+    copied = [e for e in await _events(settings, dest) if e.metadata.get("forked_from")]
+    assert len(copied) == 2, [e.content for e in copied]
+
+
+@both_arms
+@pytest.mark.asyncio
+async def test_two_forks_to_one_new_id_on_one_replica_leave_one_fork(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    results, dest = await _two_forks_to_one_id(store_settings, monkeypatch)
+    await _assert_one_fork_landed(store_settings, results, dest)
+
+
+@both_arms
+@pytest.mark.asyncio
+async def test_two_forks_to_one_new_id_on_two_replicas_leave_one_fork(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two replicas share no `leaf_lock`, so it is replaced with one that serialises nothing."""
+    from contextlib import asynccontextmanager
+
+    from felix.session import branch
+
+    @asynccontextmanager
+    async def per_replica_lock(_session: Any) -> Any:
+        yield
+
+    monkeypatch.setattr(branch, "leaf_lock", per_replica_lock)
+    results, dest = await _two_forks_to_one_id(store_settings, monkeypatch)
+    await _assert_one_fork_landed(store_settings, results, dest)
