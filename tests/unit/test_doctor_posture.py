@@ -329,3 +329,23 @@ def test_doctor_notes_what_the_worker_needs_for_skill_import_checks(
 
     output = _doctor(monkeypatch, tmp_path, FELIX_SKILL_IMPORT_CHECK_HOURS="6")
     assert "note skill import checks every 6h run in the worker" in output
+
+
+def test_doctor_notes_that_api_and_worker_share_the_skill_update_binding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A note, not a failure: checks queue on both processes and only the worker sends."""
+    from felix_cli.main import _skill_update_webhook_notes
+
+    assert _skill_update_webhook_notes(_settings()) == [], "silent while no binding is set"
+    endpoints = '{"ops": {"url": "https://hooks.example.com/felix", "secret": "s", "tenants": ["acme"]}}'
+    output = _doctor(
+        monkeypatch,
+        tmp_path,
+        FELIX_WEBHOOK_ENDPOINTS=endpoints,
+        FELIX_SKILL_UPDATE_WEBHOOKS="acme=ops",
+    )
+    assert (
+        "note skill update webhooks are queued by checks on the API and the worker and sent by the "
+        "worker: give both the same FELIX_SKILL_UPDATE_WEBHOOKS and FELIX_WEBHOOK_ENDPOINTS"
+    ) in " ".join(output.split())
