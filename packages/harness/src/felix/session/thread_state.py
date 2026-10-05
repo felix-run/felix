@@ -24,6 +24,7 @@ from felix.config import Settings
 from felix.session.tree import get_leaf as _mem_get_leaf
 from felix.session.tree import set_label as _mem_set_label
 from felix.session.tree import set_leaf as _mem_set_leaf
+from felix.session.tree import set_leaf_epoch as _set_leaf_epoch
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +53,24 @@ LEAF_TRACKED_VERSION = 2
 def leaf_is_tracked(labels_json: dict[str, Any] | None) -> bool:
     """Whether a row's `leaf_event_id` was written by a writer that keeps it current."""
     return (labels_json or {}).get(LEAF_TRACKED_KEY) == LEAF_TRACKED_VERSION
+
+
+# Counts the times a rewind or a fork has moved a row's leaf (`persist_leaf`), beside
+# `leaf_v` in `labels_json`. An append's `store_leaf` writes only while the row is still at the
+# epoch its turn resolved the leaf at (`tree.sync_leaf`), so a rewind committed by another
+# replica mid-turn is not overwritten by the turn's next append. Appends and `adopt_leaf` never
+# bump it: two turns racing on two replicas stay last-writer-wins, and a transient failure of
+# one `store_leaf` leaves the epoch -- and so every later append's condition -- where it was.
+# A row written before the key existed reads as 0, which is also what a fresh row starts at.
+LEAF_EPOCH_KEY = "leaf_epoch"
+
+
+def leaf_epoch(labels_json: dict[str, Any] | None) -> int:
+    """The row's rewind/fork epoch; 0 for a row that never had one."""
+    try:
+        return int((labels_json or {}).get(LEAF_EPOCH_KEY) or 0)
+    except TypeError, ValueError:
+        return 0
 
 
 def _default_meta() -> dict[str, Any]:
@@ -134,6 +153,7 @@ def _row_meta(stored: dict[str, Any] | None) -> dict[str, Any]:
     meta.update(stored or {})
     # Bookkeeping for the leaf column, not session metadata.
     meta.pop(LEAF_TRACKED_KEY, None)
+    meta.pop(LEAF_EPOCH_KEY, None)
     for key in ("labels", "feedback"):
         if isinstance(meta.get(key), dict):
             meta[key] = dict(meta[key])
@@ -194,7 +214,14 @@ async def persist_leaf(
     thread_id: str,
     leaf_event_id: str | None,
 ) -> None:
-    """Move a thread's leaf, leaving every other metadata key as the store has it."""
+    """Move a thread's leaf, leaving every other metadata key as the store has it.
+
+    A branch move -- a rewind, or a fork writing its new thread -- so on Postgres it bumps the
+    row's `leaf_epoch` in the same locked write, and this process's leaf takes that epoch: a
+    turn on another replica that resolved the leaf before this commit stops storing its
+    appends' leaf over it (`_PostgresSession.store_leaf`), and a turn here, which the thread's
+    `leaf_lock` already orders after this, goes on storing on top of it.
+    """
     # This process's working pointer, which `tree.annotate_and_append` parents new events
     # on. On Postgres it is written through here and never read back as the stored leaf.
     _mem_set_leaf(thread_id, leaf_event_id)
@@ -209,10 +236,13 @@ async def persist_leaf(
         stored = dict(row.labels_json or {})
         _bump(stored)
         stored[LEAF_TRACKED_KEY] = LEAF_TRACKED_VERSION
+        epoch = leaf_epoch(stored) + 1
+        stored[LEAF_EPOCH_KEY] = epoch
         row.leaf_event_id = leaf_event_id
         row.labels_json = stored
         row.updated_at = int(time.time())
         await db.commit()
+    _set_leaf_epoch(thread_id, epoch)
 
 
 async def load_leaf(
@@ -391,10 +421,12 @@ def reset_thread_meta_for_tests() -> None:
 
 
 __all__ = [
+    "LEAF_EPOCH_KEY",
     "LEAF_TRACKED_KEY",
     "LEAF_TRACKED_VERSION",
     "claim_thread",
     "get_thread_meta",
+    "leaf_epoch",
     "leaf_is_tracked",
     "list_thread_metadata",
     "load_leaf",

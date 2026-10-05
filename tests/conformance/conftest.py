@@ -463,6 +463,7 @@ async def retention_settings(request: pytest.FixtureRequest) -> AsyncIterator[An
         session_store._memory_session_stores.clear()
         thread_state._meta_by_thread.clear()
         tree._leaf_by_thread.clear()
+        tree._epoch_by_thread.clear()
         manifest_store.reset_memory_store()
 
     clear()

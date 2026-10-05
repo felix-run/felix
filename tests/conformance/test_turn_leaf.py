@@ -38,6 +38,7 @@ def _other_replica() -> None:
 
     reset_thread_meta_for_tests()
     tree._leaf_by_thread.clear()
+    tree._epoch_by_thread.clear()
     tree._label_by_event.clear()
 
 
@@ -818,3 +819,227 @@ async def test_two_forks_to_one_new_id_on_two_replicas_leave_one_fork(
     monkeypatch.setattr(branch, "leaf_lock", per_replica_lock)
     results, dest = await _two_forks_to_one_id(store_settings, monkeypatch)
     await _assert_one_fork_landed(store_settings, results, dest)
+
+
+# --- a rewind on another replica while a turn appends here -------------------------------------
+#
+# No in-process lock spans replicas, so each test plays replica Y inside one of replica X's
+# `store_leaf` calls: X's leaf index and epoch are set aside, Y writes through the same functions
+# a route would, and X's are put back before X's own write goes ahead. What stands between Y's
+# rewind and X's append is the row's `leaf_epoch`.
+
+
+async def _turn_with_other_replica(
+    settings: Any, thread: str, text: str, monkeypatch: pytest.MonkeyPatch, other: Any
+) -> None:
+    """Run a turn on X, running ``other`` as replica Y inside X's first `store_leaf` for ``thread``."""
+    from felix.session import tree
+    from felix.session.store import _PostgresSession
+
+    real = _PostgresSession.store_leaf
+    ran: list[bool] = []
+
+    async def interleaved(self: _PostgresSession, event_id: str) -> None:
+        if not ran and self.id == thread:
+            ran.append(True)
+            x_state = (dict(tree._leaf_by_thread), dict(tree._epoch_by_thread))
+            _other_replica()
+            await other()
+            tree._leaf_by_thread.clear()
+            tree._leaf_by_thread.update(x_state[0])
+            tree._epoch_by_thread.clear()
+            tree._epoch_by_thread.update(x_state[1])
+        await real(self, event_id)
+
+    monkeypatch.setattr(_PostgresSession, "store_leaf", interleaved)
+    await _turn(settings, thread, text)
+    monkeypatch.setattr(_PostgresSession, "store_leaf", real)
+    assert ran, "the turn never stored a leaf"
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_rewind_on_another_replica_mid_turn_holds(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Y rewinds between X's turn resolving the leaf and X storing it; no later append undoes it.
+
+    Unconditional, X's user event and then its reply were each written over the rewind, and the
+    next turn -- on any replica -- continued the branch the user had just left.
+    """
+    from felix.session.thread_state import LEAF_EPOCH_KEY, persist_leaf
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+
+    async def rewind_on_y() -> None:
+        await persist_leaf(settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=target)
+
+    await _turn_with_other_replica(store_settings, thread, "three", monkeypatch, rewind_on_y)
+
+    row = await _row(store_settings, thread)
+    assert row.leaf_event_id == target, "a turn's append overwrote another replica's rewind"
+    assert row.labels_json[LEAF_EPOCH_KEY] == 1
+    # The turn's events are in the log, on the abandoned branch, and the next turn follows Y.
+    events = await _events(store_settings, thread)
+    assert (
+        _by_content(events, "re: three").metadata.get("parent_id")
+        == _by_content(events, "three").metadata["event_id"]
+    )
+    model = await _turn(store_settings, thread, "four")
+    assert _by_content(await _events(store_settings, thread), "four").metadata.get("parent_id") == target
+    assert _seen_text(model) == ["one", "re: one", "four"]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_two_turns_on_two_replicas_without_a_rewind_stay_last_writer_wins(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An append bumps no epoch, so Y's append mid-turn does not stop X's from storing after it."""
+    from felix.session import tree
+    from felix.session.store import get_session_store
+    from felix.session.types import AppendableEvent
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+
+    async def append_on_y() -> None:
+        # Y's own lock is not X's, so Y's sync'd append runs the locked body directly.
+        await tree._append_under_lock(
+            get_session_store(store_settings, tenant_id=TENANT).open(thread),
+            thread,
+            [AppendableEvent(kind="custom", content="from y", metadata={"type": "custom"})],
+            sync=True,
+        )
+
+    await _turn_with_other_replica(store_settings, thread, "two", monkeypatch, append_on_y)
+
+    events = await _events(store_settings, thread)
+    assert (await _row(store_settings, thread)).leaf_event_id == _by_content(events, "re: two").metadata[
+        "event_id"
+    ]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_turn_on_a_rewound_thread_stores_its_leaf(store_settings: Any) -> None:
+    """The epoch a rewind left is the one the next turn resolves, and its appends store against it."""
+    from felix.session.thread_state import LEAF_EPOCH_KEY, get_thread_meta
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    target = _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"]
+    await _rewind(store_settings, thread, target)
+    _other_replica()
+
+    await _turn(store_settings, thread, "three")
+
+    row = await _row(store_settings, thread)
+    assert (
+        row.leaf_event_id
+        == _by_content(await _events(store_settings, thread), "re: three").metadata["event_id"]
+    )
+    assert row.labels_json[LEAF_EPOCH_KEY] == 1, "an append moved the epoch"
+    meta = await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread)
+    assert LEAF_EPOCH_KEY not in meta
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_failed_leaf_write_mid_turn_does_not_block_the_turns_later_ones(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rejected compare-and-set's failure mode: one transient error stranding the whole turn."""
+    import dataclasses
+
+    from felix.session.store import _PostgresSession
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    await _turn(store_settings, thread, "two")
+    await _rewind(
+        store_settings,
+        thread,
+        _by_content(await _events(store_settings, thread), "re: one").metadata["event_id"],
+    )
+    _other_replica()
+
+    real = _PostgresSession.store_leaf
+    failed: list[str] = []
+
+    def unreachable() -> Any:
+        raise ConnectionError("database went away")
+
+    async def flaky(self: _PostgresSession, event_id: str) -> None:
+        if not failed and self.id == thread:
+            failed.append(event_id)
+            await real(dataclasses.replace(self, session_factory=unreachable), event_id)
+            return
+        await real(self, event_id)
+
+    monkeypatch.setattr(_PostgresSession, "store_leaf", flaky)
+    await _turn(store_settings, thread, "three")
+    monkeypatch.setattr(_PostgresSession, "store_leaf", real)
+
+    events = await _events(store_settings, thread)
+    assert failed == [_by_content(events, "three").metadata["event_id"]]
+    assert (await _row(store_settings, thread)).leaf_event_id == _by_content(events, "re: three").metadata[
+        "event_id"
+    ]
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_tracked_row_from_before_the_epoch_reads_as_epoch_zero(store_settings: Any) -> None:
+    """A row #468 wrote has `leaf_v` and no `leaf_epoch`: appends store, and a rewind starts it at 1."""
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+    from felix.session.thread_state import LEAF_EPOCH_KEY, persist_leaf
+
+    thread = _thread()
+    await _seed(store_settings, thread)
+    async with tenant_session(store_settings, TENANT) as db:
+        row = await db.get(ThreadState, (TENANT, thread))
+        assert row is not None
+        row.labels_json = {k: v for k, v in row.labels_json.items() if k != LEAF_EPOCH_KEY}
+        await db.commit()
+    _other_replica()
+
+    await _turn(store_settings, thread, "two")
+    events = await _events(store_settings, thread)
+    row = await _row(store_settings, thread)
+    assert row.leaf_event_id == _by_content(events, "re: two").metadata["event_id"]
+    assert LEAF_EPOCH_KEY not in row.labels_json
+
+    target = _by_content(events, "re: one").metadata["event_id"]
+    await persist_leaf(settings=store_settings, tenant_id=TENANT, thread_id=thread, leaf_event_id=target)
+    assert (await _row(store_settings, thread)).labels_json[LEAF_EPOCH_KEY] == 1
+
+
+@postgres_only
+@pytest.mark.asyncio
+async def test_a_fork_starts_its_new_thread_at_epoch_one(store_settings: Any) -> None:
+    from felix.session.branch import fork_and_persist
+    from felix.session.store import get_session_store
+    from felix.session.thread_state import LEAF_EPOCH_KEY
+
+    source, dest = _thread(), _thread()
+    await _seed(store_settings, source)
+    store = get_session_store(store_settings, tenant_id=TENANT)
+
+    result = await fork_and_persist(
+        store.open(source), store.open(dest), settings=store_settings, tenant_id=TENANT
+    )
+
+    row = await _row(store_settings, dest)
+    assert row.leaf_event_id == result["leaf_id"]
+    assert row.labels_json[LEAF_EPOCH_KEY] == 1
+    _other_replica()
+    await _turn(store_settings, dest, "two")
+    assert (await _row(store_settings, dest)).leaf_event_id == _by_content(
+        await _events(store_settings, dest), "re: two"
+    ).metadata["event_id"]

@@ -19,6 +19,14 @@ from felix.session.types import AppendableEvent, Session, SessionEvent
 _leaf_by_thread: dict[str, str] = {}
 _label_by_event: dict[str, str] = {}
 
+# The stored `leaf_epoch` (`thread_state.LEAF_EPOCH_KEY`) this process's leaf for a thread was
+# taken at: set beside the leaf by `sync_leaf` and by a sync'd append from what the store
+# resolved, and by `thread_state.persist_leaf` from the epoch it wrote. `store_leaf` writes the
+# row only while it still holds this epoch, so an append extending a leaf another replica's
+# rewind or fork has since replaced leaves the row alone. Absent for a thread this process never
+# resolved, and for stores that keep no epoch (`memory://`, where the lock alone serialises).
+_epoch_by_thread: dict[str, int] = {}
+
 # One lock per thread, held while this process reads the stored leaf into the index
 # (`sync_leaf`), while it appends and moves the leaf (`annotate_and_append`), and across a
 # whole rewind or a fork's write into its destination (`leaf_lock`). Without it a sync could
@@ -48,8 +56,8 @@ async def leaf_lock(session: Session) -> AsyncIterator[None]:
     the hold go through `annotate_and_append(..., lock_held=True)` -- the lock is not
     reentrant, and taking it again would wait on itself.
 
-    Same process only. A turn on another replica is not serialised by this, see
-    `branch.rewind_and_persist`.
+    Same process only. A turn on another replica is not serialised by this; the row's
+    `leaf_epoch` keeps its appends from overwriting the rewind, see `branch.rewind_and_persist`.
     """
     async with _thread_lock(getattr(session, "id", "") or ""):
         yield
@@ -88,6 +96,31 @@ def get_leaf(thread_id: str) -> str | None:
     return _leaf_by_thread.get(thread_id)
 
 
+def get_leaf_epoch(thread_id: str) -> int | None:
+    """The stored epoch this process's leaf for ``thread_id`` was taken at, if it knows one."""
+    return _epoch_by_thread.get(thread_id)
+
+
+def set_leaf_epoch(thread_id: str, epoch: int | None) -> None:
+    if not thread_id:
+        return
+    if epoch is None:
+        _epoch_by_thread.pop(thread_id, None)
+    else:
+        _epoch_by_thread[thread_id] = epoch
+
+
+def _take_resolved(session: Session, thread_id: str, leaf: str | None) -> None:
+    """Set this process's leaf, and the epoch the store resolved it at, from one resolve.
+
+    Only the two resolves that set the index (`sync_leaf`, a sync'd append) take the epoch;
+    a read-only `stored_leaf` sets neither, so an export mid-turn cannot advance a turn's
+    epoch past a rewind it has not followed.
+    """
+    set_leaf(thread_id, leaf)
+    set_leaf_epoch(thread_id, getattr(session, "resolved_epoch", None))
+
+
 def set_leaf(thread_id: str, event_id: str | None) -> None:
     if not thread_id:
         return
@@ -121,7 +154,7 @@ async def sync_leaf(session: Session) -> str | None:
     thread_id = getattr(session, "id", "") or ""
     async with _thread_lock(thread_id):
         leaf = await stored_leaf(session)
-        set_leaf(thread_id, leaf)
+        _take_resolved(session, thread_id, leaf)
         return leaf
 
 
@@ -210,7 +243,7 @@ async def _append_under_lock(
     session: Session, thread_id: str, events: list[AppendableEvent], *, sync: bool
 ) -> list[str]:
     if sync:
-        set_leaf(thread_id, await stored_leaf(session))
+        _take_resolved(session, thread_id, await stored_leaf(session))
     return await _append_linked(session, thread_id, events)
 
 
@@ -350,12 +383,14 @@ __all__ = [
     "get_event_id",
     "get_label",
     "get_leaf",
+    "get_leaf_epoch",
     "get_parent_id",
     "leaf_lock",
     "new_event_id",
     "rewind_to",
     "set_label",
     "set_leaf",
+    "set_leaf_epoch",
     "stored_leaf",
     "sync_leaf",
 ]

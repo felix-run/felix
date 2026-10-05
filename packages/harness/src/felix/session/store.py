@@ -252,6 +252,9 @@ class _PostgresSession:
     id: str
     tenant_id: str
     session_factory: Any  # async_sessionmaker
+    # The row's `leaf_epoch` as of this object's last `resolve_leaf`. `tree.sync_leaf` copies it
+    # beside the leaf it sets; read-only resolvers leave it here, where no append looks.
+    resolved_epoch: int | None = field(default=None, init=False, compare=False)
 
     async def append(self, event: AppendableEvent) -> int | None:
         seqs = await self.append_batch([event])
@@ -318,33 +321,59 @@ class _PostgresSession:
         tracked (`thread_state.LEAF_TRACKED_KEY`), merged in SQL so a concurrent metadata
         write under its row lock keeps the key.
 
-        Unconditional, which is a known cross-replica limit: a rewind committed by another
-        replica between this append's linking and this write is overwritten here, and the row
-        then names this append's event. On one replica the thread's `tree.leaf_lock` keeps a
-        rewind out of that window (`branch.rewind_and_persist`). A compare-and-set on the
-        parent the append was linked to would close it across replicas, at the cost of
-        stranding every later append of a turn whose first set failed.
+        Conditional on the row's `leaf_epoch` still being the one this process's leaf was
+        taken at (`tree.get_leaf_epoch`): a rewind or a fork committed by another replica since
+        then -- between this turn's `sync_leaf` and this append -- bumped it, and the rewind
+        stands. The write is skipped, logged at INFO, and this process's leaf is left where the
+        append put it; the next turn's `sync_leaf` takes the rewound leaf from the row. Appends
+        never bump the epoch, so two turns racing on two replicas stay last-writer-wins, and a
+        write that fails here (logged, not raised) leaves the condition true for the turn's
+        later appends. A thread this process has no epoch for -- never resolved here -- writes
+        unconditionally, as every append did before the epoch existed.
         """
-        from sqlalchemy import literal, update
+        from sqlalchemy import Integer, func, literal, update
         from sqlalchemy.dialects.postgresql import JSONB
 
         from felix.db.models import ThreadState
-        from felix.session.thread_state import LEAF_TRACKED_KEY, LEAF_TRACKED_VERSION
+        from felix.session.thread_state import LEAF_EPOCH_KEY, LEAF_TRACKED_KEY, LEAF_TRACKED_VERSION
+        from felix.session.tree import get_leaf_epoch
 
         mark = literal({LEAF_TRACKED_KEY: LEAF_TRACKED_VERSION}, JSONB)
+        epoch_seen = get_leaf_epoch(self.id)
+        stmt = update(ThreadState).where(
+            ThreadState.tenant_id == self.tenant_id, ThreadState.thread_id == self.id
+        )
+        if epoch_seen is not None:
+            stored_epoch = func.coalesce(ThreadState.labels_json[LEAF_EPOCH_KEY].astext.cast(Integer), 0)
+            stmt = stmt.where(stored_epoch == epoch_seen)
         try:
             async with self.session_factory() as db:
                 db.info["tenant_id"] = self.tenant_id
-                await db.execute(
-                    update(ThreadState)
-                    .where(ThreadState.tenant_id == self.tenant_id, ThreadState.thread_id == self.id)
-                    .values(leaf_event_id=event_id, labels_json=ThreadState.labels_json.op("||")(mark))
+                result = await db.execute(
+                    stmt.values(leaf_event_id=event_id, labels_json=ThreadState.labels_json.op("||")(mark))
                 )
+                lost = epoch_seen is not None and not getattr(result, "rowcount", 0)
+                # No row is no session metadata yet, not a lost race; only a row says which.
+                row = await db.get(ThreadState, (self.tenant_id, self.id)) if lost else None
                 await db.commit()
         except Exception:
             # The events are committed; a stale stored leaf is the lesser failure, and
             # raising here would report the append itself as lost.
             logger.warning("leaf write failed for thread=%s", self.id, exc_info=True)
+            return
+        if row is not None:
+            from felix.logging_setup import loggable
+            from felix.session.thread_state import leaf_epoch
+
+            logger.info(
+                "thread=%s was rewound or forked at epoch %s since this turn took its leaf at %s; "
+                "leaving the stored leaf %s rather than %s",
+                loggable(self.id, limit=200),
+                leaf_epoch(row.labels_json),
+                epoch_seen,
+                row.leaf_event_id,
+                event_id,
+            )
 
     async def adopt_leaf(self, event_id: str) -> bool:
         """Store ``event_id`` as the leaf only while no tracked writer has stored one.
@@ -354,6 +383,9 @@ class _PostgresSession:
         unconditional `UPDATE` would then overwrite the rewind with the branch it abandoned,
         and mark it trusted. Conditional on the row still being untracked (or holding no
         leaf), so the rewind wins; returns whether this write landed.
+
+        It does not bump `leaf_epoch`: adopting corrects where the row says this branch ends,
+        and moves no branch, so a turn elsewhere that resolved the leaf before it still stores.
         """
         from sqlalchemy import literal, or_, update
         from sqlalchemy.dialects.postgresql import JSONB
@@ -406,11 +438,14 @@ class _PostgresSession:
         from sqlalchemy import select
 
         from felix.db.models import SessionEventRow, ThreadState
-        from felix.session.thread_state import leaf_is_tracked
+        from felix.session.thread_state import leaf_epoch, leaf_is_tracked
 
         async with self.session_factory() as db:
             db.info["tenant_id"] = self.tenant_id
             row = await db.get(ThreadState, (self.tenant_id, self.id))
+            # Read with the leaf, so the pair names one row state. No row is epoch 0, which is
+            # what the row a rename or a rewind creates later starts at or is bumped from.
+            self.resolved_epoch = leaf_epoch(row.labels_json) if row is not None else 0
             stored = row.leaf_event_id if row is not None else None
             if stored and row is not None and leaf_is_tracked(row.labels_json):
                 return stored
@@ -432,6 +467,8 @@ class _PostgresSession:
             async with self.session_factory() as db:
                 db.info["tenant_id"] = self.tenant_id
                 current = await db.get(ThreadState, (self.tenant_id, self.id))
+                if current is not None:
+                    self.resolved_epoch = leaf_epoch(current.labels_json)
                 if current is not None and current.leaf_event_id and leaf_is_tracked(current.labels_json):
                     return current.leaf_event_id
             return newest

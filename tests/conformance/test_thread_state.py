@@ -208,6 +208,7 @@ def _other_replica() -> None:
 
     reset_thread_meta_for_tests()
     tree._leaf_by_thread.clear()
+    tree._epoch_by_thread.clear()
     tree._label_by_event.clear()
 
 
