@@ -30,6 +30,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -208,25 +209,41 @@ async def _post(settings: Settings, endpoint: WebhookEndpoint, headers: dict[str
     )
 
 
-async def _deliver_row(
-    settings: Settings, row: dict[str, Any], registry: dict[str, WebhookEndpoint], provider: Any
-) -> None:
+async def attempt_endpoints(
+    settings: Settings,
+    endpoints: dict[str, dict[str, Any]],
+    *,
+    tenant_id: str,
+    registry: dict[str, WebhookEndpoint],
+    provider: Any,
+    body: bytes,
+    message_id: Callable[[str], str],
+    metric: str,
+    subject: str,
+    still_routed: Callable[[str], bool] = lambda _name: True,
+) -> tuple[str, int | None]:
+    """One signed attempt at every endpoint of ``endpoints`` still `pending`, updating each in
+    place (`status`, `attempts`, `last_error`, `delivered_at`); then the delivery's own status --
+    `pending` while any endpoint is, else `delivered` when all were, else `dead` -- and when the
+    next attempt is due. Each attempt is counted in ``metric`` by endpoint and outcome.
+
+    What a run's completion webhook and a skill's update notification share: the same signing,
+    the same egress-pinned client, the same backoff and the same dead letter. An endpoint the
+    registry no longer has, no longer opens to ``tenant_id``, or that ``still_routed`` disowns,
+    goes `dead` without a request."""
     from felix.secrets import register_resolved_secret, resolve_secret_value
 
-    state = dict(row.get("webhook_state") or {})
-    endpoints = {name: dict(ep or {}) for name, ep in (state.get("endpoints") or {}).items()}
-    body = json.dumps(_payload(row), separators=(",", ":"), sort_keys=True, default=str).encode()
     timestamp = int(time.time())
     for name, ep in endpoints.items():
         if ep.get("status") != "pending":
             continue
         endpoint = registry.get(name)
-        if endpoint is None or not endpoint.allows(str(row.get("tenant_id"))):
+        if endpoint is None or not endpoint.allows(tenant_id) or not still_routed(name):
             ep.update(status="dead", last_error="endpoint no longer registered for this tenant")
-            record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "dead"})
+            record_counter(metric, {"endpoint": name, "outcome": "dead"})
             continue
         ep["attempts"] = int(ep.get("attempts") or 0) + 1
-        message_id = f"{row['id']}:{name}"
+        msg_id = message_id(name)
         try:
             secret = await resolve_secret_value(provider, endpoint.secret)
             if not secret:
@@ -235,38 +252,51 @@ async def _deliver_row(
             headers = {
                 "content-type": "application/json",
                 "user-agent": "Felix-Webhooks/1",
-                "webhook-id": message_id,
+                "webhook-id": msg_id,
                 "webhook-timestamp": str(timestamp),
-                "webhook-signature": sign(secret, message_id, timestamp, body),
+                "webhook-signature": sign(secret, msg_id, timestamp, body),
             }
             status = await _post(settings, endpoint, headers, body)
             if 200 <= status < 300:
                 ep.update(status="delivered", delivered_at=now_ms(), last_error="")
-                record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "delivered"})
+                record_counter(metric, {"endpoint": name, "outcome": "delivered"})
                 continue
             ep["last_error"] = f"HTTP {status}"
         except Exception as exc:
             # The type only: an egress refusal, a timeout or a resolver error, never a message
             # that could quote the URL's query or the secret's name back into the run view.
             ep["last_error"] = type(exc).__name__
-            logger.warning(
-                "webhook %s delivery for run %s failed: %s", name, row.get("id"), type(exc).__name__
-            )
+            logger.warning("webhook %s delivery for %s failed: %s", name, subject, type(exc).__name__)
         if ep["attempts"] >= settings.webhook_max_attempts:
             ep["status"] = "dead"
-            record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "dead"})
+            record_counter(metric, {"endpoint": name, "outcome": "dead"})
         else:
-            record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "retry"})
-    state["endpoints"] = endpoints
+            record_counter(metric, {"endpoint": name, "outcome": "retry"})
     pending = [ep for ep in endpoints.values() if ep.get("status") == "pending"]
     if pending:
-        status, due_at = (
-            "pending",
-            now_ms() + retry_delay_ms(max(int(ep.get("attempts") or 1) for ep in pending)),
-        )
-    else:
-        delivered = all(ep.get("status") == "delivered" for ep in endpoints.values())
-        status, due_at = ("delivered" if delivered else "dead"), None
+        return "pending", now_ms() + retry_delay_ms(max(int(ep.get("attempts") or 1) for ep in pending))
+    delivered = all(ep.get("status") == "delivered" for ep in endpoints.values())
+    return ("delivered" if delivered else "dead"), None
+
+
+async def _deliver_row(
+    settings: Settings, row: dict[str, Any], registry: dict[str, WebhookEndpoint], provider: Any
+) -> None:
+    state = dict(row.get("webhook_state") or {})
+    endpoints = {name: dict(ep or {}) for name, ep in (state.get("endpoints") or {}).items()}
+    body = json.dumps(_payload(row), separators=(",", ":"), sort_keys=True, default=str).encode()
+    status, due_at = await attempt_endpoints(
+        settings,
+        endpoints,
+        tenant_id=str(row.get("tenant_id")),
+        registry=registry,
+        provider=provider,
+        body=body,
+        message_id=lambda name: f"{row['id']}:{name}",
+        metric="felix_webhook_delivery",
+        subject=f"run {row.get('id')}",
+    )
+    state["endpoints"] = endpoints
     await _save_delivery(settings, row, status=status, due_at=due_at, state=state)
 
 
@@ -365,6 +395,7 @@ __all__ = [
     "WEBHOOK_CLAIM_MS",
     "WebhookEndpoint",
     "WebhookEndpointError",
+    "attempt_endpoints",
     "deliver_due_webhooks",
     "endpoints_for_run",
     "parse_webhook_endpoints",

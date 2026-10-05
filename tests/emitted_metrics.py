@@ -19,7 +19,11 @@ RECORDERS = {"record_counter": 0, "record_counter_detached": 1, "record_histogra
 # `timed_span` records a histogram (and optionally a counter) on the caller's behalf, so the
 # name lives in a keyword at the call site rather than in a positional arg to a recorder.
 # A scan that only knew the recorders reported every one of those as undocumented.
-RECORDER_KEYWORDS = {"timed_span": ("metric", "counter")}
+RECORDER_KEYWORDS = {
+    "timed_span": ("metric", "counter"),
+    # The shared webhook attempt (`durability/webhooks.py`) counts each try under the caller's name.
+    "attempt_endpoints": ("metric",),
+}
 
 
 @cache
