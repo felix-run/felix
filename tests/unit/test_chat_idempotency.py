@@ -414,3 +414,45 @@ def test_key_grammar() -> None:
     assert valid_key("k") and valid_key("a-b_c.1:2") and valid_key("x" * 255)
     for bad in ("", "x" * 256, "a b", "é", "{a}1", "a}"):
         assert not valid_key(bad), bad
+
+
+# --- POST /chat/stream: how a finished stream settles its key --------------------------------
+
+
+async def test_a_stream_that_appended_nothing_frees_its_key_and_one_that_did_keeps_it() -> None:
+    """A send that failed before its turn began may be resent; one that began never runs twice.
+
+    `settle` runs however the stream ended. Nothing appended means no user message landed, so the
+    key is released and a resend runs. Anything appended is stored with where the request started
+    and ended, which is what a resend is replayed from.
+    """
+    from felix.session.store import get_session_store
+    from felix.session.types import AppendableEvent
+    from felix_api.routes.chat import _HeldStreamKey
+
+    settings = _settings("stream-settle")
+    store = MemoryIdempotencyStore(60)
+    thread = "acme:settle"
+
+    async def held(key: str) -> _HeldStreamKey:
+        claim = await store.claim("scope", key, "fp")
+        assert claim.kind == "new"
+        return _HeldStreamKey(
+            store=store, scope="scope", key=key, token=claim.token, thread=thread, from_seq=0
+        )
+
+    await (await held("nothing")).settle(settings, "acme")
+    assert (await store.claim("scope", "nothing", "fp")).kind == "new", (
+        "a send that appended nothing kept its key"
+    )
+
+    began = await held("began")
+    await (
+        get_session_store(settings, tenant_id="acme")
+        .open(thread)
+        .append(AppendableEvent(kind="message", role="user", content="hi"))
+    )
+    await began.settle(settings, "acme")
+    replay = await store.claim("scope", "began", "fp")
+    assert replay.kind == "replay" and replay.stored is not None
+    assert (replay.stored.body["from_seq"], replay.stored.body["to_seq"]) == (0, 1)

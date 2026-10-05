@@ -7249,7 +7249,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7321,7 +7321,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7394,7 +7394,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7467,7 +7467,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7539,7 +7539,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7667,7 +7667,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7815,7 +7815,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -7957,7 +7957,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -8074,7 +8074,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -8261,7 +8261,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -8718,7 +8718,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -8739,6 +8739,7 @@
     },
     "/chat/stream": {
       "post": {
+        "description": "Run a turn as an SSE stream. With an `Idempotency-Key` and a `thread_id`, once per key.\n\nA resend under the same key never runs a second turn: while the first is still streaming it\nis `409 idempotency_in_progress` (reattach with `GET /chat/stream/{thread_id}`); after, it\nreplays what the first wrote to the thread as `session_event` frames, with\n`Idempotent-Replayed: true`, or reattaches to the durable run it started. A first request\nthat appended nothing frees the key. The same key with a different body is\n`422 idempotency_key_reused`. Scoped to the principal and the thread.",
         "operationId": "chat_stream_chat_stream_post",
         "parameters": [
           {
@@ -8779,6 +8780,16 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`invalid_idempotency_key`, or `idempotency_key_requires_thread_id`: a streamed send is deduplicated per thread, so an `Idempotency-Key` needs a `thread_id`."
+          },
           "409": {
             "content": {
               "application/json": {
@@ -8787,7 +8798,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only` / `lease_held`: the `X-Felix-Lease-Token` presented does not drive the thread (or, under `FELIX_LEASE_ENFORCE=strict`, none was and another holder does). `idempotency_in_progress`: a request with this `Idempotency-Key` is still streaming; reattach with `GET /chat/stream/{thread_id}`."
           },
           "422": {
             "content": {
@@ -8901,7 +8912,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -8975,7 +8986,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {
@@ -9049,7 +9060,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
           },
           "422": {
             "content": {

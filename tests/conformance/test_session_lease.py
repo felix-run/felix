@@ -279,6 +279,29 @@ async def test_an_observer_token_cannot_release_or_drive_as_the_holder(arm: Arm)
     assert (await _status(thread))["holder_id"] == "tab-a", "an observer's token released the holder"
 
 
+async def test_strict_enforcement_refuses_no_token_only_while_a_thread_is_held_exclusively(arm: Arm) -> None:
+    """`driving_refusal` with no token: `lease_held` under strict while someone drives, else None."""
+    from felix.session.lease import driving_refusal, release_lease
+
+    held, watched = _thread(), _thread()
+    a = await _acquire(held, "tab-a", "exclusive")
+    b = await _acquire(held, "tab-b", "shared")
+    await _acquire(watched, "tab-c", "shared")
+
+    assert await driving_refusal(held, None, enforce="strict") == "lease_held"
+    assert await driving_refusal(held, "", enforce="strict") == "lease_held"
+    assert await driving_refusal(held, None, enforce="advisory") is None
+    assert await driving_refusal(held, a["token"], enforce="strict") is None
+    assert await driving_refusal(held, b["token"], enforce="strict") == "lease_read_only"
+    assert await driving_refusal(held, b["token"], enforce="advisory") == "lease_read_only"
+    # Observers never block a driver, so an observer-only thread -- and an unheld one -- passes.
+    assert await driving_refusal(watched, None, enforce="strict") is None
+    assert await driving_refusal(_thread(), None, enforce="strict") is None
+
+    assert (await release_lease(held, token=a["token"]))["ok"]
+    assert await driving_refusal(held, None, enforce="strict") is None
+
+
 # --- a renewal proves itself with the token -------------------------------------------------
 #
 # The holder id is published: every status carries the exclusive holder's, `GET …/lease` lists

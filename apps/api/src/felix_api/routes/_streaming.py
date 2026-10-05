@@ -310,6 +310,40 @@ async def resume_stream_gen(
     yield DONE
 
 
+async def replay_stream_gen(
+    *,
+    settings: Any,
+    tenant_id: str,
+    thread: str,
+    from_seq: int | None,
+    to_seq: int | None,
+) -> AsyncIterator[str]:
+    """What one finished `POST /chat/stream` wrote to its thread, for a retry under its key.
+
+    The session events in ``[from_seq, to_seq)`` -- the log's head when the first request
+    started, and when it ended -- as `session_event` frames, the reattach stream's own
+    vocabulary, then `[DONE]`. Finite on purpose: the first request is over, so there is
+    nothing to tail, and a later turn on the thread is not this request's. A first request
+    that could not read the head when it started (``from_seq`` None) is answered with the
+    thread's `snapshot` instead, as a cold reattach opens.
+    """
+    try:
+        if from_seq is None:
+            snapshot = await gather_thread_snapshot(settings=settings, tenant_id=tenant_id, thread=thread)
+            cursor = int((await stream_cursor(settings, tenant_id, thread)) or 0)
+            yield frame({"event": "snapshot", "data": snapshot}, cursor=cursor)
+        else:
+            reader = get_session_store(settings, tenant_id=tenant_id).open(thread)
+            for event in await reader.get_events(GetEventsOpts(from_seq=from_seq, to_seq=to_seq)):
+                yield session_event_frame(event, event.seq + 1)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("chat replay failed thread=%s", loggable(thread, limit=80))
+        yield error_frame(client_safe_message(exc))
+    yield DONE
+
+
 def durable_thread(tenant_id: str, accepted: dict[str, Any]) -> str:
     """The thread a durable run writes its transcript to, or "" if it cannot be derived.
 
@@ -701,6 +735,7 @@ __all__ = [
     "drain_session_events",
     "durable_run_gen",
     "next_poll_delay",
+    "replay_stream_gen",
     "resume_stream_gen",
     "stream_cursor",
 ]

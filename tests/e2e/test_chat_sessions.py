@@ -485,6 +485,102 @@ async def test_a_second_tab_observes_a_thread_another_drives_and_cannot_drive_it
         assert unleased.status_code == 200, unleased.text
 
 
+async def _hold(app: Booted, thread: str, holder: str, mode: str) -> dict[str, Any]:
+    resp = await app.client.post(
+        "/chat/sessions/lease", json={"thread_id": thread, "holder_id": holder, "mode": mode}
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _turn_body(thread: str, text: str = "x") -> dict[str, Any]:
+    return {"manifest": "quick", "thread_id": thread, "messages": [{"role": "user", "content": text}]}
+
+
+async def test_strict_lease_enforcement_refuses_a_caller_without_a_token_on_a_held_thread(boot: Any) -> None:
+    """`FELIX_LEASE_ENFORCE=strict`: the header stops being the client's choice while someone drives.
+
+    Under advisory a request without `X-Felix-Lease-Token` was never checked, so the guard
+    protected only clients that opted in. Strict refuses it with `lease_held` -- on every
+    driving route -- while another holder has the thread exclusively, and nowhere else: an
+    unheld thread and an observer-only one still take a turn with no token, and the holder's
+    own token and an observer's are judged as they always were.
+    """
+    from felix_api.routes.chat import LEASE_TOKEN_HEADER
+
+    held, free, watched = "e2e-strict-held", "e2e-strict-free", "e2e-strict-watched"
+    async with boot([_answer() for _ in range(8)], env={"FELIX_LEASE_ENFORCE": "strict"}) as app:
+        assert app.settings.lease_enforce == "strict"
+        await _seed(app, held)
+        exclusive = await _hold(app, held, "tab-a", "exclusive")
+        observer = await _hold(app, held, "tab-b", "shared")
+
+        calls_before = list(app.spy.calls)
+        for method, path, body in _driving_requests(held):
+            resp = await app.client.request(method, path, json=body)
+            assert resp.status_code == 409, f"{method} {path} let a tokenless caller drive: {resp.text}"
+            assert resp.json()["detail"] == "lease_held", f"{path}: {resp.text}"
+        assert app.spy.calls == calls_before, "a tokenless request reached the model"
+
+        refused = await app.client.post(
+            "/chat", json=_turn_body(held), headers={LEASE_TOKEN_HEADER: observer["token"]}
+        )
+        assert (refused.status_code, refused.json()["detail"]) == (409, "lease_read_only"), refused.text
+        driven = await app.client.post(
+            "/chat", json=_turn_body(held), headers={LEASE_TOKEN_HEADER: exclusive["token"]}
+        )
+        assert driven.status_code == 200, driven.text
+
+        unheld = await app.client.post("/chat", json=_turn_body(free))
+        assert unheld.status_code == 200, unheld.text
+        await _hold(app, watched, "tab-c", "shared")
+        observed_only = await app.client.post("/chat", json=_turn_body(watched))
+        assert observed_only.status_code == 200, observed_only.text
+
+
+async def test_strict_lease_enforcement_covers_v1_whose_user_is_the_same_thread(boot: Any) -> None:
+    """`/v1/chat/completions` with `user: X` appends to the chat thread `X`; strict guards it there too."""
+    held = "e2e-strict-v1"
+    async with boot([_answer() for _ in range(4)], env={"FELIX_LEASE_ENFORCE": "strict"}) as app:
+        await _seed(app, held)
+        before = len((await app.client.get(f"/chat/sessions/{held}")).json()["transcript"])
+        await _hold(app, held, "tab-a", "exclusive")
+
+        resp = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "quick", "user": held, "messages": [{"role": "user", "content": "x"}]},
+        )
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["error"]["code"] == "lease_held", resp.text
+        assert len((await app.client.get(f"/chat/sessions/{held}")).json()["transcript"]) == before
+
+        free = await app.client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "quick",
+                "user": "e2e-strict-v1-free",
+                "messages": [{"role": "user", "content": "x"}],
+            },
+        )
+        assert free.status_code == 200, free.text
+
+
+async def test_advisory_lease_enforcement_lets_a_tokenless_caller_drive_a_held_thread(boot: Any) -> None:
+    """The default is unchanged: no header, no check -- on the chat routes and on `/v1`."""
+    held = "e2e-advisory-held"
+    async with boot([_answer() for _ in range(4)]) as app:
+        assert app.settings.lease_enforce == "advisory"
+        await _seed(app, held)
+        await _hold(app, held, "tab-a", "exclusive")
+
+        assert (await app.client.post("/chat", json=_turn_body(held))).status_code == 200
+        v1 = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "quick", "user": held, "messages": [{"role": "user", "content": "x"}]},
+        )
+        assert v1.status_code == 200, v1.text
+
+
 async def test_a_contended_release_is_a_conflict_not_a_refusal(boot: Any, monkeypatch: Any) -> None:
     """`lease_contended` means the release lost a race on Redis and may land on a retry.
 

@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import replace
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, replace
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -15,6 +16,7 @@ from felix.context import AuthContext, RequestContext, async_run_with_context, g
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.idempotency import (
     IdempotencyConflict,
+    IdempotencyStore,
     StoredResponse,
     once,
     principal_scope,
@@ -48,6 +50,7 @@ from felix_api.routes._sse import (
 )
 from felix_api.routes._streaming import (
     durable_run_gen,
+    replay_stream_gen,
     resume_stream_gen,
     stream_cursor,
 )
@@ -290,8 +293,10 @@ class LeaseReleaseOut(BaseModel):
 # A client that holds a lease may present its token on the routes that drive a thread, and
 # the server then refuses it unless the token is the exclusive hold's: an observer's is
 # `409 lease_read_only`, one whose hold another holder has since taken is `409 lease_held`.
-# Optional on purpose. Leases were advisory before this header existed, and a caller that
+# Optional by default. Leases were advisory before this header existed, and a caller that
 # never took one -- a script, the OpenAI surface, an older client -- keeps working as it did.
+# `FELIX_LEASE_ENFORCE=strict` makes it binding: without the header a driving request is
+# refused while another holder has the thread exclusively (`lease.driving_refusal`).
 # Checked on every route below that starts a turn, answers one, or writes the thread's log or
 # settings. Not on `/chat/fork`, which only reads its source (forking is how an observer takes
 # its own branch), nor on `/chat/sessions/feedback`: it writes the rating into thread metadata
@@ -313,18 +318,19 @@ LEASE_REFUSALS: dict[int | str, dict[str, Any]] = {
     409: {
         "model": ChatRefusalOut,
         "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. "
-        "`lease_held`: another holder has the thread exclusively. Only sent when the header is.",
+        "`lease_held`: another holder has the thread exclusively. Only sent when the header is, "
+        "unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too.",
     }
 }
 
 
-async def _refuse_unless_driver(thread: str | None, lease_token: str | None) -> None:
-    """409 when the caller presented a lease token that does not drive `thread`."""
-    if not thread or not lease_token:
-        return
-    from felix.session.lease import lease_write_refusal
+async def _refuse_unless_driver(request: Request, thread: str | None, lease_token: str | None) -> None:
+    """409 when the caller may not drive `thread`: see `lease.driving_refusal`."""
+    from felix.session.lease import driving_refusal
 
-    refusal = await lease_write_refusal(thread, lease_token)
+    refusal = await driving_refusal(
+        thread, lease_token, enforce=getattr(request.app.state.settings, "lease_enforce", "advisory")
+    )
     if refusal:
         raise HTTPException(status_code=409, detail=refusal)
 
@@ -458,7 +464,7 @@ async def chat(body: ChatRequest, request: Request, lease_token: LeaseToken = No
     if body.thread_id and thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     # Before the idempotency claim: an observer's request is refused, not stored as the key's answer.
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     key = request.headers.get(IDEMPOTENCY_HEADER)
     if key is None:
         status, payload = await _chat_turn(body, request)
@@ -704,17 +710,161 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
     )
 
 
-@router.post("/stream", responses=LEASE_REFUSALS)
+# `POST /chat/stream` under an `Idempotency-Key`: one turn per key, whatever the client retries.
+#
+# A streamed send that failed in the client -- the network dropped, a proxy answered 5xx -- may
+# or may not have reached the turn, and the client cannot tell which. Resent with the same key,
+# it never runs a second turn or appends a second user message:
+#
+# - the first request is still streaming: `409 idempotency_in_progress`. The thread is the
+#   resume token -- `GET /chat/stream/{thread_id}` reattaches to it as to any dropped stream;
+# - the first request is over: what it wrote to the thread is replayed (`replay_stream_gen`),
+#   with `Idempotent-Replayed: true`, and nothing runs. A durable run is reattached to instead
+#   (`durable_run_gen`), since its run outlives any one request;
+# - the first request ended having appended nothing (it failed before the turn began): the key
+#   is released, so the retry runs;
+# - the same key with a different body: `422 idempotency_key_reused`.
+#
+# Scoped to the principal *and the thread*, with `FELIX_IDEMPOTENCY_TTL_SECONDS`, in the store
+# `POST /chat` uses. The key is claimed after the request has passed inbound auth and screening,
+# so a retry is judged as the first request was before it is told anything. (No 422 entry: it
+# would replace the validation error's schema; `idempotency_key_reused` is in the docstring.)
+STREAM_IDEMPOTENCY_REFUSALS: dict[int | str, dict[str, Any]] = {
+    400: {
+        "model": ChatRefusalOut,
+        "description": "`invalid_idempotency_key`, or `idempotency_key_requires_thread_id`: a streamed "
+        "send is deduplicated per thread, so an `Idempotency-Key` needs a `thread_id`.",
+    },
+    409: {
+        "model": ChatRefusalOut,
+        "description": "`lease_read_only` / `lease_held`: the `X-Felix-Lease-Token` presented does not "
+        "drive the thread (or, under `FELIX_LEASE_ENFORCE=strict`, none was and another holder does). "
+        "`idempotency_in_progress`: a request with this `Idempotency-Key` is still streaming; "
+        "reattach with `GET /chat/stream/{thread_id}`.",
+    },
+}
+
+
+@dataclass(slots=True)
+class _HeldStreamKey:
+    """A `POST /chat/stream` that won its key: where its thread stood, and how to settle the key."""
+
+    store: IdempotencyStore
+    scope: str
+    key: str
+    token: str
+    thread: str
+    from_seq: int | None
+
+    async def finish(self, body: dict[str, Any]) -> None:
+        await self.store.finish(self.scope, self.key, self.token, StoredResponse(200, body))
+
+    async def release(self) -> None:
+        await self.store.release(self.scope, self.key, self.token)
+
+    async def settle(self, settings: Any, tenant_id: str) -> None:
+        """The stream is over, however it ended: store where it stopped, or free the key.
+
+        Nothing appended means the turn never began, so a retry is safe and the key is
+        released. Anything appended -- a whole turn, or the user message of one torn down by a
+        disconnect -- is stored, so a retry replays it rather than sending the message again.
+        A head that cannot be read is treated as appended: replaying too little beats a second turn.
+        """
+        to_seq = await stream_cursor(settings, tenant_id, self.thread)
+        if to_seq is not None and self.from_seq is not None and to_seq <= self.from_seq:
+            await self.release()
+            return
+        await self.finish(
+            {"mode": "turn", "thread_id": self.thread, "from_seq": self.from_seq, "to_seq": to_seq}
+        )
+
+    async def guard(self, settings: Any, tenant_id: str, stream: AsyncIterator[str]) -> AsyncIterator[str]:
+        """``stream``, settling the key when it ends -- completed, failed, or the client gone.
+
+        Shielded: a disconnect cancels this generator, and the settle has to land anyway, or
+        the key stays `in_progress` for its whole TTL and every retry is refused.
+        """
+        try:
+            async for chunk in stream:
+                yield chunk
+        finally:
+            await asyncio.shield(self.settle(settings, tenant_id))
+
+
+async def _claim_stream_key(
+    request: Request, auth: AuthContext, thread: str, key: str, body: ChatRequest
+) -> _HeldStreamKey | StreamingResponse:
+    """Claim ``key`` for this streamed send, or answer the retry of one that already ran."""
+    settings = request.app.state.settings
+    store: IdempotencyStore = request.app.state.idempotency_store
+    scope = f"{principal_scope(auth.tenant_id, auth.principal_sub)}#stream#{thread}"
+    claim = await store.claim(scope, key, request_fingerprint("/chat/stream", body.model_dump(mode="json")))
+    if claim.kind == "in_progress":
+        raise HTTPException(status_code=409, detail="idempotency_in_progress")
+    if claim.kind == "mismatch":
+        raise HTTPException(status_code=422, detail="idempotency_key_reused")
+    if claim.kind == "replay" and claim.stored is not None:
+        stored = claim.stored.body
+        replayed = {"idempotent-replayed": "true"}
+        if stored.get("mode") == "durable":
+            return sse_response(
+                durable_run_gen(
+                    settings=settings,
+                    tenant_id=auth.tenant_id,
+                    accepted=dict(stored.get("accepted") or {}),
+                    from_seq=stored.get("from_seq"),
+                    may_read_approvals=holds_mgmt_scopes(settings, auth.scopes, SCOPE_APPROVALS_READ),
+                ),
+                headers=replayed,
+            )
+        return sse_response(
+            replay_stream_gen(
+                settings=settings,
+                tenant_id=auth.tenant_id,
+                thread=thread,
+                from_seq=stored.get("from_seq"),
+                to_seq=stored.get("to_seq"),
+            ),
+            headers=replayed,
+        )
+    # Read before the turn can append, so the replay starts at this request's first event.
+    return _HeldStreamKey(
+        store=store,
+        scope=scope,
+        key=key,
+        token=claim.token,
+        thread=thread,
+        from_seq=await stream_cursor(settings, auth.tenant_id, thread),
+    )
+
+
+@router.post("/stream", responses=STREAM_IDEMPOTENCY_REFUSALS)
 async def chat_stream(
     body: ChatRequest, request: Request, lease_token: LeaseToken = None
 ) -> StreamingResponse:
+    """Run a turn as an SSE stream. With an `Idempotency-Key` and a `thread_id`, once per key.
+
+    A resend under the same key never runs a second turn: while the first is still streaming it
+    is `409 idempotency_in_progress` (reattach with `GET /chat/stream/{thread_id}`); after, it
+    replays what the first wrote to the thread as `session_event` frames, with
+    `Idempotent-Replayed: true`, or reattaches to the durable run it started. A first request
+    that appended nothing frees the key. The same key with a different body is
+    `422 idempotency_key_reused`. Scoped to the principal and the thread.
+    """
     settings = request.app.state.settings
     tools = request.app.state.tools
     auth = _auth_from_request(request)
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if body.thread_id and thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
+    key = request.headers.get(IDEMPOTENCY_HEADER)
+    if key is not None:
+        if not valid_key(key):
+            raise HTTPException(status_code=400, detail="invalid_idempotency_key")
+        if thread is None:
+            # A threadless stream writes no log, so there is nothing a retry could be answered from.
+            raise HTTPException(status_code=400, detail="idempotency_key_requires_thread_id")
     if not (body.manifest or "").strip():
         raise HTTPException(status_code=400, detail="manifest_required")
 
@@ -751,6 +901,12 @@ async def chat_stream(
         if http is not None:
             raise http from exc
         raise
+    held: _HeldStreamKey | None = None
+    if key is not None and thread is not None:
+        claimed = await _claim_stream_key(request, auth, thread, key, body)
+        if isinstance(claimed, StreamingResponse):
+            return claimed
+        held = claimed
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat
@@ -783,10 +939,16 @@ async def chat_stream(
                 ),
             )
         except Exception as exc:
+            if held is not None:
+                await held.release()
             http = _http_from_invoke_prep(exc)
             if http is not None:
                 raise http from exc
             raise
+        if held is not None:
+            # Settled at once: the run is enqueued and outlives this request, so a retry is
+            # answered by reattaching to it, never by a second enqueue.
+            await held.finish({"mode": "durable", "accepted": accepted, "from_seq": from_seq})
         return sse_response(
             durable_run_gen(
                 settings=settings,
@@ -875,6 +1037,8 @@ async def chat_stream(
             yield error_frame(client_safe_message(exc))
         yield DONE
 
+    if held is not None:
+        return sse_response(held.guard(settings, auth.tenant_id, event_gen()))
     return sse_response(event_gen())
 
 
@@ -885,7 +1049,7 @@ async def chat_steer(body: SteerRequest, request: Request, lease_token: LeaseTok
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
 
 
@@ -900,7 +1064,7 @@ async def chat_tool_result(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     content = client_tool_result_json(body.content)
     signaled = await complete_result(
         thread,
@@ -963,7 +1127,7 @@ async def chat_rewind(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     session = get_session_store(settings, tenant_id=auth.tenant_id).open(thread)
     # The summariser is resolved before the rewind starts: the rewind holds the thread's leaf
     # lock from reading the leaf it abandons to storing the new one, and a manifest lookup has
@@ -1081,7 +1245,7 @@ async def chat_history_delete(
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     await store.open(thread).reset()
     return {"status": "deleted", "thread_id": thread}
@@ -1181,7 +1345,7 @@ async def chat_ui_response(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     return await resolve_ui_response(
         thread,
         body.request_id,
@@ -1230,7 +1394,7 @@ async def append_custom_entry(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     md = dict(body.metadata or {})
     md["in_context"] = bool(body.in_context)
     md["type"] = "custom"
@@ -1310,7 +1474,7 @@ async def set_session_name(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     meta = await update_thread_meta(
         settings=settings,
         tenant_id=auth.tenant_id,
@@ -1344,7 +1508,7 @@ async def set_session_label(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     set_label(body.event_id, body.label)
     await update_thread_meta(
         settings=settings,
@@ -1441,7 +1605,7 @@ async def chat_abort(body: AbortRequest, request: Request, lease_token: LeaseTok
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     result = await request_abort(auth.tenant_id, thread)
     await update_thread_meta(
         settings=request.app.state.settings,
@@ -1469,7 +1633,7 @@ async def chat_continue(body: ContinueRequest, request: Request, lease_token: Le
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     await clear_abort(auth.tenant_id, thread)
     store = get_session_store(settings, tenant_id=auth.tenant_id)
     session = store.open(thread)
@@ -1561,7 +1725,7 @@ async def chat_thinking(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     try:
         level = parse_thinking_level(body.thinking_level)
     except ValueError as exc:
@@ -1598,7 +1762,7 @@ async def chat_compact(
     thread = effective_thread_id(auth.tenant_id, body.thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
-    await _refuse_unless_driver(thread, lease_token)
+    await _refuse_unless_driver(request, thread, lease_token)
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
     except (LookupError, ValueError) as exc:

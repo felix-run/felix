@@ -298,6 +298,23 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     thread = effective_thread_id(auth.tenant_id, body.user)
     if body.user and thread is None:
         return _error_json("invalid user", "invalid_request_error", "invalid_user", 400)
+    # `user` names the same thread a chat client drives (`{tenant}:{user}`), so under
+    # `FELIX_LEASE_ENFORCE=strict` a thread another holder has exclusively is refused here as on
+    # `/chat`. Advisory leaves this surface unchecked, as it always was; an OpenAI SDK sends no
+    # lease header unless told to, and one that does is held to it only under strict.
+    if getattr(settings, "lease_enforce", "advisory") == "strict":
+        from felix.session.lease import driving_refusal
+
+        refusal = await driving_refusal(
+            thread, request.headers.get("x-felix-lease-token"), enforce=settings.lease_enforce
+        )
+        if refusal:
+            message = (
+                "this lease token only observes the session"
+                if refusal == "lease_read_only"
+                else "another client holds this session"
+            )
+            return _error_json(message, "conflict", refusal, 409)
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.model, thread_id=thread)

@@ -146,8 +146,10 @@ DONE = "data: [DONE]\n\n"
 KEEP_ALIVE = ": keep-alive\n\n"
 
 
-def sse_response(generator: AsyncIterator[str]) -> StreamingResponse:
-    """A streaming response with the headers a proxied SSE stream actually needs."""
+def sse_response(
+    generator: AsyncIterator[str], *, headers: dict[str, str] | None = None
+) -> StreamingResponse:
+    """A streaming response with the headers a proxied SSE stream actually needs, plus ``headers``."""
     return StreamingResponse(
         generator,
         media_type="text/event-stream",
@@ -157,6 +159,7 @@ def sse_response(generator: AsyncIterator[str]) -> StreamingResponse:
             # nginx buffers proxied responses by default, which defeats streaming
             # entirely — the client gets everything at once when the run finishes.
             "x-accel-buffering": "no",
+            **(headers or {}),
         },
     )
 

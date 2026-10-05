@@ -386,6 +386,8 @@ felix-web's chat UI does this from a Worker (`FELIX_ORIGIN`, with an optional `x
 for its own clients), and any reverse proxy that adds the `Authorization` header works the same
 way. Non-browser clients — the CLI, `felix-client`, curl, other services — are unaffected.
 
+A failed send is safe to resend: `POST /chat` and `POST /chat/stream` take an `Idempotency-Key` header, and a resend under the same key never runs a second turn — `/chat` returns the stored response, `/chat/stream` replays what the first request wrote to its thread (see [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md)). Session leases are advisory by default; `FELIX_LEASE_ENFORCE=strict` refuses a driving request that presents no `X-Felix-Lease-Token` while another client holds the thread.
+
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`), writes and forgets long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
