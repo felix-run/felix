@@ -281,7 +281,18 @@ async def check_upstream(
         diff = await _diff_upstream(session, snap.kept, base, base_version)
     cooldown = session.cooldown
     if other_ref is None:
-        await importer.record_upstream(settings, tenant_id, session.source, snap, cooldown.now)
+        await importer.record_upstream(
+            settings,
+            tenant_id,
+            session.source,
+            snap,
+            cooldown.now,
+            head=head,
+            cooldown=cooldown,
+            committed_at=committed_at,
+            # Only when the diff was against the version a notification calls `current`.
+            changed_files=len(diff["files"]) if base_version == head["version"] else None,
+        )
     eligible_at = cooldown.eligible_at(snap.first_seen)
     return {
         "name": name,
@@ -349,7 +360,9 @@ async def _check_one(
         if key not in resolved:
             resolved[key] = await resolve(session.gh, session.source, session.ref)
         snap = await importer.checked_snapshot(settings, tenant_id, session, resolved=resolved[key])
-    await importer.record_upstream(settings, tenant_id, session.source, snap, session.cooldown.now)
+    await importer.record_upstream(
+        settings, tenant_id, session.source, snap, session.cooldown.now, head=head, cooldown=session.cooldown
+    )
     return importer.state_of_snapshot(session.source, snap, session.cooldown.now)
 
 

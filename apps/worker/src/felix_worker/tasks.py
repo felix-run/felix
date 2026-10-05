@@ -305,6 +305,17 @@ async def skill_upstream_checks() -> None:
 
 
 @broker.task(schedule=[{"cron": "* * * * *"}])
+@_instrumented("skill_update_notifications")
+async def skill_update_notifications() -> None:
+    """Send queued `skill.update_available` events to the endpoints `FELIX_SKILL_UPDATE_WEBHOOKS`
+    binds to each tenant. Checks only queue them; this is the one place they are sent from."""
+    from felix.skills.update_notify import deliver_due_notifications
+
+    if sent := await deliver_due_notifications(_settings):
+        logger.info("skill_update_notifications claimed=%s", sent)
+
+
+@broker.task(schedule=[{"cron": "* * * * *"}])
 @_instrumented("webhook_delivery")
 async def webhook_delivery() -> None:
     """Announce finished durable runs to their `spec.execution.webhooks` endpoints."""

@@ -34,6 +34,7 @@ SCHEDULED_TASKS = {
     "webhook_delivery",
     "skill_jobs",
     "skill_upstream_checks",
+    "skill_update_notifications",
 }
 
 

@@ -562,7 +562,15 @@ async def import_skill(
         # The newest version already holds these files. Recorded only when this is the ref that
         # version names: an import of another ref is not the stored origin's state.
         if fetched.version.get("origin_ref") == resolved.ref:
-            await record_upstream(settings, tenant_id, parsed, snap, session.cooldown.now)
+            await record_upstream(
+                settings,
+                tenant_id,
+                parsed,
+                snap,
+                session.cooldown.now,
+                head=fetched.version,
+                cooldown=session.cooldown,
+            )
         return fetched
     verb = "updated" if action == "update" else "imported"
     saved = await library.save_draft(
@@ -600,7 +608,9 @@ async def import_skill(
         resolved.commit,
         len(fetched.dropped),
     )
-    await record_upstream(settings, tenant_id, parsed, snap, session.cooldown.now)
+    await record_upstream(
+        settings, tenant_id, parsed, snap, session.cooldown.now, head=saved, cooldown=session.cooldown
+    )
     return ImportResult(version=saved, unchanged=False, dropped_files=fetched.dropped, parent=fetched.parent)
 
 
@@ -619,19 +629,38 @@ def state_of_snapshot(source: GitHubSource, snap: Snapshot, now: int) -> dict[st
 
 
 async def record_upstream(
-    settings: Settings, tenant_id: str, source: GitHubSource, snap: Snapshot, now: int
+    settings: Settings,
+    tenant_id: str,
+    source: GitHubSource,
+    snap: Snapshot,
+    now: int,
+    *,
+    head: Mapping[str, Any] | None = None,
+    cooldown: Cooldown | None = None,
+    committed_at: int | None = None,
+    changed_files: int | None = None,
 ) -> None:
     """What the skill's stored origin holds now, for the upstream listing and the library detail
-    (`upstream_store`). The caller decides that ``snap`` is of the stored ref. Never raises: it
-    runs after a save it must not fail, and a lost record is refreshed by the next check."""
+    (`upstream_store`) -- and, when those files are an update not yet announced, a queued
+    `skill.update_available` (`update_notify`). ``head`` (the skill's newest version) and
+    ``cooldown`` are what the caller already read, and ``committed_at`` and ``changed_files`` what
+    it already knows; each left out is read, or omitted, there. An import passes the version it
+    saved or found unchanged as ``head``: what it recorded is that version's own digest, so an
+    import never queues one -- it can only supersede one queued before it. The caller decides that
+    ``snap`` is of the stored ref. Never raises: it runs after a save it must not fail, and a lost
+    record is refreshed by the next check."""
+    from felix.skills.update_notify import CheckFacts, notify_if_new
     from felix.skills.upstream_store import get_upstream_store
 
+    state = state_of_snapshot(source, snap, now)
     try:
-        await get_upstream_store(settings).record(
-            tenant_id, _slug(source), state_of_snapshot(source, snap, now)
-        )
+        await get_upstream_store(settings).record(tenant_id, _slug(source), state)
     except Exception:
         logger.warning("recording the upstream state of %s failed", source.canonical, exc_info=True)
+        return
+    # Every recorded check passes here, and only a recorded one: a `?ref=` what-if never notifies.
+    facts = CheckFacts(head=head, cooldown=cooldown, committed_at=committed_at, changed_files=changed_files)
+    await notify_if_new(settings, tenant_id, _slug(source), state, facts)
 
 
 __all__ = [

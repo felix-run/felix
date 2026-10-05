@@ -430,8 +430,19 @@ First, because everything else governs it.
          import caps is refused (`source_too_large`) rather than summarised; a skill checked under a
          `?ref=` is not recorded, so the listing never shows a what-if; the sweep shares the API's
          budget only through Redis, so a worker without it would spend a budget of its own; a spent
-         tenant's rows still lead the next tick's read (one refused call, then it is left out);
-         nothing notifies anyone of an update the sweep finds -- it is on the listing and the detail.
+         tenant's rows still lead the next tick's read (one refused call, then it is left out).
+         Closed: update notifications -- `skills/update_notify.py` queues one signed, metadata-only
+         `skill.update_available` per new upstream digest on a recorded check (the sweep, a stored-ref
+         check, a refreshed listing; an import records and never queues), and the
+         `skill_update_notifications` cron sends it to the endpoints `FELIX_SKILL_UPDATE_WEBHOOKS`
+         binds to the tenant (no wildcard; an unbound or unopened id refuses the boot and is dead at
+         send time), 50 a tick and 10 per tenant, through `durability.webhooks.WebhookSender` -- the
+         completion webhooks' signing, egress, retries and dead letter, counted in
+         `felix_webhook_delivery`, now labelled by `kind`. The `webhook-id` is derived from tenant,
+         skill, digest and the row's queue generation; a newer digest supersedes an undelivered one,
+         a stale check replaces nothing, and an event whose digest the origin moved past or someone
+         imported is `superseded`, never sent. `FELIX_WEBHOOK_TIMEOUT_SECONDS` is now at most 60.
+         State on the `skill_upstream` row (migration `0030`). Open: the felix-web docs for it.
 
 ### B. Close the durable loop
 

@@ -548,6 +548,49 @@ limit on the shared token, ends the tick. Within a tick a tenant's skills from o
 ref resolve once. The sweep shares the API's buckets only through Redis (`FELIX_REDIS_URL`), which
 the worker already needs.
 
+**Update notifications.** `FELIX_SKILL_UPDATE_WEBHOOKS` binds each tenant to the completion-webhook
+endpoints its update events go to: `tenant=endpoint_id`, comma-separated, a tenant named as often
+as it has endpoints (`acme=ops,acme=ci,beta=beta-hook`). Each id must be a
+`FELIX_WEBHOOK_ENDPOINTS` endpoint whose `tenants` include that tenant, or the boot is refused;
+there is no wildcard, so one tenant's skill names and sources never reach an endpoint bound only
+to another, and a tenant not listed gets nothing. Both are checked again at send time: an
+endpoint unbound from the tenant, or no longer open to it, goes `dead` without a request. One
+endpoint bound to several tenants (`acme=ops,beta=ops`) receives all of their events, told apart
+only by `tenant_id` in the body, and run and skill events can share one receiver and one secret:
+a receiver dispatches on `type`, never on the body's shape.
+
+A recorded check -- the sweep, a check of the stored ref, the listing with `refresh` -- that finds
+a kept-file digest the skill's newest version does not hold, and that is not the digest already
+queued for the skill, queues one `skill.update_available` event; a check older than the one that
+queued what is there replaces nothing. A `?ref=` check is a what-if, is never recorded, and never
+notifies. An import records the digest it imported and never queues an event, since that digest
+is the newest version's own; it can only supersede one queued earlier. Queuing is all a check
+does: the worker's `skill_update_notifications` sweep (every minute; 50 a tick and at most 10 of
+one tenant's, so one tenant's backlog or slow receiver cannot hold the others; one sweep at a
+time on its own `skill_job_lease` row; a 120 s claim per row that a crashed sweep lets lapse; no
+endpoint started after half that) sends it, so no check, listing or import waits on a receiver or
+fails with one.
+
+The event is **metadata only** -- `tenant_id`, `skill`, `source`, `ref`, `current` (`version`,
+`commit`, `tree_hash`), `upstream` (`commit`, `tree_hash`, `committed_at`, `first_seen_at`),
+`eligible_at`, `checked_at`, and `changed_files` when the check that found it already diffed
+against the newest version -- never a file, a diff or a description, because upstream text is
+untrusted and the payload leaves the deployment. It is built once when queued, so every retry
+sends the same bytes, and signed and delivered as completion webhooks are (below): the same
+headers, egress guard, backoff, `FELIX_WEBHOOK_MAX_ATTEMPTS` and dead letter, counted in
+`felix_webhook_delivery{kind="skill_update"}`. Its `webhook-id` is derived from the tenant, skill,
+digest and the row's queue generation: the same on every retry of one event and to every endpoint,
+so a receiver dedupes on it, and new when a digest comes back after another was queued (A, then
+B, then A again is three events). Delivery state lives on the skill's `skill_upstream` row
+(migration `0030`), and an event that is no longer news is **superseded** -- marked so and never
+sent: a newer digest found before it was delivered replaces it, and a delivery that finishes
+after that cannot overwrite the newer one; and before each delivery, and on every check that finds
+the newest version current, an event whose digest the origin has moved on from, or that the
+skill's newest version already holds (someone imported it), is dropped. An event changes nothing
+on its own: it does not import, publish, or start a cooldown the check had not started already.
+Each queued event is audited (`skill_update_notification_queued`), and queued and superseded
+events are counted in `felix_skill_update_notification`.
+
 ## Outbound egress
 
 ### Per-integration timeouts
@@ -701,9 +744,10 @@ manifest author's:
   with `FELIX_ALLOW_INSECURE`. Redirects are not followed: a `3xx` is a failed attempt.
 - **Retry and dead letter.** Non-2xx or a transport error backs off (1m doubling to 1h) and is
   `dead` at `FELIX_WEBHOOK_MAX_ATTEMPTS` (8), recorded on the fiber row itself; each attempt is
-  bounded end to end by `FELIX_WEBHOOK_TIMEOUT_SECONDS` (10), the response body is never read,
-  and every attempt is counted in `felix_webhook_delivery`. A sweep stops starting deliveries
-  after half the 120 s claim, so a slow receiver delays the rest rather than doubling them.
+  bounded end to end by `FELIX_WEBHOOK_TIMEOUT_SECONDS` (10, at most 60), the response body is
+  never read, and every attempt is counted in `felix_webhook_delivery{kind="run"}`. A sweep stops
+  starting deliveries, and endpoints within one, after half the 120 s claim, so a slow receiver
+  delays the rest rather than doubling them; the timeout's bound keeps one attempt inside that.
 
 ## Shell tools
 

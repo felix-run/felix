@@ -30,6 +30,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -140,6 +141,43 @@ def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
     return out
 
 
+def parse_tenant_endpoint_bindings(raw: str) -> dict[str, tuple[str, ...]]:
+    """Comma-separated `tenant=endpoint_id` -- the shape of a setting that routes one kind of
+    event per tenant (`FELIX_SKILL_UPDATE_WEBHOOKS`) -- as tenant to its endpoint ids, in the order
+    given, each once. A tenant is named once per endpoint. Raises `ValueError` naming the bad
+    entry; there is no wildcard on either side."""
+    out: dict[str, list[str]] = {}
+    for entry in (e.strip() for e in (raw or "").split(",")):
+        if not entry:
+            continue
+        tenant, sep, endpoint = (p.strip() for p in entry.partition("="))
+        if not sep or not tenant or not endpoint:
+            raise ValueError(f"entry {entry!r} must be tenant=endpoint_id")
+        if tenant == "*" or "*" in endpoint:
+            raise ValueError(f"entry {entry!r}: there is no wildcard; bind each tenant to its endpoint")
+        ids = out.setdefault(tenant, [])
+        if endpoint not in ids:
+            ids.append(endpoint)
+    return {tenant: tuple(ids) for tenant, ids in out.items()}
+
+
+def validate_tenant_endpoint_bindings(settings: Any, raw: str) -> None:
+    """Every id ``raw`` binds is a `FELIX_WEBHOOK_ENDPOINTS` endpoint that opens to its tenant.
+    `ValueError` otherwise, one message for both: an operator's typo and an endpoint fenced to
+    other tenants are fixed in the same place."""
+    bindings = parse_tenant_endpoint_bindings(raw)
+    if not bindings:
+        return
+    registry = parse_webhook_endpoints(settings)
+    for tenant, ids in bindings.items():
+        for name in ids:
+            endpoint = registry.get(name)
+            if endpoint is None or not endpoint.allows(tenant):
+                raise ValueError(
+                    f"{tenant}={name}: no FELIX_WEBHOOK_ENDPOINTS endpoint {name!r} registered for {tenant!r}"
+                )
+
+
 def endpoints_for_run(settings: Settings, tenant_id: str, names: list[str]) -> list[str]:
     """The endpoint ids a new run will announce to, or `WebhookEndpointError`.
 
@@ -208,66 +246,125 @@ async def _post(settings: Settings, endpoint: WebhookEndpoint, headers: dict[str
     )
 
 
+def canonical_body(obj: Any) -> bytes:
+    """The bytes a delivery signs and sends: compact, key-sorted JSON, anything JSON lacks (a
+    datetime in a run view) as its `str`. One spelling for every webhook kind, so a body is the
+    same bytes on every retry and a receiver can recompute nothing differently."""
+    return json.dumps(obj, separators=(",", ":"), sort_keys=True, default=str).encode()
+
+
+def delivery_outcome(endpoints: dict[str, dict[str, Any]]) -> tuple[str, int | None]:
+    """A delivery's own status from its endpoints' -- `pending` while any endpoint is, else
+    `delivered` when all were, else `dead` -- and when its next attempt is due."""
+    pending = [ep for ep in endpoints.values() if ep.get("status") == "pending"]
+    if pending:
+        return "pending", now_ms() + retry_delay_ms(max(int(ep.get("attempts") or 1) for ep in pending))
+    delivered = all(ep.get("status") == "delivered" for ep in endpoints.values())
+    return ("delivered" if delivered else "dead"), None
+
+
+class WebhookSender:
+    """One sweep's way of sending a signed webhook: built once per sweep with the endpoint
+    registry and secrets provider it read, and the ``kind`` every attempt is counted under in
+    `felix_webhook_delivery` (`run`, `skill_update`). What a run's completion webhook and a skill's
+    update notification share -- the signing, the egress-pinned client, the backoff and the dead
+    letter -- and what the next kind of webhook reuses."""
+
+    def __init__(
+        self, settings: Settings, registry: dict[str, WebhookEndpoint], provider: Any, kind: str
+    ) -> None:
+        self.settings = settings
+        self._registry = registry
+        self._provider = provider
+        self._kind = kind
+
+    def _count(self, endpoint: str, outcome: str) -> None:
+        record_counter(
+            "felix_webhook_delivery", {"kind": self._kind, "endpoint": endpoint, "outcome": outcome}
+        )
+
+    async def attempt(
+        self,
+        endpoints: dict[str, dict[str, Any]],
+        *,
+        tenant_id: str,
+        body: bytes,
+        message_id: Callable[[str], str],
+        subject: str,
+        still_routed: Callable[[str], bool] = lambda _name: True,
+        deadline: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """One signed attempt at every endpoint of ``endpoints`` still `pending`, each updated
+        in place (`status`, `attempts`, `last_error`, `delivered_at`) and returned. An endpoint
+        the registry no longer has, no longer opens to ``tenant_id``, or that ``still_routed``
+        disowns goes `dead` without a request. Past ``deadline`` (epoch ms) no further endpoint
+        is tried: the rest stay `pending`, untried, for the next sweep."""
+        from felix.secrets import register_resolved_secret, resolve_secret_value
+
+        timestamp = int(time.time())
+        for name, ep in endpoints.items():
+            if ep.get("status") != "pending":
+                continue
+            endpoint = self._registry.get(name)
+            if endpoint is None or not endpoint.allows(tenant_id) or not still_routed(name):
+                ep.update(status="dead", last_error="endpoint no longer registered for this tenant")
+                self._count(name, "dead")
+                continue
+            if deadline is not None and now_ms() > deadline:
+                break
+            ep["attempts"] = int(ep.get("attempts") or 0) + 1
+            msg_id = message_id(name)
+            try:
+                secret = await resolve_secret_value(self._provider, endpoint.secret)
+                if not secret:
+                    raise ValueError("signing secret resolved to nothing")
+                register_resolved_secret(secret)
+                headers = {
+                    "content-type": "application/json",
+                    "user-agent": "Felix-Webhooks/1",
+                    "webhook-id": msg_id,
+                    "webhook-timestamp": str(timestamp),
+                    "webhook-signature": sign(secret, msg_id, timestamp, body),
+                }
+                status = await _post(self.settings, endpoint, headers, body)
+                if 200 <= status < 300:
+                    ep.update(status="delivered", delivered_at=now_ms(), last_error="")
+                    self._count(name, "delivered")
+                    continue
+                ep["last_error"] = f"HTTP {status}"
+            except Exception as exc:
+                # The type only: an egress refusal, a timeout or a resolver error, never a message
+                # that could quote the URL's query or the secret's name back into the run view.
+                ep["last_error"] = type(exc).__name__
+                logger.warning("webhook %s delivery for %s failed: %s", name, subject, type(exc).__name__)
+            if ep["attempts"] >= self.settings.webhook_max_attempts:
+                ep["status"] = "dead"
+                self._count(name, "dead")
+            else:
+                self._count(name, "retry")
+        return endpoints
+
+
 async def _deliver_row(
     settings: Settings, row: dict[str, Any], registry: dict[str, WebhookEndpoint], provider: Any
 ) -> None:
-    from felix.secrets import register_resolved_secret, resolve_secret_value
+    """Announce one claimed run, with a sender of its own: for a caller holding one row."""
+    await _send_row(row, WebhookSender(settings, registry, provider, "run"))
 
+
+async def _send_row(row: dict[str, Any], sender: WebhookSender, deadline: int | None = None) -> None:
     state = dict(row.get("webhook_state") or {})
     endpoints = {name: dict(ep or {}) for name, ep in (state.get("endpoints") or {}).items()}
-    body = json.dumps(_payload(row), separators=(",", ":"), sort_keys=True, default=str).encode()
-    timestamp = int(time.time())
-    for name, ep in endpoints.items():
-        if ep.get("status") != "pending":
-            continue
-        endpoint = registry.get(name)
-        if endpoint is None or not endpoint.allows(str(row.get("tenant_id"))):
-            ep.update(status="dead", last_error="endpoint no longer registered for this tenant")
-            record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "dead"})
-            continue
-        ep["attempts"] = int(ep.get("attempts") or 0) + 1
-        message_id = f"{row['id']}:{name}"
-        try:
-            secret = await resolve_secret_value(provider, endpoint.secret)
-            if not secret:
-                raise ValueError("signing secret resolved to nothing")
-            register_resolved_secret(secret)
-            headers = {
-                "content-type": "application/json",
-                "user-agent": "Felix-Webhooks/1",
-                "webhook-id": message_id,
-                "webhook-timestamp": str(timestamp),
-                "webhook-signature": sign(secret, message_id, timestamp, body),
-            }
-            status = await _post(settings, endpoint, headers, body)
-            if 200 <= status < 300:
-                ep.update(status="delivered", delivered_at=now_ms(), last_error="")
-                record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "delivered"})
-                continue
-            ep["last_error"] = f"HTTP {status}"
-        except Exception as exc:
-            # The type only: an egress refusal, a timeout or a resolver error, never a message
-            # that could quote the URL's query or the secret's name back into the run view.
-            ep["last_error"] = type(exc).__name__
-            logger.warning(
-                "webhook %s delivery for run %s failed: %s", name, row.get("id"), type(exc).__name__
-            )
-        if ep["attempts"] >= settings.webhook_max_attempts:
-            ep["status"] = "dead"
-            record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "dead"})
-        else:
-            record_counter("felix_webhook_delivery", {"endpoint": name, "outcome": "retry"})
-    state["endpoints"] = endpoints
-    pending = [ep for ep in endpoints.values() if ep.get("status") == "pending"]
-    if pending:
-        status, due_at = (
-            "pending",
-            now_ms() + retry_delay_ms(max(int(ep.get("attempts") or 1) for ep in pending)),
-        )
-    else:
-        delivered = all(ep.get("status") == "delivered" for ep in endpoints.values())
-        status, due_at = ("delivered" if delivered else "dead"), None
-    await _save_delivery(settings, row, status=status, due_at=due_at, state=state)
+    state["endpoints"] = await sender.attempt(
+        endpoints,
+        tenant_id=str(row.get("tenant_id")),
+        body=canonical_body(_payload(row)),
+        message_id=lambda name: f"{row['id']}:{name}",
+        subject=f"run {row.get('id')}",
+        deadline=deadline,
+    )
+    status, due_at = delivery_outcome(state["endpoints"])
+    await _save_delivery(sender.settings, row, status=status, due_at=due_at, state=state)
 
 
 async def _claim_due(settings: Settings, ts: int) -> list[dict[str, Any]]:
@@ -342,19 +439,24 @@ async def _save_delivery(
 
 async def deliver_due_webhooks(settings: Settings) -> int:
     """Announce every finished run whose delivery is due. Returns how many runs were tried."""
+    # No sweep lease, by choice: rows are claimed `FOR UPDATE SKIP LOCKED`, so sweeps on several
+    # workers split the due runs between them rather than send one twice, and a run's
+    # announcement should not wait for another worker's slow receiver. (The skill-update sweep
+    # takes a lease for the opposite reason: its per-tenant share of a tick only means something
+    # when one sweep hands out the tick.)
     registry = parse_webhook_endpoints(settings)
     due = await _claim_due(settings, now_ms())
     if not due:
         return 0
     from felix.secrets import build_secrets
 
-    provider = build_secrets(settings)
+    sender = WebhookSender(settings, registry, build_secrets(settings), "run")
     deadline = now_ms() + WEBHOOK_SWEEP_BUDGET_MS
     for row in due:
         if now_ms() > deadline:
             break
         try:
-            await _deliver_row(settings, row, registry, provider)
+            await _send_row(row, sender, deadline)
         except Exception:
             # The bookkeeping itself; the claim lapses and the next sweep tries again.
             logger.warning("webhook delivery for run %s could not be recorded", row.get("id"), exc_info=True)
@@ -365,8 +467,13 @@ __all__ = [
     "WEBHOOK_CLAIM_MS",
     "WebhookEndpoint",
     "WebhookEndpointError",
+    "WebhookSender",
+    "canonical_body",
     "deliver_due_webhooks",
+    "delivery_outcome",
     "endpoints_for_run",
+    "parse_tenant_endpoint_bindings",
     "parse_webhook_endpoints",
     "sign",
+    "validate_tenant_endpoint_bindings",
 ]
