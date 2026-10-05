@@ -525,6 +525,18 @@ class Settings(BaseSettings):
     # pure polling, each checking out a pooled connection to learn nothing.
     stream_resume_poll_max_seconds: float = Field(default=10.0, ge=0.1, le=300.0)
 
+    # --- session leases ---
+    # Whether a session lease binds a caller that never presents one. `advisory`: the routes
+    # that drive a thread check `X-Felix-Lease-Token` only when it is sent, so a script or an
+    # older client is never refused. `strict`: a driving request *without* the header is
+    # `409 lease_held` while another holder has the thread exclusively -- an unheld thread, or
+    # one only observers hold, still passes without one -- and `/v1/chat/completions` with a
+    # `user` (which names the same thread) is checked the same way.
+    #
+    # A closed Literal on purpose: two postures of a check core itself makes, not a component
+    # core loads, so there is nothing for a third value to select.
+    lease_enforce: Literal["advisory", "strict"] = "advisory"
+
     # --- database pool ---
     #
     # Was hardcoded at 5 + 10 in two places, so fifteen connections per worker was a

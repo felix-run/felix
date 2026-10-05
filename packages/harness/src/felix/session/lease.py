@@ -291,10 +291,17 @@ def _release(
     return pruned, {"ok": True, "released": True, "status": _status(pruned)}
 
 
-def _write_refusal(data: dict[str, Any] | None, token: str) -> str | None:
-    """Why a caller presenting `token` may not drive the thread, or None when it may."""
+def _write_refusal(data: dict[str, Any] | None, token: str | None) -> str | None:
+    """Why a caller presenting `token` may not drive the thread, or None when it may.
+
+    `token=None` is a caller that presented none (`FELIX_LEASE_ENFORCE=strict` asks): refused
+    only while someone holds the thread exclusively. It is not matched against observers --
+    a caller with no token is no observer, and an empty string must never equal a hold's.
+    """
     if data is None:
         return None
+    if token is None:
+        return "lease_held" if data["holder_id"] else None
     if data["holder_id"] and token == data["token"]:
         return None
     if any(e["token"] == token for e in data["observers"].values()):
@@ -440,14 +447,33 @@ async def release_lease(
     return await _apply(thread_id, transition, "lease redis release")
 
 
-async def lease_write_refusal(thread_id: str, token: str) -> str | None:
+async def lease_write_refusal(thread_id: str, token: str | None) -> str | None:
     """Why the caller holding `token` may not drive `thread_id`: an error code, or None.
 
     `lease_read_only` for an observer's token, `lease_held` when someone else holds the
-    thread exclusively. Only the exclusive hold's own token passes while one exists.
+    thread exclusively. Only the exclusive hold's own token passes while one exists. A
+    `None` token -- no header, under strict enforcement -- is refused only by an exclusive hold.
     """
     _assert_tenant_scoped(thread_id)
     return _write_refusal(await _read(thread_id, "lease redis write check"), token)
+
+
+async def driving_refusal(thread_id: str | None, token: str | None, *, enforce: str) -> str | None:
+    """Why a request may not drive `thread_id`, as a refusal code, or None when it may.
+
+    With a token, always checked (`lease_write_refusal`). Without one, checked only when
+    ``enforce`` is `strict` (`FELIX_LEASE_ENFORCE`), and then refused only while another holder
+    has the thread exclusively -- a script still drives an unheld thread, or one only observers
+    watch. The one rule for every surface that drives a thread: the chat routes and
+    `/v1/chat/completions`, whose `user` names the same thread.
+    """
+    if not thread_id:
+        return None
+    if not token:
+        if enforce != "strict":
+            return None
+        token = None
+    return await lease_write_refusal(thread_id, token)
 
 
 def reset_leases_for_tests() -> None:
@@ -461,6 +487,7 @@ __all__ = [
     "EXCLUSIVE",
     "SHARED",
     "acquire_lease",
+    "driving_refusal",
     "lease_status",
     "lease_write_refusal",
     "release_lease",

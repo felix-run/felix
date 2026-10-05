@@ -414,3 +414,51 @@ def test_key_grammar() -> None:
     assert valid_key("k") and valid_key("a-b_c.1:2") and valid_key("x" * 255)
     for bad in ("", "x" * 256, "a b", "é", "{a}1", "a}"):
         assert not valid_key(bad), bad
+
+
+# --- POST /chat/stream: how a finished stream settles its key --------------------------------
+
+
+async def test_a_stream_frees_its_key_unless_it_appended_an_event_of_its_own() -> None:
+    """A send that failed before its turn began may be resent; one that began never runs twice.
+
+    `settle` decides by *this request's* events -- those stamped with its origin -- so an append
+    from elsewhere while it ran (a label, a steer, another turn) does not keep a key whose own
+    turn never began. It settles once: the response's close settling again changes nothing.
+    """
+    from felix.session.store import get_session_store
+    from felix.session.tree import ORIGIN_METADATA_KEY
+    from felix.session.types import AppendableEvent
+    from felix_api.routes.chat import _HeldStreamKey
+
+    settings = _settings("stream-settle")
+    store = MemoryIdempotencyStore(60)
+    thread = "acme:settle"
+    session = get_session_store(settings, tenant_id="acme").open(thread)
+
+    async def held(key: str) -> _HeldStreamKey:
+        claim = await store.claim("scope", key, "fp")
+        assert claim.kind == "new"
+        head = (await session.head())["seq"]
+        return _HeldStreamKey(
+            store=store, scope="scope", key=key, token=claim.token, thread=thread, from_seq=head
+        )
+
+    elsewhere = await held("elsewhere")
+    await session.append(AppendableEvent(kind="label", content="someone else's", metadata={"type": "label"}))
+    await elsewhere.settle(settings, "acme")
+    assert (await store.claim("scope", "elsewhere", "fp")).kind == "new", (
+        "another request's append kept the key"
+    )
+
+    began = await held("began")
+    await session.append(
+        AppendableEvent(
+            kind="message", role="user", content="hi", metadata={ORIGIN_METADATA_KEY: began.origin}
+        )
+    )
+    await began.settle(settings, "acme")
+    await began.settle(settings, "acme")
+    replay = await store.claim("scope", "began", "fp")
+    assert replay.kind == "replay" and replay.stored is not None
+    assert replay.stored.body["origin"] == began.origin

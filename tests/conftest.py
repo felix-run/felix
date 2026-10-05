@@ -146,7 +146,7 @@ def _isolate_process_global_stores():
     from felix.session.search import reset_search_index_for_tests
     from felix.session.store import _memory_session_stores
     from felix.session.thread_state import reset_thread_meta_for_tests
-    from felix.session.tree import _leaf_by_thread
+    from felix.session.tree import _epoch_by_thread, _leaf_by_thread
     from felix.skills import library_store as skill_library_store
     from felix.skills import quality_store as skill_quality_store
     from felix.skills import store as skills_store
@@ -180,6 +180,7 @@ def _isolate_process_global_stores():
         _memory_session_stores.clear()
         reset_thread_meta_for_tests()
         _leaf_by_thread.clear()
+        _epoch_by_thread.clear()
         # The management stores are the same shape of process global, and the same hazard: a
         # dataset named `smoke` written by one test was counted by another test's assertion on
         # the bundled `smoke` fixture, and it failed as an off-by-one in a file that had not

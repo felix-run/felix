@@ -193,12 +193,12 @@ async def rewind_and_persist(
     leaf agree either way. The summary's model call is inside the hold, so a turn on the
     thread waits for it -- the summary describes a branch that must not move under it.
 
-    Known cross-replica limit: a turn on *another* replica is not serialised by an in-process
-    lock. If its append is parented before the rewind commits and its `store_leaf` lands
-    after, that `UPDATE` overwrites the rewound leaf in the row (`_PostgresSession.store_leaf`
-    is unconditional). The cross-replica fix is a compare-and-set on the parent the append
-    was linked to; it is not done here because a set that fails once (a transient write
-    error) would then fail for every later append of the turn and strand it off the branch.
+    A turn on *another* replica is not serialised by an in-process lock. Its append can be
+    parented before the rewind commits and store its leaf after; what keeps that from
+    overwriting the rewind is the row's `leaf_epoch`, which each `persist_leaf` here bumps and
+    which that turn's `store_leaf` requires to be unchanged since its `sync_leaf`. Its write is
+    skipped and its next turn starts from the rewound leaf; the appends it makes until then
+    still land in the log, on the branch the rewind left.
 
     Returns `rewind_to`'s result, with ``branch_summary`` when one was written; an unknown
     target returns ``{"ok": False, ...}`` and moves nothing.

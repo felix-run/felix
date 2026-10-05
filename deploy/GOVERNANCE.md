@@ -1608,6 +1608,18 @@ header protects a client from its own mistakes, not the thread from a caller tha
 the log, so neither checks it. Approvals are decided through `/approvals`, gated on the
 `approvals:write` scope, not on a lease.
 
+**`FELIX_LEASE_ENFORCE=strict` makes the lease binding** on those same routes. A request
+*without* the header is then `409 lease_held` while another holder has the thread
+exclusively. A thread nobody holds, or one only observers hold, still takes a request without
+a token, so scripts and `/v1` keep working whenever no one is driving; with the header the
+rules above apply unchanged. `/v1/chat/completions` is checked too when it sends `user`,
+because `user` names the same thread as a chat `thread_id` (`{tenant}:{user}`): a `/v1`
+call is refused on a thread a chat client drives, and may send `X-Felix-Lease-Token` itself.
+A2A threads (`{tenant}:a2a:{task}`) and MCP calls (no thread) cannot reach a chat thread, and
+are not checked. The default, `advisory`, is the behaviour described above. Strict is still a
+consistency control between cooperating clients rather than an authorization boundary: every
+caller in the tenant may acquire a lease, and with no lease taken nothing is refused.
+
 Leases live in Redis so they hold across replicas, and every transition is one `WATCH`/`MULTI`
 transaction, so two replicas cannot both grant the exclusive hold. Without Redis they fall back
 to per-process state, where each replica can grant its own.
@@ -1685,6 +1697,21 @@ rate limiter does), so a retry then dedupes only within one replica. The in-proc
 bounded (50 000 keys, oldest evicted) and a response over 256 KiB is not stored, so the
 header cannot be used to grow a process; the client key is hashed into the Redis keyspace, so
 it cannot pick a cluster slot.
+
+`POST /chat/stream` honours `Idempotency-Key` too, scoped to the principal **and the thread**
+(so it needs a `thread_id`; without one it is `400 idempotency_key_requires_thread_id`), in the
+same store and for the same TTL. The key is claimed after inbound auth and screening. A resend
+while the first stream is still running is `409 idempotency_in_progress` — reattach with
+`GET /chat/stream/{thread_id}`. A resend after it ended runs nothing: it streams back, with
+`Idempotent-Replayed: true`, the session events that request itself appended (each event is
+stamped with the request's origin, so a label, a steer or another turn landing on the thread
+meanwhile is not replayed) as `session_event` frames, then the first stream's `event: error`
+frame if it ended in one, then `[DONE]` — or it reattaches to the durable run the first
+request started. A first request that appended nothing of its own — it failed before its turn
+began, or the client left before the body was sent — frees the key, so the resend runs. One
+torn down after its user message landed (a client disconnect ends a transient turn) keeps
+it: the resend replays that message rather than sending it twice, and the client continues
+with `/chat/continue` or a new message.
 
 `/health`, `/live` and `/ready` are public and unthrottled, because kubelet presents no
 credential and treats a 429 as a failed probe (`PROBE_PATHS` in `felix/security/rate_limit.py`

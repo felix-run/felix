@@ -310,6 +310,59 @@ async def resume_stream_gen(
     yield DONE
 
 
+async def request_events(
+    settings: Any, tenant_id: str, thread: str, origin: str, from_seq: int | None
+) -> list[SessionEvent]:
+    """The events one request appended to ``thread``: those stamped with its ``origin``.
+
+    By stamp, not by sequence range: a label, a steer, a `/v1` call naming the same thread or a
+    turn on another replica can append between a request's first and last event, and none of
+    them is that request's. ``from_seq`` -- the head when the request began -- only bounds the
+    scan; None scans the thread from the start.
+    """
+    from felix.session.tree import ORIGIN_METADATA_KEY
+
+    reader = get_session_store(settings, tenant_id=tenant_id).open(thread)
+    events = await reader.get_events(GetEventsOpts(from_seq=from_seq or 0))
+    return [e for e in events if (e.metadata or {}).get(ORIGIN_METADATA_KEY) == origin]
+
+
+async def replay_stream_gen(
+    *,
+    settings: Any,
+    tenant_id: str,
+    thread: str,
+    origin: str,
+    from_seq: int | None,
+    error: dict[str, Any] | None = None,
+) -> AsyncIterator[str]:
+    """What one finished `POST /chat/stream` wrote to its thread, for a resend under its key.
+
+    The frames, in order:
+
+    - one `session_event` frame per event the first request appended (`request_events`), in
+      log order, each `id: <seq + 1>` and `data: {"event": "session_event", "data": {...}}` --
+      the reattach stream's frame, so a client folds it with the same function;
+    - when the first request's stream ended in an error, that error again:
+      `event: error` / `data: {"error": {"message": ..., "type": ...}}`;
+    - `data: [DONE]`.
+
+    Finite on purpose: the first request is over, so there is nothing to tail, and what anyone
+    else appended to the thread meanwhile is not this request's.
+    """
+    try:
+        for event in await request_events(settings, tenant_id, thread, origin, from_seq):
+            yield session_event_frame(event, event.seq + 1)
+        if error:
+            yield error_frame(str(error.get("message") or ""), kind=str(error.get("type") or "stream_error"))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("chat replay failed thread=%s", loggable(thread, limit=80))
+        yield error_frame(client_safe_message(exc))
+    yield DONE
+
+
 def durable_thread(tenant_id: str, accepted: dict[str, Any]) -> str:
     """The thread a durable run writes its transcript to, or "" if it cannot be derived.
 
@@ -701,6 +754,8 @@ __all__ = [
     "drain_session_events",
     "durable_run_gen",
     "next_poll_delay",
+    "replay_stream_gen",
+    "request_events",
     "resume_stream_gen",
     "stream_cursor",
 ]
