@@ -569,7 +569,10 @@ does: the worker's `skill_update_notifications` sweep (every minute; 50 a tick a
 one tenant's, so one tenant's backlog or slow receiver cannot hold the others; one sweep at a
 time on its own `skill_job_lease` row; a 120 s claim per row that a crashed sweep lets lapse; no
 endpoint started after half that) sends it, so no check, listing or import waits on a receiver or
-fails with one.
+fails with one. Checks run on the API and on the worker, and only the worker sends, so both need the
+same `FELIX_SKILL_UPDATE_WEBHOOKS` and `FELIX_WEBHOOK_ENDPOINTS`: an API without the binding queues
+nothing from its checks, and a worker without it marks the endpoint `dead` at send time. `felix
+doctor` notes this whenever the binding is set.
 
 The event is **metadata only** -- `tenant_id`, `skill`, `source`, `ref`, `current` (`version`,
 `commit`, `tree_hash`), `upstream` (`commit`, `tree_hash`, `committed_at`, `first_seen_at`),

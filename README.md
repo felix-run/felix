@@ -339,7 +339,9 @@ spending at most half of each budget, so the listing and the library detail can 
 asking GitHub. `FELIX_SKILL_UPDATE_WEBHOOKS` (`acme=ops,acme=ci`, each id a
 `FELIX_WEBHOOK_ENDPOINTS` endpoint open to that tenant; no wildcard) announces each new upstream
 digest once as a signed `skill.update_available` event -- metadata only, sent by the worker with
-the completion webhooks' signing and retries, never from the check itself.
+the completion webhooks' signing and retries, never from the check itself. Give the API and the
+worker the same `FELIX_SKILL_UPDATE_WEBHOOKS` and `FELIX_WEBHOOK_ENDPOINTS`: both run checks, and
+only the worker sends.
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.

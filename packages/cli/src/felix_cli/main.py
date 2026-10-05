@@ -611,6 +611,19 @@ def _skill_import_check_notes(settings: Settings) -> list[str]:
     return notes
 
 
+def _skill_update_webhook_notes(settings: Settings) -> list[str]:
+    """A note, never a failure, when `FELIX_SKILL_UPDATE_WEBHOOKS` is set. Checks run on the API and
+    on the worker and only queue the event; the worker sends it and re-checks the binding first.
+    An API without the binding queues nothing, and a worker without it marks the endpoint dead --
+    and doctor, run on either, can only see this process's environment."""
+    if not settings.skill_update_webhooks.strip():
+        return []
+    return [
+        "skill update webhooks are queued by checks on the API and the worker and sent by the worker: "
+        "give both the same FELIX_SKILL_UPDATE_WEBHOOKS and FELIX_WEBHOOK_ENDPOINTS"
+    ]
+
+
 def _posture_findings(settings: Settings) -> list[Finding]:
     """What doctor says about the deployment's posture.
 
@@ -738,7 +751,7 @@ def doctor_cmd() -> None:
     # judgement, while "this is switched on and cannot work" is true in any environment.
     for row in _capability_findings(settings) + _posture_findings(settings):
         check(row.label, row.passed, row.detail, remedy=row.remedy)
-    for note in _skill_import_check_notes(settings):
+    for note in _skill_import_check_notes(settings) + _skill_update_webhook_notes(settings):
         rprint(f"  [yellow]note[/yellow]  {note}")
     if settings.environment == "development":
         rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")
