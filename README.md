@@ -336,7 +336,10 @@ lets them in, and a per-file diff against the live version. `POST /skill-library
 (`felix skills outdated`) lists every imported skill's state, 25 at a time.
 `FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, up to 168) has the worker check them on that cadence,
 spending at most half of each budget, so the listing and the library detail can answer without
-asking GitHub.
+asking GitHub. `FELIX_SKILL_UPDATE_WEBHOOKS` (`acme=ops,acme=ci`, each id a
+`FELIX_WEBHOOK_ENDPOINTS` endpoint open to that tenant; no wildcard) announces each new upstream
+digest once as a signed `skill.update_available` event -- metadata only, sent by the worker with
+the completion webhooks' signing and retries, never from the check itself.
 
 **[`examples/felix-plugin-example/`](examples/felix-plugin-example/)** is a working package that
 exercises every seam above.
@@ -742,7 +745,7 @@ Storage and execution:
   POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
   (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
   `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
-  (10), and reports each endpoint's state on `GET /chat/runs/{token}`.
+  (10, at most 60), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - Web Push wakes a subscribed browser -- an installed phone app, a backgrounded tab -- when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until

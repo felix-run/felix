@@ -343,6 +343,31 @@ class SkillUpstreamRow(Base):
     first_seen_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     checked_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The `skill.update_available` notification (`skills/update_notify.py`, migration 0030): the
+    # newest upstream digest one was queued for, and its delivery, kept beside the check it is
+    # about as a run's completion webhook is kept on the run.
+    notified_tree_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notify_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notify_due_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    notify_attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
+    notify_claim_until: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Bumped on every queue: part of the `webhook-id`, and what a delivery's save is guarded on.
+    notify_generation: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
+    # When the check that queued it ran: an older check never replaces it.
+    notify_checked_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    notify_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_skill_upstream_notify_due",
+            "notify_due_at",
+            "tenant_id",
+            "name",
+            postgresql_where=text("notify_status = 'pending'"),
+        ),
+    )
 
 
 class ManifestRow(Base):
