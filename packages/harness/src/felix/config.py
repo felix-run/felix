@@ -286,7 +286,9 @@ class Settings(BaseSettings):
     webhook_endpoints: str = Field(default="", repr=False)
     # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
     webhook_max_attempts: int = Field(default=8, ge=1)
-    webhook_timeout_seconds: float = Field(default=10.0, gt=0)
+    # Each attempt, end to end. Bounded: a sweep stops starting deliveries after half its 120 s claim,
+    # so one slower than that would hold every other due delivery past its claim.
+    webhook_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
     # Web Push: wake a browser that subscribed (`/push/subscriptions`) when a run is waiting on
     # a person -- an approval going pending, or an agent's question. Off until both of the
@@ -794,10 +796,10 @@ class Settings(BaseSettings):
     def _validate_skill_update_webhooks(self) -> None:
         """A `FELIX_SKILL_UPDATE_WEBHOOKS` binding to an endpoint that is not registered, or not
         open to its tenant, fails the boot rather than the first update it would announce."""
-        from felix.skills.update_notify import validate_skill_update_webhooks
+        from felix.durability.webhooks import validate_tenant_endpoint_bindings
 
         try:
-            validate_skill_update_webhooks(self)
+            validate_tenant_endpoint_bindings(self, self.skill_update_webhooks)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_SKILL_UPDATE_WEBHOOKS: {exc}") from exc
 
@@ -1101,10 +1103,10 @@ def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
     except ValueError:
         grants = {}  # shape errors are reported by `validate_login_config`, not here
     found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
-    from felix.skills.update_notify import parse_skill_update_webhooks
+    from felix.durability.webhooks import parse_tenant_endpoint_bindings
 
     try:
-        bindings = parse_skill_update_webhooks(settings.skill_update_webhooks)
+        bindings = parse_tenant_endpoint_bindings(settings.skill_update_webhooks)
     except ValueError:
         bindings = {}  # shape errors are reported by `_validate_skill_update_webhooks`, not here
     found.extend((f"FELIX_SKILL_UPDATE_WEBHOOKS ({tenant})", tenant) for tenant in bindings)

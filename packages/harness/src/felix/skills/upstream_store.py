@@ -48,6 +48,8 @@ NOTIFY_DEFAULTS: dict[str, Any] = {
     "notify_due_at": None,
     "notify_attempts": 0,
     "notify_claim_until": None,
+    "notify_generation": 0,
+    "notify_checked_at": None,
     "notify_state": {},
 }
 NOTIFY_COLUMNS: tuple[str, ...] = tuple(NOTIFY_DEFAULTS)
@@ -75,6 +77,15 @@ def state_of(
     }
 
 
+def _may_queue(row: Mapping[str, Any], tree_hash: str, checked_at: int) -> bool:
+    """Whether a check at ``checked_at`` finding ``tree_hash`` may queue over what ``row`` holds:
+    not the digest already queued (unless that one was superseded, so never sent), and not a
+    check older than the one that queued what is there. Both stores decide by this."""
+    if row["notified_tree_hash"] == tree_hash and row["notify_status"] != "superseded":
+        return False
+    return row["notify_checked_at"] is None or checked_at >= row["notify_checked_at"]
+
+
 @runtime_checkable
 class SkillUpstreamStore(Protocol):
     async def record(self, tenant_id: str, name: str, state: Mapping[str, Any]) -> None:
@@ -96,19 +107,37 @@ class SkillUpstreamStore(Protocol):
         ...
 
     async def enqueue_notification(
-        self, tenant_id: str, name: str, *, tree_hash: str, state: Mapping[str, Any], due_at: int
+        self,
+        tenant_id: str,
+        name: str,
+        *,
+        tree_hash: str,
+        checked_at: int,
+        state: Mapping[str, Any],
+        due_at: int,
     ) -> tuple[bool, str | None]:
-        """Queue the skill's notification of ``tree_hash``: pending, due at ``due_at``, no tries
-        yet, unclaimed, with ``state`` (its event and endpoints) -- unless ``tree_hash`` is already
-        the digest last queued, which is how a digest is announced once. Whether it was queued, and
-        the status of the notification it replaced (`pending` when an undelivered older one is
-        superseded). (False, None) for a skill with no row: a notification is about a check."""
+        """Queue the skill's notification of ``tree_hash``, found by the check at ``checked_at``:
+        pending, due at ``due_at``, no tries yet, unclaimed, the next generation, with ``state``
+        (its event and endpoints). Refused -- (False, None) -- for a skill with no row (a
+        notification is about a check); for the digest already queued, unless that one was
+        superseded (once per digest); and for a check older than the one that queued what is
+        there (a slow check never replaces a newer digest with a staler one). Otherwise (True,
+        the status of the notification it replaced: `pending` when an undelivered one is
+        superseded)."""
         ...
 
-    async def claim_notifications(self, *, now: int, claim_until: int, limit: int) -> list[dict[str, Any]]:
-        """Up to ``limit`` pending notifications of any tenant, due by ``now`` and not claimed (or
-        their claim lapsed by ``now``), each claimed until ``claim_until``: earliest due first, ties
-        by tenant and name. Each row carries the key, the upstream columns and the notification's."""
+    async def cancel_notification(self, tenant_id: str, name: str, *, checked_at: int) -> bool:
+        """Mark a pending notification `superseded` -- never sent -- when the check at
+        ``checked_at`` is no older than the one that queued it. Whether one was."""
+        ...
+
+    async def claim_notifications(
+        self, *, now: int, claim_until: int, limit: int, per_tenant: int
+    ) -> list[dict[str, Any]]:
+        """Up to ``limit`` pending notifications of any tenant, no more than ``per_tenant`` of one
+        tenant, due by ``now`` and not claimed (or their claim lapsed by ``now``), each claimed
+        until ``claim_until``: earliest due first, ties by tenant and name. Each row carries the
+        key, the upstream columns and the notification's."""
         ...
 
     async def save_notification(
@@ -116,15 +145,15 @@ class SkillUpstreamStore(Protocol):
         tenant_id: str,
         name: str,
         *,
-        tree_hash: str,
+        generation: int,
         status: str,
         due_at: int | None,
         attempts: int,
         state: Mapping[str, Any],
     ) -> bool:
-        """Write a delivery's outcome and release its claim -- unless the row has queued another
-        digest since it was claimed, whose notification this outcome must not overwrite. Whether
-        it was written."""
+        """Write a delivery's outcome and release its claim -- unless the row has queued again
+        since (another generation, even of the same digest), whose notification this outcome must
+        not overwrite. Whether it was written."""
         ...
 
 
@@ -180,10 +209,17 @@ class InMemorySkillUpstreamStore:
         return [self._upstream(r) for r in rows[:limit]]
 
     async def enqueue_notification(
-        self, tenant_id: str, name: str, *, tree_hash: str, state: Mapping[str, Any], due_at: int
+        self,
+        tenant_id: str,
+        name: str,
+        *,
+        tree_hash: str,
+        checked_at: int,
+        state: Mapping[str, Any],
+        due_at: int,
     ) -> tuple[bool, str | None]:
         row = self._rows.get((tenant_id, name))
-        if row is None or row["notified_tree_hash"] == tree_hash:
+        if row is None or not _may_queue(row, tree_hash, checked_at):
             return False, None
         previous = row["notify_status"]
         row.update(
@@ -192,12 +228,23 @@ class InMemorySkillUpstreamStore:
             notify_due_at=due_at,
             notify_attempts=0,
             notify_claim_until=None,
+            notify_generation=row["notify_generation"] + 1,
+            notify_checked_at=checked_at,
             notify_state=copy.deepcopy(dict(state)),
         )
         return True, previous
 
-    async def claim_notifications(self, *, now: int, claim_until: int, limit: int) -> list[dict[str, Any]]:
-        rows = sorted(
+    async def cancel_notification(self, tenant_id: str, name: str, *, checked_at: int) -> bool:
+        row = self._rows.get((tenant_id, name))
+        if row is None or row["notify_status"] != "pending" or (row["notify_checked_at"] or 0) > checked_at:
+            return False
+        row.update(notify_status="superseded", notify_due_at=None, notify_claim_until=None)
+        return True
+
+    async def claim_notifications(
+        self, *, now: int, claim_until: int, limit: int, per_tenant: int
+    ) -> list[dict[str, Any]]:
+        due = sorted(
             (
                 r
                 for r in self._rows.values()
@@ -207,9 +254,17 @@ class InMemorySkillUpstreamStore:
                 and (r["notify_claim_until"] is None or r["notify_claim_until"] <= now)
             ),
             key=lambda r: (r["notify_due_at"], r["tenant_id"], r["name"]),
-        )[:limit]
-        for r in rows:
+        )
+        taken: dict[str, int] = {}
+        rows: list[dict[str, Any]] = []
+        for r in due:
+            if len(rows) == limit:
+                break
+            if taken.get(r["tenant_id"], 0) >= per_tenant:
+                continue
+            taken[r["tenant_id"]] = taken.get(r["tenant_id"], 0) + 1
             r["notify_claim_until"] = claim_until
+            rows.append(r)
         return copy.deepcopy(rows)
 
     async def save_notification(
@@ -217,14 +272,14 @@ class InMemorySkillUpstreamStore:
         tenant_id: str,
         name: str,
         *,
-        tree_hash: str,
+        generation: int,
         status: str,
         due_at: int | None,
         attempts: int,
         state: Mapping[str, Any],
     ) -> bool:
         row = self._rows.get((tenant_id, name))
-        if row is None or row["notified_tree_hash"] != tree_hash:
+        if row is None or row["notify_generation"] != generation:
             return False
         row.update(
             notify_status=status,
@@ -313,7 +368,14 @@ class PostgresSkillUpstreamStore:
         return {**cls._row(r), **{c: getattr(r, c) for c in NOTIFY_COLUMNS}}
 
     async def enqueue_notification(
-        self, tenant_id: str, name: str, *, tree_hash: str, state: Mapping[str, Any], due_at: int
+        self,
+        tenant_id: str,
+        name: str,
+        *,
+        tree_hash: str,
+        checked_at: int,
+        state: Mapping[str, Any],
+        due_at: int,
     ) -> tuple[bool, str | None]:
         from sqlalchemy import select
 
@@ -324,7 +386,7 @@ class PostgresSkillUpstreamStore:
         async with tenant_session(self._settings, tenant_id) as db:
             # Locked, so of two checks recording one new digest at once exactly one queues it.
             row = await db.scalar(select(R).where(R.tenant_id == tenant_id, R.name == name).with_for_update())
-            if row is None or row.notified_tree_hash == tree_hash:
+            if row is None or not _may_queue(self._notify_row(row), tree_hash, checked_at):
                 return False, None
             previous = row.notify_status
             row.notified_tree_hash = tree_hash
@@ -332,27 +394,69 @@ class PostgresSkillUpstreamStore:
             row.notify_due_at = due_at
             row.notify_attempts = 0
             row.notify_claim_until = None
+            row.notify_generation = row.notify_generation + 1
+            row.notify_checked_at = checked_at
             row.notify_state = dict(state)
             await db.commit()
             return True, previous
 
-    async def claim_notifications(self, *, now: int, claim_until: int, limit: int) -> list[dict[str, Any]]:
-        from sqlalchemy import collate, or_, select
+    async def cancel_notification(self, tenant_id: str, name: str, *, checked_at: int) -> bool:
+        from sqlalchemy import or_, update
+
+        from felix.db.models import SkillUpstreamRow
+        from felix.db.session import tenant_session
+
+        R = SkillUpstreamRow
+        stmt = (
+            update(R)
+            .where(
+                R.tenant_id == tenant_id,
+                R.name == name,
+                R.notify_status == "pending",
+                or_(R.notify_checked_at.is_(None), R.notify_checked_at <= checked_at),
+            )
+            .values(notify_status="superseded", notify_due_at=None, notify_claim_until=None)
+            .returning(R.name)
+        )
+        async with tenant_session(self._settings, tenant_id) as db:
+            cancelled = (await db.execute(stmt)).first() is not None
+            await db.commit()
+            return cancelled
+
+    async def claim_notifications(
+        self, *, now: int, claim_until: int, limit: int, per_tenant: int
+    ) -> list[dict[str, Any]]:
+        from sqlalchemy import and_, collate, func, or_, select
 
         from felix.db.models import SkillUpstreamRow
         from felix.db.session import get_session_factory, rls_bypass
 
         R = SkillUpstreamRow
+        due = (
+            R.notify_status == "pending",
+            R.notify_due_at <= now,
+            or_(R.notify_claim_until.is_(None), R.notify_claim_until <= now),
+        )
+        # Each tenant's earliest `per_tenant`, so one tenant's backlog cannot fill a tick. In a
+        # subquery, since a window function and FOR UPDATE cannot share a SELECT.
+        ranked = (
+            select(
+                R.tenant_id,
+                R.name,
+                func.row_number()
+                .over(partition_by=R.tenant_id, order_by=(R.notify_due_at, collate(R.name, "C")))
+                .label("rank"),
+            )
+            .where(*due)
+            .subquery()
+        )
         stmt = (
             select(R)
-            .where(
-                R.notify_status == "pending",
-                R.notify_due_at <= now,
-                or_(R.notify_claim_until.is_(None), R.notify_claim_until <= now),
-            )
+            .join(ranked, and_(R.tenant_id == ranked.c.tenant_id, R.name == ranked.c.name))
+            .where(ranked.c.rank <= per_tenant, *due)
             .order_by(R.notify_due_at, collate(R.tenant_id, "C"), collate(SkillUpstreamRow.name, "C"))
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(of=R, skip_locked=True)
         )
         # Cross-tenant maintenance, as the check sweep's read is.
         with rls_bypass():
@@ -369,7 +473,7 @@ class PostgresSkillUpstreamStore:
         tenant_id: str,
         name: str,
         *,
-        tree_hash: str,
+        generation: int,
         status: str,
         due_at: int | None,
         attempts: int,
@@ -383,7 +487,7 @@ class PostgresSkillUpstreamStore:
         R = SkillUpstreamRow
         stmt = (
             update(R)
-            .where(R.tenant_id == tenant_id, R.name == name, R.notified_tree_hash == tree_hash)
+            .where(R.tenant_id == tenant_id, R.name == name, R.notify_generation == generation)
             .values(
                 notify_status=status,
                 notify_due_at=due_at,

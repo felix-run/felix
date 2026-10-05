@@ -678,34 +678,85 @@ def _notice(tree_hash: str) -> dict[str, Any]:
     return {"event": {"upstream": {"tree_hash": tree_hash}}, "endpoints": {"ops": {"status": "pending"}}}
 
 
+def _enqueuer(upstream: Any, tenant: str = "acme") -> Any:
+    async def enqueue(name: str, tree_hash: str, *, at: int, due_at: int = 1) -> tuple[bool, str | None]:
+        return await upstream.enqueue_notification(
+            tenant, name, tree_hash=tree_hash, checked_at=at, state=_notice(tree_hash), due_at=due_at
+        )
+
+    return enqueue
+
+
+A, B = "a" * 64, "b" * 64
+
+
 @parametrized
 async def test_an_update_notification_is_queued_once_per_digest_and_a_newer_one_supersedes(
     store_settings: Any,
 ) -> None:
     upstream = await _upstream_rows(store_settings, ("acme", "invoice-triage"))
+    enqueue = _enqueuer(upstream)
 
-    async def enqueue(name: str, tree_hash: str, due_at: int) -> tuple[bool, str | None]:
-        return await upstream.enqueue_notification(
-            "acme", name, tree_hash=tree_hash, state=_notice(tree_hash), due_at=due_at
-        )
+    assert await enqueue("absent", A, at=5) == (False, None), "a notification is about a recorded check"
+    assert await enqueue("invoice-triage", A, at=5) == (True, None)
+    assert await enqueue("invoice-triage", A, at=6) == (False, None), "the same digest is not queued twice"
+    assert await enqueue("invoice-triage", B, at=7) == (True, "pending"), "an undelivered one is replaced"
 
-    assert await enqueue("absent", "a" * 64, 5) == (False, None), "a notification is about a recorded check"
-    assert await enqueue("invoice-triage", "a" * 64, 5) == (True, None)
-    assert await enqueue("invoice-triage", "a" * 64, 6) == (False, None), (
-        "the same digest is not queued twice"
-    )
-    assert await enqueue("invoice-triage", "b" * 64, 7) == (True, "pending"), "an undelivered one is replaced"
-
-    [row] = await upstream.claim_notifications(now=10, claim_until=100, limit=5)
-    assert (row["notified_tree_hash"], row["notify_status"], row["notify_due_at"]) == ("b" * 64, "pending", 7)
-    assert (row["notify_attempts"], row["notify_state"]) == (0, _notice("b" * 64))
+    [row] = await upstream.claim_notifications(now=10, claim_until=100, limit=5, per_tenant=5)
+    assert (row["notified_tree_hash"], row["notify_status"], row["notify_generation"]) == (B, "pending", 2)
+    assert (row["notify_attempts"], row["notify_checked_at"], row["notify_state"]) == (0, 7, _notice(B))
     # A check after it writes only the upstream columns, and reads none of the notification's.
     await upstream.record(
         "acme", "invoice-triage", {"origin_source": "github:a/b", "origin_ref": "main", "checked_at": 9}
     )
     assert "notify_status" not in (await upstream.get("acme", ["invoice-triage"]))["invoice-triage"]
-    [after] = await upstream.claim_notifications(now=100, claim_until=200, limit=5)
-    assert (after["notified_tree_hash"], after["notify_state"]) == ("b" * 64, _notice("b" * 64))
+    [after] = await upstream.claim_notifications(now=100, claim_until=200, limit=5, per_tenant=5)
+    assert (after["notified_tree_hash"], after["notify_generation"]) == (B, 2)
+
+
+@parametrized
+async def test_a_check_older_than_the_queued_one_replaces_nothing(store_settings: Any) -> None:
+    upstream = await _upstream_rows(store_settings, ("acme", "invoice-triage"))
+    enqueue = _enqueuer(upstream)
+
+    assert await enqueue("invoice-triage", B, at=20) == (True, None)
+    assert await enqueue("invoice-triage", A, at=19) == (False, None), "a slow, stale check"
+    assert await enqueue("invoice-triage", A, at=20) == (True, "pending"), "a check of the same moment may"
+
+
+@parametrized
+async def test_a_digest_that_returns_is_queued_again_under_a_new_generation(store_settings: Any) -> None:
+    upstream = await _upstream_rows(store_settings, ("acme", "invoice-triage"))
+    enqueue = _enqueuer(upstream)
+    for at, digest in ((1, A), (2, B), (3, A)):
+        assert (await enqueue("invoice-triage", digest, at=at))[0]
+
+    [row] = await upstream.claim_notifications(now=10, claim_until=100, limit=5, per_tenant=5)
+    assert (row["notified_tree_hash"], row["notify_generation"]) == (A, 3)
+    stale = {"status": "delivered", "due_at": None, "attempts": 1, "state": _notice(A)}
+    assert await upstream.save_notification("acme", "invoice-triage", generation=1, **stale) is False, (
+        "generation 1 was A too: a stale save of it must not land on the re-queued A"
+    )
+    assert await upstream.save_notification("acme", "invoice-triage", generation=3, **stale) is True
+
+
+@parametrized
+async def test_a_superseded_notification_is_never_claimed_and_its_digest_may_queue_again(
+    store_settings: Any,
+) -> None:
+    upstream = await _upstream_rows(store_settings, ("acme", "invoice-triage"), ("acme", "quiet"))
+    enqueue = _enqueuer(upstream)
+    await enqueue("invoice-triage", A, at=5)
+
+    assert await upstream.cancel_notification("acme", "quiet", checked_at=9) is False, "nothing queued"
+    assert await upstream.cancel_notification("acme", "invoice-triage", checked_at=4) is False, (
+        "a check older than the one that queued it cancels nothing"
+    )
+    assert await upstream.cancel_notification("acme", "invoice-triage", checked_at=6) is True
+    assert await upstream.cancel_notification("acme", "invoice-triage", checked_at=7) is False, "once"
+    assert await upstream.claim_notifications(now=100, claim_until=200, limit=5, per_tenant=5) == []
+
+    assert await enqueue("invoice-triage", A, at=8) == (True, "superseded"), "never sent, so news again"
 
 
 @parametrized
@@ -726,46 +777,66 @@ async def test_due_notifications_are_claimed_across_tenants_until_the_claim_laps
         ("acme", "alpha", 3),
         ("acme", "later", 100),
     ):
-        await upstream.enqueue_notification(tenant, name, tree_hash="h" * 64, state=_notice("h"), due_at=due)
+        await _enqueuer(upstream, tenant)(name, A, at=1, due_at=due)
 
-    claimed = await upstream.claim_notifications(now=10, claim_until=100, limit=2)
+    claimed = await upstream.claim_notifications(now=10, claim_until=100, limit=2, per_tenant=5)
     assert [(r["tenant_id"], r["name"]) for r in claimed] == [("acme", "alpha"), ("acme", "beta")]
     assert all(r["notify_claim_until"] == 100 for r in claimed)
-    rest = await upstream.claim_notifications(now=10, claim_until=100, limit=5)
+    rest = await upstream.claim_notifications(now=10, claim_until=100, limit=5, per_tenant=5)
     assert [r["name"] for r in rest] == ["zeta"], (
         "earliest due first, ties by tenant and name; a claimed row is not claimed again; "
         "one not yet due, or with nothing queued, is not claimed"
     )
-    assert await upstream.claim_notifications(now=99, claim_until=200, limit=5) == []
-    lapsed = await upstream.claim_notifications(now=100, claim_until=300, limit=5)
+    assert await upstream.claim_notifications(now=99, claim_until=200, limit=5, per_tenant=5) == []
+    lapsed = await upstream.claim_notifications(now=100, claim_until=300, limit=5, per_tenant=5)
     assert [r["name"] for r in lapsed] == ["alpha", "beta", "zeta", "later"]
+
+
+@parametrized
+async def test_one_tenants_backlog_takes_at_most_its_share_of_a_claim(store_settings: Any) -> None:
+    names = [f"skill-{i}" for i in range(5)]
+    upstream = await _upstream_rows(
+        store_settings, *(("acme", n) for n in names), ("globex", "g1"), ("initech", "i1")
+    )
+    for n in names:
+        await _enqueuer(upstream)(n, A, at=1, due_at=1)
+    await _enqueuer(upstream, "globex")("g1", A, at=1, due_at=9)
+    await _enqueuer(upstream, "initech")("i1", A, at=1, due_at=9)
+
+    claimed = await upstream.claim_notifications(now=10, claim_until=100, limit=4, per_tenant=2)
+    assert [(r["tenant_id"], r["name"]) for r in claimed] == [
+        ("acme", "skill-0"),
+        ("acme", "skill-1"),
+        ("globex", "g1"),
+        ("initech", "i1"),
+    ], "acme's earlier-due backlog does not fill the batch"
+    nxt = await upstream.claim_notifications(now=10, claim_until=100, limit=4, per_tenant=2)
+    assert [r["name"] for r in nxt] == ["skill-2", "skill-3"]
 
 
 @parametrized
 async def test_a_delivery_outcome_never_overwrites_a_newer_digest(store_settings: Any) -> None:
     upstream = await _upstream_rows(store_settings, ("acme", "invoice-triage"))
-    await upstream.enqueue_notification(
-        "acme", "invoice-triage", tree_hash="a" * 64, state=_notice("a"), due_at=1
-    )
-    await upstream.claim_notifications(now=1, claim_until=100, limit=5)
+    enqueue = _enqueuer(upstream)
+    await enqueue("invoice-triage", A, at=1)
+    [claimed] = await upstream.claim_notifications(now=1, claim_until=100, limit=5, per_tenant=5)
     # A newer digest is found while the older one is out for delivery.
-    await upstream.enqueue_notification(
-        "acme", "invoice-triage", tree_hash="b" * 64, state=_notice("b"), due_at=2
+    await enqueue("invoice-triage", B, at=2, due_at=2)
+
+    stale = {"status": "delivered", "due_at": None, "attempts": 1, "state": _notice(A)}
+    generation = claimed["notify_generation"]
+    assert await upstream.save_notification("acme", "invoice-triage", generation=generation, **stale) is False
+    assert (
+        await upstream.save_notification("globex", "invoice-triage", generation=generation + 1, **stale)
+        is False
     )
 
-    stale = {
-        "tree_hash": "a" * 64,
-        "status": "delivered",
-        "due_at": None,
-        "attempts": 1,
-        "state": _notice("a"),
-    }
-    assert await upstream.save_notification("acme", "invoice-triage", **stale) is False
-    other_tenant = {**stale, "tree_hash": "b" * 64}
-    assert await upstream.save_notification("globex", "invoice-triage", **other_tenant) is False
-
-    [row] = await upstream.claim_notifications(now=5, claim_until=100, limit=5)
-    assert (row["notified_tree_hash"], row["notify_status"]) == ("b" * 64, "pending")
-    done = {**stale, "tree_hash": "b" * 64, "state": _notice("b")}
-    assert await upstream.save_notification("acme", "invoice-triage", **done) is True
-    assert await upstream.claim_notifications(now=500, claim_until=600, limit=5) == [], "delivered, released"
+    [row] = await upstream.claim_notifications(now=5, claim_until=100, limit=5, per_tenant=5)
+    assert (row["notified_tree_hash"], row["notify_status"]) == (B, "pending")
+    done = {**stale, "state": _notice(B)}
+    assert (
+        await upstream.save_notification("acme", "invoice-triage", generation=generation + 1, **done) is True
+    )
+    assert await upstream.claim_notifications(now=500, claim_until=600, limit=5, per_tenant=5) == [], (
+        "delivered, released"
+    )

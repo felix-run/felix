@@ -274,6 +274,18 @@ def _jwt_settings(**kw: object) -> Any:
     [
         ("fixed", {"jwt_verifiers": f"self:{_ISS};tenant=fixed:acme corp", "allowed_tenants": "acme"}),
         ("allowlist", {"jwt_verifiers": f"self:{_ISS};tenant=claim", "allowed_tenants": "acme/../x"}),
+        (
+            # The endpoint opens to the same malformed id, so the binding itself is well formed:
+            # only the tenant-id check can refuse it.
+            "skill_update_webhooks",
+            {
+                "jwt_verifiers": f"self:{_ISS};tenant=claim",
+                "webhook_endpoints": json.dumps(
+                    {"ops": {"url": "https://hooks.test/h", "secret": "s", "tenants": ["acme corp"]}}
+                ),
+                "skill_update_webhooks": "acme corp=ops",
+            },
+        ),
     ],
 )
 def test_a_configured_tenant_id_that_breaks_the_rule_refuses_to_start(label: str, kw: dict) -> None:

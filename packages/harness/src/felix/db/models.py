@@ -351,6 +351,10 @@ class SkillUpstreamRow(Base):
     notify_due_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     notify_attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
     notify_claim_until: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Bumped on every queue: part of the `webhook-id`, and what a delivery's save is guarded on.
+    notify_generation: Mapped[int] = mapped_column(Integer, server_default=text("0"), default=0)
+    # When the check that queued it ran: an older check never replaces it.
+    notify_checked_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     notify_state: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
