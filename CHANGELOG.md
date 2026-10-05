@@ -10,6 +10,104 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-04
+
+### Added
+
+- Import Agent Skills from GitHub into the skill library as drafts: `GET /skill-library/-/browse`, `POST /skill-library/-/import`, and `felix skills browse` / `felix skills add`. (#471)
+
+- `FELIX_SKILL_IMPORT_GITHUB_TOKEN`, `FELIX_SKILL_IMPORT_SOURCES`, `FELIX_SKILL_IMPORT_MIN_AGE_DAYS` and `FELIX_SKILL_IMPORT_PER_HOUR`, plus a tenant `import_min_age_days` skill policy field. (#471)
+
+- **Sign in to Felix from a browser by redirect, through a GitHub App.** `GET /auth/github/authorize` → GitHub → `/auth/github/callback` → `POST /auth/github/exchange`, with `state` and PKCE held in a sealed HttpOnly cookie and the token handed to the page once, never in a URL. On while `FELIX_GITHUB_CLIENT_SECRET`, `FELIX_GITHUB_TOKEN_KEY` and `FELIX_GITHUB_REDIRECT_ORIGINS` are set; `GET /auth/methods` reports `github_redirect`. The device flow (`felix login`) works unchanged with the App's client id. (#473)
+
+- **Felix keeps each person's GitHub connection, sealed.** A sign-in through a GitHub App with expiring user tokens stores the refresh token, AES-GCM sealed with `FELIX_GITHUB_TOKEN_KEY` and bound to its tenant, user and column (migration `0027_github_connections`). Access tokens are minted from it inside the harness and never returned. `GET`/`DELETE /github/connection` show and remove your own; the delete also withdraws the App's authorization at GitHub. `GET /github/connections` and `DELETE /github/connections/{id}` are the operator's, under `github:admin`. (#473)
+
+- **Open one of your own repositories in a thread, and publish to it as you.** `GET /github/repos` lists the repositories your GitHub App authorization reaches. `POST /chat/sessions/{thread_id}/workspace/repo` clones one into that thread's own checkout, where the agent's workspace and shell tools then work and nowhere else, and `GET`/`DELETE` report and remove it. `github_publish: {auth: person}` publishes to the thread's repository as the person who opened it, with a token minted from their stored connection. The token never reaches the checkout, an argument or a file. Repositories over `FELIX_REPO_CLONE_MAX_MB` (500) are refused, and checkouts unused for `FELIX_REPO_CHECKOUT_TTL_DAYS` (14) are removed by the worker. (#475)
+
+- A `shared` session-lease request on a thread another holder drives now succeeds as a read-only observer, with its own token and `held_by_other: true`, instead of `409 lease_held`. (#479)
+
+- `GET /chat/sessions/{id}/lease` reports the exclusive holder and every observer (`observer_holds`). (#479)
+
+- The routes that drive a thread accept an optional `X-Felix-Lease-Token`; when present and not the exclusive hold's, the request is `409 lease_read_only` (an observer) or `409 lease_held`. Requests without it are unaffected. (#479)
+
+- Update checks for skills imported from GitHub: `GET /skill-library/{name}/-/upstream` compares an imported skill with its origin and shows a per-file diff against the live version, `POST /skill-library/{name}/-/update` re-imports it as a draft (never published), and `GET /skill-library/-/upstream` lists every imported skill's state, 25 per page, checked live or read from the last recorded check (`refresh=false`). (#482)
+
+- `felix skills outdated`, `felix skills diff <name>` and `felix skills update <name>`. (#482)
+
+- `FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, at most 168): a worker sweep (`skill_upstream_checks`) checks imported skills on that cadence at half of each GitHub call budget, fairly across tenants, and records the result in `skill_upstream` (migration `0029`). The library detail shows it as `upstream`. (#482)
+
+### Changed
+
+- `FELIX_SKILL_IMPORT_SOURCES` entries can name their tenant (`tenant=github:owner/repo`); a tenant browses and imports only sources bound to it. (#476)
+
+- Skill import rate limits count GitHub calls per tenant and per deployment: `FELIX_SKILL_IMPORT_CALLS_PER_HOUR` and `FELIX_SKILL_IMPORT_CALLS_PER_HOUR_TOTAL` replace `FELIX_SKILL_IMPORT_PER_HOUR`. (#476)
+
+- **The shell tool refuses to run through the remote shell runner in a thread that has its own repository.** The runner cannot see a thread's checkout, so the command would have run in the shared workspace instead. (#475)
+
+- `FELIX_SKILL_IMPORT_CALLS_PER_HOUR` defaults to 500 per tenant (was 1000); `FELIX_SKILL_IMPORT_CALLS_PER_HOUR_TOTAL` stays 4000. (#477)
+
+- A lease renewal without the hold's token is now refused: re-acquiring by holder id alone is `409 lease_held` and returns no token, for the exclusive hold and for an observer's. A duplicated browser tab sharing a holder id falls back to observing. (#479)
+
+- Releasing a lease now requires its token (`403 token_required` without one); a `holder_id` sent alongside must be that token's hold. A release that loses a race on Redis is `409 lease_contended`, not `403`. (#479)
+
+- An observer's renewal extends only its own hold, never the exclusive one; releasing or losing the exclusive hold leaves observers in place, and observers no longer block an exclusive acquire. (#479)
+
+- Lease transitions on Redis run under `WATCH`/`MULTI`, so two replicas cannot both grant the exclusive hold. (#479)
+
+### Fixed
+
+- On Postgres, a replica that had not served a thread no longer starts a new root for the next turn. Every turn now takes the thread's leaf from the database, so the model sees the whole conversation. (#468)
+
+- A rewind or fork made on one replica is now followed by every replica. A replica that served the thread before the rewind no longer extends the abandoned branch, and forks and exports copy the stored branch. (#468)
+
+- Threads whose stored leaf predates leaf tracking now continue from their newest event, and the stored leaf is corrected on first use. Previously they resumed from an old rewind target. A rewind that lands while that correction runs is kept. (#468)
+
+- An export, fork, snapshot or label made during a turn on the same replica no longer moves that turn's leaf back. (#468)
+
+- `GET /chat/sessions/{id}` now shows the real leaf for a thread whose stored leaf predates leaf tracking. (#468)
+
+- A thread rewound before leaf tracking existed, with no summary event and no turn since, continues once from its newest event rather than its rewind target. The server logs a warning naming the thread. (#468)
+
+- A rewind made while a turn is running on the same server no longer loses its place. The turn's reply can no longer overwrite the rewound leaf in the database, or be added on top of the branch the rewind abandoned. (#472)
+
+- A fork into an existing thread with a turn in progress no longer ends with that thread's stored leaf disagreeing with the fork. (#472)
+
+- `POST /chat/fork` refuses a `new_thread_id` that already exists — one with any events or session metadata, or the source thread itself — with `409 {"detail": "thread_exists"}`, instead of overwriting that thread's leaf and copying a second conversation into its log. Two forks racing to the same new id, on one replica or several, leave exactly one fork. (#474)
+
+- `memory://` no longer keeps an empty session for every thread id that is only read (snapshots, leases, history, export, probes). A thread is registered on its first write, as on Postgres. (#480)
+
+- `/ready` reports ready under `memory://` when `FELIX_REDIS_URL` is unset, instead of failing on the default `localhost:6379`. A Redis URL that is set is still required, so a configured Redis that is down still fails `/ready`. `felix doctor` follows the same rule, and the rate limiter logs once at INFO that limits are per process instead of an ERROR. (#480)
+
+### Security
+
+- Imported skills, and every version descended from one, are blocked from publishing on an advisory scan finding and are content-screened when activated. (#471)
+
+- A GitHub import token without an import allowlist refuses to boot outside development. (#471)
+
+- With a GitHub import token set, Felix refuses to boot on an allowlist entry that names no tenant or globs the owner. (#476)
+
+- A commit id given as an import ref is never resolved as a branch or tag of the same name; a name that is both a tag and a branch is refused. (#476)
+
+- Imported skills are fenced as third-party in the system-prompt skill catalogue and in `list_skills` output. (#476)
+
+- **Three log lines no longer write a caller's text unescaped.** A `/v1` content part's `type`, a skill name in the object key the library probes, and a skill file's path in the cleanup after a failed save could each carry a newline and start a forged log record. They are now escaped (`felix.logging_setup.loggable`, and the same escape inside `felix_ai`), and the list of unrecognised part types is capped at twenty. (#478)
+
+- A commit id given as a skill import ref must resolve to that commit; a branch or tag of the same name is refused as `ambiguous_ref`, in any letter case. (#477)
+
+- Imported skill text from `activate_skill`, `read_skill_file` and `list_skills` is injection-marker screened even when a manifest has content screening off. (#477)
+
+- `list_skills` withholds an injected imported skill description and marks imported skills untrusted. (#477)
+
+- Checking another ref than the stored one (`?ref=`) needs `skills:write`; a check re-applies the tenant's `FELIX_SKILL_IMPORT_SOURCES` before any GitHub call. (#482)
+
+- Upstream diffs are secret-redacted and bounded: 16,384 characters per file and 131,072 in total, and no side over 256 KiB or 4,000 lines is diffed or fetched. (#482)
+
+- `felix skills diff` strips control, bidi, zero-width, filler and tag characters, and writes file headers itself so file content cannot pass for one. (#482)
+
+- A ref equal to the default branch's name resolves as that branch, so a tag of the same name cannot shadow it. (#482)
+
+- **Five error answers no longer pass an exception's text to the caller.** An upload with no file storage configured answered "set FELIX_OBJECT_STORE" to whoever sent it; it now says file storage is unavailable, and the setting is logged. `PUT /manifests/{name}`, `POST /manifests/{name}/canary`, `POST /documents` and `/v1/chat/completions`'s `response_format` errors relay only messages written for the caller. An unexpected error beneath the canary or document routes, which used to come back as a 400 carrying its own text, is now a 500 with the request id. (#481)
+
 ## [0.6.2] — 2026-10-03
 
 ### Added
@@ -4213,3 +4311,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.6.0]: https://github.com/felix-run/felix/releases/tag/v0.6.0
 [0.6.1]: https://github.com/felix-run/felix/releases/tag/v0.6.1
 [0.6.2]: https://github.com/felix-run/felix/releases/tag/v0.6.2
+[0.7.0]: https://github.com/felix-run/felix/releases/tag/v0.7.0
