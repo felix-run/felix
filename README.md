@@ -745,7 +745,7 @@ Storage and execution:
   POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
   (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
   `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
-  (10), and reports each endpoint's state on `GET /chat/runs/{token}`.
+  (10, at most 60), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - Web Push wakes a subscribed browser -- an installed phone app, a backgrounded tab -- when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
