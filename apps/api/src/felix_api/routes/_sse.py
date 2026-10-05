@@ -21,10 +21,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from fastapi.responses import StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 # Emitted by `with_heartbeat` when the upstream stream has been quiet.
 HEARTBEAT = object()
@@ -146,22 +149,62 @@ DONE = "data: [DONE]\n\n"
 KEEP_ALIVE = ": keep-alive\n\n"
 
 
+class _ClosingStreamingResponse(StreamingResponse):
+    """A stream that runs ``on_close`` once the response is over, however it ended.
+
+    The body generator's own `finally` is not enough. Under ASGI spec 2.3 (Granian) Starlette
+    cancels `stream_response` when `http.disconnect` arrives while `http.response.start` is
+    still being sent -- before the generator was ever iterated, so its `finally` never runs.
+    Spec 2.4+ servers raise `ClientDisconnect` instead and skip `background`. Wrapping the whole
+    call covers both. The body is closed first, so whatever it drives (a turn) has stopped
+    before ``on_close`` looks at what it wrote; shielded, so a cancelled caller cannot cut it short.
+    """
+
+    def __init__(self, *args: Any, on_close: Callable[[], Awaitable[None]], **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._on_close = on_close
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await asyncio.shield(self._close())
+
+    async def _close(self) -> None:
+        try:
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        except Exception:
+            logger.warning("closing a stream's body failed", exc_info=True)
+        finally:
+            await self._on_close()
+
+
 def sse_response(
-    generator: AsyncIterator[str], *, headers: dict[str, str] | None = None
+    generator: AsyncIterator[str],
+    *,
+    headers: dict[str, str] | None = None,
+    on_close: Callable[[], Awaitable[None]] | None = None,
 ) -> StreamingResponse:
-    """A streaming response with the headers a proxied SSE stream actually needs, plus ``headers``."""
-    return StreamingResponse(
-        generator,
-        media_type="text/event-stream",
-        headers={
-            "cache-control": "no-cache",
-            "connection": "keep-alive",
-            # nginx buffers proxied responses by default, which defeats streaming
-            # entirely — the client gets everything at once when the run finishes.
-            "x-accel-buffering": "no",
-            **(headers or {}),
-        },
-    )
+    """A streaming response with the headers a proxied SSE stream actually needs, plus ``headers``.
+
+    ``on_close`` runs once the response is over -- completed, failed, or the client gone, even
+    before the first byte (`_ClosingStreamingResponse`).
+    """
+    merged = {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        # nginx buffers proxied responses by default, which defeats streaming
+        # entirely — the client gets everything at once when the run finishes.
+        "x-accel-buffering": "no",
+        **(headers or {}),
+    }
+    if on_close is not None:
+        return _ClosingStreamingResponse(
+            generator, media_type="text/event-stream", headers=merged, on_close=on_close
+        )
+    return StreamingResponse(generator, media_type="text/event-stream", headers=merged)
 
 
 __all__ = [

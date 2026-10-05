@@ -63,6 +63,24 @@ async def leaf_lock(session: Session) -> AsyncIterator[None]:
         yield
 
 
+# A request that needs to find its own events in a thread afterwards -- `POST /chat/stream` under
+# an `Idempotency-Key`, which replays them to a resend -- puts an opaque id in its
+# `RequestContext.extras` under `APPEND_ORIGIN_EXTRA`, and every event appended through
+# `annotate_and_append` while that context is current carries it in metadata under
+# `ORIGIN_METADATA_KEY`. The context propagates into the tasks a turn spawns, so the turn's
+# own appends are stamped, and nothing else on the thread is: a label, a steer, another turn.
+APPEND_ORIGIN_EXTRA = "append_origin"
+ORIGIN_METADATA_KEY = "origin_request"
+
+
+def _append_origin() -> str | None:
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    origin = ctx.extras.get(APPEND_ORIGIN_EXTRA) if ctx is not None else None
+    return str(origin) if origin else None
+
+
 def new_event_id() -> str:
     return uuid.uuid4().hex
 
@@ -249,10 +267,13 @@ async def _append_under_lock(
 
 async def _append_linked(session: Session, thread_id: str, events: list[AppendableEvent]) -> list[str]:
     parent = get_leaf(thread_id)
+    origin = _append_origin()
     ids: list[str] = []
     annotated: list[AppendableEvent] = []
     for ev in events:
         md = ensure_event_metadata(ev.metadata, parent_id=parent)
+        if origin:
+            md.setdefault(ORIGIN_METADATA_KEY, origin)
         eid = str(md["event_id"])
         ids.append(eid)
         annotated.append(
@@ -375,6 +396,8 @@ async def branch_images(session: Session) -> list[tuple[ImageAttachment, str]]:
 
 
 __all__ = [
+    "APPEND_ORIGIN_EXTRA",
+    "ORIGIN_METADATA_KEY",
     "active_branch_events",
     "annotate_and_append",
     "branch_images",

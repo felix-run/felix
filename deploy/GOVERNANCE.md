@@ -1703,9 +1703,12 @@ it cannot pick a cluster slot.
 same store and for the same TTL. The key is claimed after inbound auth and screening. A resend
 while the first stream is still running is `409 idempotency_in_progress` — reattach with
 `GET /chat/stream/{thread_id}`. A resend after it ended runs nothing: it streams back, with
-`Idempotent-Replayed: true`, the session events the first request wrote (`session_event`
-frames, then `[DONE]`), or reattaches to the durable run it started. A first request that
-appended nothing — it failed before its turn began — frees the key, so the resend runs. One
+`Idempotent-Replayed: true`, the session events that request itself appended (each event is
+stamped with the request's origin, so a label, a steer or another turn landing on the thread
+meanwhile is not replayed) as `session_event` frames, then the first stream's `event: error`
+frame if it ended in one, then `[DONE]` — or it reattaches to the durable run the first
+request started. A first request that appended nothing of its own — it failed before its turn
+began, or the client left before the body was sent — frees the key, so the resend runs. One
 torn down after its user message landed (a client disconnect ends a transient turn) keeps
 it: the resend replays that message rather than sending it twice, and the client continues
 with `/chat/continue` or a new message.

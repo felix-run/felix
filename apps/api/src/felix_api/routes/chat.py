@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import secrets
 import time
-from collections.abc import AsyncIterator
-from dataclasses import dataclass, replace
+from collections.abc import AsyncGenerator, AsyncIterator
+from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -29,7 +32,7 @@ from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.session.snapshot import gather_thread_snapshot
 from felix.session.store import get_session_store
-from felix.session.tree import get_leaf, stored_leaf, sync_leaf
+from felix.session.tree import APPEND_ORIGIN_EXTRA, get_leaf, stored_leaf, sync_leaf
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
 from felix.thread_ids import effective_thread_id
@@ -51,6 +54,7 @@ from felix_api.routes._sse import (
 from felix_api.routes._streaming import (
     durable_run_gen,
     replay_stream_gen,
+    request_events,
     resume_stream_gen,
     stream_cursor,
 )
@@ -718,11 +722,12 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
 #
 # - the first request is still streaming: `409 idempotency_in_progress`. The thread is the
 #   resume token -- `GET /chat/stream/{thread_id}` reattaches to it as to any dropped stream;
-# - the first request is over: what it wrote to the thread is replayed (`replay_stream_gen`),
-#   with `Idempotent-Replayed: true`, and nothing runs. A durable run is reattached to instead
-#   (`durable_run_gen`), since its run outlives any one request;
-# - the first request ended having appended nothing (it failed before the turn began): the key
-#   is released, so the retry runs;
+# - the first request is over: the events *it* appended -- stamped with its origin, so nothing
+#   else the thread got meanwhile -- are replayed (`replay_stream_gen`), then its error frame if
+#   it ended in one, with `Idempotent-Replayed: true`, and nothing runs. A durable run is
+#   reattached to instead (`durable_run_gen`), since its run outlives any one request;
+# - the first request appended nothing of its own (it failed before the turn began, or the
+#   client left before the body ran): the key is released, so the retry runs;
 # - the same key with a different body: `422 idempotency_key_reused`.
 #
 # Scoped to the principal *and the thread*, with `FELIX_IDEMPOTENCY_TTL_SECONDS`, in the store
@@ -747,7 +752,12 @@ STREAM_IDEMPOTENCY_REFUSALS: dict[int | str, dict[str, Any]] = {
 
 @dataclass(slots=True)
 class _HeldStreamKey:
-    """A `POST /chat/stream` that won its key: where its thread stood, and how to settle the key."""
+    """A `POST /chat/stream` that won its key, and settles it exactly once when the stream ends.
+
+    ``origin`` stamps every event the turn appends (`tree.APPEND_ORIGIN_EXTRA`), which is how
+    the settle and a later replay tell this request's events from anything else the thread got
+    meanwhile. ``error`` is the stream's own error frame, if it ended in one, kept for the replay.
+    """
 
     store: IdempotencyStore
     scope: str
@@ -755,50 +765,93 @@ class _HeldStreamKey:
     token: str
     thread: str
     from_seq: int | None
-
-    async def finish(self, body: dict[str, Any]) -> None:
-        await self.store.finish(self.scope, self.key, self.token, StoredResponse(200, body))
-
-    async def release(self) -> None:
-        await self.store.release(self.scope, self.key, self.token)
+    origin: str = field(default_factory=lambda: secrets.token_hex(12))
+    error: dict[str, Any] | None = None
+    settled: bool = False
 
     async def settle(self, settings: Any, tenant_id: str) -> None:
-        """The stream is over, however it ended: store where it stopped, or free the key.
+        """Store the key's answer, or free it. Once: later calls return at once.
 
-        Nothing appended means the turn never began, so a retry is safe and the key is
-        released. Anything appended -- a whole turn, or the user message of one torn down by a
-        disconnect -- is stored, so a retry replays it rather than sending the message again.
-        A head that cannot be read is treated as appended: replaying too little beats a second turn.
+        Two paths reach this -- the body's own end (`guard`) and the response's
+        (`sse_response(on_close=...)`, for a client gone before the body ran) -- and the second
+        must not overwrite the first, or release a key the first stored.
+
+        This request appended nothing: the turn never began, so the key is released and a
+        resend runs. It appended anything -- a whole turn, or the user message of one a
+        disconnect tore down -- and the key is stored, so a resend replays that rather than
+        sending the message again. A log that cannot be read counts as appended: replaying too
+        little beats a second turn.
         """
-        to_seq = await stream_cursor(settings, tenant_id, self.thread)
-        if to_seq is not None and self.from_seq is not None and to_seq <= self.from_seq:
-            await self.release()
+        if self.settled:
             return
-        await self.finish(
-            {"mode": "turn", "thread_id": self.thread, "from_seq": self.from_seq, "to_seq": to_seq}
-        )
+        self.settled = True
+        try:
+            mine = await request_events(settings, tenant_id, self.thread, self.origin, self.from_seq)
+            appended = bool(mine)
+        except Exception:
+            logger.warning(
+                "idempotent stream: reading thread=%s failed", loggable(self.thread), exc_info=True
+            )
+            appended = True
+        if not appended:
+            await self.store.release(self.scope, self.key, self.token)
+            return
+        record = {"mode": "turn", "thread_id": self.thread, "from_seq": self.from_seq, "origin": self.origin}
+        if self.error:
+            record["error"] = self.error
+        await self.store.finish(self.scope, self.key, self.token, StoredResponse(200, record))
 
-    async def guard(self, settings: Any, tenant_id: str, stream: AsyncIterator[str]) -> AsyncIterator[str]:
-        """``stream``, settling the key when it ends -- completed, failed, or the client gone.
+    async def guard(self, settings: Any, tenant_id: str, stream: AsyncGenerator[str]) -> AsyncIterator[str]:
+        """``stream``, noting an error frame, and settling the key when it ends.
 
-        Shielded: a disconnect cancels this generator, and the settle has to land anyway, or
-        the key stays `in_progress` for its whole TTL and every retry is refused.
+        The inner stream is closed before the settle, so the turn it drives has stopped
+        appending when its events are counted; both shielded, since a disconnect cancels this.
         """
         try:
             async for chunk in stream:
+                if chunk.startswith("event: error"):
+                    self.error = _error_of(chunk)
                 yield chunk
         finally:
-            await asyncio.shield(self.settle(settings, tenant_id))
+
+            async def close_then_settle() -> None:
+                try:
+                    await stream.aclose()
+                finally:
+                    await self.settle(settings, tenant_id)
+
+            await asyncio.shield(close_then_settle())
+
+
+def _error_of(chunk: str) -> dict[str, Any] | None:
+    """The `{"message", "type"}` of an `error_frame`, read back for a replay to re-emit."""
+    for line in chunk.splitlines():
+        if line.startswith("data: "):
+            try:
+                error = json.loads(line[len("data: ") :]).get("error")
+            except ValueError, AttributeError:
+                return None
+            return dict(error) if isinstance(error, dict) else None
+    return None
 
 
 async def _claim_stream_key(
     request: Request, auth: AuthContext, thread: str, key: str, body: ChatRequest
 ) -> _HeldStreamKey | StreamingResponse:
-    """Claim ``key`` for this streamed send, or answer the retry of one that already ran."""
+    """Claim ``key`` for this streamed send, or answer the resend of one that already ran."""
     settings = request.app.state.settings
     store: IdempotencyStore = request.app.state.idempotency_store
     scope = f"{principal_scope(auth.tenant_id, auth.principal_sub)}#stream#{thread}"
-    claim = await store.claim(scope, key, request_fingerprint("/chat/stream", body.model_dump(mode="json")))
+    try:
+        claim = await store.claim(
+            scope, key, request_fingerprint("/chat/stream", body.model_dump(mode="json"))
+        )
+    except IdempotencyConflict as exc:
+        # The Redis store raises rather than answers when the key keeps changing under it.
+        status = 409 if exc.kind == "in_progress" else 422
+        raise HTTPException(
+            status_code=status, detail=f"idempotency_{'in_progress' if status == 409 else 'key_reused'}"
+        ) from exc
     if claim.kind == "in_progress":
         raise HTTPException(status_code=409, detail="idempotency_in_progress")
     if claim.kind == "mismatch":
@@ -822,12 +875,13 @@ async def _claim_stream_key(
                 settings=settings,
                 tenant_id=auth.tenant_id,
                 thread=thread,
+                origin=str(stored.get("origin") or ""),
                 from_seq=stored.get("from_seq"),
-                to_seq=stored.get("to_seq"),
+                error=stored.get("error"),
             ),
             headers=replayed,
         )
-    # Read before the turn can append, so the replay starts at this request's first event.
+    # Read before the turn can append: it bounds the scan for this request's events.
     return _HeldStreamKey(
         store=store,
         scope=scope,
@@ -846,9 +900,10 @@ async def chat_stream(
 
     A resend under the same key never runs a second turn: while the first is still streaming it
     is `409 idempotency_in_progress` (reattach with `GET /chat/stream/{thread_id}`); after, it
-    replays what the first wrote to the thread as `session_event` frames, with
-    `Idempotent-Replayed: true`, or reattaches to the durable run it started. A first request
-    that appended nothing frees the key. The same key with a different body is
+    replays the events the first request itself appended as `session_event` frames, then the
+    first stream's `event: error` frame if it ended in one, then `[DONE]`, with
+    `Idempotent-Replayed: true` -- or reattaches to the durable run it started. A first request
+    that appended nothing of its own frees the key. The same key with a different body is
     `422 idempotency_key_reused`. Scoped to the principal and the thread.
     """
     settings = request.app.state.settings
@@ -940,7 +995,8 @@ async def chat_stream(
             )
         except Exception as exc:
             if held is not None:
-                await held.release()
+                held.settled = True
+                await held.store.release(held.scope, held.key, held.token)
             http = _http_from_invoke_prep(exc)
             if http is not None:
                 raise http from exc
@@ -948,7 +1004,9 @@ async def chat_stream(
         if held is not None:
             # Settled at once: the run is enqueued and outlives this request, so a retry is
             # answered by reattaching to it, never by a second enqueue.
-            await held.finish({"mode": "durable", "accepted": accepted, "from_seq": from_seq})
+            held.settled = True
+            record = {"mode": "durable", "accepted": accepted, "from_seq": from_seq}
+            await held.store.finish(held.scope, held.key, held.token, StoredResponse(200, record))
         return sse_response(
             durable_run_gen(
                 settings=settings,
@@ -974,7 +1032,13 @@ async def chat_stream(
         thread_id=thread,
         # Screened above, before the stream opened or the durable run was enqueued.
         # `LIVE_STREAM_EXTRA`: a person is reading this stream, so `ask_user` may ask them.
-        extras={INBOUND_SCREENED_EXTRA: True, LIVE_STREAM_EXTRA: True},
+        # `APPEND_ORIGIN_EXTRA`: under an `Idempotency-Key`, what this turn appends is stamped,
+        # so the key's settle and a resend's replay find exactly this request's events.
+        extras={
+            INBOUND_SCREENED_EXTRA: True,
+            LIVE_STREAM_EXTRA: True,
+            **({APPEND_ORIGIN_EXTRA: held.origin} if held is not None else {}),
+        },
     )
 
     async def event_gen():
@@ -997,31 +1061,35 @@ async def chat_stream(
                     )
                 )
                 cursor: int | None = None
-                async for event in with_heartbeat(stream):
-                    if event is HEARTBEAT:
-                        # A comment frame keeps proxies and load balancers from closing
-                        # an idle connection during a long tool call; clients ignore it.
-                        yield KEEP_ALIVE
-                        continue
-                    payload = event.model_dump() if hasattr(event, "model_dump") else event
-                    # `id:` is the session log's own cursor, so it still means
-                    # something to the *next* connection — a per-connection counter
-                    # would not. Only structural frames carry one: they are the points
-                    # a reconnect can resume from, and they are rare, where deltas
-                    # arrive per token and would cost a query each. Frames without an
-                    # `id:` leave `lastEventId` untouched, which is exactly the
-                    # semantics wanted here.
-                    if thread and is_resume_point(str(payload.get("event") or "")):
-                        # Re-read rather than trust the cached value: a structural
-                        # frame is where an append may just have happened. Consecutive
-                        # structural frames with nothing appended between them return
-                        # the same number, which is correct and costs one small query.
-                        fresh = await stream_cursor(settings, auth.tenant_id, thread)
-                        if fresh is not None:
-                            cursor = fresh
-                        yield frame(payload, cursor=cursor)
-                    else:
-                        yield frame(payload)
+                # Closed with this generator, not left to the garbage collector: a resend's key
+                # is settled once this closes, and the turn the heartbeat pump drives must have
+                # stopped appending by then.
+                async with contextlib.aclosing(with_heartbeat(stream)) as events:
+                    async for event in events:
+                        if event is HEARTBEAT:
+                            # A comment frame keeps proxies and load balancers from closing
+                            # an idle connection during a long tool call; clients ignore it.
+                            yield KEEP_ALIVE
+                            continue
+                        payload = event.model_dump() if hasattr(event, "model_dump") else event
+                        # `id:` is the session log's own cursor, so it still means
+                        # something to the *next* connection — a per-connection counter
+                        # would not. Only structural frames carry one: they are the points
+                        # a reconnect can resume from, and they are rare, where deltas
+                        # arrive per token and would cost a query each. Frames without an
+                        # `id:` leave `lastEventId` untouched, which is exactly the
+                        # semantics wanted here.
+                        if thread and is_resume_point(str(payload.get("event") or "")):
+                            # Re-read rather than trust the cached value: a structural
+                            # frame is where an append may just have happened. Consecutive
+                            # structural frames with nothing appended between them return
+                            # the same number, which is correct and costs one small query.
+                            fresh = await stream_cursor(settings, auth.tenant_id, thread)
+                            if fresh is not None:
+                                cursor = fresh
+                            yield frame(payload, cursor=cursor)
+                        else:
+                            yield frame(payload)
         except asyncio.CancelledError:
             # The client hung up. Nothing to send; let the cancellation propagate so the
             # run is torn down instead of continuing to burn model tokens.
@@ -1038,7 +1106,10 @@ async def chat_stream(
         yield DONE
 
     if held is not None:
-        return sse_response(held.guard(settings, auth.tenant_id, event_gen()))
+        return sse_response(
+            held.guard(settings, auth.tenant_id, event_gen()),
+            on_close=lambda: held.settle(settings, auth.tenant_id),
+        )
     return sse_response(event_gen())
 
 
