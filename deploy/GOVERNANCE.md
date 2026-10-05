@@ -548,6 +548,33 @@ limit on the shared token, ends the tick. Within a tick a tenant's skills from o
 ref resolve once. The sweep shares the API's buckets only through Redis (`FELIX_REDIS_URL`), which
 the worker already needs.
 
+**Update notifications.** `FELIX_SKILL_UPDATE_WEBHOOKS` binds each tenant to the completion-webhook
+endpoints its update events go to: `tenant=endpoint_id`, comma-separated, a tenant named as often
+as it has endpoints (`acme=ops,acme=ci,beta=beta-hook`). Each id must be a
+`FELIX_WEBHOOK_ENDPOINTS` endpoint whose `tenants` include that tenant, or the boot is refused;
+there is no wildcard, so one tenant's skill names and sources never reach an endpoint bound to
+another, and a tenant not listed gets nothing. A recorded check -- the sweep, a check of the stored
+ref, the listing with `refresh`, an import -- that finds a kept-file digest the skill's newest
+version does not hold, and that is not the digest last announced for the skill, queues one
+`skill.update_available` event. A `?ref=` check is a what-if, is never recorded, and never
+notifies. Queuing is all a check does: the worker's `skill_update_notifications` sweep (every
+minute, 50 a tick, its own `skill_job_lease` row, a 120 s claim per row that a crashed sweep lets
+lapse) sends it, so no check, listing or import waits on a receiver or fails with one. The event is
+**metadata only** -- `tenant_id`, `skill`, `source`, `ref`, `current` (`version`, `commit`,
+`tree_hash`), `upstream` (`commit`, `tree_hash`, `committed_at`, `first_seen_at`), `eligible_at`,
+`checked_at`, and `changed_files` when the check that found it already diffed against the newest
+version -- never a file, a diff or a description, because upstream text is untrusted and the
+payload leaves the deployment. It is signed and delivered as completion webhooks are (below): the
+same headers, egress guard, backoff, `FELIX_WEBHOOK_MAX_ATTEMPTS` and dead letter, counted in
+`felix_skill_update_delivery`. Its `webhook-id` is derived from the tenant, skill and digest, the
+same on every retry and to every endpoint, so a receiver dedupes on it. Delivery state lives on the
+skill's `skill_upstream` row (migration `0030`): a newer digest found before an older one was
+delivered **supersedes** it -- only the newest is sent, and a delivery that finishes after that
+does not overwrite it -- so a receiver is never handed an update the origin has already moved past.
+An event changes nothing on its own: it does not import, publish, or start a cooldown the check had
+not started already. Each queued event is audited (`skill_update_notification_queued`) and counted
+in `felix_skill_update_notification`.
+
 ## Outbound egress
 
 ### Per-integration timeouts

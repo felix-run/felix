@@ -619,19 +619,34 @@ def state_of_snapshot(source: GitHubSource, snap: Snapshot, now: int) -> dict[st
 
 
 async def record_upstream(
-    settings: Settings, tenant_id: str, source: GitHubSource, snap: Snapshot, now: int
+    settings: Settings,
+    tenant_id: str,
+    source: GitHubSource,
+    snap: Snapshot,
+    now: int,
+    *,
+    committed_at: int | None = None,
+    changed_files: int | None = None,
 ) -> None:
     """What the skill's stored origin holds now, for the upstream listing and the library detail
-    (`upstream_store`). The caller decides that ``snap`` is of the stored ref. Never raises: it
-    runs after a save it must not fail, and a lost record is refreshed by the next check."""
+    (`upstream_store`) -- and, when those files are an update not yet announced, a queued
+    `skill.update_available` (`update_notify`; ``committed_at`` and ``changed_files`` ride along
+    when the caller already knows them). The caller decides that ``snap`` is of the stored ref.
+    Never raises: it runs after a save it must not fail, and a lost record is refreshed by the
+    next check."""
+    from felix.skills.update_notify import notify_if_new
     from felix.skills.upstream_store import get_upstream_store
 
+    state = state_of_snapshot(source, snap, now)
     try:
-        await get_upstream_store(settings).record(
-            tenant_id, _slug(source), state_of_snapshot(source, snap, now)
-        )
+        await get_upstream_store(settings).record(tenant_id, _slug(source), state)
     except Exception:
         logger.warning("recording the upstream state of %s failed", source.canonical, exc_info=True)
+        return
+    # Every recorded check passes here, and only a recorded one: a `?ref=` what-if never notifies.
+    await notify_if_new(
+        settings, tenant_id, _slug(source), state, committed_at=committed_at, changed_files=changed_files
+    )
 
 
 __all__ = [

@@ -457,6 +457,10 @@ class Settings(BaseSettings):
     # max 168): records whether an update is waiting, and stamps the sighting its cooldown counts
     # from. Spends at most half of each hourly budget above (`skills/upstream.py`).
     skill_import_check_hours: int = Field(default=0, ge=0, le=168)
+    # Where a tenant's `skill.update_available` events go: comma-separated `tenant=endpoint_id`
+    # (`acme=ops,acme=ci,beta=beta-hook`), each id a FELIX_WEBHOOK_ENDPOINTS endpoint open to that
+    # tenant. No wildcard; a tenant not listed gets none. Empty is off (`skills/update_notify.py`).
+    skill_update_webhooks: str = ""
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
 
@@ -683,6 +687,7 @@ class Settings(BaseSettings):
         self._validate_model_route_providers()
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
+        self._validate_skill_update_webhooks()
         self._validate_push()
 
     def push_configured(self) -> bool:
@@ -785,6 +790,16 @@ class Settings(BaseSettings):
             parse_webhook_endpoints(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_WEBHOOK_ENDPOINTS: {exc}") from exc
+
+    def _validate_skill_update_webhooks(self) -> None:
+        """A `FELIX_SKILL_UPDATE_WEBHOOKS` binding to an endpoint that is not registered, or not
+        open to its tenant, fails the boot rather than the first update it would announce."""
+        from felix.skills.update_notify import validate_skill_update_webhooks
+
+        try:
+            validate_skill_update_webhooks(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_SKILL_UPDATE_WEBHOOKS: {exc}") from exc
 
     def application_name(self) -> str:
         """What this process calls itself to Postgres."""
@@ -1086,4 +1101,11 @@ def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
     except ValueError:
         grants = {}  # shape errors are reported by `validate_login_config`, not here
     found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
+    from felix.skills.update_notify import parse_skill_update_webhooks
+
+    try:
+        bindings = parse_skill_update_webhooks(settings.skill_update_webhooks)
+    except ValueError:
+        bindings = {}  # shape errors are reported by `_validate_skill_update_webhooks`, not here
+    found.extend((f"FELIX_SKILL_UPDATE_WEBHOOKS ({tenant})", tenant) for tenant in bindings)
     return found
