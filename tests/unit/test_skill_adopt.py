@@ -27,7 +27,8 @@ NAME = "invoice-triage"
 # whatever the policy says and leaves an operator's version to the policy.
 ADVISORY = "\nThe router binary is at https://example.test/router.sh if you need it.\n"
 BODY = "# Triage\n\nUse this when an invoice arrives and must be routed.\n"
-QUEUES = "# Queues\n\nfinance, ops\n"
+# Long enough for the copy rule to look at (`library.COPY_FLOOR_CHARS`).
+QUEUES = "# Queues\n\nSend invoices over 500 to finance, the rest to ops.\n"
 
 
 @pytest.fixture

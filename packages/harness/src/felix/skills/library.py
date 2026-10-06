@@ -21,6 +21,7 @@ import hashlib
 import logging
 import re
 import time
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cmp_to_key
@@ -73,6 +74,12 @@ VERSION_RE = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}\Z")
 # caller is told; each retry re-reads the versions and bumps past the winner.
 _SAVE_ATTEMPTS = 3
 _REASON_LIMIT = 2000
+# The copy rule (`_lineage_import`) ignores a file shorter than this: under 32 characters of
+# normalized text (or 32 bytes of a binary asset) is the boilerplate many skills share -- an empty
+# file, `[]`, a license id, a heading, a coding line -- not evidence that third-party text was
+# copied, and too short to hold more than a phrase. Matching it would taint every save that
+# carries one. Such a file is still scanned at save and screened at activation like any other.
+COPY_FLOOR_CHARS = 32
 
 
 class _MustNotExist:
@@ -340,12 +347,53 @@ async def _write_files(store: Any, tenant_id: str, name: str, version: str, file
         await store.put(library_object_key(tenant_id, name, version, path), _stored_bytes(path, content))
 
 
+def normalized_text(text: str) -> str:
+    """``text`` as the copy rule compares it: Unicode NFKC, casefolded, every run of whitespace
+    one space, stripped. A copy that only re-spaces, re-cases or swaps compatibility forms
+    (full-width letters, ligatures, non-breaking spaces) normalizes to the original."""
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
+def _normalized_digest(path: str, content: str) -> str | None:
+    """The sha256 of a text file's `normalized_text`; None for a binary asset, whose bytes are
+    compared as they are."""
+    if is_binary_asset_path(path):
+        return None
+    return hashlib.sha256(normalized_text(content).encode("utf-8")).hexdigest()
+
+
 def _file_rows(files: Mapping[str, str]) -> list[dict[str, Any]]:
     rows = []
     for path, content in sorted(files.items()):
         data = _stored_bytes(path, content)
-        rows.append({"path": path, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+        rows.append(
+            {
+                "path": path,
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data),
+                "normalized_sha256": _normalized_digest(path, content),
+            }
+        )
     return rows
+
+
+def _copy_digests(files: Mapping[str, str]) -> tuple[set[str], set[str]]:
+    """The byte and normalized digests the copy rule looks up for ``files``, leaving out every
+    file under `COPY_FLOOR_CHARS`."""
+    exact: set[str] = set()
+    normalized: set[str] = set()
+    for path, content in files.items():
+        data = _stored_bytes(path, content)
+        if is_binary_asset_path(path):
+            if len(data) >= COPY_FLOOR_CHARS:
+                exact.add(hashlib.sha256(data).hexdigest())
+            continue
+        text = normalized_text(content)
+        if len(text) < COPY_FLOOR_CHARS:
+            continue
+        exact.add(hashlib.sha256(data).hexdigest())
+        normalized.add(hashlib.sha256(text.encode("utf-8")).hexdigest())
+    return exact, normalized
 
 
 async def _reserve(
@@ -585,9 +633,13 @@ async def _lineage_import(
     was edited from does -- the named parent, else the skill's newest version, which is what a
     save that names none still starts from.
 
-    For an agent's save, also when any of its files is byte-for-byte a file of an import-lineage
-    version anywhere in the tenant: an agent can read an imported skill and write its text into a
-    new one under another name, and the copy is as much a third party's as the original.
+    For an agent's save, also when any of its files is a file of an import-lineage version
+    anywhere in the tenant -- byte for byte, or once both are normalized (`normalized_text`:
+    compatibility forms, case and whitespace) -- an agent can read an imported skill and write its
+    text into a new one under another name, and the copy is as much a third party's as the
+    original. A paraphrase is not caught, and nor is a file under `COPY_FLOOR_CHARS`. A file saved
+    before the normalized digest existed (migration `0032`) has none until it is saved again, and
+    is matched by its bytes alone.
 
     An adopt (`DraftProvenance.adopted_from`, set only by `adopt`) is the one exception to the
     parent rule: an operator vouching, with a reason, for exactly the files of the version it
@@ -603,8 +655,8 @@ async def _lineage_import(
         return True
     if provenance.source != "agent":
         return False
-    digests = {hashlib.sha256(_stored_bytes(p, c)).hexdigest() for p, c in files.items()}
-    return await lib.holds_imported_file(tenant_id, digests)
+    exact, normalized = _copy_digests(files)
+    return await lib.holds_imported_file(tenant_id, exact, normalized)
 
 
 async def _same_files_as(
@@ -972,6 +1024,7 @@ async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: st
 
 
 __all__ = [
+    "COPY_FLOOR_CHARS",
     "MUST_NOT_EXIST",
     "ORIGIN_COLUMNS",
     "VERSION_RE",
@@ -999,6 +1052,7 @@ __all__ = [
     "host_owns",
     "newest_buildable_versions",
     "newest_version",
+    "normalized_text",
     "publish",
     "read_version_file",
     "read_version_files",

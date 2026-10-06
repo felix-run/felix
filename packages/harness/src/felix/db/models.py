@@ -223,9 +223,17 @@ class SkillFileRow(Base):
     path: Mapped[str] = mapped_column(Text, primary_key=True)
     sha256: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # The sha256 of a text file's `library.normalized_text` (NFKC, casefolded, whitespace
+    # collapsed), so a copy that differs only in those still matches. Null for a binary asset,
+    # and for every file saved before `0032` until it is saved again.
+    normalized_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # `holds_imported_file`: an agent's save looks its files' digests up across the tenant (0028).
-    __table_args__ = (Index("idx_skill_file_tenant_sha256", "tenant_id", "sha256"),)
+    # `holds_imported_file`: an agent's save looks its files' digests up across the tenant, by
+    # bytes (0028) and normalized text (0032).
+    __table_args__ = (
+        Index("idx_skill_file_tenant_sha256", "tenant_id", "sha256"),
+        Index("idx_skill_file_tenant_normalized_sha256", "tenant_id", "normalized_sha256"),
+    )
 
 
 class SkillFeedbackRow(Base):

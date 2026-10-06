@@ -548,6 +548,38 @@ async def test_a_file_of_an_import_lineage_version_is_found_by_its_digest(store_
 
 
 @parametrized
+async def test_a_file_of_an_import_is_found_by_its_normalized_digest_too(store_settings: Any) -> None:
+    """Either digest matches; a byte digest is never compared with a normalized one; a row with
+    no normalized digest (saved before 0032, or a binary asset) matches by its bytes only."""
+    store = get_skill_library_store(store_settings)
+    imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
+    files = [
+        {"path": "SKILL.md", "sha256": "a" * 64, "size": 10, "normalized_sha256": "1" * 64},
+        {"path": "references/x.md", "sha256": "b" * 64, "size": 3},
+    ]
+    await store.insert_version("acme", imported, files, created_by="ops", at=1)
+    own = [{"path": "SKILL.md", "sha256": "e" * 64, "size": 4, "normalized_sha256": "2" * 64}]
+    await store.insert_version(
+        "acme", {**_row("0.1.0", at=2), "name": "own-notes"}, own, created_by="c", at=2
+    )
+
+    rows = {r["path"]: r for r in await store.list_files("acme", "invoice-triage", "0.1.0")}
+    assert (rows["SKILL.md"]["normalized_sha256"], rows["references/x.md"]["normalized_sha256"]) == (
+        "1" * 64,
+        None,
+    )
+    assert await store.holds_imported_file("acme", [], ["1" * 64]) is True
+    assert await store.holds_imported_file("acme", ["f" * 64], ["1" * 64]) is True
+    assert await store.holds_imported_file("acme", ["b" * 64], []) is True
+    assert await store.holds_imported_file("acme", ["1" * 64], ["a" * 64]) is False, "never crossed"
+    assert await store.holds_imported_file("acme", [], ["2" * 64]) is False, (
+        "a file of a version not imported"
+    )
+    assert await store.holds_imported_file("globex", [], ["1" * 64]) is False
+    assert await store.holds_imported_file("acme", [], []) is False
+
+
+@parametrized
 async def test_a_file_of_an_adopted_version_still_counts_as_imported(store_settings: Any) -> None:
     """An adopted version is not import-lineage, and its files are still a third party's text:
     the copy rule counts them whether or not the version it was adopted from is still held."""

@@ -407,15 +407,20 @@ First, because everything else governs it.
          attempt, cooldown on or off; pruned after 366 days), never from a commit date the pusher
          sets. Open: a tree GitHub truncates (past ~100k entries) is refused rather than walked;
          a manifest without content screening gets only the free marker floor over imported text
-         (warned at compile), which a paraphrase passes; laundering is caught only for
-         byte-identical files. Fixed since: the skill suggester hands the decision model an
-         imported skill's listed description only (withheld on injection markers, quoted as
+         (warned at compile), which a paraphrase passes; laundering by paraphrase is not
+         detected (the copy rule compares text, not meaning); files saved before migration
+         `0032` match by bytes only until re-saved. Fixed since: the skill suggester hands the
+         decision model an imported skill's listed description only (withheld on injection markers, quoted as
          third-party text), never its body; a paraphrased description can still bias the ranking,
          which returns only probabilities. `POST /skill-library/{name}/versions/{v}/adopt`
          (`felix skills adopt`, `FelixClient.adopt_skill_version`, migration `0031`
          `skill_version.adopted_from`) clears `lineage_import` going forward: a reasoned operator
          draft of the same bytes, never published by the adopt, audited `skill_adopted`; earlier
-         versions keep the mark and an agent's copy of adopted text is still tainted.
+         versions keep the mark and an agent's copy of adopted text is still tainted. The copy
+         rule also matches a normalized digest (NFKC, casefold, whitespace collapsed;
+         `skill_file.normalized_sha256`, migration `0032`, no backfill), so a re-spaced,
+         re-cased or compatibility-form copy is caught, and it skips files under 32 normalized
+         characters so boilerplate no longer taints every save.
       2. [x] Update checks: `felix/skills/{upstream,upstream_store,bundle_diff}.py`,
          `GET /skill-library/{name}/-/upstream` (the stored ref with `skills:read`, or `?ref=` with
          `skills:write`, re-resolved under the tenant's allowlist; a per-file diff against the live

@@ -56,7 +56,7 @@ def gh(monkeypatch: pytest.MonkeyPatch) -> FakeRepos:
         {
             "README.md": b"# skills\n",
             "skills/invoice-triage/SKILL.md": skill_md(NAME),
-            "skills/invoice-triage/references/queues.md": b"# Queues\n\nfinance, ops\n",
+            "skills/invoice-triage/references/queues.md": b"# Queues\n\nSend invoices over 500 to finance, the rest to ops.\n",
             "skills/invoice-triage/assets/logo.png": b"\x89PNG\r\n\x1a\nfake",
             "skills/invoice-triage/LICENSE": b"MIT\n",
             "skills/invoice-triage/evals/evals.json": b"[]\n",

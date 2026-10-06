@@ -124,10 +124,12 @@ class SkillLibraryStore(Protocol):
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int: ...
 
-    async def holds_imported_file(self, tenant_id: str, digests: Collection[str]) -> bool:
+    async def holds_imported_file(
+        self, tenant_id: str, digests: Collection[str], normalized: Collection[str] = ()
+    ) -> bool:
         """Whether any file of an import-lineage version in the tenant -- or of a version an
         operator adopted from one (`adopted_from`), whose bytes are still a third party's -- has
-        one of ``digests``."""
+        one of ``digests`` as its sha256, or one of ``normalized`` as its `normalized_sha256`."""
         ...
 
     async def insert_version(
@@ -327,10 +329,12 @@ class InMemorySkillLibraryStore:
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         return self._pending(tenant_id, origin_manifest_id)
 
-    async def holds_imported_file(self, tenant_id: str, digests: Collection[str]) -> bool:
-        wanted = set(digests)
+    async def holds_imported_file(
+        self, tenant_id: str, digests: Collection[str], normalized: Collection[str] = ()
+    ) -> bool:
+        wanted, wanted_normalized = set(digests), set(normalized)
         return any(
-            f["sha256"] in wanted
+            f["sha256"] in wanted or f.get("normalized_sha256") in wanted_normalized
             for (t, n, v), files in self._files.items()
             if t == tenant_id and _holds_imported_text(self._versions.get((t, n, v), {}))
             for f in files
@@ -381,7 +385,8 @@ class InMemorySkillLibraryStore:
             {**_VERSION_DEFAULTS, **row, "tenant_id": tenant_id}
         )
         self._files[(tenant_id, name, version)] = [
-            {**f, "tenant_id": tenant_id, "name": name, "version": version} for f in copy.deepcopy(files)
+            {"normalized_sha256": None, **f, "tenant_id": tenant_id, "name": name, "version": version}
+            for f in copy.deepcopy(files)
         ]
 
     async def delete_draft(self, tenant_id: str, name: str, version: str) -> None:
@@ -699,18 +704,24 @@ class PostgresSkillLibraryStore:
         async with self._session(tenant_id) as db:
             return await self._pending(db, tenant_id, origin_manifest_id)
 
-    async def holds_imported_file(self, tenant_id: str, digests: Collection[str]) -> bool:
+    async def holds_imported_file(
+        self, tenant_id: str, digests: Collection[str], normalized: Collection[str] = ()
+    ) -> bool:
         from sqlalchemy import and_, exists, or_, select
 
         from felix.db.models import SkillFileRow, SkillVersionRow
 
-        wanted = sorted(set(digests))
-        if not wanted:
+        wanted, wanted_normalized = sorted(set(digests)), sorted(set(normalized))
+        matches = [
+            *([SkillFileRow.sha256.in_(wanted)] if wanted else []),
+            *([SkillFileRow.normalized_sha256.in_(wanted_normalized)] if wanted_normalized else []),
+        ]
+        if not matches:
             return False
         query = select(
             exists().where(
                 SkillFileRow.tenant_id == tenant_id,
-                SkillFileRow.sha256.in_(wanted),
+                or_(*matches),
                 exists().where(
                     and_(
                         SkillVersionRow.tenant_id == SkillFileRow.tenant_id,

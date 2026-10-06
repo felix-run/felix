@@ -427,8 +427,16 @@ name.
 
 **Lineage taint.** An import, and every version built on one by anyone, carries `lineage_import`:
 an agent's or operator's edit, an edit of that edit, an operator save naming no parent, and an
-agent's save of any file whose bytes match a file of an import-lineage version anywhere in the
-tenant (an agent copying imported text under another name). The publish gate judges such a version
+agent's save of any file matching a file of an import-lineage version anywhere in the tenant (an
+agent copying imported text under another name). A text file matches by its bytes or by its
+normalized text -- Unicode NFKC, casefolded, every run of whitespace one space, stripped -- so a
+copy that only re-spaces, re-cases or swaps compatibility forms (full-width letters, ligatures,
+non-breaking spaces) is still a copy; a binary asset matches by its bytes. A paraphrase is not
+caught: the rule compares text, not meaning, and an agent rewording imported text launders it.
+A file under 32 characters of normalized text (32 bytes for an asset) is never compared, so an
+empty file, a license id or a heading every skill shares cannot taint every save. Files saved
+before migration `0032` have no normalized digest until their skill is saved again, and match by
+bytes alone until then. The publish gate judges such a version
 as an import whoever saved it: an advisory scan blocks it whatever the policy says (tighten only),
 only the bundle's own `evals/` scenarios count toward an evaluation requirement (an import drops
 its `evals/`), and an agent's edit of one always waits for a person. Rolling back to one passes the
