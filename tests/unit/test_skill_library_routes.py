@@ -114,6 +114,7 @@ WRITES = [
     ("post", f"/skill-library/{NAME}/versions/0.1.0/publish", None),
     ("post", f"/skill-library/{NAME}/versions/0.1.0/rollback", None),
     ("post", f"/skill-library/{NAME}/versions/0.1.0/reject", {"note": "no"}),
+    ("post", f"/skill-library/{NAME}/versions/0.1.0/adopt", {"reason": "vetted"}),
     ("delete", f"/skill-library/{NAME}", None),
 ]
 

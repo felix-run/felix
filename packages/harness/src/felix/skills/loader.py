@@ -315,9 +315,10 @@ _LIBRARY_FETCH_CONCURRENCY = 16
 async def _library_skill(store: Any, *, tenant_id: str, row: dict[str, Any]) -> Skill | None:
     """The live version of one library skill, or None when its SKILL.md is missing, does not
     match the digest saved with it, or cannot be read."""
-    import hashlib
 
+    from felix.skills.copy_rule import digest
     from felix.skills.library_store import library_object_key
+    from felix.skills.publish_gate import carries_imported_text
 
     name, version = str(row["name"]), str(row["version"])
     key = library_object_key(tenant_id, name, version, "SKILL.md")
@@ -329,7 +330,7 @@ async def _library_skill(store: Any, *, tenant_id: str, row: dict[str, Any]) -> 
     if not data:
         logger.warning("library skill %s is live but has no SKILL.md; skipped", key)
         return None
-    if not row.get("sha256") or hashlib.sha256(data).hexdigest() != row["sha256"]:
+    if not row.get("sha256") or digest(data) != row["sha256"]:
         # The bytes are not the ones that were reviewed and published.
         logger.warning("library skill %s does not match its saved digest; skipped", key)
         return None
@@ -342,7 +343,7 @@ async def _library_skill(store: Any, *, tenant_id: str, row: dict[str, Any]) -> 
         return None
     skill.source = "library"
     skill.version = version
-    skill.untrusted = bool(row.get("lineage_import"))
+    skill.untrusted = carries_imported_text(row)
     return skill
 
 

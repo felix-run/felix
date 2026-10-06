@@ -1,9 +1,10 @@
 """`felix skills` — browse a GitHub repository's skills, import one into a server's library, and
 keep it current: `outdated` lists imported skills against their origins, `diff` shows what one's
-origin changed against the live version, `update` re-imports it as a draft.
+origin changed against the live version, `update` re-imports it as a draft, and `adopt` vouches
+for an imported version, saving it unchanged as an operator draft no longer judged as third-party text.
 
 Each talks to a running server (`/skill-library/-/browse`, `/-/import`, `/-/upstream`,
-`/{name}/-/upstream`, `/{name}/-/update`) through
+`/{name}/-/upstream`, `/{name}/-/update`, `/{name}/versions/{version}/adopt`) through
 `FelixClient`, authenticated the way `felix ingest-docs` is: `--api-key`/`FELIX_API_KEY`, else the
 token `felix login --save` kept for that server. The server does the fetching -- pinned to one
 commit, through its egress guard, within its `FELIX_SKILL_IMPORT_SOURCES` -- so nothing here
@@ -26,7 +27,7 @@ from typing import Any
 import typer
 
 skills_app = typer.Typer(
-    name="skills", help="Browse, import and update Agent Skills from GitHub.", no_args_is_help=True
+    name="skills", help="Browse, import, update and adopt Agent Skills from GitHub.", no_args_is_help=True
 )
 
 _URL = typer.Option("http://localhost:8080", "--url", help="The Felix server.")
@@ -281,6 +282,25 @@ def update_cmd(
         typer.echo(f"dropped {clean(path)}", err=True)
     _print_diff(row.get("diff") or {})
     _review_hint(skill, version)
+
+
+@skills_app.command("adopt")
+def adopt_cmd(
+    name: str = typer.Argument(..., help="The library skill's name."),
+    version: str = typer.Argument(..., help="The imported version to vouch for: the newest not rejected."),
+    reason: str = typer.Option(
+        ..., "--reason", help="Why this imported text is now yours; recorded and audited."
+    ),
+    url: str = _URL,
+    api_key: str | None = _API_KEY,
+) -> None:
+    """Vouch for an imported version: save its files unchanged as a new operator draft that is no
+    longer judged or screened as third-party text. The versions before it keep their mark. Never
+    published here: publish the draft through the ordinary gate with the route this prints."""
+    row = _call(url, api_key, lambda c: c.adopt_skill_version(name, version, reason=reason))
+    skill, saved = clean(row["name"]), clean(row["version"])
+    typer.echo(f"{skill}@{saved} saved as an operator draft adopted from {clean(row.get('adopted_from'))}.")
+    _review_hint(skill, saved)
 
 
 __all__ = ["clean", "clean_text", "skills_app"]

@@ -201,6 +201,10 @@ class SkillVersionRow(Base):
     lineage_import: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # Set on the version an operator's adopt saved (`library.adopt`): the import-lineage version
+    # whose files it carries byte for byte, vouched for with the row's `reason` by its `author`.
+    # Its own `lineage_import` is false; the copy rule still counts its files as imported.
+    adopted_from: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
@@ -219,9 +223,17 @@ class SkillFileRow(Base):
     path: Mapped[str] = mapped_column(Text, primary_key=True)
     sha256: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # The sha256 of a text file's normalized text (`skills/copy_rule.py`, a stored format: NFKC,
+    # format characters removed, casefolded, whitespace collapsed; a SKILL.md's body only). Null
+    # for a binary asset, and for every row written before `0032`, which stays null.
+    normalized_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # `holds_imported_file`: an agent's save looks its files' digests up across the tenant (0028).
-    __table_args__ = (Index("idx_skill_file_tenant_sha256", "tenant_id", "sha256"),)
+    # `holds_imported_file`: an agent's save looks its files' digests up across the tenant, by
+    # bytes (0028) and normalized text (0032).
+    __table_args__ = (
+        Index("idx_skill_file_tenant_sha256", "tenant_id", "sha256"),
+        Index("idx_skill_file_tenant_normalized_sha256", "tenant_id", "normalized_sha256"),
+    )
 
 
 class SkillFeedbackRow(Base):

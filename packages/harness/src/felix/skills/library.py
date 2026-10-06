@@ -17,7 +17,6 @@ was once published.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import re
 import time
@@ -28,7 +27,8 @@ from typing import Any, Literal
 
 from felix.config import Settings
 from felix.logging_setup import loggable
-from felix.skills.binary import decode_base64, encode_base64, is_binary_asset_path
+from felix.skills.binary import encode_base64, is_binary_asset_path
+from felix.skills.copy_rule import copy_digests, digest, file_digest, normalized_digest, stored_bytes
 from felix.skills.format import ValidationIssue, validate_skill_bundle
 from felix.skills.library_store import (
     ANY_LIVE,
@@ -50,6 +50,7 @@ from felix.skills.publish_gate import (
     PublishPolicy,
     Verdict,
     assess,
+    carries_imported_text,
     evaluate_files,
     gate_scenario_source,
     gate_source,
@@ -174,6 +175,30 @@ class DraftProvenance:
     principal: str | None = None
     # Set exactly when ``source="import"``.
     origin: ImportOrigin | None = None
+    # Set only by `adopt`, on an operator's save: the import-lineage version an operator vouched
+    # for. `save_draft` holds the save to it (`_check_adopt`: that version is the parent, carries
+    # imported text, is no agent's unreviewed draft, and has exactly these files).
+    adopted_from: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.source == "import") != (self.origin is not None):
+            raise ValueError("an import's provenance carries its origin, and only an import's does")
+        if self.adopted_from is not None and self.source != "operator":
+            raise ValueError("only an operator's save adopts a version")
+
+    @property
+    def builds_on_newest_buildable(self) -> bool:
+        """Whether the save's parent must be the newest version that was not rejected, rather
+        than the newest of all. An agent's edit and an import: a rejected draft is not what they
+        replace (`importer._prior`). An adopt: it vouches for the version a reviewer would
+        otherwise be editing."""
+        return self.source in {"agent", "import"} or self.adopted_from is not None
+
+    @property
+    def inherits_lineage(self) -> bool:
+        """Whether the save takes `lineage_import` from the version it builds on. Every save
+        does except an adopt, the one save that clears it (`_lineage_import`)."""
+        return self.adopted_from is None
 
 
 class SkillOriginMismatch(SkillLibraryError):
@@ -181,6 +206,33 @@ class SkillOriginMismatch(SkillLibraryError):
     version an agent or an operator wrote. An import never takes over a name."""
 
     code = "origin_mismatch"
+
+
+class SkillNotImportLineage(SkillLibraryError):
+    """An adopt named a version that carries no imported text: there is nothing to vouch for."""
+
+    code = "not_imported"
+
+
+class SkillAgentDraft(SkillLibraryError):
+    """An adopt named an agent's draft nobody has decided: vouching for it would clear the mark
+    on text an agent wrote and no person read, and its publish would no longer need a person."""
+
+    code = "agent_draft"
+
+
+class SkillAdoptMismatch(SkillLibraryError):
+    """An adopt's save is not the version it names: another parent, or other files. The
+    exemption from the lineage rule covers exactly the bytes an operator vouched for."""
+
+    code = "adopt_mismatch"
+
+
+class SkillReasonRequired(SkillLibraryError):
+    """An adopt gave no reason. Vouching for third-party text is the one save that clears its
+    mark, so it says why, and the audit trail keeps it."""
+
+    code = "reason_required"
 
 
 class SkillPublishBlocked(SkillLibraryError):
@@ -313,21 +365,23 @@ def _next_version(newest: str | None, *, explicit: str | None, bump: SemverBump)
     return resolve_next_semver(newest, bump=bump)
 
 
-def _stored_bytes(path: str, content: str) -> bytes:
-    # A binary asset arrives base64 (the bundle is text); the object store holds the bytes.
-    return decode_base64(content) if is_binary_asset_path(path) else content.encode("utf-8")
-
-
 async def _write_files(store: Any, tenant_id: str, name: str, version: str, files: Mapping[str, str]) -> None:
     for path, content in files.items():
-        await store.put(library_object_key(tenant_id, name, version, path), _stored_bytes(path, content))
+        await store.put(library_object_key(tenant_id, name, version, path), stored_bytes(path, content))
 
 
 def _file_rows(files: Mapping[str, str]) -> list[dict[str, Any]]:
     rows = []
     for path, content in sorted(files.items()):
-        data = _stored_bytes(path, content)
-        rows.append({"path": path, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+        data = stored_bytes(path, content)
+        rows.append(
+            {
+                "path": path,
+                "sha256": digest(data),
+                "size": len(data),
+                "normalized_sha256": normalized_digest(path, content),
+            }
+        )
     return rows
 
 
@@ -474,8 +528,6 @@ async def save_draft(
     The row's ``lineage_import`` is set for an import and for any version built on one
     (`_lineage_import`): an edit of third-party text is still judged as one.
     """
-    if (provenance.source == "import") != (provenance.origin is not None):
-        raise ValueError("an import's provenance carries its origin, and only an import's does")
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid or validation.frontmatter is None:
         raise SkillBundleInvalid(validation.errors)
@@ -490,6 +542,8 @@ async def save_draft(
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
     if provenance.source == "agent":
         await _evals_only_inherited(lib, tenant_id, skill_name, parent, files)
+    if provenance.adopted_from is not None:
+        await _check_adopt(lib, tenant_id, skill_name, parent, provenance.adopted_from, files)
 
     row = {
         "name": skill_name,
@@ -502,6 +556,7 @@ async def save_draft(
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
         **(provenance.origin.as_row() if provenance.origin else {}),
+        "adopted_from": provenance.adopted_from,
         "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance, files),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
@@ -514,9 +569,7 @@ async def save_draft(
         explicit=version,
         bump=bump,
         expect_newest=expect_newest,
-        # An import builds on the newest version that was not rejected, as an agent does: a
-        # rejected draft is not the version it replaces (`importer._prior`).
-        buildable=provenance.source in {"agent", "import"},
+        buildable=provenance.builds_on_newest_buildable,
         max_pending=_pending_cap(provenance, max_pending),
     )
     try:
@@ -560,18 +613,67 @@ async def _lineage_import(
     was edited from does -- the named parent, else the skill's newest version, which is what a
     save that names none still starts from.
 
-    For an agent's save, also when any of its files is byte-for-byte a file of an import-lineage
-    version anywhere in the tenant: an agent can read an imported skill and write its text into a
-    new one under another name, and the copy is as much a third party's as the original."""
+    For an agent's save, also when any of its files is a copy of a file of imported text
+    anywhere in the tenant (`copy_rule`: by bytes, or by normalized text): an agent can read an
+    imported skill and write its text into a new one under another name, and the copy is as much
+    a third party's as the original. A file the save keeps byte for byte from the version it
+    builds on is not a copy -- that version carries no imported text, so the file was already
+    vouched for there; without this an agent's first edit of an adopted skill would mark it
+    imported again. A paraphrase is not caught (`copy_rule` says what else is not).
+
+    An adopt (`DraftProvenance.inherits_lineage` false) is the one exception to the parent rule:
+    an operator vouching, with a reason, for exactly the files of the version it names --
+    `_check_adopt` has held it to that. It is an operator's save, so the copy rule does not run
+    on it either, and the version it was adopted from keeps its mark."""
     if provenance.source == "import":
         return True
+    if not provenance.inherits_lineage:
+        return False
     basis = parent or newest_version(await lib.version_ids(tenant_id, name))
-    if basis is not None and gate_source(await lib.get_version(tenant_id, name, basis)) == "import":
+    if basis is not None and carries_imported_text(await lib.get_version(tenant_id, name, basis)):
         return True
     if provenance.source != "agent":
         return False
-    digests = {hashlib.sha256(_stored_bytes(p, c)).hexdigest() for p, c in files.items()}
-    return await lib.holds_imported_file(tenant_id, digests)
+    inherited = (
+        {str(r["path"]): str(r["sha256"]) for r in await lib.list_files(tenant_id, name, basis)}
+        if basis is not None
+        else None
+    )
+    exact, normalized = copy_digests(files, inherited=inherited)
+    return await lib.holds_imported_file(tenant_id, exact, normalized=normalized)
+
+
+def _adoptable(name: str, version: str, row: Mapping[str, Any]) -> None:
+    """Refuse a version an adopt may not vouch for: one with no imported text, or an agent's draft
+    no person has decided."""
+    if not carries_imported_text(row):
+        raise SkillNotImportLineage(f"{name}@{version} carries no imported text; there is nothing to adopt")
+    if row.get("source") == "agent" and row.get("status") == "draft":
+        raise SkillAgentDraft(
+            f"{name}@{version} is an agent's draft nobody has reviewed; a person must reject it or "
+            "publish it before it can be adopted"
+        )
+
+
+async def _check_adopt(
+    lib: SkillLibraryStore,
+    tenant_id: str,
+    name: str,
+    parent: str | None,
+    adopted_from: str,
+    files: Mapping[str, str],
+) -> None:
+    """Hold an adopt's save to the version it names, whoever calls `save_draft`: the parent is
+    that version, it may be adopted (`_adoptable`), and the files are exactly its files."""
+    if parent != adopted_from:
+        raise SkillAdoptMismatch(f"an adopt of {name}@{adopted_from} must build on it, not on {parent}")
+    row = await lib.get_version(tenant_id, name, adopted_from)
+    if row is None:
+        raise SkillNotFound(f"{name}@{adopted_from} does not exist")
+    _adoptable(name, adopted_from, row)
+    held = {str(r["path"]): str(r["sha256"]) for r in await lib.list_files(tenant_id, name, adopted_from)}
+    if held != {p: file_digest(p, c) for p, c in files.items()}:
+        raise SkillAdoptMismatch(f"an adopt of {name}@{adopted_from} must carry exactly its files")
 
 
 async def _evals_only_inherited(
@@ -592,9 +694,7 @@ async def _evals_only_inherited(
         if parent is not None
         else {}
     )
-    changed = sorted(
-        p for p, c in evals.items() if inherited.get(p) != hashlib.sha256(_stored_bytes(p, c)).hexdigest()
-    )
+    changed = sorted(p for p, c in evals.items() if inherited.get(p) != file_digest(p, c))
     if changed:
         raise SkillBundleInvalid(
             [
@@ -623,10 +723,10 @@ def _redacted(settings: Settings, text: str) -> str:
     return redact_text(text, collected_secret_values(settings))
 
 
-def _checked(path: str, data: bytes | None, digest: str) -> str:
+def _checked(path: str, data: bytes | None, expected: str) -> str:
     if data is None:
         raise SkillVersionCorrupt(f"{path} is missing from the object store")
-    if hashlib.sha256(data).hexdigest() != digest:
+    if digest(data) != expected:
         raise SkillVersionCorrupt(f"{path} changed in the object store since it was saved")
     return encode_base64(data) if is_binary_asset_path(path) else data.decode("utf-8")
 
@@ -839,6 +939,88 @@ async def rollback(
     )
 
 
+async def adopt(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    by: str,
+    reason: str,
+    object_store: Any | None = None,
+) -> dict[str, Any]:
+    """An operator vouches for an import-lineage version: its files, byte for byte, saved as a new
+    operator draft built on it that does not carry `lineage_import`.
+
+    The only way the mark is cleared, and only forward: versions are immutable, so ``version``
+    and every version before it keep theirs. The new version is a draft -- it goes live through
+    the ordinary publish gate, which now judges it as an operator's -- and adopt never publishes.
+    No agent tool reaches this; it is an operator route.
+
+    Refused with ``reason_required`` for a blank reason; ``not_found``; ``parent_rejected`` for a
+    rejected draft; ``not_imported`` for a version that carries no imported text; ``agent_draft``
+    for an agent's draft no person has decided; and ``parent_changed`` unless ``version`` is the
+    skill's newest version that was not rejected (the rule every other save builds on), naming
+    who wrote the newer one.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise SkillReasonRequired("say why this imported text is now the operator's own")
+    lib = get_skill_library_store(settings)
+    row = await lib.get_version(tenant_id, name, version)
+    if row is None:
+        raise SkillNotFound(f"{name}@{version} does not exist")
+    if is_rejected(row):
+        raise SkillParentRejected(f"{name}@{version} was rejected; adopt a version that was not")
+    _adoptable(name, version, row)
+    newest = newest_version((await lib.buildable_versions(tenant_id, [name])).get(name, []))
+    if newest != version:
+        raise SkillParentChanged(await _newer_than_adopted(lib, tenant_id, name, version, newest))
+    store = _object_store(settings, object_store)
+    saved = await save_draft(
+        settings,
+        tenant_id,
+        files=await read_version_files(settings, tenant_id, name, version, object_store=store),
+        provenance=DraftProvenance(
+            source="operator", author=by, reason=reason, principal=by, adopted_from=version
+        ),
+        name=name,
+        parent=version,
+        expect_newest=version,
+        object_store=store,
+    )
+    _audit(
+        settings,
+        tenant_id,
+        "skill_adopted",
+        saved,
+        by=by,
+        adopted_from=version,
+        reason=_redacted(settings, reason[:200]),
+        principal=by,
+    )
+    return saved
+
+
+async def _newer_than_adopted(
+    lib: SkillLibraryStore, tenant_id: str, name: str, version: str, newest: str | None
+) -> str:
+    """Why an adopt of ``version`` is stale, naming who wrote the version past it -- so an
+    operator is never told only to "adopt the newest", which may be text nobody read."""
+    row = await lib.get_version(tenant_id, name, newest) if newest else None
+    if row is None:
+        return f"{name}@{version} is not the newest version of {name}"
+    if row.get("source") == "agent" and row.get("status") == "draft":
+        return (
+            f"{name}@{version} is not the newest version: {newest} is an agent's draft by "
+            f"{row.get('author')!r} that nobody has reviewed; a person must reject or publish it first"
+        )
+    return (
+        f"{name}@{version} is not the newest version: {newest} is, saved by "
+        f"{row.get('source')} {row.get('author')!r}; read that one before adopting anything"
+    )
+
+
 async def reject(
     settings: Settings, tenant_id: str, name: str, version: str, *, by: str, note: str
 ) -> dict[str, Any]:
@@ -873,20 +1055,25 @@ __all__ = [
     "VERSION_RE",
     "DraftProvenance",
     "ImportOrigin",
+    "SkillAdoptMismatch",
+    "SkillAgentDraft",
     "SkillBundleInvalid",
     "SkillExists",
     "SkillLibraryError",
     "SkillLiveChanged",
     "SkillNameShadowed",
     "SkillNotFound",
+    "SkillNotImportLineage",
     "SkillOriginMismatch",
     "SkillParentChanged",
     "SkillParentRejected",
     "SkillPendingCapReached",
     "SkillPublishBlocked",
+    "SkillReasonRequired",
     "SkillVersionCapReached",
     "SkillVersionConflict",
     "SkillVersionCorrupt",
+    "adopt",
     "archive_skill",
     "evaluate_version",
     "host_owns",

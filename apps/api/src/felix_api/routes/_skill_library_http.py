@@ -52,6 +52,12 @@ STATUS: dict[str, int] = {
     # Versions are never deleted, so waiting does not help: the state is the obstacle.
     "version_cap_reached": 409,
     "publish_blocked": 422,
+    # An adopt says why the operator vouches for imported text; a blank reason never will.
+    "reason_required": 422,
+    # An adopt of an agent's draft nobody decided: a person rejects or publishes it first.
+    "agent_draft": 409,
+    # An adopt's save is not the version it names (another parent, other files).
+    "adopt_mismatch": 409,
     # Feedback already decided; the inbox moved on underneath the caller.
     "feedback_conflict": 409,
     # An agent's undecided feedback; drains as a person decides it, so a retry later can succeed.
@@ -78,8 +84,9 @@ STATUS: dict[str, int] = {
     "rate_limited": 429,
     # An import is a draft for review; publishing it is a separate request after that review.
     "publish_not_allowed": 422,
-    # An upstream check or update of a skill whose newest version was not imported: the library's
-    # state, not the request, is what has no origin to check.
+    # An upstream check or update of a skill whose newest version was not imported, or an adopt of
+    # a version that carries no imported text: the library's state, not the request, is what has
+    # no origin to check or mark to clear.
     "not_imported": 409,
     # ...the deployment's FELIX_SKILL_IMPORT_SOURCES does not cover it, or this tenant first saw
     # its files within the minimum import age (a policy refusal like the allowlist's; waiting
@@ -129,6 +136,7 @@ STRUCTURAL_FIELDS = frozenset(
         "live_version",
         "target_version",
         "result_version",
+        "adopted_from",
         "status",
         "source",
         "scenario_source",

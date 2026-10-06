@@ -408,8 +408,27 @@ First, because everything else governs it.
          attempt, cooldown on or off; pruned after 366 days), never from a commit date the pusher
          sets. Open: a tree GitHub truncates (past ~100k entries) is refused rather than walked;
          a manifest without content screening gets only the free marker floor over imported text
-         (warned at compile), which a paraphrase passes; the suggester's decision model reads imported descriptions; nothing clears
-         `lineage_import` once set; laundering is caught only for byte-identical files.
+         (warned at compile), which a paraphrase passes; laundering by paraphrase, a partial
+         copy, or a changed non-whitespace character (a look-alike letter included) is not
+         detected (the copy rule compares text, not meaning); versions saved before migration
+         `0032` have no normalized digest and never gain one, so they match by bytes only until a
+         backfill from the object store (a worker task or CLI command) exists; the suggester
+         still sees an imported skill's name; adopt shares `skills:write` with every library
+         write, and an operator can still save imported bytes into a new skill unchecked.
+         Fixed since: the skill suggester hands the
+         decision model an imported skill's listed description only (withheld on injection markers, quoted as
+         third-party text), never its body; a paraphrased description can still bias the ranking,
+         which returns only probabilities. `POST /skill-library/{name}/versions/{v}/adopt`
+         (`felix skills adopt`, `FelixClient.adopt_skill_version`, migration `0031`
+         `skill_version.adopted_from`) clears `lineage_import` going forward: a reasoned operator
+         draft of the same bytes, never published by the adopt, audited `skill_adopted`, refused
+         for an agent's undecided draft (`agent_draft`); earlier versions keep the mark, an
+         agent's copy of adopted text into another skill is still tainted, and a file an edit
+         keeps unchanged from a parent without imported text is not a copy, so edits of an
+         adopted skill stay clean. The copy rule (`skills/copy_rule.py`) also matches a
+         normalized digest (NFKC, format characters removed, casefold, whitespace collapsed; a
+         SKILL.md's body only; `skill_file.normalized_sha256`, migration `0032`, no backfill)
+         from 32 normalized characters, while any non-empty file still matches by bytes.
       2. [x] Update checks: `felix/skills/{upstream,upstream_store,bundle_diff}.py`,
          `GET /skill-library/{name}/-/upstream` (the stored ref with `skills:read`, or `?ref=` with
          `skills:write`, re-resolved under the tenant's allowlist; a per-file diff against the live
