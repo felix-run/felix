@@ -407,8 +407,12 @@ First, because everything else governs it.
          attempt, cooldown on or off; pruned after 366 days), never from a commit date the pusher
          sets. Open: a tree GitHub truncates (past ~100k entries) is refused rather than walked;
          a manifest without content screening gets only the free marker floor over imported text
-         (warned at compile), which a paraphrase passes; the suggester's decision model reads imported descriptions; nothing clears
-         `lineage_import` once set; laundering is caught only for byte-identical files.
+         (warned at compile), which a paraphrase passes; nothing clears
+         `lineage_import` once set; laundering is caught only for byte-identical files. Fixed
+         since: the skill suggester hands the decision model an imported skill's listed
+         description only (withheld on injection markers, quoted as third-party text), never its
+         body; a paraphrased description can still bias the ranking, which returns only
+         probabilities.
       2. [x] Update checks: `felix/skills/{upstream,upstream_store,bundle_diff}.py`,
          `GET /skill-library/{name}/-/upstream` (the stored ref with `skills:read`, or `?ref=` with
          `skills:write`, re-resolved under the tenant's allowlist; a per-file diff against the live

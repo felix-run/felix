@@ -448,10 +448,15 @@ turn screening on for agents that activate imported skills, since the markers al
 paraphrase. In the system prompt's skill catalog, and in `list_skills`, an imported skill is
 listed as untrusted (`untrusted="true"` under a preamble in the catalog, `"untrusted": true` in the
 listing), and a description carrying the injection markers is withheld from both (the name is
-still listed). The skill suggester (`spec.skill_suggestion`) gives
-the decision model each skill's description and the start of its body to rank on, so imported text
-can steer which skill is hinted; the hint the agent sees carries only the skill's name, and the
-agent still activates it -- through the screening above.
+still listed). The skill suggester (`spec.skill_suggestion`) gives the decision model each
+skill's description, and in its rerank the start of its body, to rank on. An imported skill
+reaches it the way it reaches the catalog: by its listed description only -- withheld when it
+carries the injection markers -- quoted and marked as third-party text, and never by its body.
+The decision model returns probabilities and nothing else: it runs no tool and the agent sees only
+the skill name it hints, so imported text there can bias which skill is suggested, not execute
+anything, and a paraphrased injection in a description can still tilt the ranking. The agent
+still activates a hinted skill itself -- through the screening above. Operator, agent and bundled
+skills are described to it as before.
 
 **Allowlist, token and budget.** `FELIX_SKILL_IMPORT_SOURCES` globs the repositories a browse or an
 import may name, per tenant: `acme=github:acme/*` serves tenant `acme` only, and an entry with no
