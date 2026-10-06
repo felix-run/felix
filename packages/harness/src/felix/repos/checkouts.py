@@ -345,6 +345,129 @@ async def describe(settings: Settings, tenant_id: str, thread_id: str) -> dict[s
     return out
 
 
+# A listing's default and ceiling. The workspace's tree windows at 200 rows, so a few thousand
+# paths is more than a page will ever draw; the ceiling bounds what one request can make git do.
+LIST_DEFAULT = 2_000
+LIST_MAX = 10_000
+
+
+class ListRefused(Exception):
+    """A listing that cannot be made, with a code a client can act on."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _clean_prefix(prefix: str) -> str:
+    """`prefix` as a relative directory inside the checkout, or ListRefused. Lexical only: the
+    listing never touches the filesystem through it."""
+    raw = prefix.strip("/")
+    if not raw:
+        return ""
+    parts = raw.split("/")
+    if "\\" in raw or "\0" in raw or any(p in {"", ".", ".."} for p in parts):
+        raise ListRefused("invalid_prefix", "prefix must be a relative path inside the repository")
+    return raw + "/"
+
+
+_STATUS = {"M": "modified", "T": "modified", "A": "added", "D": "deleted", "U": "conflicted"}
+
+
+def _status_of(xy: str) -> str:
+    """git's two-column porcelain code as one word, the worktree column first: what the agent did
+    since the last commit is what a reader wants to see."""
+    if xy == "??":
+        return "untracked"
+    for column in (xy[1:2], xy[0:1]):
+        if column in _STATUS:
+            return _STATUS[column]
+    return "modified"
+
+
+async def list_files(
+    settings: Settings, tenant_id: str, thread_id: str, *, prefix: str = "", limit: int = LIST_DEFAULT
+) -> dict[str, Any] | None:
+    """The thread's checkout's files: tracked ones and untracked ones git does not ignore, each
+    with its size and git status, relative to the checkout root and sorted by path.
+
+    Read with the publish tool's environment and prelude: no hooks, no repository-supplied config.
+    Sizes come from `lstat`, so a symlink is measured and listed as a link and never followed —
+    a link pointing out of the checkout says where it points to no one. None when the thread has
+    no checkout; ListRefused while it is cloning or for a bad prefix. A failed or expired checkout
+    answers its state with no files.
+    """
+    from felix.tools.github_publish import _git_run
+
+    directory = thread_dir(settings, tenant_id, thread_id)
+    state = _read_state(directory)
+    if state is None:
+        return None
+    status = state.get("state")
+    if status == CLONING:
+        raise ListRefused("checkout_cloning", "the repository is still cloning")
+    if status != READY:
+        return {"state": status, "files": [], "truncated": False}
+    root = directory / REPO_DIR
+    if root.is_symlink() or not root.is_dir():
+        return {"state": FAILED, "files": [], "truncated": False}
+    want = _clean_prefix(prefix)
+    limit = max(1, min(limit, LIST_MAX))
+    pathspec = ["--", want] if want else []
+
+    # Literal pathspecs: a prefix is a directory name, never a glob or `:(magic)`.
+    listed = await _git_run(
+        root, "--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard", *pathspec
+    )
+    changed = await _git_run(
+        root,
+        "--literal-pathspecs",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--no-renames",
+        "--untracked-files=all",
+        *pathspec,
+    )
+    # Output past the cap kills git, so a truncated run's exit code is not a failure.
+    if (listed.code != 0 and not listed.truncated) or (changed.code != 0 and not changed.truncated):
+        logger.warning("listing checkout failed: %s", loggable(listed.err or changed.err, limit=300))
+        raise ListRefused("listing_failed", "the repository could not be listed")
+
+    statuses: dict[str, str] = {}
+    entries = changed.out.split(b"\0")
+    if changed.truncated:
+        entries = entries[:-1]
+    for entry in entries:
+        if len(entry) > 3:
+            statuses[entry[3:].decode("utf-8", "surrogateescape")] = _status_of(
+                entry[:2].decode("ascii", "replace")
+            )
+
+    # `ls-files` repeats a path once per conflict stage; a set keeps one row each. Paths a status
+    # names that `ls-files` cannot (a deletion staged in the index) are listed too.
+    names = listed.out.split(b"\0")
+    if listed.truncated:
+        names = names[:-1]  # the last name was cut mid-path
+    paths = {p.decode("utf-8", "surrogateescape") for p in names if p}
+    paths |= set(statuses)
+    ordered = sorted(paths)
+    truncated = len(ordered) > limit or listed.truncated or changed.truncated
+    files: list[dict[str, Any]] = []
+    for path in ordered[:limit]:
+        target = root / path
+        try:
+            st = os.lstat(target)
+        except OSError:
+            files.append(
+                {"path": path, "kind": "missing", "size": None, "status": statuses.get(path, "deleted")}
+            )
+            continue
+        kind = "symlink" if os.path.islink(target) else "file"
+        files.append({"path": path, "kind": kind, "size": st.st_size, "status": statuses.get(path, "clean")})
+    return {"state": READY, "files": files, "truncated": truncated}
+
+
 def remove_checkout(settings: Settings, tenant_id: str, thread_id: str) -> bool:
     """Delete the thread's checkout and its state. True when there was one."""
     directory = thread_dir(settings, tenant_id, thread_id)

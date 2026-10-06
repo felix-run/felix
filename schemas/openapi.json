@@ -100,6 +100,15 @@
           "github_redirect": {
             "title": "Github Redirect",
             "type": "boolean"
+          },
+          "github_signup": {
+            "default": "off",
+            "enum": [
+              "off",
+              "invite"
+            ],
+            "title": "Github Signup",
+            "type": "string"
           }
         },
         "required": [
@@ -345,6 +354,85 @@
           "manifest"
         ],
         "title": "ChatRequest",
+        "type": "object"
+      },
+      "CheckoutFileOut": {
+        "description": "One path in the checkout, relative to its root.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "file",
+              "symlink",
+              "missing"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "status": {
+            "enum": [
+              "clean",
+              "modified",
+              "added",
+              "deleted",
+              "untracked",
+              "conflicted"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "status"
+        ],
+        "title": "CheckoutFileOut",
+        "type": "object"
+      },
+      "CheckoutFilesOut": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/CheckoutFileOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "failed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "files",
+          "truncated"
+        ],
+        "title": "CheckoutFilesOut",
         "type": "object"
       },
       "CheckoutOut": {
@@ -1567,16 +1655,28 @@
           "workflow_not_granted",
           "github_unavailable",
           "github_config_error",
-          "rate_limited"
+          "rate_limited",
+          "not_invited"
         ],
         "title": "LoginErrorCode",
         "type": "string"
       },
       "LoginErrorOut": {
-        "description": "Every refusal. `interval` accompanies 428; `tenants` accompanies 409.",
+        "description": "Every refusal. `interval` accompanies 428; `tenants` accompanies 409; `github_login`\naccompanies a refusal made after GitHub said who signed in.",
         "properties": {
           "error": {
             "$ref": "#/components/schemas/LoginErrorCode"
+          },
+          "github_login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Github Login"
           },
           "interval": {
             "anyOf": [
@@ -7259,7 +7359,7 @@
     },
     "/auth/methods": {
       "get": {
-        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
+        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).\n- `github_signup`: whether an account in no mapped org may sign in to a personal tenant \u2014\n  `off`, or `invite` for the accounts on FELIX_GITHUB_SIGNUP_LOGINS. `off` whenever GitHub\n  login itself is.\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
         "operationId": "auth_methods_auth_methods_get",
         "responses": {
           "200": {
@@ -8741,6 +8841,112 @@
           }
         },
         "summary": "Open Thread Repo",
+        "tags": [
+          "Repos"
+        ]
+      }
+    },
+    "/chat/sessions/{thread_id}/workspace/repo/files": {
+      "get": {
+        "description": "The files in this thread's checkout \u2014 tracked, and untracked but not ignored \u2014 each with its\nsize and git status, sorted by path. A failed or expired checkout answers its state and no\nfiles; one still cloning is a 409.",
+        "operationId": "list_thread_repo_files_chat_sessions__thread_id__workspace_repo_files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 1024,
+              "title": "Prefix",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 2000,
+              "maximum": 10000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutFilesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Thread Repo Files",
         "tags": [
           "Repos"
         ]

@@ -10,6 +10,42 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-05
+
+### Added
+
+- `felix doctor` notes that the API and the worker need the same `FELIX_SKILL_UPDATE_WEBHOOKS` and `FELIX_WEBHOOK_ENDPOINTS` whenever skill update webhooks are bound. (#487)
+
+- `FELIX_LEASE_ENFORCE=strict` makes session leases binding: a request that drives a thread without `X-Felix-Lease-Token` is refused with `409 lease_held` while another client holds the thread exclusively. An unheld thread, or one only observers watch, still accepts requests without a token. Under strict, `/v1/chat/completions` with a `user` is checked too, because `user` names the same thread. The default, `advisory`, is unchanged. (#488)
+
+- `POST /chat/stream` honours `Idempotency-Key` (with a `thread_id`), so a send that failed in the client can be resent safely. A resend never runs a second turn: while the first is still streaming it is `409 idempotency_in_progress`, and afterwards it replays, with `Idempotent-Replayed: true`, the session events that request itself appended, followed by its error frame if it ended in one. A first request that appended nothing, including one whose client disconnected before any response was sent, frees the key so the resend runs. (#488)
+
+- `POST /skill-library/{name}/versions/{version}/adopt` (`skills:write`, body `{reason}`), `felix skills adopt <name> <version> --reason ...` and `FelixClient.adopt_skill_version`. An operator vouches for an imported version: its files are saved unchanged as a new operator draft (`adopted_from`), no longer held to the import gate or screened as third-party text once published. Earlier versions keep `lineage_import`, and later edits of the adopted skill stay clean. Adopt never publishes, is audited as `skill_adopted`, and is refused with `not_imported`, `agent_draft`, `parent_rejected`, `parent_changed`, `adopt_mismatch` or `reason_required`. Migration `0031` adds `skill_version.adopted_from`. (#491)
+
+- **List the files in a thread's repository.** `GET /chat/sessions/{thread_id}/workspace/repo/files` answers the checkout's tracked and untracked (not ignored) files, each with its size and git status, sorted by path. `prefix` narrows the list to one directory, and `limit` (default 2,000, at most 10,000) caps it, with `truncated` saying so. Symlinks are listed as symlinks and never followed. (#492)
+
+- GitHub signup: `FELIX_GITHUB_SIGNUP=invite` lets the accounts in `FELIX_GITHUB_SIGNUP_LOGINS` (`login` or `login:<id>`) that belong to no mapped org sign in to a personal tenant, `gh-<GitHub id>`, with `FELIX_GITHUB_SIGNUP_SCOPES`. Other accounts outside the org map are refused with `403 not_invited`. `GET /auth/methods` reports the mode as `github_signup`. (#493)
+
+### Changed
+
+- A GitHub login refusal made after GitHub identified the account now names it: `github_login` in the JSON body, `&login=` in the redirect fragment. (#493)
+
+### Fixed
+
+- On Postgres, a rewind or fork made on one replica while a turn was running on another is no longer overwritten by that turn's later appends. The turn's next leaf write is skipped, and the following turn continues from the rewound leaf. (#488)
+
+- `POST /skill-library` and `PUT /skill-library/{name}/versions` accept a request body of up to 12 MiB, enough for a full 8 MiB skill bundle with base64-encoded assets; they were capped at the 1 MiB core limit, so any bundle over about 1 MiB was refused with 413. Every other route keeps the 1 MiB cap. (#489)
+
+- Under Docker Compose, `FELIX_GITHUB_SIGNUP`, `FELIX_GITHUB_SIGNUP_LOGINS` and `FELIX_GITHUB_SIGNUP_SCOPES` now reach the API; before this, signup could not be turned on in a Compose deployment. (#494)
+
+### Security
+
+- `multidict` is upgraded to 6.9.1 for CVE-2026-104874. (#490)
+
+- The skill suggester's decision model sees an imported skill only by its listed description, quoted and fenced as third-party text, never its body. (#491)
+
+- Copy detection for imported skill text also matches a normalized digest (NFKC, invisible format characters removed, casefolded, whitespace collapsed; the body only for `SKILL.md`), so a reformatted copy, or a `SKILL.md` body copied under another name, keeps the import's lineage. Exact copies of any non-empty file still match by bytes. Migration `0032` adds `skill_file.normalized_sha256` with no backfill; older versions match by bytes only. A paraphrase or partial copy is still not detected. (#491)
+
 ## [0.7.0] — 2026-10-04
 
 ### Added
@@ -4312,3 +4348,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.6.1]: https://github.com/felix-run/felix/releases/tag/v0.6.1
 [0.6.2]: https://github.com/felix-run/felix/releases/tag/v0.6.2
 [0.7.0]: https://github.com/felix-run/felix/releases/tag/v0.7.0
+[0.8.0]: https://github.com/felix-run/felix/releases/tag/v0.8.0

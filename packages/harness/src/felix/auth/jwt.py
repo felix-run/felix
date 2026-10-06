@@ -178,6 +178,25 @@ def _tenant_from_payload(
     except ValueError as exc:
         raise TenantResolutionError(f"tenant claim is unusable: {exc}") from exc
 
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    from felix.auth.github_signup import admits_personal_claim, signup_enabled
+
+    if signup_enabled(settings):
+        # A personal tenant (`gh-<GitHub id>`) is created by signing in, so it is in no
+        # allowlist; what admits it instead is who minted the token and for whom.
+        personal = admits_personal_claim(
+            payload, claimed, self_issued=cfg.scheme == "self" and cfg.issuer == SELF_ISSUER
+        )
+        if personal is not None:
+            if not personal:
+                raise TenantResolutionError(
+                    f"tenant {claimed!r} is a personal tenant, claimable only by its own GitHub sign-in"
+                )
+            return claimed
+
     allowed = allowed_tenants(settings)
     if allowed and claimed not in allowed:
         # tenant_id is the isolation boundary and it arrives in a token claim. On Cognito
