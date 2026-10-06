@@ -541,10 +541,12 @@ async def test_a_file_of_an_import_lineage_version_is_found_by_its_digest(store_
         "acme", {**_row("0.1.0", at=2), "name": "own-notes"}, own, created_by="c", at=2
     )
 
-    assert await store.holds_imported_file("acme", ["b" * 64, "f" * 64]) is True
-    assert await store.holds_imported_file("acme", ["e" * 64]) is False, "a file of a version not imported"
-    assert await store.holds_imported_file("globex", ["b" * 64]) is False
-    assert await store.holds_imported_file("acme", []) is False
+    assert await store.holds_imported_file("acme", ["b" * 64, "f" * 64], normalized=[]) is True
+    assert await store.holds_imported_file("acme", ["e" * 64], normalized=[]) is False, (
+        "a file of a version not imported"
+    )
+    assert await store.holds_imported_file("globex", ["b" * 64], normalized=[]) is False
+    assert await store.holds_imported_file("acme", [], normalized=[]) is False
 
 
 @parametrized
@@ -568,15 +570,17 @@ async def test_a_file_of_an_import_is_found_by_its_normalized_digest_too(store_s
         "1" * 64,
         None,
     )
-    assert await store.holds_imported_file("acme", [], ["1" * 64]) is True
-    assert await store.holds_imported_file("acme", ["f" * 64], ["1" * 64]) is True
-    assert await store.holds_imported_file("acme", ["b" * 64], []) is True
-    assert await store.holds_imported_file("acme", ["1" * 64], ["a" * 64]) is False, "never crossed"
-    assert await store.holds_imported_file("acme", [], ["2" * 64]) is False, (
+    assert await store.holds_imported_file("acme", [], normalized=["1" * 64]) is True
+    assert await store.holds_imported_file("acme", ["f" * 64], normalized=["1" * 64]) is True
+    assert await store.holds_imported_file("acme", ["b" * 64], normalized=[]) is True
+    assert await store.holds_imported_file("acme", ["1" * 64], normalized=["a" * 64]) is False, (
+        "never crossed"
+    )
+    assert await store.holds_imported_file("acme", [], normalized=["2" * 64]) is False, (
         "a file of a version not imported"
     )
-    assert await store.holds_imported_file("globex", [], ["1" * 64]) is False
-    assert await store.holds_imported_file("acme", [], []) is False
+    assert await store.holds_imported_file("globex", [], normalized=["1" * 64]) is False
+    assert await store.holds_imported_file("acme", [], normalized=[]) is False
 
 
 @parametrized
@@ -590,8 +594,8 @@ async def test_a_file_of_an_adopted_version_still_counts_as_imported(store_setti
 
     row = await store.get_version("acme", "invoice-triage", "0.1.1")
     assert row is not None and (row["adopted_from"], row["lineage_import"]) == ("0.1.0", False)
-    assert await store.holds_imported_file("acme", ["c" * 64]) is True
-    assert await store.holds_imported_file("globex", ["c" * 64]) is False
+    assert await store.holds_imported_file("acme", ["c" * 64], normalized=[]) is True
+    assert await store.holds_imported_file("globex", ["c" * 64], normalized=[]) is False
     await store.insert_version(
         "acme",
         {**_row("0.1.0", at=2), "name": "own-notes"},
@@ -600,7 +604,7 @@ async def test_a_file_of_an_adopted_version_still_counts_as_imported(store_setti
         at=2,
     )
     assert (await store.get_version("acme", "own-notes", "0.1.0") or {})["adopted_from"] is None
-    assert await store.holds_imported_file("acme", ["d" * 64]) is False
+    assert await store.holds_imported_file("acme", ["d" * 64], normalized=[]) is False
 
 
 @parametrized

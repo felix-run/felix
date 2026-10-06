@@ -427,16 +427,33 @@ name.
 
 **Lineage taint.** An import, and every version built on one by anyone, carries `lineage_import`:
 an agent's or operator's edit, an edit of that edit, an operator save naming no parent, and an
-agent's save of any file matching a file of an import-lineage version anywhere in the tenant (an
-agent copying imported text under another name). A text file matches by its bytes or by its
-normalized text -- Unicode NFKC, casefolded, every run of whitespace one space, stripped -- so a
-copy that only re-spaces, re-cases or swaps compatibility forms (full-width letters, ligatures,
-non-breaking spaces) is still a copy; a binary asset matches by its bytes. A paraphrase is not
-caught: the rule compares text, not meaning, and an agent rewording imported text launders it.
-A file under 32 characters of normalized text (32 bytes for an asset) is never compared, so an
-empty file, a license id or a heading every skill shares cannot taint every save. Files saved
-before migration `0032` have no normalized digest until their skill is saved again, and match by
-bytes alone until then. The publish gate judges such a version
+agent's save carrying a copy of a file of imported text anywhere in the tenant (an agent
+copying imported text under another name). The copy rule (`skills/copy_rule.py`):
+
+- A file matches by its **bytes** whenever it holds any text at all -- a one-line installer
+  copied verbatim is caught however short it is -- and a binary asset whenever it is not empty.
+  An empty or whitespace-only file never matches. A tiny file every skill shares (`[]`, a license
+  id) therefore byte-matches too, and taints the save that copies it: that fails closed, and is
+  accepted.
+- A text file also matches by its **normalized text**: Unicode NFKC, format characters (category
+  `Cf`: zero-width spaces and joiners, the soft hyphen, the BOM, bidi controls) removed,
+  casefolded, every run of whitespace one space, stripped -- for a SKILL.md, over its body alone,
+  since the frontmatter names the skill. A copy that only re-spaces, re-cases, swaps
+  compatibility forms (full-width letters, ligatures, non-breaking spaces) or inserts invisible
+  characters still matches, and so does a SKILL.md body copied under another name. Normalized text
+  shorter than 32 characters is not compared: once case and spacing are ignored, that short a
+  text matches by coincidence.
+- A file the save keeps byte for byte from the version it edits is not a copy, when that version
+  carries no imported text: the file was vouched for there. So the agent tools and the feedback
+  improver, which carry every other file of the parent along, do not re-mark an adopted skill, or
+  an operator's skill holding a file the operator copied.
+- **Not caught:** a paraphrase -- the rule compares text, not meaning, and an agent rewording
+  imported text launders it; a partial copy; and any change of a non-whitespace character,
+  including a look-alike letter from another script. Versions saved before migration `0032`,
+  imports included, have no normalized digest and never gain one (a version's rows are
+  immutable), so they are matched by bytes alone.
+
+The publish gate judges such a version
 as an import whoever saved it: an advisory scan blocks it whatever the policy says (tighten only),
 only the bundle's own `evals/` scenarios count toward an evaluation requirement (an import drops
 its `evals/`), and an agent's edit of one always waits for a person. Rolling back to one passes the
@@ -451,14 +468,25 @@ false: the publish gate then judges it by the tenant's own policy, and once it i
 `activate_skill`, `read_skill_file` and `list_skills` no longer mark it untrusted. Versions are
 immutable, so the adopted version and everything before it keep the mark (a rollback to one is
 judged as an import). Adopt never publishes -- the draft goes live through the ordinary gate --
-and it is refused for a version carrying no imported text (409 `not_imported`), a rejected one
+and it is refused for a version carrying no imported text (409 `not_imported`), an agent's
+draft no person has decided (409 `agent_draft`: a person rejects or publishes it first, so an
+adopt never vouches for text an agent wrote and nobody read), a rejected one
 (`parent_rejected`), and anything but the newest version that was not rejected
-(`parent_changed`). It is audited as `skill_adopted` (principal, redacted reason, the version
-adopted and the one saved). No agent tool reaches it. The exemption is that one save's: an
-operator saving the same bytes through the ordinary save still inherits the mark, edits built
-on the adopted version do not inherit it, and an agent's save copying any adopted file is still
-caught by the copy rule -- an operator vouched for that text once, in that skill. An adopted skill
+(`parent_changed`, whose message names who wrote the newer version rather than inviting an adopt
+of it). `save_draft` holds any save carrying `adopted_from` to the same rules (409
+`adopt_mismatch` for another parent or other files), whoever calls it. It is audited as
+`skill_adopted` (principal, redacted reason, the version adopted and the one saved); under
+`FELIX_AUTH_MODE=none`, a development setting, the recorded principal is whatever the request
+claimed and means nothing. No agent tool reaches it. The exemption is that one save's: an
+operator saving the same bytes through the ordinary save still inherits the mark. Edits built on
+the adopted version do not inherit it, an agent's edit that keeps the adopted files unchanged
+included (see the copy rule above), while an agent's save copying an adopted file into another
+skill is still caught -- an operator vouched for that text once, in that skill. An adopted skill
 no longer follows its origin: an update is `not_imported` and a re-import `origin_mismatch`.
+Adopt needs `skills:write`, the scope every library write needs. A separate scope would only
+matter together with closing the other path an operator already has -- saving imported bytes
+into a new skill of its own, which the copy rule does not check for operators -- so both are left
+as one possible future step.
 
 **Imported text in front of the model.** When an agent works with a live skill of that lineage,
 `activate_skill`, `read_skill_file` and `list_skills` mark their output as relayed from an
@@ -480,9 +508,10 @@ reaches it the way it reaches the catalog: by its listed description only -- wit
 carries the injection markers -- quoted and marked as third-party text, and never by its body.
 The decision model returns probabilities and nothing else: it runs no tool and the agent sees only
 the skill name it hints, so imported text there can bias which skill is suggested, not execute
-anything, and a paraphrased injection in a description can still tilt the ranking. The agent
-still activates a hinted skill itself -- through the screening above. Operator, agent and bundled
-skills are described to it as before.
+anything, and a paraphrased injection in a description can still tilt the ranking. The skill's
+name -- a validated slug, but one the third party chose -- still reaches it, in both rounds. The
+agent still activates a hinted skill itself -- through the screening above. Operator, agent and
+bundled skills are described to it as before.
 
 **Allowlist, token and budget.** `FELIX_SKILL_IMPORT_SOURCES` globs the repositories a browse or an
 import may name, per tenant: `acme=github:acme/*` serves tenant `acme` only, and an entry with no

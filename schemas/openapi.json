@@ -14156,7 +14156,7 @@
     },
     "/skill-library/{name}/versions/{version}/adopt": {
       "post": {
-        "description": "Vouch for an imported version: save its files, byte for byte, as a new operator draft built\non it that no longer carries `lineage_import`, recording who adopted it, why, and from which\nversion (`adopted_from`). The versions before it keep their mark. The new version is a draft:\npublish it through the ordinary gate, which now judges it as an operator's. Adopt never\npublishes, and no agent tool reaches it.\n\n409 `not_imported` for a version with no imported text, `parent_rejected` for a rejected\ndraft, `parent_changed` unless `version` is the newest version that was not rejected; 422\n`reason_required` for a blank reason. Audited as `skill_adopted`.",
+        "description": "Vouch for an imported version: save its files, byte for byte, as a new operator draft built\non it that no longer carries `lineage_import`, recording who adopted it, why, and from which\nversion (`adopted_from`). The versions before it keep their mark. The new version is a draft:\npublish it through the ordinary gate, which now judges it as an operator's. Adopt never\npublishes, and no agent tool reaches it.\n\n409 `not_imported` for a version with no imported text, `agent_draft` for an agent's draft\nno person has decided (reject or publish it first), `parent_rejected` for a rejected draft,\n`parent_changed` unless `version` is the newest version that was not rejected (the message\nnames who wrote the newer one); 422 `reason_required` for a blank reason. Audited as\n`skill_adopted`.",
         "operationId": "adopt_library_version_skill_library__name__versions__version__adopt_post",
         "parameters": [
           {

@@ -223,9 +223,9 @@ class SkillFileRow(Base):
     path: Mapped[str] = mapped_column(Text, primary_key=True)
     sha256: Mapped[str] = mapped_column(Text, nullable=False)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    # The sha256 of a text file's `library.normalized_text` (NFKC, casefolded, whitespace
-    # collapsed), so a copy that differs only in those still matches. Null for a binary asset,
-    # and for every file saved before `0032` until it is saved again.
+    # The sha256 of a text file's normalized text (`skills/copy_rule.py`, a stored format: NFKC,
+    # format characters removed, casefolded, whitespace collapsed; a SKILL.md's body only). Null
+    # for a binary asset, and for every row written before `0032`, which stays null.
     normalized_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # `holds_imported_file`: an agent's save looks its files' digests up across the tenant, by

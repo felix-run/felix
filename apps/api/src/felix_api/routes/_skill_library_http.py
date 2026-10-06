@@ -54,6 +54,10 @@ STATUS: dict[str, int] = {
     "publish_blocked": 422,
     # An adopt says why the operator vouches for imported text; a blank reason never will.
     "reason_required": 422,
+    # An adopt of an agent's draft nobody decided: a person rejects or publishes it first.
+    "agent_draft": 409,
+    # An adopt's save is not the version it names (another parent, other files).
+    "adopt_mismatch": 409,
     # Feedback already decided; the inbox moved on underneath the caller.
     "feedback_conflict": 409,
     # An agent's undecided feedback; drains as a person decides it, so a retry later can succeed.

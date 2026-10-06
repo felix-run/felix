@@ -481,9 +481,11 @@ async def adopt_library_version(name: str, version: str, body: AdoptIn, request:
     publish it through the ordinary gate, which now judges it as an operator's. Adopt never
     publishes, and no agent tool reaches it.
 
-    409 `not_imported` for a version with no imported text, `parent_rejected` for a rejected
-    draft, `parent_changed` unless `version` is the newest version that was not rejected; 422
-    `reason_required` for a blank reason. Audited as `skill_adopted`.
+    409 `not_imported` for a version with no imported text, `agent_draft` for an agent's draft
+    no person has decided (reject or publish it first), `parent_rejected` for a rejected draft,
+    `parent_changed` unless `version` is the newest version that was not rejected (the message
+    names who wrote the newer one); 422 `reason_required` for a blank reason. Audited as
+    `skill_adopted`.
     """
     ctx = library_request(request, SCOPE_SKILLS_WRITE)
     if not addressable(name, version):

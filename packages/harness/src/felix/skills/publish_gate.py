@@ -153,13 +153,32 @@ def gate_scenario_source(version_source: str | None) -> str | None:
     return "bundle" if version_source in _UNTRUSTED_AUTHORS else None
 
 
+def carries_imported_text(row: Mapping[str, Any] | None) -> bool:
+    """Whether a version is judged and served as third-party text: an import, or a version that
+    inherited one's lineage (`lineage_import`). The gate (`gate_source`) and the catalog
+    (`loader._library_skill`, which marks such a skill untrusted) both ask this, so they cannot
+    disagree about which versions it covers. An adopted version (`adopted_from`) does not."""
+    if row is None:
+        return False
+    return row.get("source") == "import" or bool(row.get("lineage_import"))
+
+
+def holds_third_party_bytes(row: Mapping[str, Any] | None) -> bool:
+    """Whether a version's files count as imported text to the copy rule
+    (`library_store.holds_imported_file`): every version that `carries_imported_text`, and also a
+    version an operator adopted from one (`adopted_from`). Adoption vouches for the text in that
+    skill; an agent copying it into another skill is still copying a third party's words. Wider
+    than `carries_imported_text` on purpose."""
+    return carries_imported_text(row) or bool(row and row.get("adopted_from"))
+
+
 def gate_source(row: Mapping[str, Any] | None) -> str | None:
-    """Who the gate judges a version as having been written by: `import` for an import and for
-    every version built on one (`lineage_import`) -- an agent's or an operator's edit of
-    third-party text still carries it -- else the version's own source."""
+    """Who the gate judges a version as having been written by: `import` for every version that
+    `carries_imported_text` -- an agent's or an operator's edit of third-party text still carries
+    it -- else the version's own source."""
     if row is None:
         return None
-    if row.get("source") == "import" or row.get("lineage_import"):
+    if carries_imported_text(row):
         return "import"
     return row.get("source")
 
@@ -275,10 +294,12 @@ __all__ = [
     "SecurityStatus",
     "Verdict",
     "assess",
+    "carries_imported_text",
     "eval_counts_for_gate",
     "evaluate_files",
     "gate_scenario_source",
     "gate_source",
+    "holds_third_party_bytes",
     "policy_for_source",
     "policy_reasons",
     "publish_policy",

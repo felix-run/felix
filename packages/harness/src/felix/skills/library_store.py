@@ -125,11 +125,11 @@ class SkillLibraryStore(Protocol):
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int: ...
 
     async def holds_imported_file(
-        self, tenant_id: str, digests: Collection[str], normalized: Collection[str] = ()
+        self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
     ) -> bool:
-        """Whether any file of an import-lineage version in the tenant -- or of a version an
-        operator adopted from one (`adopted_from`), whose bytes are still a third party's -- has
-        one of ``digests`` as its sha256, or one of ``normalized`` as its `normalized_sha256`."""
+        """Whether any file of a version that `publish_gate.holds_third_party_bytes` -- import
+        lineage, or adopted from it -- in the tenant has one of ``digests`` as its sha256, or one
+        of ``normalized`` as its `normalized_sha256` (`copy_rule`)."""
         ...
 
     async def insert_version(
@@ -220,11 +220,6 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     "lineage_import": False,
     "adopted_from": None,
 }
-
-
-def _holds_imported_text(row: dict[str, Any]) -> bool:
-    """What the copy rule counts as imported: an import-lineage version, or one adopted from it."""
-    return bool(row.get("lineage_import") or row.get("adopted_from"))
 
 
 class InMemorySkillLibraryStore:
@@ -330,13 +325,15 @@ class InMemorySkillLibraryStore:
         return self._pending(tenant_id, origin_manifest_id)
 
     async def holds_imported_file(
-        self, tenant_id: str, digests: Collection[str], normalized: Collection[str] = ()
+        self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
     ) -> bool:
+        from felix.skills.publish_gate import holds_third_party_bytes
+
         wanted, wanted_normalized = set(digests), set(normalized)
         return any(
             f["sha256"] in wanted or f.get("normalized_sha256") in wanted_normalized
             for (t, n, v), files in self._files.items()
-            if t == tenant_id and _holds_imported_text(self._versions.get((t, n, v), {}))
+            if t == tenant_id and holds_third_party_bytes(self._versions.get((t, n, v)))
             for f in files
         )
 
@@ -705,7 +702,7 @@ class PostgresSkillLibraryStore:
             return await self._pending(db, tenant_id, origin_manifest_id)
 
     async def holds_imported_file(
-        self, tenant_id: str, digests: Collection[str], normalized: Collection[str] = ()
+        self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
     ) -> bool:
         from sqlalchemy import and_, exists, or_, select
 
@@ -727,6 +724,8 @@ class PostgresSkillLibraryStore:
                         SkillVersionRow.tenant_id == SkillFileRow.tenant_id,
                         SkillVersionRow.name == SkillFileRow.name,
                         SkillVersionRow.version == SkillFileRow.version,
+                        # `publish_gate.holds_third_party_bytes`, in SQL. An import's own row
+                        # always has `lineage_import` set, so `source = 'import'` adds nothing.
                         or_(
                             SkillVersionRow.lineage_import.is_(True),
                             SkillVersionRow.adopted_from.is_not(None),
