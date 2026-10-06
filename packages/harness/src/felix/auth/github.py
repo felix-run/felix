@@ -5,9 +5,11 @@ Felix runs the device flow on the caller's behalf instead, checks which configur
 user is an *active* member of, and mints its own token for that org's tenant. The GitHub
 access token is used for two reads and dropped; it never reaches the caller.
 
-`FELIX_GITHUB_ORG_TENANTS` is the whole user model: `{"<org>": {"tenant": "<id>",
-"scopes": [...]}}`. There is no user table. An org entry's optional `actions` block lets that
-org's GitHub Actions workflows trade their OIDC token for one too (`felix.auth.github_actions`).
+`FELIX_GITHUB_ORG_TENANTS` maps orgs to tenants: `{"<org>": {"tenant": "<id>",
+"scopes": [...]}}`. There is no user table. A person in none of those orgs can still get a
+personal tenant through signup (`felix.auth.github_signup`), when it is on. An org entry's
+optional `actions` block lets that org's GitHub Actions workflows trade their OIDC token for
+one too (`felix.auth.github_actions`).
 """
 
 from __future__ import annotations
@@ -128,6 +130,7 @@ class LoginErrorCode(StrEnum):
     GITHUB_UNAVAILABLE = "github_unavailable"
     GITHUB_CONFIG_ERROR = "github_config_error"
     RATE_LIMITED = "rate_limited"
+    NOT_INVITED = "not_invited"
 
 
 # The one code -> HTTP status table. `authorization_pending`/`slow_down` are not failures —
@@ -148,6 +151,8 @@ LOGIN_ERROR_STATUS: dict[LoginErrorCode, int] = {
     # The operator's to fix in the OAuth app (wrong client id, device flow disabled).
     LoginErrorCode.GITHUB_CONFIG_ERROR: 503,
     LoginErrorCode.RATE_LIMITED: 429,
+    # In no mapped org, and signup is invite-only without this account on the list.
+    LoginErrorCode.NOT_INVITED: 403,
 }
 
 # GitHub's device-flow token errors that mean something to the caller. Anything else is
@@ -182,6 +187,9 @@ class GitHubLoginError(Exception):
         self.status = LOGIN_ERROR_STATUS[code]
         self.interval = interval
         self.tenants = tenants
+        # The account GitHub authenticated, once it is known: a refusal that names it lets the
+        # person see they signed in with the wrong one. Theirs already, so it discloses nothing.
+        self.github_login = ""
 
 
 # The callers of these are anonymous, so what went wrong upstream — an egress proxy's name, a
@@ -692,12 +700,17 @@ async def _login_with(
     settings: Settings, gh: GitHubGrant, tenant: str | None, http: httpx.AsyncClient
 ) -> LoginToken:
     """GitHub's grant, however it was obtained, into a Felix token: who, which orgs, which tenant."""
+    from felix.auth import github_signup
+
     user = await fetch_user(gh.access_token, client=http)
     grants, restricted = await active_grants(settings, gh.access_token, client=http)
     try:
+        if not grants and github_signup.signup_enabled(settings):
+            grants, restricted = github_signup.admit(settings, user, restricted)
         grant = choose_grant(grants, restricted, tenant)
     except GitHubLoginError as exc:
         logger.warning("github login refused for %s (github:%s): %s", user.login, user.id, exc.code)
+        exc.github_login = user.login
         raise
     minted = mint_login_token(settings, user, grant)
     logger.info(
@@ -718,7 +731,10 @@ def validate_login_config(settings: Settings) -> None:
     a `fixed:` verifier that would override the minted tenant, FELIX_ALLOWED_TENANTS — is
     one more way to ship the failure `felix mint-jwt` already guards its own output against.
     """
+    from felix.auth.github_signup import validate_signup_config
+
     _validate_redirect_config(settings)
+    validate_signup_config(settings)
     device, actions = is_enabled(settings), actions_enabled(settings)
     if not (device or actions):
         if settings.github_org_tenants.strip():
@@ -752,6 +768,7 @@ def validate_login_config(settings: Settings) -> None:
             from felix.auth.github_actions import mint_probe
 
             _verify_probe(settings, tenant, lambda found=actions_grants: mint_probe(settings, found))
+    _probe_signup(settings)
 
 
 def _validate_redirect_config(settings: Settings) -> None:
@@ -804,6 +821,18 @@ def _probe_tenant(settings: Settings, grant: OrgGrant) -> None:
 
 
 _PROBE_USER = GitHubUser(id=0, login="felix-boot-probe")
+# Id 1 so its personal tenant, `gh-1`, has the shape a real one has; `gh-0` is not one.
+_SIGNUP_PROBE_USER = GitHubUser(id=1, login="felix-boot-probe")
+
+
+def _probe_signup(settings: Settings) -> None:
+    """A personal tenant is in no allowlist, so the probe proves the verifier admits one."""
+    from felix.auth.github_signup import personal_grant, signup_enabled
+
+    if not signup_enabled(settings):
+        return
+    grant = personal_grant(settings, _SIGNUP_PROBE_USER)
+    _verify_probe(settings, grant.tenant, lambda: mint_login_token(settings, _SIGNUP_PROBE_USER, grant))
 
 
 def _verify_probe(settings: Settings, tenant: str, mint: Callable[[], LoginToken]) -> None:

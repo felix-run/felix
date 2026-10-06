@@ -1829,6 +1829,13 @@ the operator for each login: `FELIX_GITHUB_ORG_TENANTS` maps their GitHub org to
 same. What an org cannot do is administer its own tenant — mint its own API keys, or be created
 without the operator. A tenant or key API for that is not planned.
 
+**One exception, by decision (2026-10-05): a person can be a tenant.** With
+[signup](#signup) on, a GitHub account in no mapped org gets a *personal* tenant, `gh-<GitHub
+id>`, that comes into existence the first time it signs in. The operator still decides who may
+(`FELIX_GITHUB_SIGNUP_LOGINS`) and what such a tenant may do (`FELIX_GITHUB_SIGNUP_SCOPES`); what
+changed is that the tenant itself is not listed anywhere in configuration. Organisations are
+still configured.
+
 `tenant_id` is the isolation boundary and, in the default `claim` mode, it arrives in a
 token claim. Constrain it:
 
@@ -1881,7 +1888,7 @@ a GitHub org, pinned by numeric id, to a tenant and scopes.
 
 | Path | On while | Who gets a token | TTL |
 |---|---|---|---|
-| `POST /auth/github/device` + `/token` | `FELIX_GITHUB_CLIENT_ID` | An *active member* of a mapped org, after the device flow | `FELIX_GITHUB_LOGIN_TTL_SECONDS` (8 h, max 1 d) |
+| `POST /auth/github/device` + `/token` | `FELIX_GITHUB_CLIENT_ID` | An *active member* of a mapped org, after the device flow — or an invited account, into its own tenant ([signup](#signup)) | `FELIX_GITHUB_LOGIN_TTL_SECONDS` (8 h, max 1 d) |
 | `POST /auth/github/actions` | `FELIX_GITHUB_OIDC_AUDIENCE` | A GitHub Actions run its org's `actions` block admits | `FELIX_GITHUB_OIDC_TTL_SECONDS` (15 m, max 1 h) |
 
 - **Device flow.** Anyone can start a flow and ask a member to approve its code (consent
@@ -1905,6 +1912,43 @@ a GitHub org, pinned by numeric id, to a tenant and scopes.
 - **Audit:** `github_login` (the GitHub user) and `github_actions_login` (repository, ref,
   workflow file, event, run and actors), each recorded in the tenant the token is for. Neither
   a device code nor an ID token is logged or audited.
+
+### Signup
+
+A GitHub account in none of the mapped orgs is `not_a_member` unless signup is on. With
+`FELIX_GITHUB_SIGNUP=invite`, the accounts listed in `FELIX_GITHUB_SIGNUP_LOGINS` sign in — by
+device or redirect — to a tenant of their own, and every other account is refused with
+`403 not_invited`.
+
+```bash
+FELIX_GITHUB_SIGNUP=invite
+FELIX_GITHUB_SIGNUP_LOGINS=octocat:583231,hubot   # login, or login:<numeric id>
+FELIX_GITHUB_SIGNUP_SCOPES=memory:read,audit:read
+```
+
+- **The tenant is `gh-<numeric GitHub id>`**, never the login: a login can be renamed and then
+  registered by someone else, and the tenant must not follow it.
+- **Pin each invite** as `login:<id>` (`gh api users/<login> --jq .id`). A pinned invite is
+  matched on the id alone, so a renamed account keeps it and a re-registered login does not
+  inherit it. A bare login is matched case-insensitively, and each match logs the id to pin.
+- **Org membership wins.** An invited account that is also an active member of a mapped org
+  lands in the org's tenant, as before; nobody is offered a personal tenant beside one.
+- **Who may claim a personal tenant.** It is in no `FELIX_ALLOWED_TENANTS`, so the verifier
+  admits a `gh-<id>` claim only from a `self:felix-self` token with `idp: github` and subject
+  `github:<id>` — this deployment's own sign-in, for that account. A claim of one from any other
+  issuer, or for another subject, is refused. With signup off, `gh-<id>` is an ordinary tenant
+  id, and boot refuses one configured anywhere (verifier, allowlist, API key, org map) while
+  signup is on.
+- **Scopes are required** while signup is on, and boot refuses `admin` or `*` among them: they
+  are what a stranger's token carries. Leave out the operator's own (`manifests:write`, jobs,
+  keys).
+- **There is no `open` mode.** Every personal tenant spends this deployment's model credentials,
+  and nothing yet caps one tenant's total spend — `limits.max_cost_usd` is per run, and fails open
+  for a model the pricing catalog does not price. Admitting any GitHub account waits for that cap.
+- **Audit:** the first `github_login` in a personal tenant carries `signup: true`. A refusal has
+  no tenant to be audited in; it is logged, with the login and GitHub id.
+- Changing the list is a config edit and a restart, like the org map. `GET /auth/methods` reports
+  the mode as `github_signup`.
 
 ## Management API scopes
 
