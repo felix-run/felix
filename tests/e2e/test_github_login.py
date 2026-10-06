@@ -150,7 +150,61 @@ async def test_a_non_member_gets_no_token(boot: Any, fake_github: FakeGitHub) ->
         refused = await _login(app.client)
     assert refused.status_code == 403
     assert refused.json()["error"] == "not_a_member"
+    assert refused.json()["github_login"] == "octo"
     assert "access_token" not in refused.json()
+
+
+# --- signup: an account in no mapped org, admitted by invitation ---------------------------
+
+_INVITE = {
+    "FELIX_GITHUB_SIGNUP": "invite",
+    "FELIX_GITHUB_SIGNUP_LOGINS": "octo:4242",
+    "FELIX_GITHUB_SIGNUP_SCOPES": "jobs:read",
+}
+
+
+async def test_an_invited_outsider_signs_up_into_a_tenant_of_their_own(
+    boot: Any, fake_github: FakeGitHub
+) -> None:
+    """The personal tenant is in no FELIX_ALLOWED_TENANTS, and the token opens it all the same."""
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+
+    fake_github.memberships = {}
+    fake_github.polls = [{"access_token": "gho_x"}, {"access_token": "gho_x"}]
+    async with boot([], env=_env(**_INVITE)) as app:
+        assert (await app.client.get("/auth/methods")).json()["github_signup"] == "invite"
+        first = await _login(app.client)
+        assert first.status_code == 200, first.text
+        assert (first.json()["tenant"], first.json()["scopes"]) == ("gh-4242", ["jobs:read"])
+        bearer = {"Authorization": f"Bearer {first.json()['access_token']}"}
+        assert (await app.client.get("/jobs", headers=bearer)).status_code == 200
+        await flush_all(app.settings)
+        again = await _login(app.client)
+        assert again.status_code == 200, again.text
+        await flush_all(app.settings)
+        events, _ = await audit_store.list_events(app.settings, "gh-4242", event_type="github_login")
+
+    # Newest first: only the first sign-in to the tenant is its signup.
+    assert [e["payload_json"].get("signup") for e in events] == [None, True]
+
+
+async def test_an_uninvited_outsider_is_told_signup_is_invite_only(
+    boot: Any, fake_github: FakeGitHub
+) -> None:
+    fake_github.memberships = {}
+    fake_github.polls = [{"access_token": "gho_x"}]
+    async with boot([], env=_env(**{**_INVITE, "FELIX_GITHUB_SIGNUP_LOGINS": "someone-else"})) as app:
+        refused = await _login(app.client)
+    assert refused.status_code == 403
+    assert (refused.json()["error"], refused.json()["github_login"]) == ("not_invited", "octo")
+
+
+async def test_an_invited_org_member_still_lands_in_the_org(boot: Any, fake_github: FakeGitHub) -> None:
+    fake_github.polls = [{"access_token": "gho_x"}]
+    async with boot([], env=_env(**_INVITE)) as app:
+        granted = await _login(app.client)
+    assert granted.json()["tenant"] == "acme"
 
 
 async def test_a_github_outage_is_a_502_naming_nothing_upstream(boot: Any, fake_github: FakeGitHub) -> None:
@@ -313,12 +367,13 @@ async def test_auth_methods_answers_an_anonymous_caller_in_every_mode(
             # The rest of the surface still wants a credential: only this path was opened.
             assert (await app.client.get("/jobs")).status_code == 401
     assert methods.status_code == 200, methods.text
-    # Exactly these two keys: a proxy decides whether to honour a browser's bearer on the second.
+    # Exactly these keys: a proxy decides whether to honour a browser's bearer on `bearer_required`.
     # Redirect sign-in stays off here: no client secret, token key or redirect origin is set.
     assert methods.json() == {
         "github_device": login_on,
         "github_redirect": False,
         "bearer_required": bearer_required,
+        "github_signup": "off",
     }
     # Asking never starts a flow, so it spends nothing at GitHub or from the hourly start budget.
     assert fake_github.issued == 0

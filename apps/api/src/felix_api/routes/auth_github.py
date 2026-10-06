@@ -111,15 +111,19 @@ class AuthMethodsOut(BaseModel):
     github_device: bool
     github_redirect: bool
     bearer_required: bool
+    # Who may sign in without a mapped org: nobody (`off`), or the invited (`invite`).
+    github_signup: Literal["off", "invite"] = "off"
 
 
 class LoginErrorOut(BaseModel):
-    """Every refusal. `interval` accompanies 428; `tenants` accompanies 409."""
+    """Every refusal. `interval` accompanies 428; `tenants` accompanies 409; `github_login`
+    accompanies a refusal made after GitHub said who signed in."""
 
     error: LoginErrorCode
     message: str
     interval: int | None = None
     tenants: list[str] | None = None
+    github_login: str | None = None
 
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
@@ -143,6 +147,7 @@ def _refusal(exc: GitHubLoginError) -> JSONResponse:
         message=str(exc),
         interval=exc.interval,
         tenants=list(exc.tenants) if exc.tenants else None,
+        github_login=exc.github_login or None,
     )
     headers = {"retry-after": str(exc.interval)} if exc.interval is not None else None
     return JSONResponse(body.model_dump(exclude_none=True), status_code=exc.status, headers=headers)
@@ -252,6 +257,9 @@ async def auth_methods(request: Request) -> AuthMethodsOut:
 
     - `github_device`: `POST /auth/github/device` and `/token` are served (login configured).
     - `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).
+    - `github_signup`: whether an account in no mapped org may sign in to a personal tenant —
+      `off`, or `invite` for the accounts on FELIX_GITHUB_SIGNUP_LOGINS. `off` whenever GitHub
+      login itself is.
     - `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not
       `none`). A proxy in front of the harness that would accept a browser's own
       `Authorization: Bearer` in place of its shared key must accept it only while this is
@@ -263,6 +271,7 @@ async def auth_methods(request: Request) -> AuthMethodsOut:
         github_device=is_enabled(settings),
         github_redirect=redirect_enabled(settings),
         bearer_required=settings.auth_mode != "none",
+        github_signup=settings.github_signup if is_enabled(settings) else "off",
     )
 
 
@@ -281,7 +290,14 @@ async def _after_login(settings: Settings, minted: LoginToken, *, method: str) -
     connection when there is one worth keeping (`github_connections.save_connection`)."""
     from felix.audit import store as audit_store
     from felix.auth import github_connections
+    from felix.auth.github_signup import personal_tenant_owner
 
+    # A personal tenant's first sign-in is its signup, and there is no user table to say so:
+    # the tenant's own audit log is the record of whether anyone has signed in to it before.
+    signup = False
+    if personal_tenant_owner(minted.tenant) is not None:
+        prior, _ = await audit_store.query(settings, minted.tenant, limit=1, event_type="github_login")
+        signup = not prior
     # Audited in the tenant the token is for: that tenant's operators are the ones who need
     # to see who logged in to it, with what. A refusal has no tenant and is logged instead.
     audit_store.record_event(
@@ -295,6 +311,7 @@ async def _after_login(settings: Settings, minted: LoginToken, *, method: str) -
             "scopes": list(minted.scopes),
             "expires_in": minted.expires_in,
             "method": method,
+            **({"signup": True} if signup else {}),
         },
     )
     if minted.github is None:
@@ -453,6 +470,8 @@ async def finish_github_redirect(
         fragment = f"felix_login_error={exc.code.value}"
         if exc.tenants:
             fragment += "&tenants=" + quote(",".join(exc.tenants))
+        if exc.github_login:
+            fragment += "&login=" + quote(exc.github_login)
         response = _back(target, fragment)
         _clear(response, FLOW_COOKIE, secure=target.startswith("https://"))
         return response

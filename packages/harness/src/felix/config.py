@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # accepted, which is only safe when the IdP is the sole writer of that claim.
     allowed_tenants: str = ""
     # GitHub login (device flow → a self-issued JWT). Off while the client id is empty.
-    # The org map is the whole user model: {"<org>": {"id": <org id>, "tenant": "<id>",
+    # The org map: {"<org>": {"id": <org id>, "tenant": "<id>",
     # "scopes": [...]}}; an active member of <org> gets a token for <tenant>. `id` is required:
     # an org name can be re-registered by someone else once it is released. Needs a `self:felix-self`
     # verifier (tenant=claim) that accepts what FELIX_JWKS_PRIVATE signs; checked at boot.
@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # The GitHub App's URL slug (github.com/apps/<slug>), so a client can link a person to
     # installing it on more repositories. Empty: no install link is offered.
     github_app_slug: str = ""
+    # Signup (`felix.auth.github_signup`): a GitHub account in no mapped org gets a personal
+    # tenant, `gh-<GitHub id>`. `off` admits nobody that way; `invite` admits only the accounts in
+    # FELIX_GITHUB_SIGNUP_LOGINS (`login` or `login:<id>`, comma-separated). There is no `open`:
+    # nothing caps one tenant's total spend yet. The scopes a personal tenant's token carries are
+    # required while signup is on, and may not include `admin` or `*`.
+    github_signup: Literal["off", "invite"] = "off"
+    github_signup_logins: str = ""
+    github_signup_scopes: str = ""
 
     # --- Per-person repos: a thread's checkout (`felix.repos.checkouts`) ---
     # Where threads' checkouts live: one directory per (tenant, thread). Deliberately not under

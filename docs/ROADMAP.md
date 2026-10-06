@@ -1149,7 +1149,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
 - [x] **`Idempotency-Key` on `POST /chat`** (readiness pass, 2026-09-04) — one turn per key per
       tenant, Redis-backed claims across replicas, replay with `Idempotent-Replayed: true`,
       `FELIX_IDEMPOTENCY_TTL_SECONDS`.
-- [x] **A tenant is a string.** Decided 2026-10-02: **that is the product.** Tenants are the orgs
+- [x] **A tenant is a string.** Decided 2026-10-02: **that is the product.** Amended
+      2026-10-05: a *person* can be a tenant — GitHub signup (`FELIX_GITHUB_SIGNUP=invite`) gives
+      an invited account in no mapped org a personal tenant, `gh-<GitHub id>`, created by its first
+      sign-in. Organisations remain configuration. `open` signup waits on a per-tenant spend cap.
+      Tenants are the orgs
       sharing one install, and tenants and keys stay the install operator's configuration; an
       org's members get in through GitHub login or an IdP, but an org cannot self-administer its
       tenant or keys. Written into `deploy/GOVERNANCE.md#tenant-resolution`. The original note
@@ -1158,6 +1162,11 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       `FELIX_AUTH_API_KEYS` JSON and restarting. Manifest CRUD, canary and rollback are real and
       API-driven; onboarding tenant #2 is a config edit and a process restart. Decide whether that
       is the product (single-operator self-host) or a gap, and write the answer down either way.
+- [ ] **A per-tenant spend cap, before `open` signup.** Invite-only signup (2026-10-05) gives
+      each invited GitHub account a personal tenant on this deployment's model credentials.
+      Nothing caps one tenant's total spend: `limits.max_cost_usd` is per run and fails open for
+      an unpriced model. A cap over a window, enforced before a call and failing closed for an
+      unpriced one, is what `FELIX_GITHUB_SIGNUP=open` would need.
 - [x] **GitHub login** (plan: device flow → self-issued JWT, org → tenant via
       `FELIX_GITHUB_ORG_TENANTS`). Partly answers the item above: a GitHub org is how a person
       reaches a tenant without a key edit and a restart. Three PRs, in order:

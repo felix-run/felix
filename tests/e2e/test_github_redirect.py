@@ -152,8 +152,21 @@ async def test_a_refusal_returns_to_the_app_with_its_code(boot: Any, fake_github
     async with boot([], env=_env()) as app:
         back = await _sign_in(app.client, fake_github)
         assert back.status_code == 302
-        assert back.headers["location"] == f"{APP}/t/abc#felix_login_error=not_a_member"
+        # The account GitHub signed in rides along, so the app can say which one was refused.
+        assert back.headers["location"] == f"{APP}/t/abc#felix_login_error=not_a_member&login=octo"
         assert (await app.client.post("/auth/github/exchange")).status_code == 400
+
+
+async def test_an_uninvited_account_returns_not_invited(boot: Any, fake_github: FakeGitHub) -> None:
+    fake_github.memberships = {}
+    signup = {
+        "FELIX_GITHUB_SIGNUP": "invite",
+        "FELIX_GITHUB_SIGNUP_LOGINS": "someone-else",
+        "FELIX_GITHUB_SIGNUP_SCOPES": "jobs:read",
+    }
+    async with boot([], env=_env(**signup)) as app:
+        back = await _sign_in(app.client, fake_github)
+        assert back.headers["location"] == f"{APP}/t/abc#felix_login_error=not_invited&login=octo"
 
 
 async def test_cancelling_on_github_returns_access_denied(boot: Any, fake_github: FakeGitHub) -> None:
