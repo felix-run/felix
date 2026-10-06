@@ -208,6 +208,26 @@ def test_a_diff_or_update_of_a_skill_that_was_not_imported_says_so(served: FakeR
     assert served.requests == [], "refused before GitHub is asked"
 
 
+def test_adopt_saves_an_operator_draft_and_never_publishes(served: FakeRepos) -> None:
+    assert _run("add", SOURCE).exit_code == 0
+    no_reason = _run("adopt", "invoice-triage", "0.1.0")
+    assert no_reason.exit_code == 2, "the reason is required"
+    assert _run("adopt", "invoice-triage", "0.1.0", "--reason", "ok", "--publish").exit_code == 2
+
+    result = _run("adopt", "invoice-triage", "0.1.0", "--reason", "vetted it")
+    assert result.exit_code == 0, result.output
+    assert "invoice-triage@0.1.1 saved as an operator draft adopted from 0.1.0." in result.output
+    assert "then publish with POST /skill-library/invoice-triage/versions/0.1.1/publish" in result.output
+
+    again = _run("adopt", "invoice-triage", "0.1.1", "--reason", "again")
+    assert again.exit_code == 1
+    assert "not_imported: invoice-triage@0.1.1 carries no imported text" in again.output
+
+    # The skill is the operator's now: it no longer follows its origin.
+    update = _run("update", "invoice-triage")
+    assert update.exit_code == 1 and "not_imported:" in update.output
+
+
 def test_clean_strips_bidi_and_zero_width_characters() -> None:
     from felix_cli.skills import clean
 

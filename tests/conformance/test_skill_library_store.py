@@ -548,6 +548,30 @@ async def test_a_file_of_an_import_lineage_version_is_found_by_its_digest(store_
 
 
 @parametrized
+async def test_a_file_of_an_adopted_version_still_counts_as_imported(store_settings: Any) -> None:
+    """An adopted version is not import-lineage, and its files are still a third party's text:
+    the copy rule counts them whether or not the version it was adopted from is still held."""
+    store = get_skill_library_store(store_settings)
+    adopted = {**_row("0.1.1", at=1, source="operator", origin=None), "adopted_from": "0.1.0"}
+    files = [{"path": "references/x.md", "sha256": "c" * 64, "size": 3}]
+    await store.insert_version("acme", adopted, files, created_by="ops", at=1)
+
+    row = await store.get_version("acme", "invoice-triage", "0.1.1")
+    assert row is not None and (row["adopted_from"], row["lineage_import"]) == ("0.1.0", False)
+    assert await store.holds_imported_file("acme", ["c" * 64]) is True
+    assert await store.holds_imported_file("globex", ["c" * 64]) is False
+    await store.insert_version(
+        "acme",
+        {**_row("0.1.0", at=2), "name": "own-notes"},
+        [{"path": "SKILL.md", "sha256": "d" * 64, "size": 4}],
+        created_by="c",
+        at=2,
+    )
+    assert (await store.get_version("acme", "own-notes", "0.1.0") or {})["adopted_from"] is None
+    assert await store.holds_imported_file("acme", ["d" * 64]) is False
+
+
+@parametrized
 async def test_pruning_sightings_drops_every_tenants_old_rows_only(store_settings: Any) -> None:
     from felix.skills.sighting_store import get_sighting_store
 

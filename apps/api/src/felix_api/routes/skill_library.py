@@ -52,6 +52,7 @@ from felix_api.routes._skill_library_http import (
     written_version,
 )
 from felix_api.routes._skill_library_models import (
+    AdoptIn,
     BundleIn,
     CreateSkillIn,
     MakeLiveIn,
@@ -468,6 +469,33 @@ async def reject_library_version(name: str, version: str, body: RejectIn, reques
         return await library.reject(ctx.settings, ctx.tenant_id, name, version, by=by, note=body.note)
 
     return await _transition(request, name, version, move)
+
+
+@router.post(
+    "/{name}/versions/{version}/adopt", status_code=201, response_model=SkillWriteOut, responses=ERRORS
+)
+async def adopt_library_version(name: str, version: str, body: AdoptIn, request: Request) -> Any:
+    """Vouch for an imported version: save its files, byte for byte, as a new operator draft built
+    on it that no longer carries `lineage_import`, recording who adopted it, why, and from which
+    version (`adopted_from`). The versions before it keep their mark. The new version is a draft:
+    publish it through the ordinary gate, which now judges it as an operator's. Adopt never
+    publishes, and no agent tool reaches it.
+
+    409 `not_imported` for a version with no imported text, `parent_rejected` for a rejected
+    draft, `parent_changed` unless `version` is the newest version that was not rejected; 422
+    `reason_required` for a blank reason. Audited as `skill_adopted`.
+    """
+    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    if not addressable(name, version):
+        return not_found(f"{name}@{version}")
+    by = subject_from_request(request)
+    try:
+        saved = await library.adopt(
+            ctx.settings, ctx.tenant_id, name, version, by=by, reason=body.reason, object_store=ctx.store
+        )
+    except library.SkillLibraryError as exc:
+        return refusal(exc)
+    return await written_version(ctx, by, saved, publish=False)
 
 
 @router.delete("/{name}", response_model=SkillArchivedOut, responses=ERRORS)

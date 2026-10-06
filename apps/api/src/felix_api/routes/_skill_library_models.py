@@ -112,6 +112,9 @@ class SkillVersionOut(BaseModel):
     # Imported, or built on an import: judged as an import by the publish gate, and screened as
     # untrusted output when an agent activates it.
     lineage_import: bool = False
+    # The import-lineage version an operator adopted into this one (`POST .../adopt`): the same
+    # files, vouched for by `author` with `reason`. Null on every other version.
+    adopted_from: str | None = None
 
 
 class SkillFileMetaOut(BaseModel):
@@ -560,6 +563,16 @@ class RejectIn(BaseModel):
     note: str = Field(min_length=1, max_length=REASON_LIMIT)
 
 
+class AdoptIn(BaseModel):
+    """Why the operator vouches for this imported text. Required: it is recorded on the new
+    version and in the `skill_adopted` audit event. A reason of only whitespace is refused as
+    `reason_required`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=REASON_LIMIT)
+
+
 class FeedbackIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -597,6 +610,7 @@ __all__ = [
     "REASON_LIMIT",
     "VERSION_PATTERN",
     "AcceptFeedbackIn",
+    "AdoptIn",
     "BrowseItemOut",
     "BundleIn",
     "BundleIssueOut",

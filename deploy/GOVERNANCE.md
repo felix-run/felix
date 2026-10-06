@@ -432,7 +432,25 @@ tenant (an agent copying imported text under another name). The publish gate jud
 as an import whoever saved it: an advisory scan blocks it whatever the policy says (tighten only),
 only the bundle's own `evals/` scenarios count toward an evaluation requirement (an import drops
 its `evals/`), and an agent's edit of one always waits for a person. Rolling back to one passes the
-same gate. Nothing clears the mark.
+same gate.
+
+**Adopting an import.** One thing clears the mark, and only going forward: an operator with
+`skills:write` adopting a version (`POST /skill-library/{name}/versions/{version}/adopt`, or
+`felix skills adopt <name> <version> --reason ...`). It saves a new draft whose files are
+byte-identical to that version's, as an operator's (`source: operator`, parent and `adopted_from`
+the adopted version, `author` the adopter, `reason` theirs and required), with `lineage_import`
+false: the publish gate then judges it by the tenant's own policy, and once it is live
+`activate_skill`, `read_skill_file` and `list_skills` no longer mark it untrusted. Versions are
+immutable, so the adopted version and everything before it keep the mark (a rollback to one is
+judged as an import). Adopt never publishes -- the draft goes live through the ordinary gate --
+and it is refused for a version carrying no imported text (409 `not_imported`), a rejected one
+(`parent_rejected`), and anything but the newest version that was not rejected
+(`parent_changed`). It is audited as `skill_adopted` (principal, redacted reason, the version
+adopted and the one saved). No agent tool reaches it. The exemption is that one save's: an
+operator saving the same bytes through the ordinary save still inherits the mark, edits built
+on the adopted version do not inherit it, and an agent's save copying any adopted file is still
+caught by the copy rule -- an operator vouched for that text once, in that skill. An adopted skill
+no longer follows its origin: an update is `not_imported` and a re-import `origin_mismatch`.
 
 **Imported text in front of the model.** When an agent works with a live skill of that lineage,
 `activate_skill`, `read_skill_file` and `list_skills` mark their output as relayed from an

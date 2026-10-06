@@ -69,6 +69,23 @@
         "title": "ActionsTokenRequest",
         "type": "object"
       },
+      "AdoptIn": {
+        "additionalProperties": false,
+        "description": "Why the operator vouches for this imported text. Required: it is recorded on the new\nversion and in the `skill_adopted` audit event. A reason of only whitespace is refused as\n`reason_required`.",
+        "properties": {
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "AdoptIn",
+        "type": "object"
+      },
       "AuthMethodsOut": {
         "description": "How a caller can get a credential here, and whether it needs one.",
         "properties": {
@@ -2299,6 +2316,17 @@
       },
       "ReviewQueueItemOut": {
         "properties": {
+          "adopted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted From"
+          },
           "author": {
             "title": "Author",
             "type": "string"
@@ -3425,6 +3453,17 @@
       },
       "SkillImportOut": {
         "properties": {
+          "adopted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted From"
+          },
           "author": {
             "title": "Author",
             "type": "string"
@@ -4128,6 +4167,17 @@
       },
       "SkillUpdateOut": {
         "properties": {
+          "adopted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted From"
+          },
           "author": {
             "title": "Author",
             "type": "string"
@@ -4453,6 +4503,17 @@
       },
       "SkillVersionDetailOut": {
         "properties": {
+          "adopted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted From"
+          },
           "author": {
             "title": "Author",
             "type": "string"
@@ -4711,6 +4772,17 @@
       "SkillVersionOut": {
         "description": "One version's review record, without its review detail or files.",
         "properties": {
+          "adopted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted From"
+          },
           "author": {
             "title": "Author",
             "type": "string"
@@ -4939,6 +5011,17 @@
       },
       "SkillWriteOut": {
         "properties": {
+          "adopted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adopted From"
+          },
           "author": {
             "title": "Author",
             "type": "string"
@@ -14066,6 +14149,108 @@
           }
         },
         "summary": "Get Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/{name}/versions/{version}/adopt": {
+      "post": {
+        "description": "Vouch for an imported version: save its files, byte for byte, as a new operator draft built\non it that no longer carries `lineage_import`, recording who adopted it, why, and from which\nversion (`adopted_from`). The versions before it keep their mark. The new version is a draft:\npublish it through the ordinary gate, which now judges it as an operator's. Adopt never\npublishes, and no agent tool reaches it.\n\n409 `not_imported` for a version with no imported text, `parent_rejected` for a rejected\ndraft, `parent_changed` unless `version` is the newest version that was not rejected; 422\n`reason_required` for a blank reason. Audited as `skill_adopted`.",
+        "operationId": "adopt_library_version_skill_library__name__versions__version__adopt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdoptIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillWriteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Adopt Library Version",
         "tags": [
           "Skill library"
         ]

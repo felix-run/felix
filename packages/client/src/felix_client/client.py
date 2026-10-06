@@ -714,6 +714,20 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def adopt_skill_version(self, name: str, version: str, *, reason: str) -> dict[str, Any]:
+        """Vouch for an imported version (`skills:write`): its files saved, byte for byte, as a new
+        operator draft that no longer carries `lineage_import`, with `adopted_from` naming
+        ``version``. ``reason`` is required and recorded. A draft -- never published here."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/skill-library/{quote(name, safe='')}"
+                f"/versions/{quote(version, safe='')}/adopt",
+                headers=self._headers(),
+                json={"reason": reason},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def list_skill_upstreams(
         self, *, cursor: str | None = None, refresh: bool = True
     ) -> dict[str, Any]:

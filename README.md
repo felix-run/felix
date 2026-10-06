@@ -334,6 +334,11 @@ An imported skill is checked against its origin with `GET /skill-library/{name}/
 lets them in, and a per-file diff against the live version. `POST /skill-library/{name}/-/update`
 (`felix skills update`) re-imports it as a new draft, never published; `GET /skill-library/-/upstream`
 (`felix skills outdated`) lists every imported skill's state, 25 at a time.
+Once a person has read an import and vouches for it, `POST /skill-library/{name}/versions/{v}/adopt`
+with a `reason` (`felix skills adopt <name> <v> --reason ...`, `skills:write`) saves its files
+unchanged as a new operator draft that is no longer held to the import gate or screened as
+third-party text; the earlier versions keep their mark, the draft is published the ordinary way,
+and the skill stops following its origin.
 `FELIX_SKILL_IMPORT_CHECK_HOURS` (0 = off, up to 168) has the worker check them on that cadence,
 spending at most half of each budget, so the listing and the library detail can answer without
 asking GitHub. `FELIX_SKILL_UPDATE_WEBHOOKS` (`acme=ops,acme=ci`, each id a

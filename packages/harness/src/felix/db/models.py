@@ -201,6 +201,10 @@ class SkillVersionRow(Base):
     lineage_import: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), default=False
     )
+    # Set on the version an operator's adopt saved (`library.adopt`): the import-lineage version
+    # whose files it carries byte for byte, vouched for with the row's `reason` by its `author`.
+    # Its own `lineage_import` is false; the copy rule still counts its files as imported.
+    adopted_from: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),

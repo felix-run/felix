@@ -174,6 +174,10 @@ class DraftProvenance:
     principal: str | None = None
     # Set exactly when ``source="import"``.
     origin: ImportOrigin | None = None
+    # Set only by `adopt`: the import-lineage version an operator vouched for. The save carries
+    # that version's files byte for byte (`save_draft` checks it), and is the one save that does
+    # not inherit `lineage_import` from its parent.
+    adopted_from: str | None = None
 
 
 class SkillOriginMismatch(SkillLibraryError):
@@ -181,6 +185,19 @@ class SkillOriginMismatch(SkillLibraryError):
     version an agent or an operator wrote. An import never takes over a name."""
 
     code = "origin_mismatch"
+
+
+class SkillNotImportLineage(SkillLibraryError):
+    """An adopt named a version that carries no imported text: there is nothing to vouch for."""
+
+    code = "not_imported"
+
+
+class SkillReasonRequired(SkillLibraryError):
+    """An adopt gave no reason. Vouching for third-party text is the one save that clears its
+    mark, so it says why, and the audit trail keeps it."""
+
+    code = "reason_required"
 
 
 class SkillPublishBlocked(SkillLibraryError):
@@ -476,6 +493,10 @@ async def save_draft(
     """
     if (provenance.source == "import") != (provenance.origin is not None):
         raise ValueError("an import's provenance carries its origin, and only an import's does")
+    if provenance.adopted_from is not None and (
+        provenance.source != "operator" or parent != provenance.adopted_from
+    ):
+        raise ValueError("an adopt is an operator's save whose parent is the version it adopts")
     validation = await asyncio.to_thread(validate_skill_bundle, files, name)
     if not validation.valid or validation.frontmatter is None:
         raise SkillBundleInvalid(validation.errors)
@@ -490,6 +511,8 @@ async def save_draft(
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
     if provenance.source == "agent":
         await _evals_only_inherited(lib, tenant_id, skill_name, parent, files)
+    if provenance.adopted_from is not None:
+        await _same_files_as(lib, tenant_id, skill_name, provenance.adopted_from, files)
 
     row = {
         "name": skill_name,
@@ -502,6 +525,7 @@ async def save_draft(
         "reason": (provenance.reason or "")[:_REASON_LIMIT],
         "description": validation.frontmatter.description,
         **(provenance.origin.as_row() if provenance.origin else {}),
+        "adopted_from": provenance.adopted_from,
         "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance, files),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
@@ -515,8 +539,9 @@ async def save_draft(
         bump=bump,
         expect_newest=expect_newest,
         # An import builds on the newest version that was not rejected, as an agent does: a
-        # rejected draft is not the version it replaces (`importer._prior`).
-        buildable=provenance.source in {"agent", "import"},
+        # rejected draft is not the version it replaces (`importer._prior`). So does an adopt:
+        # it vouches for the version a reviewer would otherwise be editing.
+        buildable=provenance.source in {"agent", "import"} or provenance.adopted_from is not None,
         max_pending=_pending_cap(provenance, max_pending),
     )
     try:
@@ -562,9 +587,17 @@ async def _lineage_import(
 
     For an agent's save, also when any of its files is byte-for-byte a file of an import-lineage
     version anywhere in the tenant: an agent can read an imported skill and write its text into a
-    new one under another name, and the copy is as much a third party's as the original."""
+    new one under another name, and the copy is as much a third party's as the original.
+
+    An adopt (`DraftProvenance.adopted_from`, set only by `adopt`) is the one exception to the
+    parent rule: an operator vouching, with a reason, for exactly the files of the version it
+    names -- `save_draft` has checked they are that version's, byte for byte. It is an operator's
+    save, so the copy rule does not run on it either. Nothing else reaches here with it set, and
+    the version it was adopted from keeps its mark."""
     if provenance.source == "import":
         return True
+    if provenance.adopted_from is not None:
+        return False
     basis = parent or newest_version(await lib.version_ids(tenant_id, name))
     if basis is not None and gate_source(await lib.get_version(tenant_id, name, basis)) == "import":
         return True
@@ -572,6 +605,17 @@ async def _lineage_import(
         return False
     digests = {hashlib.sha256(_stored_bytes(p, c)).hexdigest() for p, c in files.items()}
     return await lib.holds_imported_file(tenant_id, digests)
+
+
+async def _same_files_as(
+    lib: SkillLibraryStore, tenant_id: str, name: str, version: str, files: Mapping[str, str]
+) -> None:
+    """Refuse an adopt whose files are not exactly ``version``'s: the exemption from the parent
+    rule covers the bytes the operator vouched for and nothing else."""
+    held = {str(r["path"]): str(r["sha256"]) for r in await lib.list_files(tenant_id, name, version)}
+    sent = {p: hashlib.sha256(_stored_bytes(p, c)).hexdigest() for p, c in files.items()}
+    if held != sent:
+        raise ValueError(f"an adopt of {name}@{version} must carry exactly that version's files")
 
 
 async def _evals_only_inherited(
@@ -839,6 +883,66 @@ async def rollback(
     )
 
 
+async def adopt(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    by: str,
+    reason: str,
+    object_store: Any | None = None,
+) -> dict[str, Any]:
+    """An operator vouches for an import-lineage version: its files, byte for byte, saved as a new
+    operator draft built on it that does not carry `lineage_import`.
+
+    The only way the mark is cleared, and only forward: versions are immutable, so ``version``
+    and every version before it keep theirs. The new version is a draft -- it goes live through
+    the ordinary publish gate, which now judges it as an operator's -- and adopt never publishes.
+    No agent tool reaches this; it is an operator route.
+
+    Refused with ``reason_required`` for a blank reason; ``not_found``; ``parent_rejected`` for a
+    rejected draft; ``not_imported`` for a version that carries no imported text; and
+    ``parent_changed`` unless ``version`` is the skill's newest version that was not rejected
+    (the rule every other save builds on).
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise SkillReasonRequired("say why this imported text is now the operator's own")
+    lib = get_skill_library_store(settings)
+    row = await lib.get_version(tenant_id, name, version)
+    if row is None:
+        raise SkillNotFound(f"{name}@{version} does not exist")
+    if is_rejected(row):
+        raise SkillParentRejected(f"{name}@{version} was rejected; adopt a version that was not")
+    if gate_source(row) != "import":
+        raise SkillNotImportLineage(f"{name}@{version} carries no imported text; there is nothing to adopt")
+    store = _object_store(settings, object_store)
+    saved = await save_draft(
+        settings,
+        tenant_id,
+        files=await read_version_files(settings, tenant_id, name, version, object_store=store),
+        provenance=DraftProvenance(
+            source="operator", author=by, reason=reason, principal=by, adopted_from=version
+        ),
+        name=name,
+        parent=version,
+        expect_newest=version,
+        object_store=store,
+    )
+    _audit(
+        settings,
+        tenant_id,
+        "skill_adopted",
+        saved,
+        by=by,
+        adopted_from=version,
+        reason=_redacted(settings, reason[:200]),
+        principal=by,
+    )
+    return saved
+
+
 async def reject(
     settings: Settings, tenant_id: str, name: str, version: str, *, by: str, note: str
 ) -> dict[str, Any]:
@@ -879,14 +983,17 @@ __all__ = [
     "SkillLiveChanged",
     "SkillNameShadowed",
     "SkillNotFound",
+    "SkillNotImportLineage",
     "SkillOriginMismatch",
     "SkillParentChanged",
     "SkillParentRejected",
     "SkillPendingCapReached",
     "SkillPublishBlocked",
+    "SkillReasonRequired",
     "SkillVersionCapReached",
     "SkillVersionConflict",
     "SkillVersionCorrupt",
+    "adopt",
     "archive_skill",
     "evaluate_version",
     "host_owns",
