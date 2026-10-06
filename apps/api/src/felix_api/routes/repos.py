@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from felix.logging_setup import loggable
 from pydantic import BaseModel, Field
@@ -227,6 +227,65 @@ async def get_thread_repo(thread_id: str, request: Request) -> Any:
     if described is None:
         return _refusal(404, "no_repository", "this thread has no repository")
     return CheckoutOut.model_validate(described)
+
+
+class CheckoutFileOut(BaseModel):
+    """One path in the checkout, relative to its root."""
+
+    path: str
+    # A symlink is listed as one and never followed; `missing` is a path git knows (a staged
+    # deletion) with nothing on disk.
+    kind: Literal["file", "symlink", "missing"]
+    size: int | None = None
+    status: Literal["clean", "modified", "added", "deleted", "untracked", "conflicted"]
+
+
+class CheckoutFilesOut(BaseModel):
+    state: Literal["ready", "failed", "expired"]
+    files: list[CheckoutFileOut]
+    # More paths than `limit`: narrow with `prefix`.
+    truncated: bool
+
+
+_LIST_MESSAGES = {
+    "checkout_cloning": "the repository is still cloning; try again once it is ready",
+    "invalid_prefix": "prefix must be a relative path inside the repository",
+    "listing_failed": "the repository could not be listed; the cause is in the server's log",
+}
+
+
+@checkout_router.get(
+    "/{thread_id}/workspace/repo/files",
+    response_model=CheckoutFilesOut,
+    responses={
+        400: {"model": RepoErrorOut},
+        404: {"model": RepoErrorOut},
+        409: {"model": RepoErrorOut},
+        500: {"model": RepoErrorOut},
+    },
+)
+async def list_thread_repo_files(
+    thread_id: str,
+    request: Request,
+    prefix: str = Query(default="", max_length=1024),
+    limit: int = Query(default=2_000, ge=1, le=10_000),
+) -> Any:
+    """The files in this thread's checkout — tracked, and untracked but not ignored — each with its
+    size and git status, sorted by path. A failed or expired checkout answers its state and no
+    files; one still cloning is a 409."""
+    from felix.repos import checkouts
+
+    tenant, scoped = _thread(request, thread_id)
+    try:
+        listed = await checkouts.list_files(
+            request.app.state.settings, tenant, scoped, prefix=prefix, limit=limit
+        )
+    except checkouts.ListRefused as exc:
+        status = 400 if exc.code == "invalid_prefix" else 409 if exc.code == "checkout_cloning" else 500
+        return _refusal(status, exc.code, _LIST_MESSAGES.get(exc.code, "the repository could not be listed"))
+    if listed is None:
+        return _refusal(404, "no_repository", "this thread has no repository")
+    return CheckoutFilesOut.model_validate(listed)
 
 
 @checkout_router.delete(

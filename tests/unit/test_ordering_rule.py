@@ -32,6 +32,7 @@ EXEMPT = {
     "documents/store.py:search_documents": "`kv[0]` is the chunk id, unique among the fused hits",
     "documents/store.py:_channels_in_memory": "`kv[0]` is the chunk id; the lexical sort ends on `r['id']`",
     "documents/store.py:list_documents": "one row per `doc_id` (grouped), and both arms end on it",
+    "repos/checkouts.py:list_files": "sorts a set of paths: every key is the whole path, unique",
     "session/strategies.py:render": "a stable sort over seq-ordered events: ties keep seq order",
     "skills/quality_store.py:_claim_once": "ends on the head's `id` then `tenant_id`, the primary key of the table passed in (skill_feedback or skill_eval)",
     "skills/suggest.py:_rank": "ends on the skill's position in the catalogue, unique per skill",
