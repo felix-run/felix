@@ -12,7 +12,7 @@ import pytest
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings
 from felix.logging_setup import REQUEST_ID_HEADER
-from felix_api.app import CORE_BODY_LIMIT_BYTES, create_app
+from felix_api.app import CORE_BODY_LIMIT_BYTES, SKILL_BUNDLE_BODY_LIMIT_BYTES, create_app
 from felix_api.middleware import (
     BodyLimitMiddleware,
     RateLimitMiddleware,
@@ -245,4 +245,88 @@ async def test_a_raising_key_resolver_does_not_take_down_the_request(caplog) -> 
     warnings = [r for r in caplog.records if r.name == "felix_api.middleware"]
     assert len(warnings) == 1, (
         f"expected one warning for a resolver that fails every request, got {len(warnings)}"
+    )
+
+
+# A skill bundle may be several megabytes, and the two routes that carry a whole bundle get a
+# larger cap than the core one; no other route does. These pin both halves, and the raised
+# cap's own ceiling, because a route limit that silently applied everywhere — or nowhere —
+# would pass every test above.
+_BUNDLE_SIZED = CORE_BODY_LIMIT_BYTES * 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("POST", "/skill-library"), ("PUT", "/skill-library/some-skill/versions")],
+)
+async def test_a_bundle_sized_body_reaches_the_skill_write_routes(method: str, path: str) -> None:
+    """Over the core cap but under the bundle cap: the middleware lets it through, and the
+    route answers on its own terms (validation, auth) rather than with a 413."""
+    async with _client(_app(f"bundle-{method}")) as client:
+        response = await client.request(
+            method, path, content=_chunked(_BUNDLE_SIZED), headers={"content-type": "application/json"}
+        )
+    assert response.status_code != 413, f"{method} {path} refused a bundle-sized body"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/chat"),
+        ("POST", "/skill-library/-/import"),
+        ("POST", "/skill-library/some-skill/versions/0.1.0/publish"),
+        ("PUT", "/skill-library/some-skill/versions/extra"),
+        ("GET", "/skill-library"),
+    ],
+)
+async def test_other_routes_keep_the_core_cap(method: str, path: str) -> None:
+    """The raised cap is for bundle writes only; a lookalike path or another method on the
+    same prefix still gets the core one.
+
+    Checked through the declared length: a route that answers without reading its body (a 404,
+    a 405) never trips the streaming counter, so a chunked body would not show which cap was
+    chosen for it."""
+    async with _client(_app(f"core-{method}-{len(path)}")) as client:
+        response = await client.request(
+            method,
+            path,
+            content=b"{}",
+            headers={"content-type": "application/json", "content-length": str(_BUNDLE_SIZED)},
+        )
+    assert response.status_code == 413, f"{method} {path} took a body over the core cap"
+
+
+@pytest.mark.asyncio
+async def test_the_bundle_cap_is_still_a_cap() -> None:
+    """One byte over the bundle cap is refused on the bundle route, by the streaming counter
+    and by the declared length alike."""
+    async with _client(_app("bundle-over")) as client:
+        streamed = await client.post(
+            "/skill-library",
+            content=_chunked(SKILL_BUNDLE_BODY_LIMIT_BYTES + 1),
+            headers={"content-type": "application/json"},
+        )
+        declared = await client.post(
+            "/skill-library",
+            content=b"{}",
+            headers={
+                "content-type": "application/json",
+                "content-length": str(SKILL_BUNDLE_BODY_LIMIT_BYTES + 1),
+            },
+        )
+    assert streamed.status_code == 413
+    assert declared.status_code == 413
+
+
+def test_the_bundle_cap_fits_the_largest_bundle_the_library_accepts() -> None:
+    """MAX_BUNDLE_BYTES of binary assets base64-encode to 4/3 of that; the route cap must fit
+    the encoded bundle with room for JSON keys, or the library's own cap is unreachable."""
+    from felix.skills.format import MAX_BUNDLE_BYTES
+
+    encoded = -(-MAX_BUNDLE_BYTES // 3) * 4
+    assert encoded + 256 * 1024 <= SKILL_BUNDLE_BODY_LIMIT_BYTES, (
+        f"bundle route cap {SKILL_BUNDLE_BODY_LIMIT_BYTES} cannot carry a full {MAX_BUNDLE_BYTES}-byte "
+        f"bundle ({encoded} bytes encoded)"
     )

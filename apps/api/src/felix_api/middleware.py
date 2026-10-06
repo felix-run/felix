@@ -17,7 +17,8 @@ for, and four pure-ASGI layers measured indistinguishable from zero.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 
 from fastapi.responses import JSONResponse
 from felix.config import Settings
@@ -160,21 +161,41 @@ class BodyLimitMiddleware:
     a total bypass, but any request without that header was read unbounded.
 
     In pure ASGI the receive channel is ours to hand down, so the cap is real.
+
+    `route_limits` raises the cap for named routes only, as `(method, path pattern, limit)`
+    matched against the raw path before routing: a skill bundle is legitimately several
+    megabytes, and raising the global cap to fit it would raise it for every route.
     """
 
-    def __init__(self, app: ASGIApp, *, limit: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        limit: int,
+        route_limits: Sequence[tuple[str, re.Pattern[str], int]] = (),
+    ) -> None:
         self.app = app
         self.limit = limit
+        self.route_limits = tuple(route_limits)
+
+    def _limit_for(self, scope: Scope) -> int:
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+        for route_method, pattern, limit in self.route_limits:
+            if method == route_method and pattern.fullmatch(path):
+                return max(limit, self.limit)
+        return self.limit
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        limit = self._limit_for(scope)
         declared = Headers(scope=scope).get("content-length")
         if declared is not None:
             try:
-                if int(declared) > self.limit:
+                if int(declared) > limit:
                     await _too_large()(scope, receive, send)
                     return
             except ValueError:
@@ -191,7 +212,7 @@ class BodyLimitMiddleware:
             message = await receive()
             if message.get("type") == "http.request":
                 seen += len(message.get("body") or b"")
-                if seen > self.limit:
+                if seen > limit:
                     exceeded = True
                     # Cut the body off rather than raising through the receive
                     # channel: an exception there unwinds inside the route and

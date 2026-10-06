@@ -352,8 +352,9 @@ First, because everything else governs it.
       3. [x] (#437) `/skill-library` routes, `skills:write` scope, wire contract, e2e; with the
          review's carry-overs: an explicit pin to an operator upload wins over a library skill,
          and `update_skill` takes a required `parent_version` its approval binds, with the preview naming
-         the parent and its inherited files by digest. Open:
-         the 1 MiB core body limit caps an uploaded bundle well under the library's 8 MiB.
+         the parent and its inherited files by digest. Since fixed: the two bundle-write routes
+         (`POST /skill-library`, `PUT /{name}/versions`) take up to 12 MiB, enough for a full 8 MiB
+         bundle base64-encoded; every other route keeps the 1 MiB core cap.
       4. [x] (#442) Feedback (`submit_skill_feedback`, the `/-/feedback` inbox, accept / reject),
          improvement from accepted feedback into a reviewed draft, baseline-vs-with-skill evals,
          and the per-tenant publish policy (`require_eval`, `min_eval_uplift`), run by the
