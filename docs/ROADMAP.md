@@ -428,7 +428,9 @@ First, because everything else governs it.
          adopted skill stay clean. The copy rule (`skills/copy_rule.py`) also matches a
          normalized digest (NFKC, format characters removed, casefold, whitespace collapsed; a
          SKILL.md's body only; `skill_file.normalized_sha256`, migration `0032`, no backfill)
-         from 32 normalized characters, while any non-empty file still matches by bytes.
+         from 32 normalized characters, while any text file with something left after
+         normalizing, and any non-empty binary asset, still matches by bytes; an empty,
+         whitespace-only or format-characters-only text file matches neither way.
       2. [x] Update checks: `felix/skills/{upstream,upstream_store,bundle_diff}.py`,
          `GET /skill-library/{name}/-/upstream` (the stored ref with `skills:read`, or `?ref=` with
          `skills:write`, re-resolved under the tenant's allowlist; a per-file diff against the live
