@@ -109,6 +109,20 @@ async def test_a_person_lists_opens_and_works_in_their_repository(
         other = await app.client.get("/chat/sessions/t2/workspace/repo", headers=bearer)
         assert other.status_code == 404
 
+        files = await app.client.get("/chat/sessions/t1/workspace/repo/files", headers=bearer)
+        assert files.status_code == 200, files.text
+        assert files.json()["state"] == "ready" and files.json()["truncated"] is False
+        assert [(f["path"], f["status"]) for f in files.json()["files"]] == [
+            ("README.md", "clean"),
+            ("app.py", "clean"),
+        ]
+        bad = await app.client.get(
+            "/chat/sessions/t1/workspace/repo/files", params={"prefix": "../.."}, headers=bearer
+        )
+        assert bad.status_code == 400 and bad.json()["error"] == "invalid_prefix"
+        none = await app.client.get("/chat/sessions/t2/workspace/repo/files", headers=bearer)
+        assert none.status_code == 404
+
         removed = await app.client.delete("/chat/sessions/t1/workspace/repo", headers=bearer)
         assert removed.status_code == 204
         assert (await app.client.get("/chat/sessions/t1/workspace/repo", headers=bearer)).status_code == 404

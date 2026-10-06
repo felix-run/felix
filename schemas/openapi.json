@@ -356,6 +356,85 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "CheckoutFileOut": {
+        "description": "One path in the checkout, relative to its root.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "file",
+              "symlink",
+              "missing"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "status": {
+            "enum": [
+              "clean",
+              "modified",
+              "added",
+              "deleted",
+              "untracked",
+              "conflicted"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "status"
+        ],
+        "title": "CheckoutFileOut",
+        "type": "object"
+      },
+      "CheckoutFilesOut": {
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/CheckoutFileOut"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "failed",
+              "expired"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "files",
+          "truncated"
+        ],
+        "title": "CheckoutFilesOut",
+        "type": "object"
+      },
       "CheckoutOut": {
         "properties": {
           "ahead": {
@@ -8762,6 +8841,112 @@
           }
         },
         "summary": "Open Thread Repo",
+        "tags": [
+          "Repos"
+        ]
+      }
+    },
+    "/chat/sessions/{thread_id}/workspace/repo/files": {
+      "get": {
+        "description": "The files in this thread's checkout \u2014 tracked, and untracked but not ignored \u2014 each with its\nsize and git status, sorted by path. A failed or expired checkout answers its state and no\nfiles; one still cloning is a 409.",
+        "operationId": "list_thread_repo_files_chat_sessions__thread_id__workspace_repo_files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 1024,
+              "title": "Prefix",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 2000,
+              "maximum": 10000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckoutFilesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Thread Repo Files",
         "tags": [
           "Repos"
         ]

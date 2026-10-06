@@ -205,3 +205,85 @@ def test_the_remote_shell_runner_is_refused_for_a_thread_checkout(settings: Sett
 
     assert _is_thread_checkout(Path(settings.workspace_root).resolve(), settings) is False
     assert _is_thread_checkout(tmp_path / "data" / "checkouts" / "x" / "repo", settings) is True
+
+
+async def test_the_listing_names_every_file_with_its_size_and_status(
+    git_server: Any, settings: Settings
+) -> None:
+    await _open(settings)
+    repo = checkouts.thread_dir(settings, "acme", "acme:t1") / "repo"
+    (repo / "app.py").write_text("print(2)\n# more\n")
+    (repo / "README.md").unlink()
+    (repo / "src").mkdir()
+    (repo / "src" / "new.py").write_text("x = 1\n")
+    (repo / "staged.txt").write_text("s\n")
+    _git(repo, "add", "staged.txt")
+    (repo / ".gitignore").write_text("*.log\n")
+    (repo / "noise.log").write_text("ignored\n")
+    listed = await checkouts.list_files(settings, "acme", "acme:t1")
+    assert listed is not None and listed["state"] == "ready" and listed["truncated"] is False
+    rows = {f["path"]: f for f in listed["files"]}
+    assert rows["app.py"] == {"path": "app.py", "kind": "file", "size": 16, "status": "modified"}
+    assert rows["README.md"]["kind"] == "missing" and rows["README.md"]["status"] == "deleted"
+    assert rows["src/new.py"]["status"] == "untracked"
+    assert rows["staged.txt"]["status"] == "added"
+    assert "noise.log" not in rows  # ignored files are not the repository's
+    assert not any(p.startswith(".git/") for p in rows)
+    assert [f["path"] for f in listed["files"]] == sorted(rows)
+
+
+async def test_a_symlink_is_listed_as_one_and_never_followed(git_server: Any, settings: Settings) -> None:
+    await _open(settings)
+    repo = checkouts.thread_dir(settings, "acme", "acme:t1") / "repo"
+    os.symlink("/etc/passwd", repo / "escape")
+    listed = await checkouts.list_files(settings, "acme", "acme:t1")
+    assert listed is not None
+    row = next(f for f in listed["files"] if f["path"] == "escape")
+    assert row["kind"] == "symlink" and row["size"] == len("/etc/passwd")
+
+
+async def test_a_prefix_narrows_the_listing_and_a_limit_says_it_cut(
+    git_server: Any, settings: Settings
+) -> None:
+    await _open(settings)
+    repo = checkouts.thread_dir(settings, "acme", "acme:t1") / "repo"
+    (repo / "src").mkdir()
+    for name in ("a.py", "b.py", "c.py"):
+        (repo / "src" / name).write_text("")
+    (repo / "src*").mkdir()
+    (repo / "src*" / "literal.py").write_text("")
+    listed = await checkouts.list_files(settings, "acme", "acme:t1", prefix="src/")
+    assert listed is not None
+    assert [f["path"] for f in listed["files"]] == ["src/a.py", "src/b.py", "src/c.py"]
+    # A prefix is a directory name, not a glob.
+    starred = await checkouts.list_files(settings, "acme", "acme:t1", prefix="src*")
+    assert starred is not None and [f["path"] for f in starred["files"]] == ["src*/literal.py"]
+    cut = await checkouts.list_files(settings, "acme", "acme:t1", prefix="src", limit=2)
+    assert cut is not None and len(cut["files"]) == 2 and cut["truncated"] is True
+
+
+@pytest.mark.parametrize("prefix", ["..", "../x", "src/../..", "a\\b", "./src", "a//b"])
+async def test_a_prefix_outside_the_checkout_is_refused(
+    git_server: Any, settings: Settings, prefix: str
+) -> None:
+    await _open(settings)
+    with pytest.raises(checkouts.ListRefused) as refused:
+        await checkouts.list_files(settings, "acme", "acme:t1", prefix=prefix)
+    assert refused.value.code == "invalid_prefix"
+
+
+async def test_the_listing_answers_for_a_checkout_that_is_not_ready(settings: Settings) -> None:
+    assert await checkouts.list_files(settings, "acme", "acme:none") is None
+    directory = checkouts.thread_dir(settings, "acme", "acme:t1")
+    directory.mkdir(parents=True)
+    checkouts._write_state(directory, {"state": "cloning", "repo": "acme/widgets"})
+    with pytest.raises(checkouts.ListRefused) as refused:
+        await checkouts.list_files(settings, "acme", "acme:t1")
+    assert refused.value.code == "checkout_cloning"
+    for state in ("failed", "expired"):
+        checkouts._write_state(directory, {"state": state, "repo": "acme/widgets"})
+        assert await checkouts.list_files(settings, "acme", "acme:t1") == {
+            "state": state,
+            "files": [],
+            "truncated": False,
+        }
