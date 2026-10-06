@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -65,6 +66,15 @@ from felix_api.routes import (
 logger = logging.getLogger("felix_api.app")
 
 CORE_BODY_LIMIT_BYTES = 1024 * 1024
+
+# A skill bundle may hold MAX_BUNDLE_BYTES of files, and it arrives as JSON with binary assets
+# base64-encoded (4/3 the size) plus keys and escaping. The two routes that carry a whole bundle
+# get room for the largest one the library accepts; every other route keeps the core cap.
+SKILL_BUNDLE_BODY_LIMIT_BYTES = 12 * 1024 * 1024
+SKILL_BUNDLE_ROUTES: tuple[tuple[str, re.Pattern[str], int], ...] = (
+    ("POST", re.compile(r"/skill-library/?"), SKILL_BUNDLE_BODY_LIMIT_BYTES),
+    ("PUT", re.compile(r"/skill-library/[^/]+/versions/?"), SKILL_BUNDLE_BODY_LIMIT_BYTES),
+)
 
 
 def create_app(
@@ -241,7 +251,7 @@ def create_app(
         settings=cfg,
         key_resolvers=rate_key_resolvers,
     )
-    app.add_middleware(BodyLimitMiddleware, limit=body_limit)
+    app.add_middleware(BodyLimitMiddleware, limit=body_limit, route_limits=SKILL_BUNDLE_ROUTES)
     # Headers on every response, including a 413 and a 401: registered after body limit
     # so it wraps it, before request id so the correlation id is still outermost.
     app.add_middleware(SecurityHeadersMiddleware, settings=cfg)
