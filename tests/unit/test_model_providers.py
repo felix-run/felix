@@ -207,13 +207,13 @@ def test_a_hosted_provider_credential_comes_from_a_secret_ref() -> None:
 # --- endpoints --------------------------------------------------------------------------
 
 
-def test_an_ollama_base_url_that_already_ends_in_v1_is_not_doubled() -> None:
+def test_a_base_url_that_already_ends_in_v1_is_not_doubled() -> None:
     """The old factory appended `/v1` unconditionally, so a configured `.../v1` became
     `/v1/v1` and every request 404'd."""
-    ollama = next(s for s in OPENAI_COMPATIBLE if s.name == "ollama")
-    assert ollama.resolve_base_url("http://host:11434/v1") == "http://host:11434/v1"
-    assert ollama.resolve_base_url("http://host:11434") == "http://host:11434/v1"
-    assert ollama.resolve_base_url(None) == "http://localhost:11434/v1"
+    openai = next(s for s in OPENAI_COMPATIBLE if s.name == "openai")
+    assert openai.resolve_base_url("http://host:8000/v1") == "http://host:8000/v1"
+    assert openai.resolve_base_url("http://host:8000") == "http://host:8000/v1"
+    assert openai.resolve_base_url(None) == "https://api.openai.com/v1"
 
 
 def test_the_openai_provider_honours_a_gateway_url() -> None:
@@ -256,7 +256,7 @@ def test_an_unknown_provider_in_model_routes_fails_at_startup() -> None:
 
 def test_a_known_provider_in_model_routes_passes_startup() -> None:
     settings = _settings(
-        model_routes='{"ok":{"provider":"ollama","model":"llama3.2"}}',
+        model_routes='{"ok":{"provider":"workers_ai","model":"@cf/zai-org/glm-5.3"}}',
         auth_mode="none",
         allow_insecure=True,
         environment="development",

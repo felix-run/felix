@@ -25,17 +25,6 @@ _CORE: tuple[ProviderSpec, ...] = (
         embedding_model="text-embedding-3-small",
         supports_strict_schema=True,
     ),
-    ProviderSpec(
-        name="ollama",
-        wire=OpenAICompletionsClient,
-        base_url_default="http://localhost:11434",
-        base_url_config_key="ollama_base_url",
-        api_key_literal="ollama",
-        ensure_v1_suffix=True,
-        bills_per_token=False,
-        supports_embeddings=True,
-        embedding_model="nomic-embed-text",
-    ),
 )
 
 

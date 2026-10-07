@@ -24,9 +24,10 @@ manifest that exercises it.
 - Schema: `packages/harness/src/felix/manifests/schema.py`
 - Compiler: `packages/harness/src/felix/manifests/builder.py` (`build_agent`)
 - Bundled examples: `ls manifests/`. The ones to copy from: `quick` (minimal), `router` /
-  `hybrid-router` (multi-agent), `cowork` (client tools), `oss-only` (Ollama), `governed` (the
-  fullest governance example). `triage` and `contributor` are Felix working on its own repo (the
-  self-build program, `docs/SELF.md`); change them only with that spec open.
+  `hybrid-router` (multi-agent), `cowork` (client tools), `oss-only` (open weights on Workers
+  AI), `governed` (the fullest governance example). `triage` and `contributor` are Felix
+  working on its own repo (the self-build program, `docs/SELF.md`); change them only with that
+  spec open.
 - Loader: `manifests/loader.py` resolves `manifests/` from the repo root, then cwd, then the
   packaged `bundled/` dir.
 

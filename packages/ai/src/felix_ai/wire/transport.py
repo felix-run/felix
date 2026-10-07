@@ -52,7 +52,7 @@ class ModelUnreachableError(ModelGatewayError):
     """The provider never answered: refused connection, DNS failure, or a timeout.
 
     A `ModelGatewayError` rather than the bare `httpx` exception, because the routes relay
-    only typed errors to the client: an Ollama that is not running reached the chat UI as
+    only typed errors to the client: a model endpoint that is not running reached the chat UI as
     `internal error (request …)`, which reads as a Felix bug rather than a dead endpoint.
     The status is the one a gateway would answer with, which also lets a fallback chain
     advance past it — `_is_provider_error` treats 5xx as the provider's fault.

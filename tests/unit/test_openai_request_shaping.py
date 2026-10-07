@@ -1,7 +1,7 @@
 """The OpenAI path shapes its request; it used to just send everything.
 
 `ModelQuirks` had exactly one reader, on the Anthropic path — the docstring said so and it
-was true. So the OpenAI-compatible path, which is also Ollama and every LiteLLM/vLLM
+was true. So the OpenAI-compatible path, which is also Workers AI and every LiteLLM/vLLM
 gateway, had no output clamp and no sampling suppression, and the `o1`/`o3`/`o4` catalog
 entries could never have worked. Meanwhile it emitted an Anthropic `thinking` block into
 every request, which a server that validates its schema rejects outright.

@@ -6,8 +6,8 @@ metadata:
   version: 1.0.0
   description: >-
     Hybrid routing — a Claude Haiku classifier picks the intent, then dispatches
-    to open-source Llama sub-agents. The strong model only pays for the short
-    classification turn; execution stays on Ollama.
+    to an open-weight sub-agent. The strong model only pays for the short
+    classification turn; tool work runs on GLM-5.3 via Workers AI.
   tags: [router, hybrid, oss]
 
 spec:
