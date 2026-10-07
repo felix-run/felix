@@ -10,6 +10,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from felix_ai.types import split_file_ref
+
 from felix.audit.emit import emit_agent_audit
 from felix.config import get_settings
 from felix.hooks import run_before_turn, run_filter_history
@@ -172,6 +174,27 @@ def _model_spec_with_override(spec: Any, model_id: str | None) -> Any:
         return clone
     except Exception:
         return spec
+
+
+def _tool_end_data(tool_msg: ChatMessage) -> dict[str, Any]:
+    """A `tool_end` frame: the result, and the stored images the tool returned beside it.
+
+    Only references (`felix-file://<id>`) go on the frame; a client fetches each from
+    `GET /files/{id}` as it does an uploaded image. Before this a screenshot reached a
+    watching client only on the next read of the session log, so a browser call's card read
+    as a line of text for the whole run. An image still inline -- kept only when there was no
+    request tenant to store it under, an eval run -- stays off the stream: its bytes are up
+    to the attachment cap each, and the log keeps them for whoever reads it.
+    """
+    data: dict[str, Any] = {"name": tool_msg.name, "output": tool_msg.content, "id": tool_msg.tool_call_id}
+    images = [
+        {"url": a.url, "media_type": a.media_type}
+        for a in tool_msg.attachments or ()
+        if split_file_ref(a.url)
+    ]
+    if images:
+        data["attachments"] = images
+    return data
 
 
 @dataclass
@@ -1089,14 +1112,7 @@ class _ReactAgent:
                     raise
                 for tool_msg in tool_msgs:
                     if emit_events:
-                        yield Event(
-                            event="tool_end",
-                            data={
-                                "name": tool_msg.name,
-                                "output": tool_msg.content,
-                                "id": tool_msg.tool_call_id,
-                            },
-                        )
+                        yield Event(event="tool_end", data=_tool_end_data(tool_msg))
                         yield Event(
                             event="tool_execution_update",
                             data={
