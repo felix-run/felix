@@ -40,7 +40,7 @@ class ProviderSpec:
 
     `base_url_config_key` and `api_key_config_key` name attributes on whatever config
     object the harness passes; either may be absent for a provider whose endpoint is fixed
-    (Anthropic) or which needs no credential (a local Ollama).
+    (Anthropic) or whose credential arrives only through provider options.
     """
 
     name: str
@@ -48,23 +48,16 @@ class ProviderSpec:
     base_url_default: str
     base_url_config_key: str | None = None
     api_key_config_key: str | None = None
-    # A provider that takes any non-empty string, like Ollama, which authenticates nothing.
-    api_key_literal: str | None = None
     # Names to try in the secrets backend, and the values to mask out of tool output.
     secret_names: tuple[str, ...] = field(default_factory=tuple)
-    # Whether the endpoint is an OpenAI-style `/v1` root. Appended only when absent: the
-    # original Ollama factory appended unconditionally, so an operator who set
-    # FELIX_OLLAMA_BASE_URL to a URL already ending in /v1 got /v1/v1 and a 404.
+    # Whether the endpoint is an OpenAI-style `/v1` root. Appended only when absent: an
+    # earlier factory appended unconditionally, so an operator whose base URL already
+    # ended in /v1 got /v1/v1 and a 404.
     ensure_v1_suffix: bool = False
     # Headers beyond auth, as (header name, option key). The header is sent only when the
     # option is set, which is how one provider covers both "direct" and "routed through a
     # gateway" without being two providers.
     header_options: tuple[tuple[str, str], ...] = field(default_factory=tuple)
-    # Whether tokens cost money here. False for a local runtime, where spend is trivially
-    # zero and a declared `limits.max_cost_usd` is therefore enforceable without rates.
-    # This cannot be read off the model: Llama runs on a laptop and is also sold by four
-    # hosted providers, and the catalog matches model ids by substring.
-    bills_per_token: bool = True
     # Option names this provider reads as a credential beyond `api_key`. Header options are
     # exempt from redaction because they are addressing — but a header is exactly where a
     # second credential goes (Cloudflare AI Gateway's `cf-aig-authorization`, an Azure-style

@@ -13,13 +13,13 @@ import logging
 from typing import Any
 
 import pytest
-from felix.config import Settings
+from felix.config import DEFAULT_MODEL_ROUTES, Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.governance import GovernanceError, assert_cost_limit_is_measurable
 from felix.manifests.loader import parse_manifest
-from felix.patterns.model import record_usage, wire_model_id
+from felix.patterns.model import parse_model_routes, record_usage, wire_model_id
 from felix.usage.pricing import estimate_cost
-from felix_ai.catalog import entry_for, is_priced
+from felix_ai.catalog import all_entries, entry_for, is_priced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 
 
@@ -47,25 +47,20 @@ def test_a_known_model_is_still_priced() -> None:
     assert cost["total"] > 0.0
 
 
-def test_free_is_a_property_of_the_provider_not_the_model_name() -> None:
-    """Llama runs on a laptop *and* is sold by Workers AI, Groq, Together and Fireworks,
-    and `entry_for` matches by substring — so pricing the `llama` catalog entry at zero
-    would make every hosted Llama free to `limits.max_cost_usd`. Locality lives on the
-    provider instead."""
-    from felix_ai.providers import builtin_provider_specs
-
+def test_a_bare_llama_is_unpriced_not_free() -> None:
+    """Llama is sold by Workers AI, Groq, Together and Fireworks at different rates, and
+    `entry_for` matches by substring — so pricing the `llama` catalog entry at zero would
+    make every hosted Llama free to `limits.max_cost_usd`."""
     assert not is_priced("llama3.2")
     # The hosted one carries Cloudflare's own rate under an `@cf/` key, not a zero.
     assert entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing.input > 0
-    by_name = {s.name: s for s in builtin_provider_specs()}
-    assert by_name["ollama"].bills_per_token is False
-    assert by_name["workers_ai"].bills_per_token is True
 
 
-def test_a_local_route_can_still_declare_a_spend_cap() -> None:
-    """Spend on a local runtime is zero, so the cap holds without any rates."""
-    settings = _settings(model_routes='{"local":{"provider":"ollama","model":"llama3.2"}}')
-    assert_cost_limit_is_measurable(_manifest("local", limits={"max_cost_usd": 5.0}), settings)
+def test_a_bare_llama_route_cannot_declare_a_spend_cap() -> None:
+    """With no host-specific rate there is nothing to count, so the cap is refused."""
+    settings = _settings(model_routes='{"hosted":{"provider":"groq","model":"llama3.2"}}')
+    with pytest.raises(GovernanceError, match=r"llama3\.2"):
+        assert_cost_limit_is_measurable(_manifest("hosted", limits={"max_cost_usd": 5.0}), settings)
 
 
 # --- the wire id is what gets priced -------------------------------------------------
@@ -174,16 +169,35 @@ def test_a_manifest_price_override_makes_an_unknown_model_cappable() -> None:
     )
 
 
-@pytest.mark.parametrize("route", ["kimi-k2-cf", "gpt-oss-120b-cf", "gpt-oss-20b-cf", "glm-flash-cf"])
+# Read from the route table rather than listed, so a new built-in Workers AI route joins
+# these tests without anyone remembering to add it.
+WORKERS_AI_ROUTES = sorted(r for r, v in DEFAULT_MODEL_ROUTES.items() if v["provider"] == "workers_ai")
+
+
+def test_there_are_workers_ai_default_routes_to_check() -> None:
+    assert len(WORKERS_AI_ROUTES) >= 10
+
+
+@pytest.mark.parametrize("route", WORKERS_AI_ROUTES)
 def test_a_declared_cost_cap_compiles_on_a_workers_ai_default_route(route: str) -> None:
     """The built-in routes, with no FELIX_MODEL_ROUTES at all: `contributor` declares
     `max_cost_usd: 20`, and while Workers AI shipped unpriced it could not run there."""
+    # The cap check skips an id it cannot resolve, so pin that this one resolves.
+    assert parse_model_routes(_settings())[route].provider == "workers_ai"
     assert_cost_limit_is_measurable(_manifest(route, limits={"max_cost_usd": 20.0}), _settings())
+
+
+@pytest.mark.parametrize("route", WORKERS_AI_ROUTES)
+def test_each_workers_ai_route_has_its_own_catalog_entry(route: str) -> None:
+    """`entry_for` matches the longest key that is a substring, so a missing
+    `@cf/zai-org/glm-5.3-flash` entry is still "priced" — at GLM-5.3's rate, nine times
+    Flash's. Priced is not enough; the wire id must be a key of its own."""
+    assert DEFAULT_MODEL_ROUTES[route]["model"] in all_entries()
 
 
 def test_an_undeclared_cap_is_not_refused() -> None:
     """`effective_limits` fills max_cost_usd from ABSOLUTE_LIMITS. Refusing on that would
-    break every local Ollama deployment over a ceiling the author never asked for."""
+    break every deployment on an unpriced model over a ceiling the author never asked for."""
     settings = _settings(model_routes='{"mystery":{"provider":"openai","model":"mystery-model"}}')
     assert_cost_limit_is_measurable(_manifest("mystery", limits={"max_tool_calls": 5}), settings)
 

@@ -10,6 +10,24 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-06
+
+### Added
+
+- Priced Workers AI routes `glm-5.3-cf`, `glm-5.3-flash-cf`, `deepseek-v4-pro-cf`, `deepseek-v4-flash-cf`, `qwen3.8-27b-cf` and `kimi-k2.7-code-cf`, so `limits.max_cost_usd` holds on each. (#497)
+
+### Changed
+
+- `llama-3-pro` and `llama-3-fast` now resolve to GLM-5.3 and GLM-5.3 Flash on Workers AI, and the bundled `oss-only` agent runs on `glm-5.3-cf`. (#497)
+
+### Removed
+
+- The `ollama` model provider and `FELIX_OLLAMA_BASE_URL`. A route naming `"provider": "ollama"` now fails startup validation; reach a local OpenAI-compatible server through the `openai` provider and a `base_url` instead. (#497)
+
+### Security
+
+- Manifests naming `llama-3-pro` or `llama-3-fast` (as the agent, a fallback, a judge or a screener) now send prompts to Cloudflare Workers AI instead of a local Ollama, once a `workers_ai` key is configured. Declare `spec.auth.outbound.providers` to keep an agent off hosted providers. (#497)
+
 ## [0.8.0] — 2026-10-05
 
 ### Added
@@ -4349,3 +4367,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.6.2]: https://github.com/felix-run/felix/releases/tag/v0.6.2
 [0.7.0]: https://github.com/felix-run/felix/releases/tag/v0.7.0
 [0.8.0]: https://github.com/felix-run/felix/releases/tag/v0.8.0
+[0.9.0]: https://github.com/felix-run/felix/releases/tag/v0.9.0

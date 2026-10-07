@@ -206,8 +206,9 @@ def test_build_model_carries_the_override_on_every_client_shape() -> None:
     from felix.patterns import model as model_mod
 
     settings = _settings(
-        # A local provider: registered by default and constructed without a credential.
-        model_routes='{"fast": {"provider": "ollama", "model": "llama3"}, "slow": {"provider": "ollama", "model": "llama3:70b"}}',
+        # Any built-in provider will do; the key keeps this off its missing-credential path.
+        model_routes='{"fast": {"provider": "groq", "model": "llama3"}, "slow": {"provider": "groq", "model": "llama3:70b"}}',
+        model_provider_options='{"groq": {"api_key": "unused"}}',
     )
     price = {"input": 3.0, "output": 9.0}
     assert getattr(model_mod.build_model(settings, _Spec(price=price)), "price_override", None) == price

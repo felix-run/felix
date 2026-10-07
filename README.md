@@ -428,11 +428,10 @@ Providers Felix ships, all speaking one of two wire formats:
 |---|---|---|
 | `anthropic` | `api.anthropic.com` | `FELIX_ANTHROPIC_API_KEY` |
 | `openai` | `api.openai.com/v1`, or `FELIX_LITELLM_BASE_URL` | `FELIX_OPENAI_API_KEY` |
-| `ollama` | `FELIX_OLLAMA_BASE_URL` | — (local, and billed as free) |
 | `workers_ai` | `api.cloudflare.com/…/accounts/{account_id}/ai/v1` | `api_key`, `account_id`, optional `gateway_id` |
 | `groq` `together` `deepseek` `cerebras` `fireworks` `openrouter` `xai` `mistral` `google` | each vendor's OpenAI-compatible endpoint | `api_key` |
 
-Everything past the first three is configured through `FELIX_MODEL_PROVIDER_OPTIONS` rather
+Everything past the first two is configured through `FELIX_MODEL_PROVIDER_OPTIONS` rather
 than a settings field per vendor. Each is also selectable as `FELIX_MEMORY_EMBEDDER`, since
 `/embeddings` is part of the same wire format.
 
@@ -444,8 +443,7 @@ Workers AI is the exception because Cloudflare publishes a per-token rate for ea
 meters in neurons and states the conversion), so the catalog carries those rates for the
 models behind the `-cf` routes below and a few more, under `@cf/` keys, and a spend cap holds on
 them. Any other `@cf/` id stays unpriced. The 10,000 free neurons a day are not subtracted, so
-spend reads high rather than low. `ollama` is exempt because a local runtime genuinely costs
-nothing — that is a property of the provider, not of the model's name.
+spend reads high rather than low.
 
 A provider is a descriptor — a wire format, an endpoint, and where its credential lives —
 so adding one is a row rather than a module. Both wire formats and the HTTP transport are
@@ -482,10 +480,15 @@ override) or by the built-in defaults:
 | `claude-haiku` | anthropic | `claude-haiku-4-5` |
 | `claude-fable` | anthropic | `claude-fable-5` |
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
-| `llama-3-pro` / `llama-3-fast` | ollama | `llama3.3:70b` / `llama3.2` |
+| `glm-5.3-cf` | workers_ai | `@cf/zai-org/glm-5.3` (1M, text only) |
+| `glm-5.3-flash-cf` | workers_ai | `@cf/zai-org/glm-5.3-flash` (1M, vision) |
+| `deepseek-v4-pro-cf` / `deepseek-v4-flash-cf` | workers_ai | `@cf/deepseek-ai/deepseek-v4-pro-0813` / `@cf/deepseek-ai/deepseek-v4-flash-0731` (1M, text only) |
+| `qwen3.8-27b-cf` | workers_ai | `@cf/qwen/qwen3.8-27b` (262K, vision) |
+| `kimi-k2.7-code-cf` | workers_ai | `@cf/moonshotai/kimi-k2.7-code` (262K, vision) |
 | `kimi-k2-cf` | workers_ai | `@cf/moonshotai/kimi-k2.6` (262K, vision) |
 | `gpt-oss-120b-cf` / `gpt-oss-20b-cf` | workers_ai | `@cf/openai/gpt-oss-120b` / `@cf/openai/gpt-oss-20b` (text only) |
 | `glm-flash-cf` | workers_ai | `@cf/zai-org/glm-4.7-flash` (text only) |
+| `llama-3-pro` / `llama-3-fast` | workers_ai | legacy ids, now `@cf/zai-org/glm-5.3` / `@cf/zai-org/glm-5.3-flash` |
 
 A turn that carries an image and is bound for a model the catalog marks text-only goes to
 `spec.model.vision_model`, or `FELIX_DEFAULT_VISION_MODEL_ID` when the manifest names none — so a
@@ -496,12 +499,15 @@ fallback is skipped -- and has no escalation of its own. With neither set, the
 request is refused with a 422 naming the route instead of reaching a model that would answer that
 it cannot see. A custom route declares what it accepts with a `modalities` key, which the catalog
 cannot know for an arbitrary model:
-`{"vision":{"provider":"ollama","model":"llava","modalities":["text","image"]}}`. A model the
-catalog cannot vouch for either way is sent the image as before.
+`{"vision":{"provider":"workers_ai","model":"@cf/meta/llama-3.2-11b-vision-instruct","modalities":["text","image"]}}`.
+A model the catalog cannot vouch for either way is sent the image as before.
 
 Every `-cf` route supports tool calling and is priced, so `limits.max_cost_usd` is enforced on
-it. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` is priced too but has no default route: Workers
-AI serves it with a 24K window, smaller than an agent's prompt with a skill catalogue.
+it. GLM-5.3, GLM-5.3 Flash, DeepSeek V4 and Kimi K2.7 Code need the Workers Paid plan (or AI
+Gateway credits). `llama-3-pro` and `llama-3-fast` used to route to a local Ollama, which Felix no
+longer ships, and are kept so manifests naming them still resolve.
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast` is priced too but has no default route: Workers AI serves
+it with a 24K window, smaller than an agent's prompt with a skill catalogue.
 
 A streaming turn is one model call. `POST /chat/stream` emits deltas from the same request that
 produces the turn's tool calls, usage and stop reason, so the text a client watches arrive is the

@@ -194,8 +194,8 @@ async def _maybe_llm_judge(
     ok, score, rule = heuristic
     criteria = str(rubric.get("judge_criteria") or rubric.get("criteria") or "relevance")
     threshold = float(rubric.get("judge_threshold") or 0.7)
-    # Defaulting to an Ollama route meant the judge silently degraded to the heuristic
-    # on any deployment without a local model — see MemoryCapture.model.
+    # Defaulting to a route the deployment held no credential for meant the judge
+    # silently degraded to the heuristic — see MemoryCapture.model.
     model_id = str(rubric.get("judge_model") or "claude-haiku")
     decider_id = str(rubric.get("judge_decider") or "")
     if decider_id:

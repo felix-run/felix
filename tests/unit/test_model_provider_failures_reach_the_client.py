@@ -1,6 +1,6 @@
 """A model provider that is down or unconfigured must say so, not answer `internal error`.
 
-Found in a real run: `oss-only` with no Ollama listening, and a `workers_ai` route with no
+Found in a real run: `oss-only` with no local model listening, and a `workers_ai` route with no
 `account_id`, both reached the chat UI as `internal error (request …)`. The first was a bare
 `httpx.ConnectError` escaping the wire layer; the second a `ProviderConfigError` whose message
 was written for an operator but was not on the relay list. Neither is a Felix fault, and the
@@ -43,17 +43,17 @@ def test_an_unreachable_provider_is_a_typed_gateway_error() -> None:
     from felix.patterns.model_composites import _is_provider_error
     from felix_api.errors import client_safe_message
 
-    refused = ModelUnreachableError("ollama", httpx.ConnectError("refused http://10.0.0.7:11434"))
+    refused = ModelUnreachableError("workers_ai", httpx.ConnectError("refused http://10.0.0.7:8000"))
     assert isinstance(refused, ModelGatewayError)
     assert refused.status == 503
-    assert client_safe_message(refused) == "ollama provider unreachable (ConnectError)"
+    assert client_safe_message(refused) == "workers_ai provider unreachable (ConnectError)"
     # The endpoint is internal topology: logged, never relayed.
     assert "10.0.0.7" not in client_safe_message(refused)
     assert "10.0.0.7" in refused.body
     # A fallback chain advances past a dead provider instead of failing the run.
     assert _is_provider_error(refused)
 
-    assert ModelUnreachableError("ollama", httpx.ReadTimeout("slow")).status == 504
+    assert ModelUnreachableError("workers_ai", httpx.ReadTimeout("slow")).status == 504
 
 
 @pytest.fixture(autouse=True)
@@ -75,14 +75,15 @@ def _failing_send(monkeypatch: pytest.MonkeyPatch, outcome: Exception | int) -> 
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
 
 
-def _ollama_client():
+# A configured base_url replaces the account-id template, so no account_id is needed.
+_DEAD_WORKERS_AI = json.dumps({"workers_ai": {"base_url": DEAD, "api_key": "cf"}})
+
+
+def _dead_client():
     from felix.patterns.model import build_one_model
 
-    settings = _settings(
-        model_routes=json.dumps({"local": {"provider": "ollama", "model": "llama3.3:70b"}}),
-        model_provider_options=json.dumps({"ollama": {"base_url": DEAD}}),
-    )
-    return build_one_model(settings, None, "local")
+    settings = _settings(model_provider_options=_DEAD_WORKERS_AI)
+    return build_one_model(settings, None, "glm-5.3-cf")
 
 
 async def _drain(client: object, entry: str) -> None:
@@ -100,15 +101,15 @@ async def _drain(client: object, entry: str) -> None:
 async def test_every_entry_point_types_a_refused_connection(entry: str) -> None:
     """Against the real socket: port 9 refuses, nothing is stubbed."""
     with pytest.raises(ModelUnreachableError) as caught:
-        await _drain(_ollama_client(), entry)
-    assert caught.value.label == "ollama"
+        await _drain(_dead_client(), entry)
+    assert caught.value.label == "workers_ai"
     assert caught.value.status == 503
 
 
 async def test_a_timeout_out_of_the_client_is_a_504(monkeypatch: pytest.MonkeyPatch) -> None:
     _failing_send(monkeypatch, httpx.ReadTimeout("slow"))
     with pytest.raises(ModelUnreachableError) as caught:
-        await _drain(_ollama_client(), "chat")
+        await _drain(_dead_client(), "chat")
     assert caught.value.status == 504
 
 
@@ -119,9 +120,9 @@ async def test_an_http_error_names_the_routed_provider(monkeypatch: pytest.Monke
 
     _failing_send(monkeypatch, 400)
     with pytest.raises(ModelGatewayError) as caught:
-        await _drain(_ollama_client(), entry)
+        await _drain(_dead_client(), entry)
     assert not isinstance(caught.value, ModelUnreachableError)
-    assert str(caught.value) == "ollama provider returned HTTP 400"
+    assert str(caught.value) == "workers_ai provider returned HTTP 400"
 
 
 @pytest.mark.parametrize("entry", ["chat", "stream_turn"])
@@ -149,10 +150,7 @@ async def test_the_anthropic_wire_names_the_routed_provider_too(
 async def test_the_stream_names_the_dead_provider() -> None:
     from felix_api.app import create_app
 
-    settings = _settings(
-        model_routes=json.dumps({"llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"}}),
-        model_provider_options=json.dumps({"ollama": {"base_url": DEAD}}),
-    )
+    settings = _settings(model_provider_options=_DEAD_WORKERS_AI)
     app = create_app(settings=settings, plugins=[])
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30) as client:
         resp = await client.post(
@@ -160,7 +158,7 @@ async def test_the_stream_names_the_dead_provider() -> None:
             json={"manifest": "oss-only", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 200
-    assert "ollama provider unreachable (ConnectError)" in resp.text
+    assert "workers_ai provider unreachable (ConnectError)" in resp.text
     assert "internal error" not in resp.text
     assert "127.0.0.1:9" not in resp.text
 

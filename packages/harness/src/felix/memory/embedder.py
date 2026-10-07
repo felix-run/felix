@@ -86,7 +86,7 @@ class SentenceTransformersEmbedder:
 
 
 class OpenAIEmbedder:
-    """Any OpenAI-compatible ``/embeddings`` endpoint, which includes Ollama.
+    """Any OpenAI-compatible ``/embeddings`` endpoint, which includes Workers AI.
 
     Implemented straight on httpx, a core dependency, so this backend needs no extra.
     """
