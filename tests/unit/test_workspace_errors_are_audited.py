@@ -27,6 +27,9 @@ from felix.tools import workspace
 from felix.tools.builtins import default_tool_provider
 from felix.tools.types import is_failure_content
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 
 async def _run(
     monkeypatch: pytest.MonkeyPatch, *, root: str, tool: str, args: dict[str, Any]

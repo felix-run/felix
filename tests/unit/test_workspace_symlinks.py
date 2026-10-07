@@ -27,6 +27,9 @@ from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.shell import resolve_cwd
 from felix.tools.types import output_text
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 SECRET = "SECRET-not-in-the-workspace"
 REFUSED = "symlinks are not followed"
 

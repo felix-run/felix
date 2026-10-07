@@ -221,6 +221,7 @@ class _ShellExecutor:
                 argv,
                 str(cwd.relative_to(root)),
                 stdin_text,
+                _scope_on_runner(root, settings),
             )
         try:
             result = await exec_argv(argv, cwd=cwd, root=root, stdin=stdin_text, timeout_s=self._timeout_s)
@@ -229,9 +230,13 @@ class _ShellExecutor:
         return json.dumps(result)
 
     async def _run_remote(
-        self, url: str, token: str, argv: list[str], cwd: str, stdin: str | None
+        self, url: str, token: str, argv: list[str], cwd: str, stdin: str | None, scope: str
     ) -> ToolOutput:
         body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": max(1, int(self._timeout_s * 1000))}
+        if scope:
+            # The runner shares the volume, not this process's request: it is told which scope's
+            # directory `cwd` is relative to, and checks the shape before using it.
+            body["scope"] = scope
         if stdin is not None:
             body["stdin"] = stdin
         deadline_s = self._timeout_s + RUNNER_GRACE_S
@@ -460,11 +465,23 @@ __all__ = [
 
 
 def _is_thread_checkout(root: Path, settings: Any) -> bool:
-    """Whether `root` is a thread's checkout rather than the operator's shared workspace."""
+    """Whether `root` is a thread's checkout rather than a scope of the operator's workspace.
+
+    A scope's directory is the workspace root or one under it; a checkout is never under it
+    (`checkout_root` refuses that configuration), which is what tells the two apart.
+    """
     shared = str(getattr(settings, "workspace_root", "") or "").strip()
     if not shared:
         return True
     try:
-        return root != Path(shared).expanduser().resolve()
+        base = Path(shared).expanduser().resolve()
     except OSError:
         return True
+    return root != base and base not in root.parents
+
+
+def _scope_on_runner(root: Path, settings: Any) -> str:
+    """`root` relative to the workspace root, as the runner is told it: `""` for the root itself."""
+    base = Path(str(getattr(settings, "workspace_root", "") or "")).expanduser().resolve()
+    rel = root.relative_to(base).as_posix()
+    return "" if rel == "." else rel

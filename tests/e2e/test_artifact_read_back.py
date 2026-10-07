@@ -38,6 +38,8 @@ def _manifest(name: str, *, artifacts: bool, **spec: Any) -> Any:
                 "tools": ["read_file"],
                 "auth": {"inbound": {"allow_anonymous": True}},
                 "artifacts": {"enabled": artifacts, "threshold_chars": 2000, "preview_chars": 100},
+                # big.txt sits at the workspace root and the requests carry no thread.
+                "workspace": {"scope": "deployment"},
                 **spec,
             },
         }

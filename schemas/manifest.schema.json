@@ -2276,6 +2276,9 @@
         "artifacts": {
           "$ref": "#/$defs/ArtifactsSpec"
         },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceSpec"
+        },
         "reflect": {
           "$ref": "#/$defs/ReflectSpec"
         },
@@ -2463,6 +2466,24 @@
         }
       },
       "title": "ToolsRetrievalSpec",
+      "type": "object"
+    },
+    "WorkspaceSpec": {
+      "additionalProperties": false,
+      "description": "Which directory the workspace tools, `shell` and the image tools' `path` work in.\n\n`thread` (the default): the thread's own, so one conversation never sees another's files.\n`tenant`: one directory shared by every thread of the tenant. `deployment`: the whole of\nFELIX_WORKSPACE_ROOT, for the self-build manifests whose root is a real checkout; honoured only\nfor the tenants in FELIX_WORKSPACE_DEPLOYMENT_TENANTS, and refused for any other.",
+      "properties": {
+        "scope": {
+          "default": "thread",
+          "enum": [
+            "thread",
+            "tenant",
+            "deployment"
+          ],
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "title": "WorkspaceSpec",
       "type": "object"
     }
   },

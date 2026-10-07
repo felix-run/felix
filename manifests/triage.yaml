@@ -89,6 +89,11 @@ spec:
       - End with what you drafted, what you scored, and what you skipped and why.
       - Always refer to yourself as Felix, never as Claude or any other name.
 
+  # The self-build checkout is FELIX_WORKSPACE_ROOT itself, so this manifest works in the whole of
+  # it. Honoured only for FELIX_WORKSPACE_DEPLOYMENT_TENANTS; any other tenant is refused.
+  workspace:
+    scope: deployment
+
   tools:
     - list_dir
     - read_file

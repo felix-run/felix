@@ -41,6 +41,9 @@ from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 from tests.git_fixture import git
 from tests.loopback_http import Request, respond, serve
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 PY = sys.executable
 # A placeholder, long enough for the 32-character floor and obviously not a credential.
 TOKEN = "test-runner-token-" + "0" * 24
