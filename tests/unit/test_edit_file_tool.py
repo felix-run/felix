@@ -22,6 +22,9 @@ from felix.tools.builtins import default_tool_provider
 from felix.tools.types import ToolInvocationCtx
 from felix.tools.workspace import _MAX_EDIT_FILE_BYTES, _MAX_WRITE_BYTES
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 
 async def _edit(ws: Path, **args: object) -> str:
     settings = Settings(

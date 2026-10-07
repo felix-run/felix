@@ -43,6 +43,7 @@ from felix.config import MIN_SHELL_RUNNER_TOKEN_CHARS
 from felix.manifests.schema import MAX_INTEGRATION_TIMEOUT_MS
 from felix.security.shell_policy import ShellNotAllowedError, allowed_prefixes, assert_argv_allowed
 from felix.tools.shell import DEFAULT_SHELL_TIMEOUT_S, ShellArgs, exec_argv, resolve_cwd
+from felix.tools.workspace_scope import ensure_scope_dir, is_scope_relpath
 
 if TYPE_CHECKING:
     from felix.config import Settings
@@ -59,6 +60,9 @@ class RunRequest(ShellArgs):
     """`ShellArgs` — the same bounds the tool's own arguments carry — plus the deadline."""
 
     timeout_ms: int = Field(default=int(DEFAULT_SHELL_TIMEOUT_S * 1000), gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
+    # The workspace scope's directory relative to FELIX_WORKSPACE_ROOT (`""`: the root). Set by the
+    # API from the call's scope, never by the model, and held to the shape the API produces.
+    scope: str = Field(default="", max_length=256)
 
 
 # What the caller is told. Fixed text, never an exception's: the detail is logged here, where an
@@ -66,6 +70,7 @@ class RunRequest(ShellArgs):
 _DENIED_MESSAGES = {
     "argv": "the command is not on this runner's allowlist",
     "cwd": "the working directory is not inside this runner's workspace",
+    "scope": "the workspace scope is not one this runner recognises",
 }
 
 
@@ -164,8 +169,12 @@ def create_runner_app(settings: Settings | None = None) -> FastAPI:
             assert_argv_allowed(req.argv, allowed_prefixes(settings), settings)
         except ShellNotAllowedError as exc:
             return _denied("argv", str(exc))
+        if not is_scope_relpath(req.scope):
+            return _denied("scope", f"refused scope {req.scope!r}")
         try:
             root = _workspace_root(settings)
+            if req.scope:
+                root = ensure_scope_dir(root, req.scope)
             cwd = resolve_cwd(root, req.cwd)
         except ValueError as exc:
             return _denied("cwd", str(exc))

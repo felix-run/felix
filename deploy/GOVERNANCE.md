@@ -859,8 +859,13 @@ own:
   may read `/proc/<api pid>/environ`: every secret the `env` backend resolves from there, the
   GitHub token included. Withholding a variable from the child is not withholding it from code
   the child runs. The shell runner below is what closes this; nothing else does.
-- **One tenant per process.** `FELIX_WORKSPACE_ROOT` is process-global; every tenant's shell
-  tool reads and writes the same tree. A multi-tenant deployment does not bind one.
+- **Scoped, not separate.** `cwd` resolves under the call's workspace scope
+  (`spec.workspace.scope`: the thread's directory by default, the tenant's, or — for
+  FELIX_WORKSPACE_DEPLOYMENT_TENANTS only — the whole root), and the runner is told the same scope.
+  That keeps one tenant's *paths* out of another's; it does not separate *processes*. Every command
+  still runs as the same user on the same host, so code one tenant's shell runs can reach another's
+  files outside the path checks. A deployment that admits tenants it does not trust binds no
+  `shell_tools` — [`WORKSPACE.md`](../docs/WORKSPACE.md) phase 3 is what separates them.
 
 ### The shell runner
 
@@ -1001,7 +1006,7 @@ minted from their stored GitHub connection (`felix.auth.github_connections`) at 
 call. The properties above hold unchanged, with three additions:
 
 - **The checkout is the thread's own.** It lives under FELIX_REPO_CHECKOUT_ROOT, never under the
-  shared FELIX_WORKSPACE_ROOT, and every workspace tool in that thread works in it and nowhere else.
+  FELIX_WORKSPACE_ROOT, and every workspace tool in that thread works in it and nowhere else.
   A checkout still cloning, failed or expired stops the tools rather than falling back to the shared
   workspace. The remote shell runner cannot see a checkout, so shell calls in such a thread are
   refused rather than sent to run in the shared workspace.
