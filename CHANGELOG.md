@@ -10,6 +10,14 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-07
+
+### Added
+
+- `FELIX_WORKSPACE_BACKEND=hosted` runs each thread's or tenant's workspace in its own sandbox: a Cloudflare Container with the internet off, reached through the gateway Worker in `deploy/cloudflare/workspace-gateway` (`FELIX_WORKSPACE_GATEWAY_URL`, `FELIX_WORKSPACE_GATEWAY_TOKEN`), with `/workspace` kept in R2 between runs. The workspace tools answer exactly as on `local`. Under `hosted`, an image tool's `path`, `publish_commits` and repository checkouts are refused outside `deployment` scope (`shell_tools` run in the sandbox: #511). `local` remains the default. (#510)
+
+- Under `FELIX_WORKSPACE_BACKEND=hosted`, `shell_tools` commands run in the scope's own sandbox (internet off, a minimal environment), after the same allowlist and command screening as on the host, and never fall back to the host. A deployment admitting untrusted tenants can bind `shell_tools` under `hosted`. (#511)
+
 ## [0.10.0] — 2026-10-06
 
 ### Added
@@ -4385,3 +4393,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.8.0]: https://github.com/felix-run/felix/releases/tag/v0.8.0
 [0.9.0]: https://github.com/felix-run/felix/releases/tag/v0.9.0
 [0.10.0]: https://github.com/felix-run/felix/releases/tag/v0.10.0
+[0.11.0]: https://github.com/felix-run/felix/releases/tag/v0.11.0
