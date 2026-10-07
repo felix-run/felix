@@ -5,7 +5,7 @@ metadata:
   name: oss-only
   version: 1.0.0
   description: >-
-    Open-weight agent — runs on GLM-5.3 via Cloudflare Workers AI with no
+    Open-weight agent — runs on GLM-5.3 Flash via Cloudflare Workers AI with no
     Anthropic/OpenAI keys. Needs a "workers_ai" entry in
     FELIX_MODEL_PROVIDER_OPTIONS (api_key, account_id, optional gateway_id).
   tags: [react, oss, workers-ai]
@@ -19,7 +19,7 @@ spec:
   pattern: react
 
   model:
-    id: glm-5.3-cf
+    id: glm-5.3-flash-cf
     temperature: 0
 
   system_prompt:

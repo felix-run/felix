@@ -7,7 +7,7 @@ metadata:
   description: >-
     Hybrid routing — a Claude Haiku classifier picks the intent, then dispatches
     to an open-weight sub-agent. The strong model only pays for the short
-    classification turn; tool work runs on GLM-5.3 via Workers AI.
+    classification turn; tool work runs on GLM-5.3 Flash via Workers AI.
   tags: [router, hybrid, oss]
 
 spec:
