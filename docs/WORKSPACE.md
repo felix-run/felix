@@ -60,9 +60,10 @@ containers through the Docker SDK, which needs the daemon's socket.
   repository gates inside a sandbox is a separate design.
 - **Replacing client tools.** The in-browser workspace stays what it is: the right answer when the
   files belong on the user's machine and someone is watching.
-- **Arbitrary code execution in the workspace.** This proposal isolates file operations. Letting a
-  model run commands against its workspace is what the isolation later makes safe to build, not
-  something this delivers.
+- **Arbitrary code execution in the workspace** — amended 2026-10-07: phase 3b runs a manifest's
+  existing `shell_tools` (an allowlisted argv, no shell) inside the scope's sandbox, because a hosted
+  workspace whose commands still ran on the host would isolate the files and not the code that
+  writes them. Anything beyond `shell_tools` stays out of scope.
 
 ## Design
 
@@ -185,12 +186,13 @@ the same operator, instead of going to a new third party. Checked against the re
 | File and command API | met — `writeFile`, `readFile`, `mkdir`, `exec` | `list_dir` and `search_files` are built on `exec` if no listing call fits |
 | Keeps files across idle, resume by id | **not by itself** — a sandbox is a Durable Object plus a container, and the container's disk is fresh every time it starts | `/workspace` is persisted with `createBackup` / `restoreBackup` to an R2 bucket; see below |
 | Egress control | met — `enableInternet`, and `allowedHosts` as a deny-by-default allowlist, plus `deniedHosts` | the adapter creates workspace sandboxes with the internet off |
-| Delete, and list by metadata | **unconfirmed** — no delete call found in the docs read | the reconcile sweep may have to work from the R2 backup objects and the mapping table rather than a provider listing; confirm before phase 4 |
+| Delete, and list by metadata | **delete: met (rechecked 2026-10-07)** — `destroy()`; no listing | the reconcile sweep may have to work from the R2 backup objects and the mapping table rather than a provider listing; confirm before phase 4 |
 | Where the data lives | met — the deployment's own Cloudflare account and R2 bucket | answers most of open question 3 for this provider |
 | Callable from the harness | **not directly** — the SDK runs only inside a Worker (`getSandbox(env.Sandbox, id)`); there is no Python SDK or public API for it | a gateway Worker is required; see below |
-| Status and price | Sandbox SDK 1.0 is in preview; Workers Paid plan | `hosted` stays opt-in until the adapter has run on the reference deployment for a release |
+| Status and price | **SDK 1.0 released 2026-09-30** (rechecked 2026-10-07; 0.x fixes end 2026-12-31); Workers Paid plan | `hosted` stays opt-in until the adapter has run on the reference deployment for a release |
 
-**The gateway Worker.** A small Worker in `felix-run/web`, next to the chat-ui proxy, holds the
+**The gateway Worker.** A small Worker — in this repository, `deploy/cloudflare/workspace-gateway`,
+as decided on 2026-10-07 (see "Phase 3 as decided") — holds the
 Sandbox Durable Object binding and the backup bucket and exposes exactly the `SandboxProvider`
 operations over HTTPS. The harness's adapter is an HTTP client to it, authenticated by a dedicated
 secret (not the chat-ui key, not a harness API key). The gateway takes a scope key and never a raw
@@ -285,6 +287,70 @@ registered prefix now: today a write that fails with `Errno 13` is audited as `o
   wrote without going to the provider's console — the same reason `/memory` and `/documents` have
   routes.
 
+## Phase 3 as decided (2026-10-07)
+
+Shaped after a recheck of the provider against **Sandbox SDK 1.0**, which was released on
+2026-09-30 and changes the API the sections above were written against. Where this section and
+those disagree, this one is current.
+
+**What changed in the provider.**
+- **No more `getSandbox`.** In 1.0 the gateway writes its own Durable Object, which drives
+  `this.ctx.container` (`start`, `exec(argv)`, `destroy`), and the Worker reaches it with
+  `getByName`. `createBackup`/`restoreBackup` give way to `DirectoryBackup`: one directory, kept as
+  one R2 object, restored as plain files, with no R2 credential inside the container.
+- **`destroy()` exists.** Snapshots, though, cannot be deleted at all, so this design does not use
+  them.
+- **Each instance is a Firecracker microVM** with its own kernel. Disk does not survive a stop. Idle
+  instances are not billed. Cold starts are typically 1–3 s.
+- **The file API follows symlinks and has no ranged read.**
+
+**Decisions.**
+- **Files, then shell.**
+  - **3a** puts the five file tools on the hosted backend.
+  - **3b** runs `shell_tools` inside the same sandbox through `exec`. The harness still applies the
+    allowlist and command screening first, and a hosted scope never falls back to the host.
+- **Parity through a helper.** The sandbox image carries a small `felix-fs` helper, run through
+  `exec`. It walks with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)` and gives ranged reads,
+  the size caps, edit by rename and the bounded search. One conformance suite then runs against
+  `local` and `hosted` alike.
+- **Backups at the end of each run, not each write.**
+  - **When:** `DirectoryBackup` to R2 when a run that wrote files ends, and again before the idle
+    timeout stops the sandbox.
+  - **Restore:** on wake.
+  - **The cost:** a VM lost mid-run loses that run's writes. This replaces "a backup after every
+    write" above.
+- **SDK 1.0, the gateway's own Durable Object.**
+  - The Durable Object is named from `(tenant_id, scope_key)`, which the Worker derives and
+    validates.
+  - Containers start with `enableInternet: false` on the smallest instance type.
+  - There is a 10-minute idle timeout and a `/health` route.
+- **No `workspace_sandboxes` table in phase 3.** The Durable Object name is deterministic, which
+  replaces the mapping table above. The R2 prefix is what phase 4's sweeps reconcile against.
+- **One sandbox per `tenant` scope**, shared by that tenant's threads.
+- **Local files move once.** On a scope's first hosted use, its local files are uploaded once and
+  the upload is recorded.
+- **Some tools still need a local directory:** an image tool's `path`, `publish_commits`, AGENTS.md
+  loading and a thread's repository checkout. Under `hosted`, these are refused for any scope but
+  `deployment`, never served from the host.
+
+- **The gateway lives in this repository** (`deploy/cloudflare/workspace-gateway`), not in
+  `felix-run/web`. It is harness infrastructure, like the database: an operator running Felix
+  headless, with no chat-ui, deploys it from here. This also puts the `felix-fs` helper beside the
+  code it is ported from. A test compares the two as syntax trees, so they cannot drift.
+
+**Pull requests, in order, all in this repository.**
+1. The gateway Worker (`deploy/cloudflare/workspace-gateway`), its image and the `felix-fs` helper,
+   the five file operations, its handler contract tests, the helper's tests in the harness suite,
+   and `wrangler.example.jsonc`.
+2. Persistence. `DirectoryBackup`, restore on start, a checkpoint route, a
+   backup-then-stop alarm on idle, and `destroy`.
+3. `HostedBackend` over the gateway, a fake gateway for tests, the backend conformance
+   suite run against both backends, the `FELIX_WORKSPACE_BACKEND` opt-in, and the end-of-run
+   checkpoint.
+4. 3b, `shell_tools` exec through the hosted backend. Also UPGRADING notes and an opt-in
+   live conformance job.
+5. Latency and cost measured on the reference deployment, and this file brought in line.
+
 ## Phases
 
 | Phase | What | Changes behaviour? | Status |
@@ -293,7 +359,8 @@ registered prefix now: today a write that fails with `Errno 13` is audited as `o
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
-| 3 | `hosted` backend: the `SandboxProvider` protocol, the Cloudflare Sandboxes adapter and its gateway Worker in `felix-run/web`, the `workspace_sandboxes` table, the adapter conformance suite | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
+| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
+| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[ ]` |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
 
@@ -301,8 +368,8 @@ Phases 0 and 1 are small and independent and should land first. Phase 2 was spli
 isolation, through the one function every workspace consumer already calls, and 2b is where the
 tools stop touching the filesystem directly — a refactor with no change in behaviour, ahead of the
 backend that needs it. Phase 3 is the production change; its provider is chosen
-(Cloudflare Sandboxes), and it spans both repositories: the adapter here, the gateway Worker in
-`felix-run/web`.
+(Cloudflare Sandboxes), and all of it is in this repository: the adapter and the gateway Worker,
+under `deploy/cloudflare/`.
 
 ## Migration
 
