@@ -957,3 +957,62 @@ async def test_a_failing_approvals_read_does_not_take_the_run_stream_down(
     assert "approval_required" not in names
     assert "session_event" in names, "a failing approvals read took the transcript with it"
     assert "final" in names, "a failing approvals read took the answer with it"
+
+
+# --- what the run is waiting on its client for ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_durable_run_asks_its_client_to_run_a_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client-tool half of the gap the approvals relay closed.
+
+    A client tool announces itself with a side event, which reaches only a stream in the
+    agent's process; a durable run's agent is in the worker. Without this, `cowork`'s
+    `local_shell` waited out its timeout on every durable run with no client ever asked.
+    """
+    from felix.tools import client_requests
+
+    settings = _settings("tail-client-tool")
+    thread = "default:client-tool"
+    _force_durable(monkeypatch)
+    request = {
+        "id": "call_ls",
+        "name": "local_shell",
+        "args": {"command": "ls"},
+        "thread_id": thread,
+        "transport": "client",
+    }
+
+    async def worker_called_a_client_tool() -> None:
+        await client_requests.record(thread, request, timeout=300)
+
+    _stub_fiber(
+        monkeypatch, on_poll=[worker_called_a_client_tool], statuses=["running", "running", "running"]
+    )
+    try:
+        async with _client(settings) as client:
+            body = await _post_stream(client, "client-tool")
+    finally:
+        await client_requests.clear(thread, "call_ls")
+
+    asked = [p["data"] for _, p in _blocks(body) if p.get("event") == "tool_request"]
+    # Once, however many polls saw it pending, and exactly the payload the side event carries,
+    # so a client answers it with the handler it already has.
+    assert asked == [request], f"expected one tool_request, got {asked} in {_names(body)}"
+
+
+@pytest.mark.asyncio
+async def test_another_threads_client_tool_is_not_announced(monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.tools import client_requests
+
+    settings = _settings("tail-client-tool-scope")
+    _force_durable(monkeypatch)
+    await client_requests.record("default:theirs", {"id": "call_x", "name": "local_shell"}, timeout=300)
+    _stub_fiber(monkeypatch, statuses=["running", "running"])
+    try:
+        async with _client(settings) as client:
+            body = await _post_stream(client, "mine-client")
+    finally:
+        await client_requests.clear("default:theirs", "call_x")
+
+    assert "tool_request" not in _names(body), "another thread's client tool reached this stream"

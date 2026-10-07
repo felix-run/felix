@@ -73,9 +73,13 @@ async def test_cowork_manifest_loads() -> None:
     m = load_bundled("cowork")
     assert isinstance(m, Manifest)
     assert m.metadata.name == "cowork"
-    assert "write_file" in m.spec.tools
-    assert any(t.name == "local_shell" for t in m.spec.client_tools)
-    assert m.spec.approvals
+    # The user's folder is the workspace: bound beside the server's `list_dir`, the model
+    # listed the server's empty one and told the user theirs was empty.
+    assert not {"list_dir", "read_file", "write_file", "edit_file", "search_files"} & set(m.spec.tools)
+    client = {t.name for t in m.spec.client_tools}
+    assert {"local_list", "local_read", "local_search", "local_write", "local_edit", "local_shell"} <= client
+    gated = {tool for rule in m.spec.approvals for tool in rule.tools}
+    assert {"local_write", "local_edit", "local_shell"} <= gated, "a write to the user's disk ran ungated"
     assert m.spec.execution.mode == "durable"
 
 
