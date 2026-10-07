@@ -969,7 +969,7 @@ class JudgeRule(_Strict):
     name: str = Field(min_length=1)
     criteria: str = Field(min_length=1)
     threshold: float = Field(default=0.7, ge=0, le=1)
-    # Empty = heuristic only; set a model id (e.g. llama-3-fast) to call the gateway.
+    # Empty = heuristic only; set a model id (e.g. claude-haiku or glm-5.3-flash-cf) to call the gateway.
     model: str = ""
     target_tools: list[str] = Field(default_factory=list)
     final_response: bool = False

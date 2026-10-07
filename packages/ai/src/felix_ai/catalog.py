@@ -342,8 +342,8 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         quirks=ModelQuirks(**_UNVOUCHED),
         text_only=True,
     ),
-    # The entries from here to GLM-4.7 Flash are read from each model page, 2026-10-06; all
-    # but Qwen need the Workers Paid plan. Cached input is recorded and not yet applied.
+    # The entries from here to GLM-4.7 Flash are read from each model page, 2026-10-06.
+    # Cached input is recorded and not yet applied.
     "@cf/zai-org/glm-5.3": ModelCatalogEntry(
         context_window=1_048_576,
         max_output_tokens=1_048_576,

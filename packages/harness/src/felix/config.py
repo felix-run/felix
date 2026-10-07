@@ -1069,7 +1069,7 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     # "workers_ai" in FELIX_MODEL_PROVIDER_OPTIONS. Each is priced in the catalog and
     # supports tool calling. GLM-5.3, DeepSeek V4 Pro and Kimi are agent tiers; GLM-5.3 Flash
     # and DeepSeek V4 Flash the cheap ones for side requests; Qwen 3.8 a mid-size vision
-    # model. All but Qwen and the older four below need the Workers Paid plan.
+    # model. Which need the Workers Paid plan is in the README's routes table.
     "glm-5.3-cf": {"provider": "workers_ai", "model": "@cf/zai-org/glm-5.3"},
     "glm-5.3-flash-cf": {"provider": "workers_ai", "model": "@cf/zai-org/glm-5.3-flash"},
     "deepseek-v4-pro-cf": {"provider": "workers_ai", "model": "@cf/deepseek-ai/deepseek-v4-pro-0813"},

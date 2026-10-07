@@ -55,10 +55,10 @@ is in both because it shares a credential, not an interface.
    a double without `stream_turn` looked correct in isolation and failed open on
    `limits.max_cost_usd`.
 3. **From a plugin**: `PluginRegistry.register_model_provider(name, factory)`; core never names it.
-4. Set `bills_per_token=False` for a local runtime, so a cost limit is enforceable without rates.
-5. Add the model family to `felix_ai/catalog.py` with its context window and pricing. An unpriced
-   model cannot enforce `limits.max_cost_usd`.
-6. Add the arm to `WIRE_FORMATS` in `tests/conformance/test_model_provider.py` if it is a new wire
+4. Add the model family to `felix_ai/catalog.py` with its context window and pricing. An unpriced
+   model cannot enforce `limits.max_cost_usd` — a manifest declaring one on it needs
+   `spec.model.price`, and there is no per-provider exemption.
+5. Add the arm to `WIRE_FORMATS` in `tests/conformance/test_model_provider.py` if it is a new wire
    format. The contract covers registration → route → `build_one_model` → a turn →
    `record_usage`. No arm needs infrastructure, so **a skip there is a bug**.
 

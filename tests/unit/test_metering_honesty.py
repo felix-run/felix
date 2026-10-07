@@ -13,13 +13,13 @@ import logging
 from typing import Any
 
 import pytest
-from felix.config import Settings
+from felix.config import DEFAULT_MODEL_ROUTES, Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.governance import GovernanceError, assert_cost_limit_is_measurable
 from felix.manifests.loader import parse_manifest
-from felix.patterns.model import record_usage, wire_model_id
+from felix.patterns.model import parse_model_routes, record_usage, wire_model_id
 from felix.usage.pricing import estimate_cost
-from felix_ai.catalog import entry_for, is_priced
+from felix_ai.catalog import all_entries, entry_for, is_priced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 
 
@@ -169,27 +169,30 @@ def test_a_manifest_price_override_makes_an_unknown_model_cappable() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "route",
-    [
-        "kimi-k2-cf",
-        "gpt-oss-120b-cf",
-        "gpt-oss-20b-cf",
-        "glm-flash-cf",
-        "glm-5.3-cf",
-        "glm-5.3-flash-cf",
-        "deepseek-v4-pro-cf",
-        "deepseek-v4-flash-cf",
-        "qwen3.8-27b-cf",
-        "kimi-k2.7-code-cf",
-        "llama-3-pro",
-        "llama-3-fast",
-    ],
-)
+# Read from the route table rather than listed, so a new built-in Workers AI route joins
+# these tests without anyone remembering to add it.
+WORKERS_AI_ROUTES = sorted(r for r, v in DEFAULT_MODEL_ROUTES.items() if v["provider"] == "workers_ai")
+
+
+def test_there_are_workers_ai_default_routes_to_check() -> None:
+    assert len(WORKERS_AI_ROUTES) >= 10
+
+
+@pytest.mark.parametrize("route", WORKERS_AI_ROUTES)
 def test_a_declared_cost_cap_compiles_on_a_workers_ai_default_route(route: str) -> None:
     """The built-in routes, with no FELIX_MODEL_ROUTES at all: `contributor` declares
     `max_cost_usd: 20`, and while Workers AI shipped unpriced it could not run there."""
+    # The cap check skips an id it cannot resolve, so pin that this one resolves.
+    assert parse_model_routes(_settings())[route].provider == "workers_ai"
     assert_cost_limit_is_measurable(_manifest(route, limits={"max_cost_usd": 20.0}), _settings())
+
+
+@pytest.mark.parametrize("route", WORKERS_AI_ROUTES)
+def test_each_workers_ai_route_has_its_own_catalog_entry(route: str) -> None:
+    """`entry_for` matches the longest key that is a substring, so a missing
+    `@cf/zai-org/glm-5.3-flash` entry is still "priced" — at GLM-5.3's rate, nine times
+    Flash's. Priced is not enough; the wire id must be a key of its own."""
+    assert DEFAULT_MODEL_ROUTES[route]["model"] in all_entries()
 
 
 def test_an_undeclared_cap_is_not_refused() -> None:
