@@ -8,6 +8,7 @@ from typing import Any
 
 from felix.manifests.schema import ClientToolRef
 from felix.side_events import emit as emit_side_event
+from felix.tools import client_requests
 from felix.tools.types import (
     Tool,
     ToolInput,
@@ -99,18 +100,22 @@ class _ClientToolExecutor:
             # refuses the same id, so the wait could only ever end in `[error/timeout]`.
             return "[error/invalid_arguments] tool_call_id is too long"
 
-        await emit_side_event(
-            thread_id,
-            "tool_request",
-            {
-                "id": tool_call_id,
-                "name": self._name,
-                "args": dict(args),
-                "thread_id": thread_id,
-                "transport": "client",
-            },
-        )
-        result = await wait_for_result(thread_id, tool_call_id, timeout=self._timeout)
+        request = {
+            "id": tool_call_id,
+            "name": self._name,
+            "args": dict(args),
+            "thread_id": thread_id,
+            "transport": "client",
+        }
+        timeout = DEFAULT_TIMEOUT_SECONDS if self._timeout is None else float(self._timeout)
+        # Recorded as well as emitted: the side event reaches only a stream in this process,
+        # and a durable run's stream is served by another one. See `client_requests`.
+        await client_requests.record(thread_id, request, timeout=timeout)
+        try:
+            await emit_side_event(thread_id, "tool_request", request)
+            result = await wait_for_result(thread_id, tool_call_id, timeout=timeout)
+        finally:
+            await client_requests.clear(thread_id, tool_call_id)
         return result.content
 
 

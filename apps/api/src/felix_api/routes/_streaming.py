@@ -451,6 +451,7 @@ class DurableTail:
         "_cursor",
         "_may_read_approvals",
         "_reader",
+        "_requested",
         "_settings",
         "_tenant_id",
         "_thread",
@@ -476,6 +477,7 @@ class DurableTail:
         self._tenant_id = tenant_id
         self._may_read_approvals = may_read_approvals
         self._announced: set[str] = set()
+        self._requested: set[str] = set()
 
     async def drain(self) -> list[str]:
         """Frames for everything new since the last drain. Never raises.
@@ -492,7 +494,7 @@ class DurableTail:
             frames, self._cursor = await drain_session_events(self._reader, self._cursor)
         except Exception:
             logger.debug("durable tail read failed for %s", loggable(self._thread, limit=80), exc_info=True)
-        return frames + await self._drain_approvals()
+        return frames + await self._drain_approvals() + await self._drain_client_requests()
 
     async def _drain_approvals(self) -> list[str]:
         """Frames for approvals this run is blocked on that the client has not been told about.
@@ -552,6 +554,34 @@ class DurableTail:
                 continue
             self._announced.add(approval_id)
             frames.append(approval_required_frame(row))
+        return frames
+
+    async def _drain_client_requests(self) -> list[str]:
+        """`tool_request` frames for client tools this run is waiting on, each announced once.
+
+        The approvals gap, for the other blocking round trip. A client tool's request is a side
+        event, which reaches only a stream in the agent's own process, so a durable run's
+        request never reached the client that has to run it — the run waited out the tool's
+        timeout instead. `client_requests` is where the executor records it, and the frame is
+        the same payload the side event carries, so a client answers it with the handler and
+        the `POST /chat/tool_result` it already has.
+
+        Not behind `approvals:read`, unlike the approvals above: those rows are a management
+        surface, while a client tool request is part of the conversation — a streamed run
+        sends this frame to whoever is driving it, and so does this.
+        """
+        if not self._thread:
+            return []
+        from felix.tools import client_requests
+
+        frames = []
+        for request in await client_requests.pending(self._thread):
+            tool_call_id = str(request.get("id") or "")
+            if not tool_call_id or tool_call_id in self._requested:
+                continue
+            self._requested.add(tool_call_id)
+            payload = {k: v for k, v in request.items() if k != "expires_at"}
+            frames.append(frame({"event": "tool_request", "data": payload}))
         return frames
 
     async def wait(self, *, timeout: float) -> Wake:

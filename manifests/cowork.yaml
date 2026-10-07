@@ -8,7 +8,7 @@ metadata:
   tags: [react, workspace, durable]
   greeting:
     headline: "What should we do in this folder?"
-    subtitle: "cowork reads the workspace without asking, and asks before it writes a file or runs a command."
+    subtitle: "cowork reads your folder without asking, and asks before it writes a file or runs a command."
   starters:
     - title: "List the workspace"
       prompt: "List the top-level files and folders in the workspace."
@@ -29,24 +29,120 @@ spec:
   system_prompt:
     inline: |
       You are Felix, a workspace agent.
-      Complete user goals by reading and editing files in the workspace, using
-      client tools when local/browser actions are required, and pausing for
-      approval when a gated tool is invoked.
+      The workspace is the user's own folder, open in their browser or terminal.
+      Reach it only through the local_* tools: local_list, local_read and
+      local_search to look, local_write and local_edit to change files, and
+      local_shell for commands. Paths are relative to the folder's root.
+      Writes and commands pause for the user's approval.
       Prefer small, reversible changes. Summarize what you did when finished.
       Always refer to yourself as Felix, never as Claude or any other name.
 
+  # The workspace tools (`list_dir`, `read_file`, ...) are not bound here. They act on a folder
+  # on the server, and the folder this agent is for is the user's: bound beside the `local_*`
+  # tools below, the model listed the server's empty workspace and told the user theirs was
+  # empty while their folder sat open in the sidebar.
   tools:
     - calculator
-    - list_dir
-    - read_file
-    - write_file
-    - edit_file
-    - search_files
     - list_skills
     - activate_skill
     - deactivate_skill
 
+  # The user's folder. Each runs in the connected client — the browser's mounted folder or
+  # in-tab files, or the terminal client's working directory — and a durable run reaches it
+  # through the stream (`felix.tools.client_requests`). Argument names follow the workspace
+  # tools', so a client reads `path` off either.
   client_tools:
+    - name: local_list
+      description: List the entries of a directory in the user's folder. Directories end in "/".
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Directory relative to the folder's root. Defaults to the root.
+          recursive:
+            type: boolean
+            description: List everything below the directory too, not only its direct entries.
+        additionalProperties: false
+      timeout_seconds: 60
+    - name: local_read
+      description: Read a text file from the user's folder.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+          offset:
+            type: integer
+            minimum: 0
+            description: Character offset to start reading from.
+          limit:
+            type: integer
+            minimum: 1
+            description: Maximum characters to return.
+        required: [path]
+        additionalProperties: false
+      timeout_seconds: 60
+    - name: local_search
+      description: Search the text files in the user's folder for a string. Returns matching lines as path:line:text.
+      args_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: Text to find (case-sensitive), or a regular expression when regex is true.
+          path:
+            type: string
+            description: Directory to search, relative to the folder's root. Defaults to the root.
+          regex:
+            type: boolean
+            description: Treat query as a regular expression.
+          max_hits:
+            type: integer
+            minimum: 1
+            maximum: 200
+            description: Stop after this many matching lines. Defaults to 20.
+        required: [query]
+        additionalProperties: false
+      timeout_seconds: 120
+    - name: local_write
+      description: Create or overwrite a text file in the user's folder.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+          content:
+            type: string
+            description: The file's full new text.
+          append:
+            type: boolean
+            description: Append to the file instead of overwriting it.
+        required: [path, content]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_edit
+      description: Replace exact text in a file in the user's folder.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+          old_string:
+            type: string
+            description: Exact text to find. Include enough surrounding lines to appear once.
+          new_string:
+            type: string
+            description: Text to put in its place. Empty deletes the match.
+          replace_all:
+            type: boolean
+            description: Replace every occurrence instead of requiring exactly one.
+        required: [path, old_string, new_string]
+        additionalProperties: false
+      timeout_seconds: 300
     - name: local_shell
       description: Run a shell command in the user's local environment.
       args_schema:
@@ -78,8 +174,8 @@ spec:
 
   approvals:
     - id: workspace-write
-      description: Confirm writes to the workspace
-      tools: [write_file, edit_file]
+      description: Confirm writes to your folder
+      tools: [local_write, local_edit]
       ttl_seconds: 600
     - id: client-shell
       description: Confirm local shell commands
@@ -94,12 +190,9 @@ spec:
   content_screening:
     enabled: true
     on_flag: quarantine
-    # `read_file`, `search_files` and `list_dir` are `transport: local`, so the untrusted-tool
-    # default does not cover them — but they read the same filesystem `local_shell` does, and
-    # they are the route an agent prefers over `cat`. Naming them here adds screening; the list
-    # only ever adds, and cannot narrow it away from the client tools. `recall` and
-    # `list_memories` used to be named here too; memory tools are screened by default now.
-    tools: [read_file, search_files, list_dir]
+    # Every `local_*` tool is `transport: client`, which the untrusted-tool default already
+    # screens, so nothing is named here. `read_file`, `search_files` and `list_dir` were, while
+    # this manifest bound them; memory tools are screened by default too.
 
   limits:
     max_tool_calls: 200
