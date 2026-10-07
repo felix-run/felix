@@ -31,6 +31,7 @@ jobs:
       helm: ${{ steps.filter.outputs.helm }}
       toolkit: ${{ steps.filter.outputs.toolkit }}
       scalar: ${{ steps.filter.outputs.scalar }}
+      gateway: ${{ steps.filter.outputs.gateway }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -45,6 +46,8 @@ jobs:
               - 'manifests/**'
               - 'scripts/**'
               - 'clients/**'
+              # Its tests are in tests/unit and hold it to the harness's workspace code.
+              - 'deploy/cloudflare/workspace-gateway/helper/**'
               - 'alembic.ini'
               - 'Makefile'
               - 'pyproject.toml'
@@ -66,6 +69,9 @@ jobs:
             scalar:
               - 'apps/api/src/felix_api/docs.py'
               - 'scripts/check-scalar-sri.py'
+            gateway:
+              - 'deploy/cloudflare/workspace-gateway/**'
+              - '.github/workflows/**'
             toolkit:
               - '.claude/**'
               - 'CLAUDE.md'
@@ -290,6 +296,27 @@ jobs:
         run: uv run --no-sync python scripts/lean-import-check.py
       - name: CLI runs
         run: uv run --no-sync felix version
+
+  # The hosted workspace backend's gateway Worker: TypeScript, so its own toolchain. Its Python
+  # helper runs in the `test` job, beside the harness code it is held to.
+  gateway:
+    needs: changes
+    if: needs.changes.outputs.gateway == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: deploy/cloudflare/workspace-gateway
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Type-check
+        run: npm run check-types
+      - name: Handler contract
+        run: npm test
 
   toolkit:
     needs: changes
