@@ -19,6 +19,8 @@ export const OPS = [
   'write',
   'edit',
   'search',
+  // A `shell_tools` command, run in the sandbox by the shell tool's own exec path.
+  'exec',
   // Not file operations: back `/workspace` up to R2 now, and stop the sandbox and delete its backup.
   'checkpoint',
   'destroy',
@@ -30,6 +32,11 @@ export const MAX_READ_BYTES = 512_000;
 export const MAX_WRITE_BYTES = 512_000;
 export const MAX_QUERY_CHARS = 512;
 export const MAX_SEARCH_HITS = 50;
+/** The shell tool's bounds (felix/tools/shell.py `ShellArgs`, `MAX_INTEGRATION_TIMEOUT_S`). */
+export const MAX_ARGV_ITEMS = 256;
+export const MAX_ARGV_BYTES = 64_000;
+export const MAX_STDIN_CHARS = 256_000;
+export const MAX_EXEC_TIMEOUT_MS = 3_600_000;
 /** A write's base64 body plus JSON framing, rounded up. Anything larger is not a tool call. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -50,6 +57,7 @@ export type HelperRequest =
   | { op: 'write'; path: string; data: string; append: boolean }
   | { op: 'edit'; path: string; old: string; new: string; replace_all: boolean }
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
+  | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
   | { op: 'checkpoint' }
   | { op: 'destroy' };
 
@@ -155,6 +163,33 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
       if (replacement === null) return '`new` must be a string';
       if (replaceAll === null) return '`replace_all` must be a boolean';
       return { op, path, old, new: replacement, replace_all: replaceAll };
+    }
+    case 'exec': {
+      const argv = body.argv;
+      const cwd = str(body, 'cwd', '.');
+      const timeoutMs = int(body, 'timeout_ms', 300_000, 1, MAX_EXEC_TIMEOUT_MS);
+      const stdin = body.stdin;
+      if (
+        !Array.isArray(argv) ||
+        argv.length === 0 ||
+        argv.length > MAX_ARGV_ITEMS ||
+        !argv.every((a) => typeof a === 'string') ||
+        new TextEncoder().encode(argv.join('')).length > MAX_ARGV_BYTES
+      ) {
+        return `\`argv\` must be 1 to ${MAX_ARGV_ITEMS} strings, at most ${MAX_ARGV_BYTES} bytes`;
+      }
+      if (cwd === null) return '`cwd` must be a string';
+      if (timeoutMs === null) return `\`timeout_ms\` must be an integer from 1 to ${MAX_EXEC_TIMEOUT_MS}`;
+      if (stdin !== undefined && (typeof stdin !== 'string' || stdin.length > MAX_STDIN_CHARS)) {
+        return `\`stdin\` must be a string of at most ${MAX_STDIN_CHARS} characters`;
+      }
+      return {
+        op,
+        argv: argv as string[],
+        cwd,
+        timeout_ms: timeoutMs,
+        ...(stdin === undefined ? {} : { stdin: stdin as string }),
+      };
     }
     case 'search': {
       const path = str(body, 'path', '.');

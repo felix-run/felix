@@ -8,6 +8,7 @@ is the wire contract the Worker's own tests hold it to, and the file code the sa
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import shutil
@@ -60,7 +61,7 @@ class FakeGateway:
     def sandbox(self, scope: str) -> Path:
         return self.root / scope
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
+    async def handler(self, request: httpx.Request) -> httpx.Response:
         if self.down:
             raise httpx.ConnectError("gateway down", request=request)
         if request.headers.get("authorization") != f"Bearer {TOKEN}":
@@ -84,7 +85,8 @@ class FakeGateway:
         helper = _helper()
         previous, helper.ROOT = helper.ROOT, directory
         try:
-            answer = helper.run({"op": op, **body})
+            # Off the event loop: `exec` runs its own (`asyncio.run`), as it does in the sandbox.
+            answer = await asyncio.to_thread(helper.run, {"op": op, **body})
         finally:
             helper.ROOT = previous
         if answer["ok"]:

@@ -361,7 +361,7 @@ those disagree, this one is current.
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
 | 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508 gateway, #509 persistence, feat/hosted-workspace-backend; not yet run against a deployed gateway |
-| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[ ]` |
+| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` feat/hosted-shell: the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
 

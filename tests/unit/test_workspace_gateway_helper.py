@@ -234,6 +234,7 @@ class PortedCodeTests(unittest.TestCase):
     SOURCES = (
         "packages/harness/src/felix/tools/workspace.py",
         "packages/harness/src/felix/tools/workspace_local.py",
+        "packages/harness/src/felix/tools/shell.py",
     )
     PORTED = (
         "SymlinkRefusedError",
@@ -256,6 +257,15 @@ class PortedCodeTests(unittest.TestCase):
         "_scan_file",
         "_scan_tree",
         "_search",
+        # shell.py: the one exec path, so a sandboxed command is bounded and killed the same way.
+        # `_child_env` is deliberately not here: the sandbox has no harness environment to scrub.
+        "_Stream",
+        "_Budget",
+        "_kill_group",
+        "_drain",
+        "_feed",
+        "resolve_cwd",
+        "exec_argv",
     )
 
     @staticmethod
@@ -298,3 +308,17 @@ class PortedCodeTests(unittest.TestCase):
             "_EDIT_TMP_PREFIX",
         ):
             self.assertEqual(getattr(felix_fs, name), getattr(workspace, name), name)
+
+    def test_the_helpers_exec_bounds_are_the_shell_tools(self) -> None:
+        from felix.manifests.schema import MAX_INTEGRATION_TIMEOUT_MS
+        from felix.tools import shell
+
+        for name in (
+            "MAX_OUTPUT_BYTES",
+            "MAX_TOTAL_OUTPUT_BYTES",
+            "_READ_CHUNK",
+            "_MAX_STDIN_CHARS",
+            "_DRAIN_AFTER_KILL_S",
+        ):
+            self.assertEqual(getattr(felix_fs, name), getattr(shell, name), name)
+        self.assertEqual(felix_fs._MAX_EXEC_TIMEOUT_MS, MAX_INTEGRATION_TIMEOUT_MS)

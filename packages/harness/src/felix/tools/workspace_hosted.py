@@ -137,13 +137,15 @@ class HostedBackend:
                 "hosted workspace backend does not serve"
             )
 
-    async def _call(self, scope: WorkspaceScope, op: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def _call(
+        self, scope: WorkspaceScope, op: str, body: dict[str, Any], timeout: httpx.Timeout = _TIMEOUT
+    ) -> dict[str, Any]:
         self._refuse_checkout(scope)
         url = f"{self._url}/v1/workspaces/{gateway_path(self._settings, scope)}/{op}"
         headers = {"authorization": f"Bearer {self._settings.workspace_gateway_token}"}
         try:
             async with gateway_client(self._settings) as client:
-                resp = await client.post(url, json=body, headers=headers)
+                resp = await client.post(url, json=body, headers=headers, timeout=timeout)
         except httpx.TimeoutException as exc:
             raise _unavailable("the gateway did not answer in time") from exc
         except httpx.HTTPError as exc:
@@ -220,6 +222,21 @@ class HostedBackend:
         body = {"path": path, "query": query, "regex": regex, "max_hits": max_hits}
         out = await self._call(scope, "search", body)
         return SearchResult(hits=list(out["hits"]))
+
+    async def exec(
+        self, scope: WorkspaceScope, argv: list[str], cwd: str, stdin: str | None, timeout_ms: int
+    ) -> dict[str, Any]:
+        """A `shell_tools` command in the scope's sandbox (3b). The result is the shell runner's
+        shape, which the shell tool validates as it validates a runner's. A command may write, so
+        the scope is checkpointed at the end of the request like any other written scope."""
+        body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": timeout_ms}
+        if stdin is not None:
+            body["stdin"] = stdin
+        # The helper kills at the command's timeout and drains; a cold start comes on top.
+        wait = httpx.Timeout(timeout_ms / 1000 + 90.0, connect=10.0)
+        out = await self._call(scope, "exec", body, timeout=wait)
+        self._written(scope)
+        return out
 
     async def checkpoint(self, scope: WorkspaceScope) -> dict[str, Any]:
         return await self._call(scope, "checkpoint", {})

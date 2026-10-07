@@ -33,6 +33,8 @@ export const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 export const IDLE_BACKUP_AFTER_MS = INACTIVITY_TIMEOUT_MS - 2 * 60 * 1000;
 /** Longer than any one tool call: the harness's search budget is 5s, a read or write far less. */
 const OPERATION_TIMEOUT_MS = 30 * 1000;
+/** An `exec` is bounded by its own timeout; the helper kills at it and drains for up to 5s. */
+const EXEC_GRACE_MS = 30 * 1000;
 /** A backup or a restore moves the whole workspace; give it room, but not forever. */
 const TRANSFER_TIMEOUT_MS = 5 * 60 * 1000;
 const HELPER = ['python3', '-I', '/opt/felix-fs/felix_fs.py'];
@@ -113,15 +115,17 @@ export class WorkspaceSandbox extends DurableObject<Env> {
       }
     }
     const answer = await this.#helper(scope, request);
-    if (answer.ok && (request.op === 'write' || request.op === 'edit')) {
+    if (answer.ok && (request.op === 'write' || request.op === 'edit' || request.op === 'exec')) {
       this.ctx.storage.kv.put(DIRTY_KEY, true);
     }
     return answer;
   }
 
   async #helper(scope: string, request: HelperRequest): Promise<HelperAnswer> {
+    const deadline =
+      request.op === 'exec' ? request.timeout_ms + EXEC_GRACE_MS : OPERATION_TIMEOUT_MS;
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), OPERATION_TIMEOUT_MS);
+    const timer = setTimeout(() => abort.abort(), deadline);
     try {
       const process = await this.#container.exec(HELPER, {
         cwd: '/',
@@ -146,7 +150,7 @@ export class WorkspaceSandbox extends DurableObject<Env> {
         return {
           ok: false,
           error: 'timeout',
-          message: `the operation took over ${OPERATION_TIMEOUT_MS / 1000}s`,
+          message: `the operation took over ${deadline / 1000}s`,
         };
       }
       console.error({ event: 'workspace.exec.failed', scope, op: request.op, error: describe(cause) });

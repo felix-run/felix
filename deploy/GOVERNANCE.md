@@ -862,10 +862,13 @@ own:
 - **Scoped, not separate.** `cwd` resolves under the call's workspace scope
   (`spec.workspace.scope`: the thread's directory by default, the tenant's, or — for
   FELIX_WORKSPACE_DEPLOYMENT_TENANTS only — the whole root), and the runner is told the same scope.
-  That keeps one tenant's *paths* out of another's; it does not separate *processes*. Every command
-  still runs as the same user on the same host, so code one tenant's shell runs can reach another's
-  files outside the path checks. A deployment that admits tenants it does not trust binds no
-  `shell_tools` — [`WORKSPACE.md`](../docs/WORKSPACE.md) phase 3 is what separates them.
+  On the `local` workspace backend that keeps one tenant's *paths* out of another's; it does not
+  separate *processes*. Every command still runs as the same user on the same host, so code one
+  tenant's shell runs can reach another's files outside the path checks. **With
+  `FELIX_WORKSPACE_BACKEND=hosted` it does:** a scope's commands run in that scope's own sandbox (a
+  Firecracker microVM with the internet off, through `deploy/cloudflare/workspace-gateway`), after
+  the same allowlist and screening here, and never fall back to this host. A deployment that admits
+  tenants it does not trust binds `shell_tools` only under `hosted`.
 
 ### The shell runner
 
