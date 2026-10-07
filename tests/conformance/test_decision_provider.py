@@ -100,9 +100,9 @@ class _Arm:
                 run = {"state": "Completed", "result": body}
                 body = {"result": run, "success": True, "errors": [], "messages": []}
             elif self.name == "clef":
-                # Cloudflare's own model runs synchronously: one envelope, as its model page
-                # documents. Not yet confirmed by a live call — the partner-run nesting above
-                # was a surprise, and `parse_response` reads either shape.
+                # Cloudflare's own model runs synchronously: one envelope, no run to unwrap.
+                # The shape live `clef` and `clef-flash` calls returned (2026-10-06), unlike
+                # the partner-run nesting above. A score also carries a `legend`, unread.
                 body = {"result": body, "success": True, "errors": [], "messages": []}
             self.transport.responses = [_Resp(200, body)]
         elif self.name == "scripted":
