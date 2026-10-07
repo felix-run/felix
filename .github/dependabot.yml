@@ -29,9 +29,20 @@ updates:
   - package-ecosystem: docker
     directories:
       - "/deploy/docker"
+      - "/deploy/cloudflare/workspace-gateway"
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
     groups:
       images:
+        patterns: ["*"]
+
+  # The workspace gateway Worker's toolchain (wrangler, TypeScript, Vitest).
+  - package-ecosystem: npm
+    directory: "/deploy/cloudflare/workspace-gateway"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      gateway:
         patterns: ["*"]

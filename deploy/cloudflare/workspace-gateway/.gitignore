@@ -1,0 +1,5 @@
+node_modules/
+.wrangler/
+# The real deployment config: copy wrangler.example.jsonc.
+wrangler.jsonc
+.dev.vars
