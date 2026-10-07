@@ -45,9 +45,11 @@ holds the two to the same answers. To turn it on:
    `FELIX_WORKSPACE_GATEWAY_URL` (the Worker's https URL) and `FELIX_WORKSPACE_GATEWAY_TOKEN`
    (the same token). Boot refuses `hosted` without both.
 
-What `hosted` does not serve, and refuses rather than serving from the host: `shell_tools`, an
-image tool's `path`, `publish_commits` and a thread's repository checkout, for any scope but
-`deployment` (which stays on the host). Files already in a local scope are not copied across: a
+`shell_tools` run in the scope's sandbox as well, after the same allowlist and command screening as
+on the host. The sandbox image is a slim Debian with Python and little else, so a command that is
+not installed there fails as a missing binary. What `hosted` does not serve, and refuses rather than
+serving from the host: an image tool's `path`, `publish_commits` and a thread's repository checkout,
+for any scope but `deployment` (which stays on the host). Files already in a local scope are not copied across: a
 scope starts empty on the hosted backend.
 
 ## Workspaces are per thread by default

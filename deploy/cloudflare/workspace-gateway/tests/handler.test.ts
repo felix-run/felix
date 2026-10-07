@@ -131,6 +131,26 @@ describe('workspace gateway', () => {
     expect(calls.map((c) => c.request)).toEqual([{ op: 'checkpoint' }, { op: 'destroy' }]);
   });
 
+  it('takes an exec with the shell tool’s defaults and bounds', async () => {
+    await send(post('/v1/workspaces/acme/shared/exec', { argv: ['make', 'test'] }));
+    expect(calls[0]?.request).toEqual({ op: 'exec', argv: ['make', 'test'], cwd: '.', timeout_ms: 300_000 });
+    const bad: unknown[] = [
+      {},
+      { argv: [] },
+      { argv: 'make' },
+      { argv: [1] },
+      { argv: Array(257).fill('x') },
+      { argv: ['x'.repeat(64_001)] },
+      { argv: ['ls'], timeout_ms: 3_600_001 },
+      { argv: ['cat'], stdin: 'x'.repeat(256_001) },
+    ];
+    for (const body of bad) {
+      const res = await send(post('/v1/workspaces/acme/shared/exec', body));
+      expect(res.status, JSON.stringify(body).slice(0, 60)).toBe(400);
+    }
+    expect(calls).toHaveLength(1);
+  });
+
   it('names no sandbox for a malformed scope', async () => {
     for (const path of [
       `/v1/workspaces/..//shared/list`,

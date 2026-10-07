@@ -27,6 +27,7 @@ runs and one JSON object is printed: `{"ok": true, "result": {...}}` or `{"ok": 
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import errno
@@ -34,6 +35,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
 import sys
 import time
@@ -59,6 +61,14 @@ _MAX_SEARCH_DEPTH = 64
 _MAX_DIR_BATCH = 10_000
 _EDIT_TMP_PREFIX = ".felix-edit-"
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY
+# The shell tool's bounds (felix/tools/shell.py), for `exec`.
+MAX_OUTPUT_BYTES = 64_000
+MAX_TOTAL_OUTPUT_BYTES = 8_000_000
+_READ_CHUNK = 65_536
+_MAX_STDIN_CHARS = 256_000
+_DRAIN_AFTER_KILL_S = 5.0
+# The harness's longest integration timeout (`MAX_INTEGRATION_TIMEOUT_S`).
+_MAX_EXEC_TIMEOUT_MS = 3_600_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,6 +439,163 @@ def _search(root: Path, args: SearchFilesArgs, pattern: re.Pattern[str] | None) 
 # --- end of PORTED ---------------------------------------------------------------------------
 
 
+def _child_env() -> dict[str, str]:
+    """A command's environment in the sandbox: a fixed minimal one, not a scrubbed copy.
+
+    On the host the harness scrubs its own environment down to a few keys
+    (`felix.security.stdio_policy.stdio_child_env`). Here there is nothing to scrub -- the sandbox
+    starts with an empty environment -- so the command gets a PATH of absolute system directories
+    and nothing else of anyone's.
+    """
+    return {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": str(ROOT),
+        "LANG": "C.UTF-8",
+    }
+
+
+# --- PORTED from the harness's felix/tools/shell.py: do not edit without editing it there ----
+
+
+class _Stream:
+    """A bounded tail of one output stream, filled by `_drain`."""
+
+    def __init__(self) -> None:
+        self.tail = bytearray()
+        self.truncated = False
+
+
+class _Budget:
+    """Bytes written across both streams, shared so the kill fires once."""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.exceeded = False
+
+
+def _kill_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the child's whole process group, not only the child.
+
+    `start_new_session=True` made the child a group leader, so grandchildren — the pytest
+    a test script spawns — die with it instead of holding the pipes open forever.
+    """
+    if proc.returncode is not None:
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
+async def _drain(
+    reader: asyncio.StreamReader | None, into: _Stream, budget: _Budget, proc: asyncio.subprocess.Process
+) -> None:
+    if reader is None:
+        return
+    while True:
+        chunk = await reader.read(_READ_CHUNK)
+        if not chunk:
+            return
+        budget.total += len(chunk)
+        into.tail += chunk
+        if len(into.tail) > MAX_OUTPUT_BYTES:
+            del into.tail[: len(into.tail) - MAX_OUTPUT_BYTES]
+            into.truncated = True
+        if budget.total > MAX_TOTAL_OUTPUT_BYTES and not budget.exceeded:
+            budget.exceeded = True
+            _kill_group(proc)
+
+
+async def _feed(proc: asyncio.subprocess.Process, data: bytes | None) -> None:
+    if proc.stdin is None:
+        return
+    try:
+        if data:
+            proc.stdin.write(data)
+            await proc.stdin.drain()
+    except BrokenPipeError, ConnectionResetError:
+        pass  # the command exited without reading; its exit code says so
+    finally:
+        proc.stdin.close()
+
+
+def resolve_cwd(root: Path, raw: str) -> Path:
+    """`raw` under `root`, or `ValueError` — escapes, absolute paths, symlinks, non-directories.
+
+    Walked the way the workspace tools open a path, so a symlinked component is refused here
+    as it is there. The answer is still a name the exec then `chdir`s to, so this is a check,
+    not a confinement: where the command runs is the boundary, not where it starts.
+    """
+    try:
+        with open_workspace_dir(root, raw or ".") as (_fd, rel):
+            pass
+    except OSError:
+        raise ValueError(f"not a directory: {raw}") from None
+    return root if rel == "." else root.joinpath(*rel.split("/"))
+
+
+async def exec_argv(
+    argv: list[str], *, cwd: Path, root: Path, stdin: str | None, timeout_s: float
+) -> dict[str, Any]:
+    """Exec `argv` in `cwd` and return the result the model sees. The one exec path.
+
+    Shared by the in-process tool and `felix.shell_runner`, so the scrubbed environment, the
+    process-group kill and the bounded tail are the same code on both sides. Callers have
+    already checked the allowlist and resolved `cwd` under `root`. Raises `OSError` when the
+    command cannot be spawned.
+    """
+    stdin_bytes = stdin[:_MAX_STDIN_CHARS].encode("utf-8") if stdin is not None else None
+    started = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        cwd=str(cwd),
+        env=_child_env(),
+        stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+
+    out, err, budget = _Stream(), _Stream(), _Budget()
+    tasks = [
+        asyncio.create_task(_feed(proc, stdin_bytes)),
+        asyncio.create_task(_drain(proc.stdout, out, budget, proc)),
+        asyncio.create_task(_drain(proc.stderr, err, budget, proc)),
+    ]
+    timed_out = False
+    try:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout_s)
+        except TimeoutError:
+            timed_out = True
+            _kill_group(proc)
+            await proc.wait()
+        # The group is dead or exited; give its pipes a bounded moment to close.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=_DRAIN_AFTER_KILL_S
+            )
+    finally:
+        # Cancellation of the calling task lands here too: nothing it spawned survives it.
+        _kill_group(proc)
+        for task in tasks:
+            task.cancel()
+        if proc.returncode is None:
+            await proc.wait()
+    return {
+        "argv": argv,
+        "cwd": str(cwd.relative_to(root)),
+        "exit_code": proc.returncode,
+        "timed_out": timed_out,
+        "output_exceeded": budget.exceeded,
+        "stdout": out.tail.decode("utf-8", errors="replace"),
+        "stderr": err.tail.decode("utf-8", errors="replace"),
+        "truncated": out.truncated or err.truncated or budget.exceeded,
+        "duration_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
+# --- end of PORTED from shell.py -------------------------------------------------------------
+
+
 def op_list(req: dict[str, Any]) -> dict[str, Any]:
     with open_workspace_dir(ROOT, req.get("path", ".")) as (fd, rel):
         entries: list[dict[str, Any]] = []
@@ -519,6 +686,32 @@ def op_search(req: dict[str, Any]) -> dict[str, Any]:
     return {"hits": hits}
 
 
+def op_exec(req: dict[str, Any]) -> dict[str, Any]:
+    """A `shell_tools` command, run here by the shell tool's own exec path.
+
+    The harness has already checked the argv against the manifest's and the operator's allowlists
+    and screened it; what this adds is where it runs. `cwd` is resolved under /workspace with no
+    symlink followed, as the shell tool resolves it on the host.
+    """
+    argv = req["argv"]
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise KeyError("argv")
+    timeout_ms = int(req.get("timeout_ms", 300_000))
+    if not 1 <= timeout_ms <= _MAX_EXEC_TIMEOUT_MS:
+        raise ValueError(f"timeout_ms must be 1 to {_MAX_EXEC_TIMEOUT_MS}")
+    stdin = req.get("stdin")
+    cwd = resolve_cwd(ROOT, str(req.get("cwd") or "."))
+    return asyncio.run(
+        exec_argv(
+            argv,
+            cwd=cwd,
+            root=ROOT,
+            stdin=stdin if isinstance(stdin, str) else None,
+            timeout_s=timeout_ms / 1000,
+        )
+    )
+
+
 def op_prepare(req: dict[str, Any]) -> dict[str, Any]:
     with open_workspace_dir(ROOT, "."):
         pass
@@ -532,6 +725,7 @@ OPS = {
     "write": op_write,
     "edit": op_edit,
     "search": op_search,
+    "exec": op_exec,
 }
 
 

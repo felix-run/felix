@@ -32,8 +32,9 @@ harness ──HTTPS, bearer──▶ gateway Worker ──getByName(tenant/key)�
 ## Wire contract
 
 `POST /v1/workspaces/{tenant}/{key}/{op}` with `Authorization: Bearer <WORKSPACE_GATEWAY_TOKEN>`,
-`op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `checkpoint`
-and `destroy`. Answers `{"result": {...}}` or
+`op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `exec` (a
+`shell_tools` command, run by the shell tool's own exec path in the sandbox), `checkpoint` and
+`destroy`. Answers `{"result": {...}}` or
 `{"error": CODE, "message": TEXT}`; `src/protocol.ts` has the shapes and codes. `GET /health`
 needs no credential.
 

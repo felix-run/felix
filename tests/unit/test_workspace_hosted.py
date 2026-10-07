@@ -299,3 +299,101 @@ def test_the_default_backend_is_local_and_needs_no_gateway(tmp_path: Path) -> No
     settings = _settings(tmp_path, "local")
     settings.validate_runtime()
     assert isinstance(get_workspace_backend(settings), LocalBackend)
+
+
+# --- shell_tools in the sandbox (3b) -------------------------------------------------------
+
+_COMMANDS = ["sh", "ls", "cat", "/no/such/binary"]
+
+
+async def _shell(
+    settings: Settings, argv: list[str], commands: list[str] = _COMMANDS, **args: Any
+) -> dict[str, Any] | str:
+    from felix.manifests.schema import ShellToolRef
+    from felix.tools.shell import tools_from_shell_refs
+
+    (tool,) = tools_from_shell_refs(
+        [ShellToolRef(name="run", commands=commands, timeout_ms=1000)], settings=settings
+    )
+    out = tool_output_content(
+        await tool.executor.execute({"argv": argv, **args}, ToolInvocationCtx(thread_id=THREAD))
+    )
+    try:
+        result = json.loads(out)
+    except ValueError:
+        return out
+    result.pop("duration_ms", None)  # the one field a run cannot reproduce
+    return result
+
+
+async def _shell_session(settings: Settings) -> list[Any]:
+    out: list[Any] = []
+    async with _request(settings):
+        await _call("write_file", {"path": "sub/a.txt", "content": "a"})
+        out.append(await _shell(settings, ["sh", "-c", "echo out; echo err >&2; exit 3"]))
+        out.append(await _shell(settings, ["ls"], cwd="sub"))
+        out.append(await _shell(settings, ["cat"], stdin="piped in"))
+        out.append(await _shell(settings, ["sh", "-c", "echo made > made.txt"]))
+        out.append(await _call("read_file", {"path": "made.txt"}))
+        out.append(await _shell(settings, ["sh", "-c", "sleep 10"], cwd="."))
+        out.append(await _shell(settings, ["ls"], cwd="../"))
+        out.append(await _shell(settings, ["ls"], cwd="missing"))
+        out.append(await _shell(settings, ["/no/such/binary"]))
+        out.append(await _shell(settings, ["rm", "-rf", "/"]))
+    return out
+
+
+@pytest.mark.parametrize("backend", ["local", "hosted"])
+async def test_shell_tools_answer_identically_on_both_backends(
+    tmp_path: Path, gateway: FakeGateway, backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.tools import shell
+
+    # A one-second budget keeps the timeout case quick; the same on both backends.
+    monkeypatch.setattr(shell, "_DRAIN_AFTER_KILL_S", 1.0)
+    allowed = {"shell_allowed_commands": ", ".join(_COMMANDS)}
+    transcript = await _shell_session(_settings(tmp_path / backend, backend, **allowed))
+    reference = await _shell_session(_settings(tmp_path / "reference", "local", **allowed))
+    assert transcript == reference
+    first = transcript[0]
+    assert isinstance(first, dict) and (first["exit_code"], first["stdout"], first["stderr"]) == (
+        3,
+        "out\n",
+        "err\n",
+    )
+    assert json.loads(transcript[4])["content"] == "made\n"
+
+
+async def test_a_hosted_command_runs_in_the_sandbox_and_is_checkpointed(
+    tmp_path: Path, gateway: FakeGateway
+) -> None:
+    settings = _settings(tmp_path, "hosted", shell_allowed_commands=", ".join(_COMMANDS))
+    async with _request(settings):
+        await _shell(settings, ["sh", "-c", "echo made > made.txt"])
+    assert (_scope_dir(tmp_path, "hosted") / "made.txt").read_text() == "made\n"
+    assert not any((tmp_path / "workspace").rglob("made.txt"))
+    assert ("acme/" + thread_key(TENANT, THREAD), "exec") in gateway.calls
+    assert gateway.checkpoints == [f"{TENANT}/{thread_key(TENANT, THREAD)}"]
+
+
+async def test_a_command_off_the_allowlist_never_reaches_the_sandbox(
+    tmp_path: Path, gateway: FakeGateway
+) -> None:
+    settings = _settings(tmp_path, "hosted", shell_allowed_commands="ls")
+    async with _request(settings):
+        out = await _shell(settings, ["sh", "-c", "echo hi"], commands=["ls"])
+    assert isinstance(out, str) and out.startswith("[shell denied]")
+    assert gateway.calls == []
+
+
+async def test_an_unreachable_gateway_runs_nothing_anywhere(tmp_path: Path, gateway: FakeGateway) -> None:
+    gateway.down = True
+    settings = _settings(tmp_path, "hosted", shell_allowed_commands=", ".join(_COMMANDS))
+    async with _request(settings):
+        out = await _shell(settings, ["sh", "-c", "echo made > made.txt"])
+    # `tool_error_output` adds no `[tool error/...]` prefix to text that already starts with `[`.
+    assert isinstance(out, str) and out.startswith(
+        "[shell] workspace_root: the hosted workspace is unavailable"
+    )
+    assert "the command did not run" in out
+    assert not any(tmp_path.rglob("made.txt"))

@@ -637,9 +637,10 @@ class Settings(BaseSettings):
     # Where a thread's or a tenant's workspace lives. `local`: under FELIX_WORKSPACE_ROOT, on this
     # host. `hosted`: in its own sandbox, through the workspace gateway Worker
     # (deploy/cloudflare/workspace-gateway), so a model's file operations never touch this host.
-    # Under `hosted`, `deployment` scope stays local, and the consumers that need a real directory
-    # (`shell`, image `path`, `publish_commits`, a thread's repository checkout) are refused for
-    # every other scope rather than served from the host. docs/WORKSPACE.md phase 3.
+    # Under `hosted`, `deployment` scope stays local, `shell_tools` run in the scope's sandbox, and
+    # the consumers that need a real directory (image `path`, `publish_commits`, a thread's
+    # repository checkout) are refused for every other scope rather than served from the host.
+    # docs/WORKSPACE.md phase 3.
     workspace_backend: Literal["local", "hosted"] = "local"
     # Out of repr like every URL setting: one can carry credentials in its userinfo.
     workspace_gateway_url: str = Field(default="", repr=False)

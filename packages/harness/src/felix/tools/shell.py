@@ -194,13 +194,18 @@ class _ShellExecutor:
             assert_argv_allowed(argv, self._prefixes, settings)
         except ShellNotAllowedError as exc:
             return self._refuse("argv", str(exc))
+        stdin = args.get("stdin")
+        stdin_text = str(stdin)[:_MAX_STDIN_CHARS] if stdin is not None else None
+        hosted = _hosted_scope(settings)
+        if hosted is not None:
+            # Under the hosted workspace backend the command runs in the scope's sandbox, where
+            # its files are. Every check above has run here; it never falls back to this host.
+            return await self._run_hosted(settings, hosted, argv, str(args.get("cwd") or "."), stdin_text)
         try:
             root = workspace_root()
             cwd = resolve_cwd(root, str(args.get("cwd") or "."))
         except ValueError as exc:
             return self._refuse("cwd", str(exc))
-        stdin = args.get("stdin")
-        stdin_text = str(stdin)[:_MAX_STDIN_CHARS] if stdin is not None else None
         runner_url = str(getattr(settings, "shell_runner_url", "") or "").strip()
         if runner_url:
             if _is_thread_checkout(root, settings):
@@ -228,6 +233,32 @@ class _ShellExecutor:
         except OSError as exc:
             return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
         return json.dumps(result)
+
+    async def _run_hosted(
+        self, settings: Any, scope: Any, argv: list[str], cwd: str, stdin: str | None
+    ) -> ToolOutput:
+        from felix.tools.workspace_hosted import HostedBackend
+
+        try:
+            out = await HostedBackend(settings).exec(
+                scope, argv, cwd, stdin, max(1, int(self._timeout_s * 1000))
+            )
+        except ValueError as exc:
+            if "workspace_root" in str(exc):
+                return tool_error_output(
+                    ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}; the command did not run"
+                )
+            # The sandbox resolved `cwd` as `resolve_cwd` does here: escaping, absolute, a symlink.
+            return self._refuse("cwd", str(exc))
+        except OSError as exc:
+            # The command could not be spawned in the sandbox, as `exec_argv` reports it here.
+            return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
+        try:
+            result = RunnerResult.model_validate(out)
+        except ValidationError:
+            return _runner_unavailable("returned a malformed result")
+        # argv is what this process asked for, not what the sandbox says it ran.
+        return json.dumps({**result.model_dump(), "argv": argv})
 
     async def _run_remote(
         self, url: str, token: str, argv: list[str], cwd: str, stdin: str | None, scope: str
@@ -462,6 +493,16 @@ __all__ = [
     "resolve_cwd",
     "tools_from_shell_refs",
 ]
+
+
+def _hosted_scope(settings: Any) -> Any | None:
+    """The call's workspace scope when the hosted backend serves it, else None (run locally)."""
+    if getattr(settings, "workspace_backend", "local") != "hosted":
+        return None
+    from felix.tools.workspace_backend import current_workspace_scope
+
+    _, scope = current_workspace_scope()
+    return scope if scope is not None and scope.scope != "deployment" else None
 
 
 def _is_thread_checkout(root: Path, settings: Any) -> bool:

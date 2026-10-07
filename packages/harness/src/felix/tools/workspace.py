@@ -347,7 +347,8 @@ def workspace_root() -> Path:
 
     if getattr(ctx.settings, "workspace_backend", "local") == "hosted" and current_scope() != "deployment":
         # The scope's files are in its sandbox, not here: a consumer that needs a real directory
-        # (`shell`, image `path`, `publish_commits`) is refused rather than given one on the host.
+        # (image `path`, `publish_commits`) is refused rather than given one on the host. `shell`
+        # does not reach this under `hosted`: it runs in the sandbox (`_hosted_scope` in shell.py).
         from felix.tools.workspace_hosted import local_only_refusal
 
         raise ValueError(local_only_refusal(current_scope()))
