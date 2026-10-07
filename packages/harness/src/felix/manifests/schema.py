@@ -856,7 +856,7 @@ class DeciderSpec(_Strict):
     router manifest is the opt-in; the model classifier remains its fallback.
     """
 
-    #: A `FELIX_DECISION_ROUTES` id: `jev` (TypeSafe), `jev-cf` (Workers AI), or your own.
+    #: A `FELIX_DECISION_ROUTES` id: `clef`, `clef-flash`, `jev` (TypeSafe), `jev-cf`, or your own.
     id: str = ""
     #: Below this, a consumer treats the decision as unsure and takes its fallback path.
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)

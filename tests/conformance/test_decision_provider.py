@@ -15,11 +15,12 @@ import json
 from typing import Any
 
 import pytest
+from felix.config import DEFAULT_DECISION_ROUTES
 from felix_ai.decide import Choice, ChoiceAnswer, Noul, NoulAnswer, Score, ScoreAnswer
 from felix_ai.types import TokenUsage
 from felix_ai.wire.transport import ModelGatewayError
 
-ARMS = ["scripted", "typesafe", "workers_ai", "llm"]
+ARMS = ["scripted", "typesafe", "workers_ai", "clef", "llm"]
 parametrized = pytest.mark.parametrize("arm", ARMS, indirect=True)
 
 INPUT_TOKENS = 1_000_000
@@ -90,7 +91,7 @@ class _Arm:
 
     def program(self, pick: str = "b", *, missing: str = "") -> None:
         """Make the next decision answer `pick`, optionally leaving one question out."""
-        if self.name in ("typesafe", "workers_ai"):
+        if self.name in _HTTP_ARMS:
             assert self.transport is not None
             body = _jev_body(pick, missing=missing)
             if self.name == "workers_ai":
@@ -98,6 +99,11 @@ class _Arm:
                 # run, and the answers sit one level further in.
                 run = {"state": "Completed", "result": body}
                 body = {"result": run, "success": True, "errors": [], "messages": []}
+            elif self.name == "clef":
+                # Cloudflare's own model runs synchronously: one envelope, as its model page
+                # documents. Not yet confirmed by a live call — the partner-run nesting above
+                # was a surprise, and `parse_response` reads either shape.
+                body = {"result": body, "success": True, "errors": [], "messages": []}
             self.transport.responses = [_Resp(200, body)]
         elif self.name == "scripted":
             from felix_ai.decide.scripted import register_scripted_decider
@@ -128,12 +134,17 @@ class _Arm:
         return build_decider(self.settings, "d")
 
 
+# The HTTP arms run the shipped defaults, not copies: the default's `model` picks the request
+# shape (`@cf/` is run by path) and the catalog price, so a hand-copied route would stay green
+# while the default drifted.
 _ROUTES = {
     "scripted": {"provider": "scripted", "model": "jev-latest"},
-    "typesafe": {"provider": "typesafe", "model": "jev-latest"},
-    "workers_ai": {"provider": "workers_ai", "model": "typesafe/jev"},
+    "typesafe": DEFAULT_DECISION_ROUTES["jev"],
+    "workers_ai": DEFAULT_DECISION_ROUTES["jev-cf"],
+    "clef": DEFAULT_DECISION_ROUTES["clef"],
     "llm": {"provider": "llm", "model": "cheap"},
 }
+_HTTP_ARMS = ("typesafe", "workers_ai", "clef")
 
 
 @pytest.fixture
@@ -147,7 +158,7 @@ def arm(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Any:
 
     name = request.param
     transport = None
-    if name in ("typesafe", "workers_ai"):
+    if name in _HTTP_ARMS:
         transport = _Transport()
         monkeypatch.setattr(httpx, "AsyncClient", transport)
     settings = Settings(
@@ -257,7 +268,7 @@ async def test_a_chat_model_reply_that_is_not_a_decision_is_refused(arm: _Arm, r
         await _decide_in_request(arm.build(), arm.settings)
 
 
-# --- the two Jev endpoints --------------------------------------------------------------
+# --- the Jev-API endpoints --------------------------------------------------------------
 
 
 @pytest.mark.parametrize("arm", ["typesafe"], indirect=True)
@@ -294,7 +305,35 @@ async def test_workers_ai_nests_the_input_and_unwraps_the_envelope(arm: _Arm) ->
     assert result.model == "jev-1.13.0"
 
 
-@pytest.mark.parametrize("arm", ["workers_ai"], indirect=True)
+@pytest.mark.parametrize("arm", ["clef"], indirect=True)
+@pytest.mark.asyncio
+async def test_clef_is_run_by_path_with_its_short_name_and_flat_fields(arm: _Arm) -> None:
+    """Clef's documented request: `/ai/run/@cf/cloudflare/clef`, the Jev fields at the top,
+    and `model` matching `^(clef|clef-flash)$` — the `@cf/` id is refused there."""
+    arm.program("b")
+    result, _ctx = await _decide_in_request(arm.build(), arm.settings)
+    assert arm.transport is not None
+    assert arm.transport.urls == [
+        "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef"
+    ]
+    body = arm.transport.sent[0]
+    assert body["model"] == "clef"
+    assert set(body) == {"model", "state", "questions"}
+    assert arm.transport.headers[0]["Authorization"] == "Bearer cf"
+    assert result.answers["pick"].choice == "b"
+
+
+@pytest.mark.parametrize("route_id", sorted(DEFAULT_DECISION_ROUTES))
+def test_every_default_decision_route_is_priced(route_id: str) -> None:
+    """A default no arm runs (`clef-flash`) still has to be priced, or `max_cost_usd` fails open."""
+    from felix_ai.catalog import known_entry_for
+
+    route = DEFAULT_DECISION_ROUTES[route_id]
+    entry = known_entry_for(route["model"])
+    assert entry is not None and entry.pricing is not None, f"{route_id} -> {route['model']} is unpriced"
+
+
+@pytest.mark.parametrize("arm", ["workers_ai", "clef"], indirect=True)
 @pytest.mark.asyncio
 async def test_a_cloudflare_failure_envelope_is_an_error_not_an_empty_answer(arm: _Arm) -> None:
     assert arm.transport is not None
@@ -313,7 +352,7 @@ async def test_an_unfinished_run_names_its_state(arm: _Arm) -> None:
         await _decide_in_request(arm.build(), arm.settings)
 
 
-@pytest.mark.parametrize("arm", ["typesafe", "workers_ai"], indirect=True)
+@pytest.mark.parametrize("arm", ["typesafe", "workers_ai", "clef"], indirect=True)
 @pytest.mark.asyncio
 async def test_an_http_error_raises_the_gateway_error(arm: _Arm) -> None:
     assert arm.transport is not None

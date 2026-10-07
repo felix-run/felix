@@ -3,11 +3,13 @@
 # `support`, with a decision model making its small decisions. Every consumer of `spec.decider`
 # that fits a support agent is switched on here, so this is the manifest to copy from.
 #
-# Needs a decision route. `jev` is TypeSafe's Jev and wants a key:
-#   FELIX_MODEL_PROVIDER_OPTIONS={"typesafe": {"api_key": "..."}}
-# or Jev on Workers AI — set `decider.id: jev-cf` and give `workers_ai` an api_key and
-# account_id. To try it with no second vendor, point the `jev` route at a chat model instead:
-#   FELIX_DECISION_ROUTES={"jev": {"provider": "llm", "model": "claude-haiku"}}
+# Needs a decision route. `clef` is Cloudflare's decision model on Workers AI, and shares
+# the credential the Workers AI chat routes use:
+#   FELIX_MODEL_PROVIDER_OPTIONS={"workers_ai": {"api_key": "...", "account_id": "..."}}
+# `clef-flash` is its faster, cheaper sibling. TypeSafe's Jev is `jev` (wants a "typesafe"
+# api_key) or `jev-cf` (Jev on Workers AI). To try it with no decision vendor at all, point
+# the `clef` route at a chat model instead:
+#   FELIX_DECISION_ROUTES={"clef": {"provider": "llm", "model": "claude-haiku"}}
 # Without any of these the compile refuses, naming what is missing, rather than running an
 # agent that silently decides nothing.
 apiVersion: felix/v1
@@ -24,7 +26,7 @@ spec:
   pattern: react
 
   decider:
-    id: jev
+    id: clef
     # Below this a consumer treats the decision as unsure and falls back to what it did
     # without a decider — keyword tool ranking, the escalation heuristic.
     min_confidence: 0.5
