@@ -12,6 +12,35 @@ not fail. Keep that habit: a wave entry that lists only wins is not worth writin
 
 ## Waves
 
+### v0.9.0: Workers AI replaces Ollama (Oct 2026, #497)
+
+The `ollama` provider and `FELIX_OLLAMA_BASE_URL` were removed. Open-weight models now run
+on Workers AI, through the `workers_ai` provider that already existed, with six new priced
+`-cf` routes. `llama-3-pro` and `llama-3-fast` stay as legacy ids that now resolve to GLM-5.3
+and GLM-5.3 Flash.
+
+- **Removing a provider took two fields with it.** Only Ollama set `bills_per_token=False`
+  and `api_key_literal`. Left in place, the governance "free provider" branch would have
+  checked an always-empty set: a control that looks present and does nothing. Both went, and
+  the spend cap is now uniform: every route needs a price.
+- **"Priced" is not "priced correctly".** The catalog matches the longest key that is a
+  substring of the model id, so `@cf/zai-org/glm-5.3-flash` without its own entry still read
+  as priced, at GLM-5.3's rate, about nine times too high. The cost-cap test passed. The test
+  that now catches it asserts that each Workers AI route's wire id is a catalog key of its
+  own, and it builds its cases from `DEFAULT_MODEL_ROUTES` rather than a hand list, which had
+  already gone from 4 entries to 12.
+- **A toolkit skill outlived the code it described.** `model-layer` still told the next agent
+  to set `bills_per_token` on a new local provider. `validate-toolkit.py` checks paths, not
+  field names, so only a reviewer reading the diff caught it.
+- **Repointing an alias moves the data.** A manifest that chose `llama-3-fast` to stay on a
+  local machine now sends prompts to Cloudflare once a `workers_ai` key exists. That went into
+  the release notes under Security, pointing at `spec.auth.outbound.providers`.
+- **The post-deploy check had been red for three releases.** The scheduled smoke against
+  api.felix.run has answered 401 since 2026-10-04, and nothing blocks on it. 0.9.0 was checked
+  by hand the way 0.6.1 was: all twelve bundled manifests compile in the container, and
+  `oss-only` resolves to `workers_ai:@cf/zai-org/glm-5.3`. Fixing the smoke secret is on the
+  roadmap.
+
 ### v0.6.1: compiling every manifest in production (Oct 2026, #451, #454–#457)
 
 This started from a user report, "internal error (request …)" on `contributor`, and grew once we

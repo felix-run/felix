@@ -23,7 +23,7 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns import tool_runner as runner_mod
 from felix.patterns.tool_runner import ToolRunner
 from felix.patterns.types import ToolCall
-from felix.tools import workspace
+from felix.tools import workspace_local
 from felix.tools.builtins import default_tool_provider
 from felix.tools.types import is_failure_content
 
@@ -79,7 +79,7 @@ async def test_a_write_the_filesystem_refuses_is_audited_as_an_error(
 
     # Patched rather than chmod'd, so the test means the same thing when the suite runs as root.
     # `_write_all` is the one place a workspace write reaches the descriptor it opened.
-    monkeypatch.setattr(workspace, "_write_all", _refused)
+    monkeypatch.setattr(workspace_local, "_write_all", _refused)
 
     audited, content = await _run(
         monkeypatch, root=str(ws), tool="write_file", args={"path": "a.txt", "content": "x"}
