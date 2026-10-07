@@ -426,6 +426,21 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         pricing=ModelPricing(input=0.042, output=0.0, cache_read=0.0, cache_write=0.0),
         text_only=True,
     ),
+    # Cloudflare's Clef, Jev-API compatible, on Workers AI. 64K context; it also reads
+    # images, which the decider does not send yet. Longest key wins, so `clef-flash` is
+    # not billed at Clef's rate.
+    "@cf/cloudflare/clef": ModelCatalogEntry(
+        context_window=65_536,
+        max_output_tokens=1_024,
+        pricing=ModelPricing(input=0.24, output=0.0, cache_read=0.0, cache_write=0.0),
+        text_only=True,
+    ),
+    "@cf/cloudflare/clef-flash": ModelCatalogEntry(
+        context_window=65_536,
+        max_output_tokens=1_024,
+        pricing=ModelPricing(input=0.09, output=0.0, cache_read=0.0, cache_write=0.0),
+        text_only=True,
+    ),
     # --- Llama, wherever it is served ---
     # Unpriced, not free. Llama is sold by Workers AI, Groq, Together and Fireworks at
     # different rates, and `entry_for` matches by substring, so pricing this entry at zero

@@ -304,6 +304,15 @@ First, because everything else governs it.
       `jev` to Workers AI through the `felix-prod` AI Gateway. Partner models bill against prepaid,
       account-level AI Gateway credits (a 402, code 2021, when empty), not Workers AI usage.
 
+- [ ] **Clef as the default decider.** Cloudflare's Clef and Clef-flash (2026-10-01) are
+      Jev-API compatible, open-weight, 64K context, and billed as Workers AI usage on the credential
+      the chat routes already hold. `clef` and `clef-flash` are now default decision routes and
+      `decider-support` uses `clef`; the `jev` routes stay. Open: one live call. A `@cf/` model is
+      run by path (`/ai/run/@cf/cloudflare/clef`) with flat fields, unlike Jev's nested
+      partner run, and its single-envelope response is taken from the model page, not observed;
+      Jev's page was wrong about exactly this. Not wired: Clef reads images (`images`, up to 4),
+      which `image_screening` could use instead of transcribing first.
+
 - [x] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
       e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
       `builder.py` compiles each `spec.sub_agents` name with `build_agent(name)` →

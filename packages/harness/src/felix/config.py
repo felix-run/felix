@@ -252,7 +252,8 @@ class Settings(BaseSettings):
     # JSON override of logical id -> {provider, model} for *decision* providers — models that
     # answer typed questions (choose, score, true/false) rather than generate text, selected
     # by `spec.decider.id`. Credentials come from FELIX_MODEL_PROVIDER_OPTIONS under the
-    # provider's name. Defaults: `jev` (TypeSafe direct) and `jev-cf` (Workers AI).
+    # provider's name. Defaults: `clef` and `clef-flash` (Cloudflare's, on Workers AI), `jev`
+    # (TypeSafe direct) and `jev-cf` (Jev on Workers AI).
     decision_routes: str = ""
     # Bounds each HTTP request to a model provider. A large tool call — a file's contents
     # as an argument, say — can legitimately take longer than two minutes to generate, and
@@ -1088,8 +1089,11 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
 
 
 # Decision routes: logical id -> a registered decision provider and its model. `llm` answers
-# with any FELIX_MODEL_ROUTES id and needs no second vendor; the two Jev routes need a key.
+# with any FELIX_MODEL_ROUTES id and needs no second vendor. Clef shares the Workers AI
+# credential the chat routes already use; `jev` needs a TypeSafe key of its own.
 DEFAULT_DECISION_ROUTES: dict[str, dict[str, str]] = {
+    "clef": {"provider": "workers_ai", "model": "@cf/cloudflare/clef"},
+    "clef-flash": {"provider": "workers_ai", "model": "@cf/cloudflare/clef-flash"},
     "jev": {"provider": "typesafe", "model": "jev-latest"},
     "jev-cf": {"provider": "workers_ai", "model": "typesafe/jev"},
 }

@@ -34,8 +34,9 @@ A manifest names a **logical id** (`spec.model.id`, `spec.decider.id`), never a 
 Routes map it to `{provider, model}`:
 
 - `FELIX_MODEL_ROUTES` (JSON) overlays `config.py:DEFAULT_MODEL_ROUTES`.
-- `FELIX_DECISION_ROUTES` overlays `config.py:DEFAULT_DECISION_ROUTES` (`jev` via `typesafe`,
-  `jev-cf` via `workers_ai`). Provider `llm` decides with any `FELIX_MODEL_ROUTES` id and needs
+- `FELIX_DECISION_ROUTES` overlays `config.py:DEFAULT_DECISION_ROUTES` (`clef`, `clef-flash`
+  and `jev-cf` via `workers_ai`, `jev` via `typesafe`). A `@cf/` wire model is run by path with
+  flat fields and its short name in `model`; a partner model (`typesafe/jev`) is nested input. Provider `llm` decides with any `FELIX_MODEL_ROUTES` id and needs
   no second vendor.
 - Settings validation rejects, at boot, a route naming an unregistered provider — so a plugin
   provider must be registered before `Settings` validates.
