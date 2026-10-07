@@ -79,7 +79,7 @@ async def test_a_clone_sends_the_token_to_the_server_and_keeps_it_nowhere(
             assert TOKEN.encode() not in data and expected.encode() not in data, path
 
 
-async def test_the_tools_work_in_the_checkout_and_other_threads_keep_the_shared_workspace(
+async def test_the_tools_work_in_the_checkout_and_other_threads_keep_their_own_workspace(
     git_server: Any, settings: Settings
 ) -> None:
     await _open(settings)
@@ -87,8 +87,16 @@ async def test_the_tools_work_in_the_checkout_and_other_threads_keep_the_shared_
         _in_thread(settings, "acme:t1")
         == checkouts.thread_dir(settings, "acme", "acme:t1").resolve() / "repo"
     )
-    assert _in_thread(settings, "acme:t2") == Path(settings.workspace_root).resolve()
-    assert _in_thread(settings, None) == Path(settings.workspace_root).resolve()
+    assert _in_thread(settings, "acme:t2") == _thread_scope(settings, "acme", "acme:t2")
+    # The default scope is the thread's; a call with no thread has none and is refused.
+    with pytest.raises(ValueError, match="belongs to a thread"):
+        _in_thread(settings, None)
+
+
+def _thread_scope(settings: Settings, tenant: str, thread: str) -> Path:
+    from felix.tools.workspace_scope import scope_relpath
+
+    return Path(settings.workspace_root).resolve() / scope_relpath(settings, tenant, thread, "thread")
 
 
 async def test_a_second_repository_is_refused_and_the_same_one_is_a_no_op(
@@ -196,7 +204,7 @@ async def test_removing_a_checkout_deletes_it(git_server: Any, settings: Setting
     await _open(settings)
     assert checkouts.remove_checkout(settings, "acme", "acme:t1") is True
     assert checkouts.read_checkout(settings, "acme", "acme:t1") is None
-    assert _in_thread(settings, "acme:t1") == Path(settings.workspace_root).resolve()
+    assert _in_thread(settings, "acme:t1") == _thread_scope(settings, "acme", "acme:t1")
     assert checkouts.remove_checkout(settings, "acme", "acme:t1") is False
 
 
@@ -204,6 +212,8 @@ def test_the_remote_shell_runner_is_refused_for_a_thread_checkout(settings: Sett
     from felix.tools.shell import _is_thread_checkout
 
     assert _is_thread_checkout(Path(settings.workspace_root).resolve(), settings) is False
+    # A scope's directory is under the workspace root, so it is not a checkout either.
+    assert _is_thread_checkout(_thread_scope(settings, "acme", "acme:t1"), settings) is False
     assert _is_thread_checkout(tmp_path / "data" / "checkouts" / "x" / "repo", settings) is True
 
 

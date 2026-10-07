@@ -245,3 +245,26 @@ def git_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]
     from tests.git_server import serve
 
     yield from serve(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def deployment_workspace_scope() -> Iterator[None]:
+    """Run the test's tool calls against the whole workspace root, as before scopes existed.
+
+    For tests about what the tools do to a file, written against files at the root. Tests about
+    *which* directory a call reaches (`test_workspace_scopes.py`) bind their scope themselves.
+    """
+    from felix.tools import workspace_scope
+
+    class _Any(frozenset[str]):
+        def __contains__(self, item: object) -> bool:
+            return True
+
+    # Whatever tenant the test's context names: the deployment gate has tests of its own.
+    original = workspace_scope.deployment_tenants
+    workspace_scope.deployment_tenants = lambda settings: _Any()  # type: ignore[assignment]
+    try:
+        with workspace_scope.bound_scope("deployment"):
+            yield
+    finally:
+        workspace_scope.deployment_tenants = original  # type: ignore[assignment]

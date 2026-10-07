@@ -1008,6 +1008,44 @@ comment explaining exactly that. It is conditional, not inert.
       cost, but a cached "valid" survives a revocation for as long as it lives. That is a posture
       call about how stale an authorisation may be, and it wants an owner rather than a default.
 
+- [ ] **Start a run from an inbound event** (proposed 2026-10-06). Runs start from a person
+      (`/chat`), a schedule (`/jobs`) or a peer (A2A), but never from something that happened
+      elsewhere: a pushed commit, a failed payment, an alert. No route accepts one (`app.py` mounts
+      no `/hooks` or `/triggers`), and nothing verifies `x-hub-signature-256` or a Standard Webhooks
+      signature on the way in, only on the way out (`durability/webhooks.py`). Seam: a
+      `routes/triggers.py` that owns per-endpoint signing secrets (`secret:NAME`, rotated like
+      completion-webhook secrets), verifies before parsing, maps the payload to a prompt through a
+      template the operator wrote, and hands it to `fire_job` (`jobs/scheduler.py`) or
+      `start_durable_chat` (`durability/runs.py`), which already take a `trigger=` label and a
+      principal. Hard parts, in order: replay (the `webhook-id` dedupe the outbound side has, read
+      the other way), the payload is **untrusted input reaching the model** (screen it as a tool
+      result, never as the operator's prompt), and per-endpoint rate limits so a noisy sender
+      cannot spend the tenant's budget. Pairs with `spec.execution.webhooks`: event in, result out.
+- [ ] **Credentials the model never holds** (proposed 2026-10-06). Today a secret reaches a tool
+      as an MCP `Authorization` header, an MCP stdio `env`, or a container's auth, all resolved at
+      compile time, and the defence on the way back is exact-string `[REDACTED]` over tool output,
+      the session log and audit (`builder.py`, `session/store.py`). Exact match is the gap: a
+      stdio server or shell child that holds a key can return it base64'd, split or reversed, and
+      that reaches the model. `http_fetch` has no header field at all, so no fetched API can be
+      authenticated without handing the key to something the model drives. Proposal: an
+      operator-owned map from host (or host + path prefix) to `secret:NAME`, applied inside
+      `GuardedAsyncTransport.handle_async_request` (`security/egress.py`) **after** the egress
+      check, so the credential is attached only to a request already allowed to that host, and
+      the model, the tool arguments and every log see only the request it made. Then an
+      `http_fetch` that can call an authenticated API, and MCP HTTP servers moved onto the same
+      map. Stdio children keep env secrets and stay the documented exception.
+- [ ] **Fail over on an exhausted provider, not only a failing one** (proposed 2026-10-06).
+      `spec.model.fallbacks` advances when `_is_provider_error` (`patterns/model_composites.py`)
+      says so: `>= 500` or `429`. A quota 429 therefore fails over, but **402** (AI Gateway credits
+      empty, see the note under A), a `400` whose body says the credit balance is too low, and a
+      connection error with no status all fail the run with a fallback configured and unused.
+      Widen the classifier to 402 and the billing markers `_HARD_LIMIT_MARKERS` already lists
+      (`felix_ai/wire/transport.py`), never to 401/403, which is a key to fix rather than a
+      provider to route around. Separately, and as a decision rather than a fix:
+      `limits.max_cost_usd` is a hard stop (`check_budgets` → `trip()`); a manifest may want
+      "past this, continue on route X" instead. If it does, that is an explicit `on_budget:`
+      field the compile pin sees, never an implicit downgrade.
+
 #### From the governance mutation audit (Sep 2026, #141–#150)
 
 Carried forward intact. These are the exempt kind under the meta-work budget: several are
@@ -1095,6 +1133,20 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       ignored; a second backend would be a feature with its own design, not a registry entry.
 
 ### Headless / contract
+
+- [ ] **Sub-agents on the stream** (proposed 2026-10-06). A composite manifest's children are
+      invisible to a client. The router and the delegating patterns pipe a child's frames through
+      `_pipe_stream` (`patterns/delegating.py`) unmarked, so a `tool_start` from the child reads
+      as the parent's; groupchat stamps `[name]` into transcript *text* only; `parallel` runs its
+      children with `invoke()` under `asyncio.gather`, so nothing they do streams at all, only the
+      synthesis; and children run with `thread_id=None`, so the session log has no record of them
+      either. Proposal: `subagent_start` / `subagent_end` frames (`{agent, path, depth}`, `end`
+      carrying the outcome) from `_forward` / `_delegate`, every piped frame tagged with the `path`
+      of the agent that produced it, and `parallel` moved onto merged `stream_events` so siblings
+      interleave on the wire. Both new events go into `schemas/sse-events.json` and `felix-run/web`
+      (`check-protocol-parity` fails until they are modelled), and the tag is an optional field so
+      a client that ignores it still renders one flat turn. The session log is the larger half:
+      without a child record, a reload shows the flat turn again.
 
 - [x] **Nothing enforces RLS coverage for a new tenant table** (readiness pass, 2026-09-04).
       `tests/unit/test_rls_coverage.py` renders every migration offline and checks the DDL:

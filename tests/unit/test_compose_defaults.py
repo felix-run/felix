@@ -40,6 +40,7 @@ PASSED_THROUGH = {
     "FELIX_GITHUB_OIDC_TTL_SECONDS": "github_oidc_ttl_seconds",
     "FELIX_GITHUB_CALLBACK_PATH": "github_callback_path",
     "FELIX_GITHUB_SIGNUP": "github_signup",
+    "FELIX_WORKSPACE_DEPLOYMENT_TENANTS": "workspace_deployment_tenants",
     "FELIX_REPO_CLONE_MAX_MB": "repo_clone_max_mb",
     "FELIX_REPO_CHECKOUT_TTL_DAYS": "repo_checkout_ttl_days",
     "FELIX_REPO_CLONE_TIMEOUT_SECONDS": "repo_clone_timeout_seconds",

@@ -404,8 +404,8 @@ class ImageToolRef(_Strict):
     name: str = Field(min_length=1)
     description: str = ""
     op: Literal["list", "info", "resize", "crop", "rotate", "convert", "thumbnail"]
-    # Read workspace files through `path`. Off by default: the workspace is one directory for
-    # every tenant on the host, and a manifest grants reading it explicitly, as with `read_file`.
+    # Read workspace files through `path`. Off by default: a manifest grants reading its
+    # workspace (`spec.workspace`) explicitly, as with `read_file`.
     allow_path: bool = False
     fatal: bool = False
 
@@ -770,6 +770,18 @@ class AnomalySpec(_Strict):
     min_volume: int = Field(default=10, ge=1)
     min_rate: float = Field(default=0.2, ge=0, le=1)
     baseline_factor: float = Field(default=3.0, ge=1)
+
+
+class WorkspaceSpec(_Strict):
+    """Which directory the workspace tools, `shell` and the image tools' `path` work in.
+
+    `thread` (the default): the thread's own, so one conversation never sees another's files.
+    `tenant`: one directory shared by every thread of the tenant. `deployment`: the whole of
+    FELIX_WORKSPACE_ROOT, for the self-build manifests whose root is a real checkout; honoured only
+    for the tenants in FELIX_WORKSPACE_DEPLOYMENT_TENANTS, and refused for any other.
+    """
+
+    scope: Literal["thread", "tenant", "deployment"] = "thread"
 
 
 class ArtifactsSpec(_Strict):
@@ -1150,6 +1162,7 @@ class Spec(_Strict):
     skill_suggestion: SkillSuggestionSpec = Field(default_factory=SkillSuggestionSpec)
     skill_authoring: SkillAuthoringSpec = Field(default_factory=SkillAuthoringSpec)
     artifacts: ArtifactsSpec = Field(default_factory=ArtifactsSpec)
+    workspace: WorkspaceSpec = Field(default_factory=WorkspaceSpec)
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
     plan_execute: PlanExecuteSpec = Field(default_factory=PlanExecuteSpec)
     procedural_memory: ProceduralSpec = Field(default_factory=ProceduralSpec)
