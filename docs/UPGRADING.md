@@ -31,6 +31,25 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## Hosted workspaces (opt-in)
+
+**Nothing changes unless you set `FELIX_WORKSPACE_BACKEND=hosted`.** With it, each thread's or
+tenant's workspace lives in its own sandbox: a Cloudflare Container started with the internet off,
+reached through the gateway Worker in `deploy/cloudflare/workspace-gateway`, with `/workspace` kept
+in an R2 bucket between runs. The workspace tools behave exactly as on `local`; a conformance test
+holds the two to the same answers. To turn it on:
+
+1. Deploy the gateway (its `README.md`): create the `felix-workspaces` R2 bucket, set
+   `WORKSPACE_GATEWAY_TOKEN` (32+ characters), `wrangler deploy`.
+2. On the API and the worker, set `FELIX_WORKSPACE_BACKEND=hosted`,
+   `FELIX_WORKSPACE_GATEWAY_URL` (the Worker's https URL) and `FELIX_WORKSPACE_GATEWAY_TOKEN`
+   (the same token). Boot refuses `hosted` without both.
+
+What `hosted` does not serve, and refuses rather than serving from the host: `shell_tools`, an
+image tool's `path`, `publish_commits` and a thread's repository checkout, for any scope but
+`deployment` (which stays on the host). Files already in a local scope are not copied across: a
+scope starts empty on the hosted backend.
+
 ## Workspaces are per thread by default
 
 **One command after the roll, and only if agents had already written files.** Every workspace tool

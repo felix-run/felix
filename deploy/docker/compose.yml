@@ -53,6 +53,11 @@ x-felix-env: &felix-env
   FELIX_MODEL_PROVIDER_OPTIONS: ${FELIX_MODEL_PROVIDER_OPTIONS:-}
   FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
   FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-default}
+  # `hosted`: each scope's files in its own sandbox, through the gateway Worker
+  # (deploy/cloudflare/workspace-gateway). The API and the worker both run the tools.
+  FELIX_WORKSPACE_BACKEND: ${FELIX_WORKSPACE_BACKEND:-local}
+  FELIX_WORKSPACE_GATEWAY_URL: ${FELIX_WORKSPACE_GATEWAY_URL:-}
+  FELIX_WORKSPACE_GATEWAY_TOKEN: ${FELIX_WORKSPACE_GATEWAY_TOKEN:-}
   # Extra SKILL.md directory, searched alongside the image's bundled skills/.
   # Mount it into the container as well when you set this.
   FELIX_SKILLS_DIR: ${FELIX_SKILLS_DIR:-}

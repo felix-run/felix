@@ -33,8 +33,12 @@ export const MIN_TOKEN_CHARS = 32;
 
 const ROUTE = /^\/v1\/workspaces\/([^/]+)\/([^/]+)\/([^/]+)$/;
 
-function refuse(error: ErrorCode, message: string): Response {
-  return Response.json({ error, message }, { status: STATUS[error] });
+function refuse(error: ErrorCode, message: string, kind?: string): Response {
+  // `kind` (the helper's exception name, for a filesystem failure) lets the harness raise the same
+  // exception the local backend would, so a tool words the failure the same on both.
+  return Response.json(kind ? { error, message, kind } : { error, message }, {
+    status: STATUS[error],
+  });
 }
 
 /** Constant-time over the longer of the two, so the comparison says nothing about the length. */
@@ -115,6 +119,6 @@ export default {
     }
     return answer.ok
       ? Response.json({ result: answer.result })
-      : refuse(answer.error, answer.message);
+      : refuse(answer.error, answer.message, answer.kind);
   },
 };

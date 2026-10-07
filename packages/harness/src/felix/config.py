@@ -17,6 +17,9 @@ logger = logging.getLogger("felix.config")
 # Shared by `validate_runtime` (the API side) and `felix-shell-runner` (which refuses to start
 # with less), so the two ends of one credential cannot disagree about what is long enough.
 MIN_SHELL_RUNNER_TOKEN_CHARS = 32
+# The workspace gateway Worker refuses a bearer shorter than this (`MIN_TOKEN_CHARS` in
+# deploy/cloudflare/workspace-gateway/src/handler.ts); boot refuses it here first.
+MIN_WORKSPACE_GATEWAY_TOKEN_CHARS = 32
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -631,6 +634,16 @@ class Settings(BaseSettings):
     # FELIX_WORKSPACE_ROOT, every other scope's files included. Comma-separated; the operator's own
     # tenants only. Any other tenant asking for it is refused (`felix.tools.workspace_scope`).
     workspace_deployment_tenants: str = "default"
+    # Where a thread's or a tenant's workspace lives. `local`: under FELIX_WORKSPACE_ROOT, on this
+    # host. `hosted`: in its own sandbox, through the workspace gateway Worker
+    # (deploy/cloudflare/workspace-gateway), so a model's file operations never touch this host.
+    # Under `hosted`, `deployment` scope stays local, and the consumers that need a real directory
+    # (`shell`, image `path`, `publish_commits`, a thread's repository checkout) are refused for
+    # every other scope rather than served from the host. docs/WORKSPACE.md phase 3.
+    workspace_backend: Literal["local", "hosted"] = "local"
+    # Out of repr like every URL setting: one can carry credentials in its userinfo.
+    workspace_gateway_url: str = Field(default="", repr=False)
+    workspace_gateway_token: str = Field(default="", repr=False)
     # When true, auto-discover AGENTS.md from workspace_root / object store.
     load_agents_md: bool = False
 
@@ -980,6 +993,25 @@ class Settings(BaseSettings):
                 "scripts/shell-runner-token.sh writes one into .env."
             )
 
+    def _validate_workspace_gateway(self) -> None:
+        """`hosted` with no reachable, authenticated gateway would refuse every workspace call."""
+        if self.workspace_backend != "hosted":
+            return
+        from urllib.parse import urlsplit
+
+        url = urlsplit(self.workspace_gateway_url.strip())
+        local = url.hostname in {"localhost", "127.0.0.1", "::1"}
+        if url.scheme not in {"https", "http"} or not url.netloc or (url.scheme == "http" and not local):
+            raise RuntimeError(
+                "FELIX_WORKSPACE_BACKEND=hosted needs FELIX_WORKSPACE_GATEWAY_URL, the gateway Worker's "
+                "https URL (plain http only for localhost): every file a model writes crosses it."
+            )
+        if len(self.workspace_gateway_token) < MIN_WORKSPACE_GATEWAY_TOKEN_CHARS:
+            raise RuntimeError(
+                f"FELIX_WORKSPACE_GATEWAY_TOKEN must be at least {MIN_WORKSPACE_GATEWAY_TOKEN_CHARS} "
+                "characters: the gateway refuses a shorter one, and so every call."
+            )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -1012,6 +1044,7 @@ class Settings(BaseSettings):
 
         self._validate_skill_import()
         self._validate_shell_runner()
+        self._validate_workspace_gateway()
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()
         from felix.auth.github import validate_login_config

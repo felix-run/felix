@@ -1327,6 +1327,8 @@ def test_outbound_clients_go_through_the_egress_guard() -> None:
         "durability/webhooks.py": "only for an endpoint the operator marked `private: true`; others use the guard",
         # The runner is a private Compose hostname, which is what the guard refuses.
         "tools/shell.py": "FELIX_SHELL_RUNNER_URL is operator config, never a manifest or model value",
+        # The gateway is the operator's own Worker, and `wrangler dev` serves it on localhost.
+        "tools/workspace_hosted.py": "FELIX_WORKSPACE_GATEWAY_URL is operator config, never a manifest or model value",
     }
     seen_clients = 0
     offenders: list[str] = []
