@@ -71,7 +71,7 @@ export type ErrorCode =
 /** What the sandbox's `felix-fs` helper prints, and what the Durable Object returns. */
 export type HelperAnswer =
   | { ok: true; result: Record<string, unknown> }
-  | { ok: false; error: ErrorCode; message: string };
+  | { ok: false; error: ErrorCode; message: string; kind?: string };
 
 /** The HTTP status each answer travels under. The body carries the code; the status is for logs. */
 export const STATUS: Record<ErrorCode, number> = {

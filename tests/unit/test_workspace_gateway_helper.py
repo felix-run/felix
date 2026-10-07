@@ -138,7 +138,9 @@ class WriteTests(HelperCase):
     def test_a_directory_is_refused_as_the_local_backend_refuses_it(self) -> None:
         (self.ws / "d").mkdir()
         # The open fails before the regular-file check, as it does locally: an internal error.
-        self.assertIn("IsADirectoryError", self.refused("write", "io_error", path="d", data=self._data("x")))
+        out = self.call("write", path="d", data=self._data("x"))
+        self.assertEqual((out["error"], out["kind"]), ("io_error", "IsADirectoryError"))
+        self.assertTrue(out["message"].startswith("[Errno 21]"), out)
         self.refused("write", "not_a_file", path=".", data=self._data("x"))
 
 

@@ -117,7 +117,11 @@ def current_workspace_scope() -> tuple[Settings, WorkspaceScope | None]:
 
 
 def get_workspace_backend(settings: Settings) -> WorkspaceBackend:
-    """The backend this deployment uses. One today; FELIX_WORKSPACE_BACKEND arrives with a second."""
+    """The backend FELIX_WORKSPACE_BACKEND names: this host's filesystem, or the hosted gateway."""
+    if getattr(settings, "workspace_backend", "local") == "hosted":
+        from felix.tools.workspace_hosted import HostedBackend
+
+        return HostedBackend(settings)
     from felix.tools.workspace_local import LocalBackend
 
     return LocalBackend(settings)

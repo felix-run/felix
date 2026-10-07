@@ -328,7 +328,8 @@ those disagree, this one is current.
   replaces the mapping table above. The R2 prefix is what phase 4's sweeps reconcile against.
 - **One sandbox per `tenant` scope**, shared by that tenant's threads.
 - **Local files move once.** On a scope's first hosted use, its local files are uploaded once and
-  the upload is recorded.
+  the upload is recorded. *Not built yet* (2026-10-07): until it is, a scope starts empty on
+  `hosted`, which `UPGRADING.md` says.
 - **Some tools still need a local directory:** an image tool's `path`, `publish_commits`, AGENTS.md
   loading and a thread's repository checkout. Under `hosted`, these are refused for any scope but
   `deployment`, never served from the host.
@@ -359,7 +360,7 @@ those disagree, this one is current.
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
-| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
+| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508 gateway, #509 persistence, feat/hosted-workspace-backend; not yet run against a deployed gateway |
 | 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[ ]` |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |

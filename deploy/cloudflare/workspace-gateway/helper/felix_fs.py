@@ -558,9 +558,11 @@ def run(req: dict[str, Any]) -> dict[str, Any]:
     except NotADirectoryError as exc:
         return {"ok": False, "error": "not_a_directory", "message": str(exc)}
     except PermissionError as exc:
-        return {"ok": False, "error": "permission_denied", "message": f"{type(exc).__name__}: {exc}"}
+        return {"ok": False, "error": "permission_denied", "message": str(exc), "kind": type(exc).__name__}
     except OSError as exc:
-        return {"ok": False, "error": "io_error", "message": f"{type(exc).__name__}: {exc}"}
+        # `kind` names the exception, so the harness raises the same one and its tools word the
+        # failure exactly as they do for the local backend (`IsADirectoryError: [Errno 21] ...`).
+        return {"ok": False, "error": "io_error", "message": str(exc), "kind": type(exc).__name__}
 
 
 def main(stdin: Any) -> int:

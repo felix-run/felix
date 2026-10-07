@@ -68,6 +68,9 @@ class RequestContext:
 
 
 _ctx: ContextVar[RequestContext | None] = ContextVar("felix_request_context", default=None)
+# `felix.tools.workspace_hosted.WRITTEN_SCOPES_KEY`, spelled here so the context module imports
+# nothing from the tools to check it.
+_WORKSPACE_WRITTEN = "workspace_written_scopes"
 
 
 def get_context() -> RequestContext:
@@ -114,4 +117,12 @@ async def async_run_with_context(ctx: RequestContext) -> AsyncIterator[RequestCo
         try:
             yield ctx
         finally:
-            _ctx.reset(token)
+            try:
+                if ctx.extras.get(_WORKSPACE_WRITTEN):
+                    # The scopes this request wrote under the hosted workspace backend, backed up
+                    # as it ends. Never raises (`checkpoint_written`).
+                    from felix.tools.workspace_hosted import checkpoint_written
+
+                    await checkpoint_written(ctx)
+            finally:
+                _ctx.reset(token)

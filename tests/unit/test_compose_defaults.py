@@ -41,6 +41,7 @@ PASSED_THROUGH = {
     "FELIX_GITHUB_CALLBACK_PATH": "github_callback_path",
     "FELIX_GITHUB_SIGNUP": "github_signup",
     "FELIX_WORKSPACE_DEPLOYMENT_TENANTS": "workspace_deployment_tenants",
+    "FELIX_WORKSPACE_BACKEND": "workspace_backend",
     "FELIX_REPO_CLONE_MAX_MB": "repo_clone_max_mb",
     "FELIX_REPO_CHECKOUT_TTL_DAYS": "repo_checkout_ttl_days",
     "FELIX_REPO_CLONE_TIMEOUT_SECONDS": "repo_clone_timeout_seconds",
@@ -185,6 +186,9 @@ EVERY_PROCESS = (
     "FELIX_PUSH_VAPID_SUBJECT",
     "FELIX_REPO_CHECKOUT_ROOT",
     "FELIX_REPO_CHECKOUT_TTL_DAYS",
+    "FELIX_WORKSPACE_BACKEND",
+    "FELIX_WORKSPACE_GATEWAY_URL",
+    "FELIX_WORKSPACE_GATEWAY_TOKEN",
 )
 
 
