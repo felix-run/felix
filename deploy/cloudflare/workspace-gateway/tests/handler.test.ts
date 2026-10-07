@@ -123,6 +123,14 @@ describe('workspace gateway', () => {
     });
   });
 
+  it('passes checkpoint and destroy through with no arguments', async () => {
+    for (const op of ['checkpoint', 'destroy']) {
+      const res = await send(post(`/v1/workspaces/acme/shared/${op}`));
+      expect(res.status, op).toBe(200);
+    }
+    expect(calls.map((c) => c.request)).toEqual([{ op: 'checkpoint' }, { op: 'destroy' }]);
+  });
+
   it('names no sandbox for a malformed scope', async () => {
     for (const path of [
       `/v1/workspaces/..//shared/list`,
@@ -138,7 +146,7 @@ describe('workspace gateway', () => {
     expect(calls).toEqual([]);
   });
 
-  it('takes only the six operations, and only by POST', async () => {
+  it('takes only its operations, and only by POST', async () => {
     expect((await send(post(`/v1/workspaces/acme/shared/delete`, {}))).status).toBe(404);
     const get = new Request(`${BASE}/v1/workspaces/acme/shared/list`, {
       headers: { authorization: `Bearer ${TOKEN}` },
