@@ -10,6 +10,14 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-07
+
+### Changed
+
+- A durable run's client tools now reach the client: the durable `POST /chat/stream` announces each pending client-tool request as a `tool_request` frame, so `local_shell` and other client tools no longer time out on a durable run. (#513)
+
+- `cowork` works on the user's own folder through new client tools (`local_list`, `local_read`, `local_search`, `local_write`, `local_edit`; writes need approval) and no longer binds the server-side workspace tools. (#513)
+
 ## [0.11.0] — 2026-10-07
 
 ### Added
@@ -4394,3 +4402,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.9.0]: https://github.com/felix-run/felix/releases/tag/v0.9.0
 [0.10.0]: https://github.com/felix-run/felix/releases/tag/v0.10.0
 [0.11.0]: https://github.com/felix-run/felix/releases/tag/v0.11.0
+[0.11.1]: https://github.com/felix-run/felix/releases/tag/v0.11.1
