@@ -191,7 +191,8 @@ the same operator, instead of going to a new third party. Checked against the re
 | Callable from the harness | **not directly** — the SDK runs only inside a Worker (`getSandbox(env.Sandbox, id)`); there is no Python SDK or public API for it | a gateway Worker is required; see below |
 | Status and price | **SDK 1.0 released 2026-09-30** (rechecked 2026-10-07; 0.x fixes end 2026-12-31); Workers Paid plan | `hosted` stays opt-in until the adapter has run on the reference deployment for a release |
 
-**The gateway Worker.** A small Worker in `felix-run/web`, next to the chat-ui proxy, holds the
+**The gateway Worker.** A small Worker — in this repository, `deploy/cloudflare/workspace-gateway`,
+as decided on 2026-10-07 (see "Phase 3 as decided") — holds the
 Sandbox Durable Object binding and the backup bucket and exposes exactly the `SandboxProvider`
 operations over HTTPS. The harness's adapter is an HTTP client to it, authenticated by a dedicated
 secret (not the chat-ui key, not a harness API key). The gateway takes a scope key and never a raw
@@ -332,19 +333,23 @@ those disagree, this one is current.
   loading and a thread's repository checkout. Under `hosted`, these are refused for any scope but
   `deployment`, never served from the host.
 
-**Pull requests, in order.**
-1. **felix-web:** the gateway Worker (`apps/workspace-gateway`), its image and the `felix-fs`
-   helper, the five file operations, a contract suite in `@felix/test-kit`, and
-   `wrangler.example.jsonc`.
-2. **felix-web:** persistence. `DirectoryBackup`, restore on start, a checkpoint route, a
+- **The gateway lives in this repository** (`deploy/cloudflare/workspace-gateway`), not in
+  `felix-run/web`. It is harness infrastructure, like the database: an operator running Felix
+  headless, with no chat-ui, deploys it from here. This also puts the `felix-fs` helper beside the
+  code it is ported from. A test compares the two as syntax trees, so they cannot drift.
+
+**Pull requests, in order, all in this repository.**
+1. The gateway Worker (`deploy/cloudflare/workspace-gateway`), its image and the `felix-fs` helper,
+   the five file operations, its handler contract tests, the helper's tests in the harness suite,
+   and `wrangler.example.jsonc`.
+2. Persistence. `DirectoryBackup`, restore on start, a checkpoint route, a
    backup-then-stop alarm on idle, and `destroy`.
-3. **felix:** `HostedBackend` over the gateway, a fake gateway for tests, the backend conformance
+3. `HostedBackend` over the gateway, a fake gateway for tests, the backend conformance
    suite run against both backends, the `FELIX_WORKSPACE_BACKEND` opt-in, and the end-of-run
    checkpoint.
-4. **felix:** 3b, `shell_tools` exec through the hosted backend. Also UPGRADING notes and an opt-in
+4. 3b, `shell_tools` exec through the hosted backend. Also UPGRADING notes and an opt-in
    live conformance job.
-5. **Both repositories:** latency and cost measured on the reference deployment, and this file
-   brought in line.
+5. Latency and cost measured on the reference deployment, and this file brought in line.
 
 ## Phases
 
@@ -354,7 +359,7 @@ those disagree, this one is current.
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
-| 3a | `hosted` backend for the five file tools: the gateway Worker in `felix-run/web` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
+| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
 | 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[ ]` |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
@@ -363,8 +368,8 @@ Phases 0 and 1 are small and independent and should land first. Phase 2 was spli
 isolation, through the one function every workspace consumer already calls, and 2b is where the
 tools stop touching the filesystem directly — a refactor with no change in behaviour, ahead of the
 backend that needs it. Phase 3 is the production change; its provider is chosen
-(Cloudflare Sandboxes), and it spans both repositories: the adapter here, the gateway Worker in
-`felix-run/web`.
+(Cloudflare Sandboxes), and all of it is in this repository: the adapter and the gateway Worker,
+under `deploy/cloudflare/`.
 
 ## Migration
 
