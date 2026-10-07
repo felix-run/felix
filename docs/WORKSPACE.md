@@ -1,9 +1,9 @@
 # Workspaces that are not the server
 
 **Status: proposal, 2026-09-24; revised the same day to make a hosted sandbox service the production
-backend.** Nothing below is built yet except the configuration change in phase 0. This file is the
-design the workspace tools are to be moved onto; it is updated in place as each phase lands, like
-[SELF.md](SELF.md).
+backend.** Built so far: phase 0 (the default volume), phase 1 (truthful failures) and phase 2a
+(scopes on the `local` layout). This file is the design the workspace tools are to be moved onto;
+it is updated in place as each phase lands, like [SELF.md](SELF.md).
 
 The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files` — are how a
 model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
@@ -102,14 +102,25 @@ refused call never reaches a backend, and an approved one reaches it exactly as 
 
 | `scope` | Key | For |
 |---|---|---|
-| `thread` (default) | the thread id | a conversation's files are its own |
+| `thread` (default) | a hash of the tenant and the thread id | a conversation's files are its own |
 | `tenant` | a fixed `shared` key | agents that should see one tenant-wide workspace |
+| `deployment` | none: the whole root | the self-build manifests, whose root is a real checkout |
 
 A tool called outside a thread (no `thread_id`) under `scope: thread` is refused, not quietly given a
-shared directory. The `local` backend lays scopes out as `<root>/<tenant>/<key>/`; tenant ids are
-already held to `[A-Za-z0-9._-]+`; a thread suffix is only guaranteed free of `:` and `#`, so the
-backend holds the key to the same charset before using it as a path segment, and refuses one that is
-not.
+shared directory. `deployment` holds every other scope, so it is honoured only for the tenants in
+`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` (default `default`) and refused for any other.
+
+**As built (phase 2a, `felix/tools/workspace_scope.py`).** The `local` layout is
+`<root>/.felix-scopes/<tenant>/<key>/`, not `<root>/<tenant>/<key>/` as first proposed: files written
+before scopes sit at the root, and a reserved directory means none of them can be mistaken for a
+tenant's. The thread key is a hash rather than the id held to a charset — a hash is a safe path
+segment whatever the id holds, so no thread is refused for its name. Each scope directory is created
+0700, walked by descriptor with no component a symlink. The scope is bound per call by the builder's
+outermost wrapper (`apply_workspace_scope`), so an approval's preview reads the directory the call
+will write; a call with no scope bound gets `thread`. `workspace_root()` resolves it, which is how
+`shell`, the image tools and `publish_commits` are scoped with no change of their own, and the remote
+shell runner is sent the scope's relative path and accepts only that shape. Instruction files
+(`AGENTS.md`) are still read from the root, which only `deployment` can now write.
 
 ### Backends
 
@@ -268,13 +279,16 @@ registered prefix now: today a write that fails with `Errno 13` is audited as `o
 |---|---|---|---|
 | 0 | Stop defaulting the workspace to the checkout: `compose.yml` mounts a named `felix-workspace` volume, initialised to the image's uid, instead of `./workspace` | fresh deployments; existing ones on the old default see an empty workspace (`UPGRADING.md`) | `[x]` fix/workspace-default-volume; the reference host set `FELIX_WORKSPACE_HOST=/srv/felix/workspace` by hand first |
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
-| 2 | `WorkspaceBackend` seam with the `local` backend, plus `spec.workspace.scope` (default `thread`) | yes — see migration | `[ ]` |
+| 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
+| 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[ ]` |
 | 3 | `hosted` backend: the `SandboxProvider` protocol, the Cloudflare Sandboxes adapter and its gateway Worker in `felix-run/web`, the `workspace_sandboxes` table, the adapter conformance suite | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
 
-Phases 0 and 1 are small and independent and should land first. Phase 2 is where the tools stop
-touching the filesystem directly. Phase 3 is the production change; its provider is chosen
+Phases 0 and 1 are small and independent and should land first. Phase 2 was split: 2a delivers the
+isolation, through the one function every workspace consumer already calls, and 2b is where the
+tools stop touching the filesystem directly — a refactor with no change in behaviour, ahead of the
+backend that needs it. Phase 3 is the production change; its provider is chosen
 (Cloudflare Sandboxes), and it spans both repositories: the adapter here, the gateway Worker in
 `felix-run/web`.
 
@@ -283,8 +297,10 @@ touching the filesystem directly. Phase 3 is the production change; its provider
 Phase 2 changes what an existing deployment sees, because files written before it live at the root
 and a `scope: thread` workspace starts empty. So:
 
-- The first release with phase 2 treats files at the root as the tenant `default`'s `shared` scope,
-  and bundled manifests that relied on a shared directory declare `scope: tenant` explicitly.
+- The first release with phase 2a leaves files at the root where they are, visible only to the
+  `deployment` scope, and `felix workspace migrate` moves them into the tenant `default`'s `shared`
+  scope once (`UPGRADING.md`). The bundled manifests that rely on the root — `contributor` and
+  `triage` — declare `scope: deployment`; `cowork` stays on `thread`.
 - Moving to `hosted` uploads an existing scope's files into its new sandbox on first use, once, and
   records that it did.
 - `UPGRADING.md` gets a section for each, and `hosted` stays opt-in until it has run on the reference

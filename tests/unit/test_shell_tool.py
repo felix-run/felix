@@ -32,6 +32,9 @@ from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.shell import MAX_OUTPUT_BYTES, MAX_TOTAL_OUTPUT_BYTES, ShellArgs, tools_from_shell_refs
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny, tool_output_content
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 PY = sys.executable
 
 

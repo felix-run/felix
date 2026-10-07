@@ -15,6 +15,9 @@ from felix.tools.types import ToolInvocationCtx, tool_output_content, tool_outpu
 
 from tests.optional_deps import require_optional
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 
 @pytest.fixture
 def pil() -> Any:

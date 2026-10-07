@@ -427,6 +427,53 @@ def ingest_docs(
 app.add_typer(skills_app, name="skills")
 
 
+workspace_app = typer.Typer(name="workspace", help="Manage FELIX_WORKSPACE_ROOT.", no_args_is_help=True)
+app.add_typer(workspace_app, name="workspace")
+
+
+@workspace_app.command("migrate")
+def workspace_migrate(
+    tenant: str = typer.Option("default", "--tenant", help="Whose `shared` scope receives the files."),
+    keep: list[str] = typer.Option(
+        [], "--keep", help="A top-level name to leave at the root (repeatable), e.g. AGENTS.md."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Say what would move; move nothing."),
+) -> None:
+    """Move files written before workspace scopes into a tenant's `shared` scope.
+
+    Before scoping, every agent worked at the root of FELIX_WORKSPACE_ROOT. Afterwards only the
+    operator's `deployment`-scope manifests see the root, so this carries what was there to where
+    a `scope: tenant` manifest of TENANT finds it. Nothing is overwritten; running it twice is
+    harmless. Run it on the host (or in a container) that mounts the workspace, once per upgrade.
+    """
+    from felix.config import get_settings
+    from felix.tools.workspace import deployment_workspace
+    from felix.tools.workspace_scope import migrate_legacy_files
+
+    raw = (get_settings().workspace_root or "").strip()
+    if not raw:
+        rprint("[red]FELIX_WORKSPACE_ROOT is not set; nothing to migrate.[/red]")
+        raise typer.Exit(2)
+    try:
+        base = deployment_workspace(raw)
+        result = migrate_legacy_files(base, tenant, keep=frozenset(keep), dry_run=dry_run)
+    except (ValueError, OSError) as exc:
+        rprint(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    verb = "would move" if dry_run else "moved"
+    rprint(f"{verb} {len(result.moved)} entr{'y' if len(result.moved) == 1 else 'ies'} into {result.target}")
+    for name in result.moved:
+        rprint(f"  {name}")
+    if result.kept:
+        rprint(f"kept at the root: {', '.join(result.kept)}")
+    if result.collided:
+        rprint(
+            f"[yellow]left at the root, already present in {result.target}: "
+            f"{', '.join(result.collided)}[/yellow]"
+        )
+        raise typer.Exit(1)
+
+
 @app.command("bundle-manifests")
 def bundle_manifests(
     out: Path | None = typer.Option(None, "--out", "-o", help="Write JSON Schema / bundle summary here."),
