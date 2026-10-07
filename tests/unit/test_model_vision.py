@@ -46,12 +46,17 @@ def test_the_catalog_answers_only_what_it_can_vouch_for(model: str, expected: bo
 
 
 def test_a_route_declaration_beats_the_catalog() -> None:
-    assert route_accepts_images(ModelRoute("ollama", "llava", modalities=("text", "image"))) is True
+    assert (
+        route_accepts_images(ModelRoute("workers_ai", "@cf/acme/unlisted", modalities=("text", "image")))
+        is True
+    )
     assert route_accepts_images(ModelRoute("anthropic", "claude-sonnet-5", modalities=("text",))) is False
 
 
 def test_routes_read_modalities_from_the_setting() -> None:
-    raw = json.dumps({"seer": {"provider": "ollama", "model": "llava", "modalities": ["text", "image"]}})
+    raw = json.dumps(
+        {"seer": {"provider": "workers_ai", "model": "@cf/acme/unlisted", "modalities": ["text", "image"]}}
+    )
     routes = parse_model_routes(Settings(model_routes=raw))
     assert routes["seer"].modalities == ("text", "image")
     assert routes["claude-sonnet"].modalities is None

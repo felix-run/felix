@@ -1,6 +1,6 @@
 """The OpenAI chat-completions wire format.
 
-Also Ollama, LiteLLM, vLLM, and every hosted endpoint that speaks this shape — which is
+Also Workers AI, LiteLLM, vLLM, and every hosted endpoint that speaks this shape — which is
 most of them, and is why a new provider is usually a base URL rather than a new module.
 """
 
@@ -109,7 +109,7 @@ def apply_openai_thinking_cache(
     This used to emit three things unconditionally whenever `spec.thinking_budget` was set:
     `reasoning_effort`, which only OpenAI's reasoning models accept; `prompt_cache_key`,
     which is OpenAI-specific; and an Anthropic `thinking` block, which is not an OpenAI
-    field at all. The same body goes to api.openai.com, to Ollama and to any vLLM or
+    field at all. The same body goes to api.openai.com, to Workers AI and to any vLLM or
     self-written gateway, and a server that validates its request schema rejects the
     unknown key — so "OpenAI-compatible" carried an Anthropic parameter into every
     endpoint that spoke the format.
@@ -307,7 +307,7 @@ def _parse_openai_tool_calls(raw: list[dict[str, Any]] | None) -> list[ToolCall]
 
 @dataclass
 class OpenAICompletionsClient(HttpModelClient):
-    """The OpenAI chat-completions wire format — also Ollama and any LiteLLM gateway."""
+    """The OpenAI chat-completions wire format — also Workers AI and any LiteLLM gateway."""
 
     def _auth_headers(self) -> dict[str, str]:
         """Auth and content type for this wire format.

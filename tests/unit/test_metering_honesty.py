@@ -47,25 +47,20 @@ def test_a_known_model_is_still_priced() -> None:
     assert cost["total"] > 0.0
 
 
-def test_free_is_a_property_of_the_provider_not_the_model_name() -> None:
-    """Llama runs on a laptop *and* is sold by Workers AI, Groq, Together and Fireworks,
-    and `entry_for` matches by substring — so pricing the `llama` catalog entry at zero
-    would make every hosted Llama free to `limits.max_cost_usd`. Locality lives on the
-    provider instead."""
-    from felix_ai.providers import builtin_provider_specs
-
+def test_a_bare_llama_is_unpriced_not_free() -> None:
+    """Llama is sold by Workers AI, Groq, Together and Fireworks at different rates, and
+    `entry_for` matches by substring — so pricing the `llama` catalog entry at zero would
+    make every hosted Llama free to `limits.max_cost_usd`."""
     assert not is_priced("llama3.2")
     # The hosted one carries Cloudflare's own rate under an `@cf/` key, not a zero.
     assert entry_for("@cf/meta/llama-3.3-70b-instruct-fp8-fast").pricing.input > 0
-    by_name = {s.name: s for s in builtin_provider_specs()}
-    assert by_name["ollama"].bills_per_token is False
-    assert by_name["workers_ai"].bills_per_token is True
 
 
-def test_a_local_route_can_still_declare_a_spend_cap() -> None:
-    """Spend on a local runtime is zero, so the cap holds without any rates."""
-    settings = _settings(model_routes='{"local":{"provider":"ollama","model":"llama3.2"}}')
-    assert_cost_limit_is_measurable(_manifest("local", limits={"max_cost_usd": 5.0}), settings)
+def test_a_bare_llama_route_cannot_declare_a_spend_cap() -> None:
+    """With no host-specific rate there is nothing to count, so the cap is refused."""
+    settings = _settings(model_routes='{"hosted":{"provider":"groq","model":"llama3.2"}}')
+    with pytest.raises(GovernanceError, match=r"llama3\.2"):
+        assert_cost_limit_is_measurable(_manifest("hosted", limits={"max_cost_usd": 5.0}), settings)
 
 
 # --- the wire id is what gets priced -------------------------------------------------
@@ -174,7 +169,23 @@ def test_a_manifest_price_override_makes_an_unknown_model_cappable() -> None:
     )
 
 
-@pytest.mark.parametrize("route", ["kimi-k2-cf", "gpt-oss-120b-cf", "gpt-oss-20b-cf", "glm-flash-cf"])
+@pytest.mark.parametrize(
+    "route",
+    [
+        "kimi-k2-cf",
+        "gpt-oss-120b-cf",
+        "gpt-oss-20b-cf",
+        "glm-flash-cf",
+        "glm-5.3-cf",
+        "glm-5.3-flash-cf",
+        "deepseek-v4-pro-cf",
+        "deepseek-v4-flash-cf",
+        "qwen3.8-27b-cf",
+        "kimi-k2.7-code-cf",
+        "llama-3-pro",
+        "llama-3-fast",
+    ],
+)
 def test_a_declared_cost_cap_compiles_on_a_workers_ai_default_route(route: str) -> None:
     """The built-in routes, with no FELIX_MODEL_ROUTES at all: `contributor` declares
     `max_cost_usd: 20`, and while Workers AI shipped unpriced it could not run there."""
@@ -183,7 +194,7 @@ def test_a_declared_cost_cap_compiles_on_a_workers_ai_default_route(route: str) 
 
 def test_an_undeclared_cap_is_not_refused() -> None:
     """`effective_limits` fills max_cost_usd from ABSOLUTE_LIMITS. Refusing on that would
-    break every local Ollama deployment over a ceiling the author never asked for."""
+    break every deployment on an unpriced model over a ceiling the author never asked for."""
     settings = _settings(model_routes='{"mystery":{"provider":"openai","model":"mystery-model"}}')
     assert_cost_limit_is_measurable(_manifest("mystery", limits={"max_tool_calls": 5}), settings)
 

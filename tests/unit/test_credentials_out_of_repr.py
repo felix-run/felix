@@ -18,7 +18,6 @@ LOOKS_SECRET = re.compile(r"key|secret|token|password|passwd|private|credential|
 
 # Names that match the pattern and hold nothing secret — each with why.
 NOT_SECRET = {
-    "ollama_base_url": "a local endpoint, no credentials",
     "litellm_base_url": "an endpoint; its key travels in model_provider_options",
     "search_url": "an endpoint; its key is search_api_key",
     "policy_bundle_pubkey": "a public key",

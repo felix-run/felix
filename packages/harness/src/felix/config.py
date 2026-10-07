@@ -243,7 +243,6 @@ class Settings(BaseSettings):
     default_vision_model_id: str = ""
     anthropic_api_key: str = Field(default="", repr=False)
     openai_api_key: str = Field(default="", repr=False)
-    ollama_base_url: str = "http://localhost:11434"
     litellm_base_url: str = ""
     model_routes: str = ""  # JSON override of logical id -> {provider, model}
     # JSON: provider name -> {"base_url": ..., "api_key": ...}. The built-in providers
@@ -405,7 +404,7 @@ class Settings(BaseSettings):
     # felix-harness[embeddings] is installed and runs without the vector channel when it is
     # not — local only, because a hosted embedder would send stored memories to a provider
     # and the column is 768-wide. `none` turns it off; `sentence_transformers` requires the
-    # extra; `openai` and `ollama` speak an OpenAI-compatible /embeddings endpoint.
+    # extra; `openai`, `workers_ai` and `google` speak an OpenAI-compatible /embeddings endpoint.
     # Registrable: felix.memory.embedder.register_embedder_backend adds a backend.
     memory_embedder: str = "auto"
 
@@ -1066,15 +1065,25 @@ DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-5"},
     "gpt-4.1": {"provider": "openai", "model": "gpt-4.1"},
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
-    "llama-3-pro": {"provider": "ollama", "model": "llama3.3:70b"},
-    "llama-3-fast": {"provider": "ollama", "model": "llama3.2"},
-    # Open models on Cloudflare Workers AI, one token and an account id under "workers_ai" in
-    # FELIX_MODEL_PROVIDER_OPTIONS. Each is priced in the catalog and supports tool calling.
-    # Kimi is the agent tier (262K window); GLM Flash the cheap one for side requests.
+    # Open-weight models on Cloudflare Workers AI, one token and an account id under
+    # "workers_ai" in FELIX_MODEL_PROVIDER_OPTIONS. Each is priced in the catalog and
+    # supports tool calling. GLM-5.3, DeepSeek V4 Pro and Kimi are agent tiers; GLM-5.3 Flash
+    # and DeepSeek V4 Flash the cheap ones for side requests; Qwen 3.8 a mid-size vision
+    # model. All but Qwen and the older four below need the Workers Paid plan.
+    "glm-5.3-cf": {"provider": "workers_ai", "model": "@cf/zai-org/glm-5.3"},
+    "glm-5.3-flash-cf": {"provider": "workers_ai", "model": "@cf/zai-org/glm-5.3-flash"},
+    "deepseek-v4-pro-cf": {"provider": "workers_ai", "model": "@cf/deepseek-ai/deepseek-v4-pro-0813"},
+    "deepseek-v4-flash-cf": {"provider": "workers_ai", "model": "@cf/deepseek-ai/deepseek-v4-flash-0731"},
+    "qwen3.8-27b-cf": {"provider": "workers_ai", "model": "@cf/qwen/qwen3.8-27b"},
+    "kimi-k2.7-code-cf": {"provider": "workers_ai", "model": "@cf/moonshotai/kimi-k2.7-code"},
     "kimi-k2-cf": {"provider": "workers_ai", "model": "@cf/moonshotai/kimi-k2.6"},
     "gpt-oss-120b-cf": {"provider": "workers_ai", "model": "@cf/openai/gpt-oss-120b"},
     "gpt-oss-20b-cf": {"provider": "workers_ai", "model": "@cf/openai/gpt-oss-20b"},
     "glm-flash-cf": {"provider": "workers_ai", "model": "@cf/zai-org/glm-4.7-flash"},
+    # Legacy logical ids that once routed to a local Ollama, kept so manifests naming them
+    # keep resolving: the same pro/fast split, now on open weights served by Workers AI.
+    "llama-3-pro": {"provider": "workers_ai", "model": "@cf/zai-org/glm-5.3"},
+    "llama-3-fast": {"provider": "workers_ai", "model": "@cf/zai-org/glm-5.3-flash"},
 }
 
 

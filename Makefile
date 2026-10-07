@@ -147,7 +147,7 @@ conformance:
 
 dev:
 	@echo "Felix -> http://localhost:$${FELIX_PORT:-8080}"
-	@echo "Set ANTHROPIC_API_KEY / OPENAI_API_KEY, or point FELIX_OLLAMA_BASE_URL at Ollama."
+	@echo "Set ANTHROPIC_API_KEY / OPENAI_API_KEY, or a workers_ai entry in FELIX_MODEL_PROVIDER_OPTIONS."
 	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none FELIX_HOST=127.0.0.1 \
 		FELIX_OBJECT_STORE=$${FELIX_OBJECT_STORE:-fs} \
 		uv run felix-api

@@ -316,7 +316,7 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
     # model's page, read 2026-10-01. Cloudflare meters in neurons and publishes these per-token
     # rates as the conversion; the 10,000 free neurons a day are not subtracted, so spend reads
     # high rather than low. Every key carries the `@cf/` prefix, so the same weights served by
-    # Ollama, Groq or Together never match one of these rates. The OpenAI wire counts cached
+    # Groq, Together or a local runtime never match one of these rates. The OpenAI wire counts cached
     # tokens as plain input, so Kimi's cache rate is recorded and not yet applied.
     # Cloudflare states no output limit separate from the window, and `apply_request_shaping`
     # clamps `max_tokens` to `max_output_tokens` — so each entry sets it to its window. The
@@ -339,6 +339,50 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         context_window=128_000,
         max_output_tokens=128_000,
         pricing=ModelPricing(input=0.2, output=0.3, cache_read=0.2, cache_write=0.2),
+        quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
+    ),
+    # The entries from here to GLM-4.7 Flash are read from each model page, 2026-10-06; all
+    # but Qwen need the Workers Paid plan. Cached input is recorded and not yet applied.
+    "@cf/zai-org/glm-5.3": ModelCatalogEntry(
+        context_window=1_048_576,
+        max_output_tokens=1_048_576,
+        pricing=ModelPricing(input=1.40, output=4.40, cache_read=0.26, cache_write=1.40),
+        quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
+    ),
+    "@cf/zai-org/glm-5.3-flash": ModelCatalogEntry(
+        context_window=1_048_576,
+        max_output_tokens=1_048_576,
+        pricing=ModelPricing(input=0.15, output=0.50, cache_read=0.03, cache_write=0.15),
+        input_modalities=_TEXT_AND_IMAGE,
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/moonshotai/kimi-k2.7-code": ModelCatalogEntry(
+        context_window=262_144,
+        max_output_tokens=262_144,
+        pricing=ModelPricing(input=0.95, output=4.0, cache_read=0.19, cache_write=0.95),
+        input_modalities=_TEXT_AND_IMAGE,
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/qwen/qwen3.8-27b": ModelCatalogEntry(
+        context_window=262_144,
+        max_output_tokens=262_144,
+        pricing=ModelPricing(input=0.45, output=3.20, cache_read=0.05, cache_write=0.45),
+        input_modalities=_TEXT_AND_IMAGE,
+        quirks=ModelQuirks(**_UNVOUCHED),
+    ),
+    "@cf/deepseek-ai/deepseek-v4-pro-0813": ModelCatalogEntry(
+        context_window=1_048_576,
+        max_output_tokens=1_048_576,
+        pricing=ModelPricing(input=1.32, output=3.96, cache_read=0.044, cache_write=1.32),
+        quirks=ModelQuirks(**_UNVOUCHED),
+        text_only=True,
+    ),
+    "@cf/deepseek-ai/deepseek-v4-flash-0731": ModelCatalogEntry(
+        context_window=1_048_576,
+        max_output_tokens=1_048_576,
+        pricing=ModelPricing(input=0.44, output=1.32, cache_read=0.014, cache_write=0.44),
         quirks=ModelQuirks(**_UNVOUCHED),
         text_only=True,
     ),
@@ -382,12 +426,11 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
         pricing=ModelPricing(input=0.042, output=0.0, cache_read=0.0, cache_write=0.0),
         text_only=True,
     ),
-    # --- Local ---
-    # Unpriced, not free. Llama runs locally *and* is served for money by Workers AI,
-    # Groq, Together and Fireworks — and `entry_for` matches by substring, so pricing this
-    # entry at zero would have made every hosted Llama free to `limits.max_cost_usd`.
-    # Whether tokens cost anything is a property of the provider, not the model name:
-    # `ProviderSpec.bills_per_token` carries it.
+    # --- Llama, wherever it is served ---
+    # Unpriced, not free. Llama is sold by Workers AI, Groq, Together and Fireworks at
+    # different rates, and `entry_for` matches by substring, so pricing this entry at zero
+    # would have made every hosted Llama free to `limits.max_cost_usd`. A hosted rate
+    # lives under that host's own key, like the `@cf/` entries above.
     "llama": ModelCatalogEntry(context_window=128_000),
 }
 

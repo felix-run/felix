@@ -5,26 +5,28 @@ metadata:
   name: oss-only
   version: 1.0.0
   description: >-
-    Fully open-source agent — runs on Ollama (Llama) with no Anthropic/OpenAI
-    keys. Tools, memory embeddings, and judges stay on self-hosted models.
-  tags: [react, oss, ollama]
+    Open-weight agent — runs on GLM-5.3 via Cloudflare Workers AI with no
+    Anthropic/OpenAI keys. Needs a "workers_ai" entry in
+    FELIX_MODEL_PROVIDER_OPTIONS (api_key, account_id, optional gateway_id).
+  tags: [react, oss, workers-ai]
   starters:
-    - title: "Pick a local model"
-      prompt: "Recommend an open model size for coding help on a 16GB laptop and explain why."
-    - title: "Speed up local inference"
-      prompt: "Give three practical tips for when a local LLM feels too slow for interactive chat."
+    - title: "Pick an open model"
+      prompt: "When would you pick an open-weight model over a proprietary one for coding help, and why?"
+    - title: "Cut inference cost"
+      prompt: "Give three practical ways to lower the per-turn cost of an agent running on hosted open models."
 
 spec:
   pattern: react
 
   model:
-    id: llama-3-pro
+    id: glm-5.3-cf
     temperature: 0
 
   system_prompt:
     inline: |
-      You are Felix, a helpful AI assistant running entirely on open-source
-      models via Ollama. Use your tools when they help you answer accurately.
+      You are Felix, a helpful AI assistant running entirely on open-weight
+      models served by Cloudflare Workers AI. Use your tools when they help
+      you answer accurately.
       Always refer to yourself as Felix, never as Claude or any other name.
 
   tools:

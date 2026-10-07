@@ -627,7 +627,7 @@ class ClientToolRef(_Strict):
 class MemoryCapture(_Strict):
     enabled: bool = False
     # Extraction runs once per completed turn, so it wants the cheap tier — that is
-    # what this field is for. It defaulted to `llama-3-fast`, which routes to Ollama:
+    # what this field is for. It defaulted to `llama-3-fast`, which then routed to Ollama:
     # harmless while the field was never read, but now that extraction honours it, a
     # deployment with only an Anthropic key would have had capture fail on every turn
     # and say so only in a log.
@@ -654,7 +654,7 @@ class MemoryConsolidate(_Strict):
 
     enabled: bool = False
     # Same reasoning as MemoryCapture.model above, which this was the missed sibling of:
-    # `llama-3-fast` routes to Ollama, so a deployment holding only an Anthropic key would
+    # `llama-3-fast` routed to Ollama, so a deployment holding only an Anthropic key would
     # have had consolidation fail on every run and say so only in a log.
     model: str = "claude-haiku"
     after_facts: int = Field(default=50, ge=10)

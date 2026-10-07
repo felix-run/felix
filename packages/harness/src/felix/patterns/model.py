@@ -111,8 +111,8 @@ def parse_route_overlay(
 
 def _route_from(v: dict[str, Any]) -> ModelRoute:
     """One route entry. `modalities` is optional and says what the route accepts, for a model
-    the catalog cannot vouch for: `{"provider": "ollama", "model": "llava", "modalities":
-    ["text", "image"]}`."""
+    the catalog cannot vouch for: `{"provider": "workers_ai", "model":
+    "@cf/meta/llama-3.2-11b-vision-instruct", "modalities": ["text", "image"]}`."""
     modalities = v.get("modalities")
     return ModelRoute(
         provider=v["provider"],
@@ -531,8 +531,6 @@ def resolve_provider_config(spec: ProviderSpec, settings: Settings) -> tuple[str
     api_key = options.get("api_key") or ""
     if not api_key and spec.api_key_config_key:
         api_key = str(getattr(settings, spec.api_key_config_key, "") or "")
-    if not api_key and spec.api_key_literal:
-        api_key = spec.api_key_literal
     if not api_key and spec.name not in _WARNED_NO_CREDENTIAL:
         # Once per provider, not once per turn. `resolve_provider_config` runs on the
         # per-request path — `build_model` from the react loop, from each sub-agent, and

@@ -188,9 +188,9 @@ async def test_bound_tools_pass_through_the_governance_stack() -> None:
 def test_bundled_manifests_that_enable_capture_use_the_cheap_tier() -> None:
     """Extraction runs every turn; billing it to the turn's model doubles the cost.
 
-    Also guards the provider: `llama-3-fast` needs Ollama, which a default Anthropic
-    deployment does not run, so a manifest defaulting there would fail capture on
-    every turn and report it only in a log.
+    Also guards the provider: `llama-3-fast` needs a Workers AI account, which a default
+    Anthropic deployment does not hold, so a manifest defaulting there would fail capture
+    on every turn and report it only in a log.
     """
     from pathlib import Path
 
