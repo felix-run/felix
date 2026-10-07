@@ -2,7 +2,7 @@
 
 **Status: proposal, 2026-09-24; revised the same day to make a hosted sandbox service the production
 backend.** Built so far: phase 0 (the default volume), phase 1 (truthful failures) and phase 2a
-(scopes on the `local` layout). This file is the design the workspace tools are to be moved onto;
+(scopes on the `local` layout) and phase 2b (the `WorkspaceBackend` seam). This file is the design the workspace tools are to be moved onto;
 it is updated in place as each phase lands, like [SELF.md](SELF.md).
 
 The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files` — are how a
@@ -88,6 +88,18 @@ class WorkspaceBackend(Protocol):
 ```
 
 The tools keep their argument models, limits and messages; they stop touching the filesystem.
+
+**As built (phase 2b, `felix/tools/workspace_backend.py`, `workspace_local.py`).** Two departures
+from the sketch above. A `prepare(scope)` call comes first, so a workspace that cannot be served is
+still reported before anything wrong with the arguments, the order callers saw before the seam (and
+the natural place for a hosted backend to create a sandbox on first use). And the result types are
+data, not formatted text: the tools still build every string the model sees. Failures cross the seam
+as the exceptions the tools already mapped (`ValueError`, `NotAFileError`, `OSError`), plus
+`EditRefused` for an edit the model can correct. The regex screen and the search deadline stay in the
+tool; the backend compiles its own copy of the pattern, since a compiled pattern is not something
+every backend can be sent. `shell`, the image tools' `path`, `publish_commits` and the context-file
+loader still use `workspace_root()` and the local primitives: they need a real directory, and moving
+them is phase 3's question.
 Containment (`resolve_under_root`), the regex budget in `search_files`, and `edit_file`'s
 byte-exact, rename-into-place write move *into* each backend unchanged, so the rules have one
 implementation per backend and the same tests run against all of them.
@@ -280,7 +292,7 @@ registered prefix now: today a write that fails with `Errno 13` is audited as `o
 | 0 | Stop defaulting the workspace to the checkout: `compose.yml` mounts a named `felix-workspace` volume, initialised to the image's uid, instead of `./workspace` | fresh deployments; existing ones on the old default see an empty workspace (`UPGRADING.md`) | `[x]` fix/workspace-default-volume; the reference host set `FELIX_WORKSPACE_HOST=/srv/felix/workspace` by hand first |
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
-| 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[ ]` |
+| 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
 | 3 | `hosted` backend: the `SandboxProvider` protocol, the Cloudflare Sandboxes adapter and its gateway Worker in `felix-run/web`, the `workspace_sandboxes` table, the adapter conformance suite | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[ ]` |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |

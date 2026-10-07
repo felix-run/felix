@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
-from felix.tools import workspace
+from felix.tools import workspace_local
 from felix.tools.builtins import default_tool_provider
 from felix.tools.types import ToolInvocationCtx
 from felix.tools.workspace import _MAX_EDIT_FILE_BYTES, _MAX_WRITE_BYTES
@@ -256,7 +256,7 @@ def test_the_read_and_the_write_are_both_inside_the_lock() -> None:
     pass with the lock removed — a test that cannot fail, wearing the look of proof. This one
     goes red when the `async with` is dropped, and the control below shows it can tell the
     difference."""
-    source = Path(workspace.__file__).read_text(encoding="utf-8")
+    source = Path(workspace_local.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     bodies = {
         node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
@@ -273,9 +273,9 @@ def test_the_read_and_the_write_are_both_inside_the_lock() -> None:
             for node in ast.walk(bodies[name])
         )
 
-    assert takes_the_lock("_edit_file")
-    assert takes_the_lock("_write_file")
-    assert not takes_the_lock("_read_file"), "positive control: the scan discriminates"
+    assert takes_the_lock("edit_file")
+    assert takes_the_lock("write_file")
+    assert not takes_the_lock("read_file"), "positive control: the scan discriminates"
 
 
 @pytest.mark.asyncio
@@ -291,7 +291,7 @@ async def test_a_write_that_fails_leaves_the_original_where_it_was(
         # The edit's only write is the temporary sibling; the original is renamed over, never written.
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(workspace, "_write_all", full_disk)
+    monkeypatch.setattr(workspace_local, "_write_all", full_disk)
 
     out = await _edit(ws, path="a.txt", old_string="original", new_string="edited")
 
