@@ -5,6 +5,8 @@
  */
 import handler from './handler';
 
+// The Container reaches R2 only through this, with a grant for the one object an operation needs.
+export { DirectoryBackupGateway } from '@cloudflare/sandbox';
 export { WorkspaceSandbox } from './sandbox';
 
 // `satisfies`, not a cast: the real namespace's stub has to be what the handler calls.

@@ -12,7 +12,17 @@
  * the scope scheme.
  */
 
-export const OPS = ['prepare', 'list', 'read', 'write', 'edit', 'search'] as const;
+export const OPS = [
+  'prepare',
+  'list',
+  'read',
+  'write',
+  'edit',
+  'search',
+  // Not file operations: back `/workspace` up to R2 now, and stop the sandbox and delete its backup.
+  'checkpoint',
+  'destroy',
+] as const;
 export type Op = (typeof OPS)[number];
 
 /** The limits of the harness's workspace tools, held again here and in the helper. */
@@ -39,7 +49,9 @@ export type HelperRequest =
   | { op: 'read'; path: string; offset: number; limit: number }
   | { op: 'write'; path: string; data: string; append: boolean }
   | { op: 'edit'; path: string; old: string; new: string; replace_all: boolean }
-  | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number };
+  | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
+  | { op: 'checkpoint' }
+  | { op: 'destroy' };
 
 export type ErrorCode =
   | 'bad_request'
@@ -108,6 +120,8 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
   const body = raw as Body;
   switch (op) {
     case 'prepare':
+    case 'checkpoint':
+    case 'destroy':
       return { op };
     case 'list': {
       const path = str(body, 'path', '.');

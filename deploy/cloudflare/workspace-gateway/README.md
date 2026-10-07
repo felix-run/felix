@@ -18,13 +18,22 @@ harness ──HTTPS, bearer──▶ gateway Worker ──getByName(tenant/key)�
   operation and walks every path with the local backend's code — no symlink followed, ranged
   reads, edit by rename. `tests/unit/test_workspace_gateway_helper.py` compares that code with its
   source in `felix/tools/` as syntax trees, so the two cannot drift silently.
-- **Not yet persistent.** A Container's disk does not survive it stopping (10 idle minutes).
-  Backing `/workspace` up to R2 at the end of each run and restoring it on start is the next change.
+- **`/workspace` lives in R2 between Containers.** A Container's disk does not survive it stopping
+  (10 idle minutes), so:
+  - a started Container gets the scope's latest backup restored before any operation reaches it,
+    and a restore that fails refuses the call rather than serving the scope empty;
+  - `checkpoint` backs it up (the harness calls it when a run that wrote files ends), and an alarm
+    backs up a scope written since its last backup shortly before the idle stop;
+  - `destroy` stops the Container and deletes the backup.
+
+  Backups use `DirectoryBackup` from `@cloudflare/sandbox`: one object per backup, written by the
+  Container through a grant for that object alone, so it holds no R2 credential.
 
 ## Wire contract
 
 `POST /v1/workspaces/{tenant}/{key}/{op}` with `Authorization: Bearer <WORKSPACE_GATEWAY_TOKEN>`,
-`op` one of `prepare`, `list`, `read`, `write`, `edit`, `search`. Answers `{"result": {...}}` or
+`op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `checkpoint`
+and `destroy`. Answers `{"result": {...}}` or
 `{"error": CODE, "message": TEXT}`; `src/protocol.ts` has the shapes and codes. `GET /health`
 needs no credential.
 
@@ -33,6 +42,7 @@ needs no credential.
 ```bash
 cp wrangler.example.jsonc wrangler.jsonc        # gitignored
 npm ci
+npx wrangler r2 bucket create felix-workspaces
 openssl rand -hex 32 | npx wrangler secret put WORKSPACE_GATEWAY_TOKEN
 npx wrangler deploy                             # builds the image: needs Docker
 ```

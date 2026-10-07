@@ -8,6 +8,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-15",
   "compatibility_flags": ["nodejs_compat"],
+  // Each scope's /workspace, one object per backup, under workspaces/. Create it first:
+  //   wrangler r2 bucket create felix-workspaces
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "felix-workspaces" }],
   "durable_objects": {
     "bindings": [{ "name": "SANDBOX", "class_name": "WorkspaceSandbox" }]
   },
