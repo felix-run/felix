@@ -1,0 +1,25 @@
+// The workspace gateway. Copy to wrangler.jsonc (gitignored) for a real deployment.
+// The harness's bearer is a secret, never a var:
+//   wrangler secret put WORKSPACE_GATEWAY_TOKEN     # 32+ characters, e.g. `openssl rand -hex 32`
+// and the same value goes into the harness as FELIX_WORKSPACE_GATEWAY_TOKEN.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "felix-workspace-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "SANDBOX", "class_name": "WorkspaceSandbox" }]
+  },
+  "containers": [
+    {
+      "class_name": "WorkspaceSandbox",
+      "scheduling_policy": "durable_object",
+      "images": { "workspace": { "dockerfile": "./Dockerfile" } }
+    }
+  ],
+  "exports": {
+    "WorkspaceSandbox": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "observability": { "enabled": true }
+}

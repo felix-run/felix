@@ -1,0 +1,19 @@
+{
+  "name": "felix-workspace-gateway",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The Worker the harness's hosted workspace backend reaches each scope's sandbox through.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types --config wrangler.example.jsonc --env-interface WorkerEnv",
+    "test": "vitest run",
+    "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.148.0"
+  }
+}
