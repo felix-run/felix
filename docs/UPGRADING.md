@@ -31,6 +31,41 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## Workspaces are per thread by default
+
+**One command after the roll, and only if agents had already written files.** Every workspace tool
+(`list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`), `shell`, the image tools'
+`path` and `publish_commits` used to work in the one directory `FELIX_WORKSPACE_ROOT` names, for
+every tenant and thread on the host. Each call now works in its manifest's scope
+(`spec.workspace.scope`, [`WORKSPACE.md`](WORKSPACE.md)):
+
+| `scope` | Directory | Default for |
+|---|---|---|
+| `thread` | `<root>/.felix-scopes/<tenant>/<hash>` | every manifest that does not say |
+| `tenant` | `<root>/.felix-scopes/<tenant>/shared` | — |
+| `deployment` | `<root>` itself | `contributor`, `triage` |
+
+`deployment` holds every other scope, so it is honoured only for the tenants in
+`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` (default `default`); any other tenant running a manifest that
+asks for it is refused. A call with no thread under `scope: thread` (an MCP or A2A call that names
+none) is refused too, rather than given a shared directory.
+
+**Files already at the root are no longer what an agent sees**, except under `deployment`. Move them
+into the `default` tenant's `shared` scope, once, where the workspace is mounted:
+
+```bash
+docker compose exec api felix workspace migrate --dry-run   # what would move
+docker compose exec api felix workspace migrate --keep AGENTS.md
+```
+
+`--keep` leaves a name at the root: instruction files (`AGENTS.md`, `SYSTEM.md`) are read from the
+root when `FELIX_LOAD_AGENTS_MD` is on, and only the operator's `deployment` scope can write there
+now. Nothing is overwritten and a second run moves nothing. A manifest that should see those files
+declares `workspace: {scope: tenant}`; a new thread under the default scope starts empty.
+
+`felix-shell-runner` must run the same release as the API: the API now tells it which scope a
+command runs in, and an older runner ignores the field and runs at the root.
+
 ## The Temporal backend was removed
 
 **Only matters if you set `FELIX_DURABILITY=temporal`.** It drove fibers through Temporal but used

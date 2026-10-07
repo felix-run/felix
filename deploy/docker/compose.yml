@@ -53,6 +53,7 @@ x-felix-env: &felix-env
   FELIX_MODEL_PROVIDER_OPTIONS: ${FELIX_MODEL_PROVIDER_OPTIONS:-}
   FELIX_OLLAMA_BASE_URL: ${FELIX_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
   FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
+  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-default}
   # Extra SKILL.md directory, searched alongside the image's bundled skills/.
   # Mount it into the container as well when you set this.
   FELIX_SKILLS_DIR: ${FELIX_SKILLS_DIR:-}

@@ -627,6 +627,10 @@ class Settings(BaseSettings):
     data_dir: str = Field(default="./data")
     # Optional workspace root for AGENTS.md / SYSTEM.md / instruction file loading.
     workspace_root: str = ""
+    # Tenants whose manifests may ask for `spec.workspace.scope: deployment` -- the whole of
+    # FELIX_WORKSPACE_ROOT, every other scope's files included. Comma-separated; the operator's own
+    # tenants only. Any other tenant asking for it is refused (`felix.tools.workspace_scope`).
+    workspace_deployment_tenants: str = "default"
     # When true, auto-discover AGENTS.md from workspace_root / object store.
     load_agents_md: bool = False
 

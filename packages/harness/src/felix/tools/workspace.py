@@ -313,10 +313,12 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def workspace_root() -> Path:
-    """The checkout every workspace tool — and the shell tool — is confined to.
+    """The directory every workspace tool — and the shell tool — is confined to.
 
     A thread with a repository of its own (`felix.repos.checkouts`) works in that checkout and
-    nowhere else; every other run works in the operator's FELIX_WORKSPACE_ROOT.
+    nowhere else. Every other run works in its scope's directory under the operator's
+    FELIX_WORKSPACE_ROOT (`felix.tools.workspace_scope`): its thread's, its tenant's, or — for the
+    operator's own tenants only — the root itself.
     """
     ctx = try_get_context()
     root = ""
@@ -327,6 +329,17 @@ def workspace_root() -> Path:
         root = str(getattr(ctx.settings, "workspace_root", "") or "")
     if not root:
         raise ValueError("workspace_root is not configured (set FELIX_WORKSPACE_ROOT)")
+    path = deployment_workspace(root)
+    if ctx is None:
+        # Not a tool call (no request): operator code, which is given the deployment's root.
+        return path
+    from felix.tools.workspace_scope import scoped_root
+
+    return scoped_root(path, ctx)
+
+
+def deployment_workspace(root: str) -> Path:
+    """FELIX_WORKSPACE_ROOT, checked: not a link, present, a directory."""
     configured = Path(root).expanduser()
     # The root itself may not be a link: whoever can repoint it moves every tool to another
     # directory. Components above it may be (`/tmp` on macOS), and are resolved below.
@@ -927,6 +940,7 @@ __all__ = [
     "SearchFilesArgs",
     "SymlinkRefusedError",
     "WriteFileArgs",
+    "deployment_workspace",
     "open_at",
     "open_regular",
     "open_workspace_dir",

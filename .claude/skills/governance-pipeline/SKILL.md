@@ -32,6 +32,7 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
                → judges
                  → approvals
                    → artifact spill
+                     → workspace scope
    ```
 
    The comment `order matters` in the source is load-bearing. Each `apply_*` clones every tool with
@@ -54,7 +55,9 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
    - Sees raw arguments before anything rewrites them → early (policies, command screening).
    - Sees tool output → after the call, later in the stack (content screening, guardrails, judges).
    - Blocks execution pending a human → approvals, late so cheaper checks reject first.
-   - Rewrites output for storage → artifact spill, last.
+   - Rewrites output for storage → artifact spill, after the controls.
+   - Sets what the call runs *against* rather than judging it → workspace scope, outermost, so an
+     approval's preview reads the same directory the call will write.
 4. Emit an audit event (`audit/emit.py`) when the control fires — a control with no audit trail is
    invisible to `/audit` and to `deploy/GOVERNANCE.md` claims.
 5. Test in `tests/unit/test_manifest_governance.py` (fires when configured) and

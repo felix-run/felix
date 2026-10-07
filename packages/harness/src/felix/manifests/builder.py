@@ -51,6 +51,7 @@ from felix.tools.types import (
     tool_output_content,
     tool_output_images,
 )
+from felix.tools.workspace_scope import WorkspaceScopeName
 
 logger = logging.getLogger("felix.manifests.builder")
 
@@ -184,6 +185,27 @@ def _bind_artifact_reader(resolved: list[Tool], m: Any, deps: BuildDeps, tenant_
             )
         ],
     )
+
+
+def apply_workspace_scope(tools: list[Tool], scope: WorkspaceScopeName) -> list[Tool]:
+    """Outermost: every call, its approval preview included, runs against the manifest's scope.
+
+    Every tool is wrapped, not only the workspace ones: which tools reach the workspace is not a
+    closed list (`shell`, the image tools' `path`, `publish_commits`, a plugin's), and binding a
+    context variable costs nothing for a tool that never reads it.
+    """
+    from felix.tools.workspace_scope import bound_scope
+
+    def wrap_one(tool: Tool) -> Tool:
+        inner = tool.executor
+
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+            with bound_scope(scope):
+                return await inner.execute(args, ctx)
+
+        return _clone_tool(tool, wrap_executor(inner, execute))
+
+    return _wrap_tools(tools, wrap_one)
 
 
 def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str) -> list[Tool]:
@@ -1973,7 +1995,8 @@ async def build_agent(
         _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
         _warn_screenshots_are_quarantined(m)
 
-        # Governance pipeline (order matters — matches TS builder).
+        # Governance pipeline (order matters — matches TS builder). The workspace scope binds
+        # last, outermost: not a control, but the directory every control and preview runs over.
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
         if m.spec.policies:
             resolved = apply_policies(resolved, m.spec.policies, m.metadata.name)
@@ -2015,6 +2038,7 @@ async def build_agent(
                 # retention sweep can never find.
                 settings=deps.settings if deps.settings is not None else get_settings(),
             )
+        resolved = apply_workspace_scope(resolved, m.spec.workspace.scope)
 
         final_prompt = (
             system_prompt or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."

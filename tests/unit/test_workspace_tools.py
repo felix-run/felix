@@ -11,6 +11,9 @@ from felix.tools.builtins import default_tool_provider
 from felix.tools.types import ToolInvocationCtx
 from felix.tools.workspace import resolve_under_root
 
+# Written against files at the workspace root; scope selection is test_workspace_scopes.py.
+pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
+
 
 def test_resolve_under_root_rejects_escape(tmp_path: Path) -> None:
     root = tmp_path / "ws"

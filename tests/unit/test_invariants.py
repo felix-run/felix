@@ -218,6 +218,7 @@ EXPECTED_WRAPPER_ORDER = [
     "apply_judges",
     "apply_approvals",
     "apply_artifact_spill",
+    "apply_workspace_scope",
 ]
 
 
