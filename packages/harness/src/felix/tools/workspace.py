@@ -1,4 +1,12 @@
-"""Workspace file tools sandboxed under ``Settings.workspace_root``."""
+"""The workspace file tools, and the path primitives every workspace consumer walks with.
+
+The five tools (`list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`) judge their
+arguments here -- size caps, the regex screen -- and hand the file I/O to a `WorkspaceBackend`
+(`felix.tools.workspace_backend`; on this host, `felix.tools.workspace_local`). The primitives
+below (`workspace_parts`, `open_workspace_parent`, `open_regular`, ...) are that backend's, and
+`shell`, the image tools and the context-file loader's, which work on the local filesystem by
+design. `workspace_root()` is the directory those local consumers work in for the current call.
+"""
 
 from __future__ import annotations
 
@@ -8,12 +16,10 @@ import errno
 import json
 import os
 import re
-import secrets
 import stat
-import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,6 +27,10 @@ from felix.context import try_get_context
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider
 from felix.tools.types import ToolOutput, ToolOutputDict, define_tool
+from felix.tools.workspace_backend import EditRefused
+
+if TYPE_CHECKING:
+    from felix.tools.workspace_backend import WorkspaceBackend, WorkspaceScope
 
 _MAX_READ_BYTES = 512_000
 _MAX_WRITE_BYTES = 512_000
@@ -353,6 +363,31 @@ def deployment_workspace(root: str) -> Path:
     return path
 
 
+def scope_root(settings: Any, scope: WorkspaceScope | None) -> Path:
+    """The directory a workspace call for `scope` works in: what `workspace_root()` answers for the
+    same request, from explicit arguments rather than the ambient context (the backend's view)."""
+    if scope is None:
+        return workspace_root()
+    thread = _thread_checkout_of(settings, scope.tenant_id, scope.thread_id)
+    if thread is not None:
+        return thread
+    root = str(getattr(settings, "workspace_root", "") or "")
+    if not root:
+        raise ValueError("workspace_root is not configured (set FELIX_WORKSPACE_ROOT)")
+    from felix.tools.workspace_scope import ensure_scope_dir, scope_relpath
+
+    base = deployment_workspace(root)
+    return ensure_scope_dir(base, scope_relpath(settings, scope.tenant_id, scope.thread_id, scope.scope))
+
+
+def _seam() -> tuple[WorkspaceBackend, WorkspaceScope | None]:
+    """The backend this call's files are behind, and the scope it is for."""
+    from felix.tools.workspace_backend import current_workspace_scope, get_workspace_backend
+
+    settings, scope = current_workspace_scope()
+    return get_workspace_backend(settings), scope
+
+
 def _thread_checkout(ctx: Any) -> Path | None:
     """The run's thread's checkout, or None when the run has no thread or the thread no repo.
 
@@ -360,14 +395,18 @@ def _thread_checkout(ctx: Any) -> Path | None:
     a thread whose repository is still cloning or was removed does not fall back to the shared
     workspace and edit files the person never meant it to touch.
     """
-    thread_id = getattr(ctx, "thread_id", None)
-    tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None)
+    return _thread_checkout_of(
+        ctx.settings, getattr(getattr(ctx, "auth", None), "tenant_id", None), getattr(ctx, "thread_id", None)
+    )
+
+
+def _thread_checkout_of(settings: Any, tenant_id: str | None, thread_id: str | None) -> Path | None:
     if not thread_id or not tenant_id:
         return None
     from felix.repos.checkouts import thread_workspace
 
     try:
-        return thread_workspace(ctx.settings, tenant_id, thread_id)
+        return thread_workspace(settings, tenant_id, thread_id)
     except ValueError as exc:
         message = str(exc)
         raise ValueError(
@@ -418,22 +457,9 @@ def _child_rel(rel: str, name: str) -> str:
 
 
 async def _list_dir(args: PathArgs) -> ToolOutput:
+    backend, scope = _seam()
     try:
-        root = workspace_root()
-        with open_workspace_dir(root, args.path) as (fd, rel):
-            entries: list[dict[str, Any]] = []
-            # Case-folded, then the exact name, which is unique in a directory: `A` and `a`
-            # cannot swap places with the cut at `_MAX_LIST_ENTRIES` between them.
-            batch = sorted(_dir_batch(fd), key=lambda e: (e[0].lower(), e[0]))
-            for name, st in batch[:_MAX_LIST_ENTRIES]:
-                mode = st.st_mode
-                # A symlink is reported as one, never as what it points at: the tools will
-                # not follow it, so calling it a file or a directory would be a lie.
-                kind = "dir" if stat.S_ISDIR(mode) else "symlink" if stat.S_ISLNK(mode) else "file"
-                item: dict[str, Any] = {"path": _child_rel(rel, name), "type": kind}
-                if stat.S_ISREG(mode):
-                    item["size"] = st.st_size
-                entries.append(item)
+        listed = await backend.list_dir(scope, args.path)
     except ValueError as exc:
         return _path_refused(exc)
     except OSError as exc:
@@ -442,36 +468,13 @@ async def _list_dir(args: PathArgs) -> ToolOutput:
         if isinstance(exc, NotADirectoryError):
             return _refuse(f"not a directory: {args.path}")
         return _os_failed(exc)
-    return json.dumps({"path": rel, "entries": entries})
-
-
-def _read_window(root: Path, user_path: str, offset: int, limit: int) -> tuple[str, int, bytes]:
-    """`(rel, size, chunk)`: the file's size, and only the `limit` bytes at `offset` of it.
-
-    The whole file used to be read and then sliced, so `read_file` on a sparse 50 GiB file
-    allocated 50 GiB to return the first 512 KB of it. `limit` is capped at `_MAX_READ_BYTES` by
-    the argument model and again here, so that is the most one call reads, whatever the size.
-    """
-    with open_workspace_parent(root, user_path) as (parent, leaf, rel):
-        if leaf is None:
-            raise NotAFileError(rel)
-        fd = open_regular(parent, leaf, os.O_RDONLY, rel)
-        try:
-            size = os.fstat(fd).st_size
-            # Past the end is an empty window, as the slice it replaces was — and an offset past
-            # what `off_t` holds never reaches `pread`, which would raise OverflowError on it.
-            chunk = _pread(fd, min(limit, _MAX_READ_BYTES), offset) if offset < size else b""
-        finally:
-            os.close(fd)
-    return rel, size, chunk
+    return json.dumps({"path": listed.path, "entries": listed.entries})
 
 
 async def _read_file(args: ReadFileArgs) -> ToolOutput:
+    backend, scope = _seam()
     try:
-        root = workspace_root()
-        # Off the event loop: a bounded read, but a read of a file the agent's code controls,
-        # on whatever filesystem the workspace is.
-        rel, size, chunk = await asyncio.to_thread(_read_window, root, args.path, args.offset, args.limit)
+        read = await backend.read_file(scope, args.path, args.offset, args.limit)
     except NotAFileError:
         return _refuse(f"not a file: {args.path}")
     except ValueError as exc:
@@ -481,66 +484,39 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
             return _refuse(f"not a file: {args.path}")
         return _os_failed(exc)
     try:
-        text = chunk.decode("utf-8")
+        text = read.data.decode("utf-8")
     except UnicodeDecodeError:
         return json.dumps(
             {
-                "path": rel,
+                "path": read.path,
                 "offset": args.offset,
                 "binary": True,
-                "size": size,
-                "bytes_read": len(chunk),
+                "size": read.size,
+                "bytes_read": len(read.data),
             }
         )
     return json.dumps(
         {
-            "path": rel,
+            "path": read.path,
             "offset": args.offset,
-            "size": size,
+            "size": read.size,
             "content": text,
         }
     )
 
 
-_write_locks: dict[str, asyncio.Lock] = {}
-
-
-def _write_lock(target: Path) -> asyncio.Lock:
-    """One lock per path, so parallel tool calls cannot interleave on a file.
-
-    `spec.tool_execution: parallel` runs a batch with `asyncio.gather`, and two calls in
-    one batch can name the same file. Appends would interleave mid-write and a write racing
-    an append would drop one of them. The key is the root joined with the normalised relative
-    path; with no symlink ever followed, two spellings of one file normalise to one key. The
-    map is process-local, which is the same scope as the writes it is ordering.
-    """
-    return _write_locks.setdefault(str(target), asyncio.Lock())
-
-
-def _lock_key(root: Path, rel: str) -> Path:
-    return root if rel == "." else root.joinpath(*rel.split("/"))
-
-
 async def _write_file(args: WriteFileArgs) -> ToolOutput:
+    backend, scope = _seam()
     try:
-        root = workspace_root()
-        rel = "/".join(workspace_parts(args.path)) or "."
+        await backend.prepare(scope)
+        workspace_parts(args.path)
     except ValueError as exc:
         return _path_refused(exc)
     payload = args.content.encode("utf-8")
     if len(payload) > _MAX_WRITE_BYTES:
         return _refuse(f"content exceeds {_MAX_WRITE_BYTES} bytes")
-    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if args.append else os.O_TRUNC)
     try:
-        async with _write_lock(_lock_key(root, rel)):
-            with open_workspace_parent(root, args.path, create=True) as (parent, leaf, rel):
-                if leaf is None:
-                    return _refuse(f"not a file: {args.path}")
-                fd = open_regular(parent, leaf, flags, rel)
-                try:
-                    _write_all(fd, payload)
-                finally:
-                    os.close(fd)
+        written = await backend.write_file(scope, args.path, payload, args.append)
     except NotAFileError:
         return _refuse(f"not a file: {args.path}")
     except ValueError as exc:
@@ -549,114 +525,28 @@ async def _write_file(args: WriteFileArgs) -> ToolOutput:
         return _os_failed(exc)
     return json.dumps(
         {
-            "path": rel,
-            "bytes": len(payload),
+            "path": written.path,
+            "bytes": written.bytes,
             "append": args.append,
         }
     )
 
 
-def _create_edit_temp(parent: int) -> tuple[int, str]:
-    """A new, empty sibling in `parent` under a random name: `(fd, name)`."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    for _ in range(3):
-        tmp = f"{_EDIT_TMP_PREFIX}{secrets.token_hex(8)}"
-        try:
-            return open_at(parent, tmp, flags, tmp, 0o600), tmp
-        except FileExistsError, SymlinkRefusedError:
-            continue  # 64 random bits taken already: draw again, never reuse or delete it
-    raise FileExistsError("no free temporary name for the edit")
-
-
-def _replace_file(parent: int, leaf: str, mode: int, payload: bytes) -> None:
-    """Write `payload` over `leaf` in the directory `parent` without ever leaving it half-written.
-
-    A truncating write would leave, on failure partway, a file whose prior contents exist
-    nowhere: an edit carries only the two strings, not the pre-image a whole-file write still
-    has in its own arguments. The temporary file is a sibling under a random name, made with
-    `O_EXCL` through the directory's descriptor (so nothing already there — a planted link, a
-    directory — is written through or deleted; a collision just draws another name), and the
-    rename — which replaces a name and follows nothing — is atomic. It carries the target's
-    mode: an edited `scripts/test.sh` that came back without its executable bit would be a
-    strange way to break the gates.
-    """
-    fd, tmp = _create_edit_temp(parent)
-    try:
-        try:
-            _write_all(fd, payload)
-            os.fchmod(fd, mode)
-        finally:
-            os.close(fd)
-        os.replace(tmp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp, dir_fd=parent)
-        raise
-
-
 async def _edit_file(args: EditFileArgs) -> ToolOutput:
-    """Replace an exact string in a file, leaving every other byte where it was.
-
-    Bytes in and bytes out, like `_read_file`: `read_text` would open in universal-newline
-    mode and hand back `\n` for every `\r\n`, so writing the result would rewrite every line
-    ending in a CRLF file that the edit never touched — and an `old_string` the model copied
-    out of `read_file` would not match, because that tool preserves them.
-
-    The lock is held across the read and the write. There is no `await` between them today,
-    so within one event loop the body is already atomic and the lock cannot be observed to
-    do anything; it is here because an edit is a read-modify-write, and the first person to
-    move this I/O to a thread would otherwise have to notice that on their own.
-    """
+    """Replace an exact string in a file, leaving every other byte where it was
+    (`LocalBackend.edit_file` says how)."""
+    backend, scope = _seam()
     try:
-        root = workspace_root()
-        rel = "/".join(workspace_parts(args.path)) or "."
+        await backend.prepare(scope)
+        workspace_parts(args.path)
     except ValueError as exc:
         return _path_refused(exc)
     if len(args.new_string.encode("utf-8")) > _MAX_WRITE_BYTES:
         return _refuse(f"new_string exceeds {_MAX_WRITE_BYTES} bytes")
     try:
-        async with _write_lock(_lock_key(root, rel)):
-            with open_workspace_parent(root, args.path) as (parent, leaf, rel):
-                if leaf is None:
-                    return _refuse(f"not a file: {args.path}")
-                fd = open_regular(parent, leaf, os.O_RDONLY, rel)
-                try:
-                    st = os.fstat(fd)
-                    # One byte past the cap, never the whole file: a file over it is refused.
-                    raw = _pread(fd, _MAX_EDIT_FILE_BYTES + 1, 0)
-                    if len(raw) > _MAX_EDIT_FILE_BYTES:
-                        return _refuse(f"{args.path} exceeds {_MAX_EDIT_FILE_BYTES} bytes")
-                finally:
-                    os.close(fd)
-                try:
-                    text = raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    return _refuse(f"not UTF-8 text: {args.path}")
-                found = text.count(args.old_string)
-                if found == 0:
-                    return _refuse(f"old_string not found in {args.path}")
-                if args.old_string == args.new_string:
-                    return _refuse(f"old_string and new_string are identical in {args.path}")
-                if found > 1 and not args.replace_all:
-                    return _refuse(
-                        f"old_string appears {found} times in {args.path} — extend it with "
-                        "surrounding lines until it is unique, or pass replace_all"
-                    )
-                # Both caps above bound an *input*, and `replace_all` multiplies them: the size
-                # of what would be written is projected from the byte delta per match and
-                # refused before `str.replace` builds it, because checking afterwards still
-                # allocates it.
-                grew = len(args.new_string.encode("utf-8")) - len(args.old_string.encode("utf-8"))
-                projected = len(raw) + found * grew
-                if projected > _MAX_EDIT_FILE_BYTES:
-                    return _refuse(
-                        f"the edit would make {args.path} {projected} bytes, over the "
-                        f"{_MAX_EDIT_FILE_BYTES} limit"
-                    )
-                # `found` is 1 unless replace_all said otherwise, so this replaces exactly the
-                # matches the guards above allowed.
-                payload = text.replace(args.old_string, args.new_string).encode("utf-8")
-                _replace_file(parent, leaf, stat.S_IMODE(st.st_mode), payload)
+        edited = await backend.edit_file(scope, args.path, args.old_string, args.new_string, args.replace_all)
+    except EditRefused as exc:
+        return _refuse(str(exc))
     except NotAFileError:
         return _refuse(f"not a file: {args.path}")
     except ValueError as exc:
@@ -667,9 +557,9 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
         return _os_failed(exc)
     return json.dumps(
         {
-            "path": rel,
-            "replacements": found,
-            "bytes": len(payload),
+            "path": edited.path,
+            "replacements": edited.replacements,
+            "bytes": edited.bytes,
         }
     )
 
@@ -730,131 +620,22 @@ def _reject_catastrophic(pattern: str) -> str | None:
     return None
 
 
-def _scan_text(
-    text: str, rel: str, args: SearchFilesArgs, pattern: re.Pattern[str] | None, hits: list[dict[str, Any]]
-) -> None:
-    for i, line in enumerate(text.splitlines(), start=1):
-        # Truncate before matching: backtracking cost grows with the length of the
-        # subject, so an unbounded line is what makes a bad pattern expensive.
-        subject = line[:_MAX_SEARCH_LINE_CHARS]
-        matched = bool(pattern.search(subject)) if pattern else args.query in subject
-        if matched:
-            hits.append({"path": rel, "line": i, "text": line[:400]})
-            if len(hits) >= args.max_hits:
-                return
-
-
-def _scan_file(
-    parent: int,
-    name: str,
-    rel: str,
-    args: SearchFilesArgs,
-    pattern: re.Pattern[str] | None,
-    hits: list[dict[str, Any]],
-) -> None:
-    try:
-        fd = open_regular(parent, name, os.O_RDONLY, rel)
-    except ValueError, OSError:
-        return  # a symlink, a FIFO, a file that vanished: not searched
-    try:
-        if os.fstat(fd).st_size > _MAX_SEARCH_FILE_BYTES:
-            return
-        text = _pread(fd, _MAX_SEARCH_FILE_BYTES, 0).decode("utf-8", errors="ignore")
-    except OSError:
-        return
-    finally:
-        os.close(fd)
-    _scan_text(text, rel, args, pattern, hits)
-
-
-def _scan_tree(
-    dir_fd: int,
-    rel: str,
-    args: SearchFilesArgs,
-    pattern: re.Pattern[str] | None,
-    hits: list[dict[str, Any]],
-    deadline: float,
-) -> None:
-    """Depth-first over `dir_fd`, by descriptor: a symlinked directory is never entered.
-
-    An explicit stack, not recursion, holding one open descriptor per level (closed as each
-    level finishes) and `_MAX_SEARCH_DEPTH` levels at most, so a deep tree the agent made can
-    neither exhaust the interpreter's stack nor the process's descriptors; deeper directories
-    are skipped. Runs on a worker thread that outlives the request's deadline, so it checks the
-    deadline itself rather than walking a large tree for nobody, and stops at the hit cap.
-    """
-    # (descriptor, its rel path, entries still to visit — reverse-sorted, so `pop` is in name
-    # order and the walk is the same pre-order the recursive one was). `dir_fd` is the caller's.
-    stack = [(dir_fd, rel, sorted(_dir_batch(dir_fd, dirs_and_files_only=True), key=_by_name, reverse=True))]
-    try:
-        while stack:
-            fd, here, pending = stack[-1]
-            if not pending:
-                stack.pop()
-                if fd != dir_fd:
-                    os.close(fd)
-                continue
-            if len(hits) >= args.max_hits or time.monotonic() > deadline:
-                return
-            name, st = pending.pop()
-            child = _child_rel(here, name)
-            if stat.S_ISREG(st.st_mode):
-                _scan_file(fd, name, child, args, pattern, hits)
-                continue
-            if len(stack) > _MAX_SEARCH_DEPTH:
-                continue
-            try:
-                sub = open_at(fd, name, _DIR_FLAGS, child)
-            except ValueError, OSError:
-                continue
-            try:
-                batch = sorted(_dir_batch(sub, dirs_and_files_only=True), key=_by_name, reverse=True)
-            except OSError:
-                os.close(sub)
-                continue
-            stack.append((sub, child, batch))
-    finally:
-        for fd, _, _ in stack:
-            if fd != dir_fd:
-                os.close(fd)
-
-
-def _search(root: Path, args: SearchFilesArgs, pattern: re.Pattern[str] | None) -> list[dict[str, Any]]:
-    """Synchronous search, run on a worker thread under a deadline."""
-    hits: list[dict[str, Any]] = []
-    deadline = time.monotonic() + _SEARCH_BUDGET_S
-    with open_workspace_parent(root, args.path) as (parent, leaf, rel):
-        if leaf is None:
-            _scan_tree(parent, rel, args, pattern, hits, deadline)
-            return hits
-        mode = os.stat(leaf, dir_fd=parent, follow_symlinks=False).st_mode
-        if stat.S_ISLNK(mode):
-            raise SymlinkRefusedError(rel)
-        if stat.S_ISREG(mode):
-            _scan_file(parent, leaf, rel, args, pattern, hits)
-            return hits
-        fd = open_at(parent, leaf, _DIR_FLAGS, rel)
-        try:
-            _scan_tree(fd, rel, args, pattern, hits, deadline)
-        finally:
-            os.close(fd)
-    return hits
-
-
 async def _search_files(args: SearchFilesArgs) -> ToolOutput:
+    backend, scope = _seam()
     try:
-        root = workspace_root()
+        await backend.prepare(scope)
         workspace_parts(args.path)
     except ValueError as exc:
         return _path_refused(exc)
 
-    pattern: re.Pattern[str] | None = None
     if args.regex:
         refused = _reject_catastrophic(args.query)
         if refused:
             return _refuse(f"{refused}")
         try:
-            pattern = re.compile(args.query)
+            # Compiled here to judge it, before the call reaches a backend; the backend compiles
+            # its own copy, since a compiled pattern is not something every backend can be sent.
+            re.compile(args.query)
         except re.error as exc:
             return _refuse(f"invalid regex: {exc}")
 
@@ -862,8 +643,10 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
         # Off the event loop and on a deadline. `re` cannot be interrupted, so the thread
         # keeps burning CPU until it finishes — but the request returns and the API stays
         # responsive, which is the difference between a slow tool and a stalled process.
-        hits = await asyncio.wait_for(asyncio.to_thread(_search, root, args, pattern), _SEARCH_BUDGET_S)
-        return json.dumps({"query": args.query, "hits": hits})
+        found = await asyncio.wait_for(
+            backend.search(scope, args.path, args.query, args.regex, args.max_hits), _SEARCH_BUDGET_S
+        )
+        return json.dumps({"query": args.query, "hits": found.hits})
     except TimeoutError:
         return tool_error_output(
             ToolErrorCode.TIMEOUT,
