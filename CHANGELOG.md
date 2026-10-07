@@ -10,6 +10,22 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-06
+
+### Added
+
+- **Tool images on the stream:** a `tool_end` frame now lists the images the tool returned as `attachments` (`felix-file://` references), so a client can show a screenshot while the run is still going instead of only after a reload. (#500)
+
+- `spec.workspace.scope` picks the directory a manifest's workspace tools, `shell`, image `path` and `publish_commits` work in: `thread` (the default, the thread's own), `tenant` (shared by the tenant's threads), or `deployment` (the whole `FELIX_WORKSPACE_ROOT`, honoured only for the tenants in the new `FELIX_WORKSPACE_DEPLOYMENT_TENANTS`, default `default`). `contributor` and `triage` declare `deployment`. (#499)
+
+- `felix workspace migrate` moves files written at the workspace root before scopes into a tenant's `shared` scope (`--keep`, `--dry-run`). (#499)
+
+- Cloudflare's Clef decision models as the built-in decision routes `clef` and `clef-flash`, on Workers AI and priced in the catalog; `decider-support` now uses `clef`. (#502)
+
+### Security
+
+- One tenant's agent can no longer read or write another tenant's workspace files, nor one thread another's: every workspace tool call works in its scope's directory under `FELIX_WORKSPACE_ROOT`. Files already at the root are visible only to the `deployment` scope until `felix workspace migrate` moves them (see `docs/UPGRADING.md`). (#499)
+
 ## [0.9.0] — 2026-10-06
 
 ### Added
@@ -4368,3 +4384,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.7.0]: https://github.com/felix-run/felix/releases/tag/v0.7.0
 [0.8.0]: https://github.com/felix-run/felix/releases/tag/v0.8.0
 [0.9.0]: https://github.com/felix-run/felix/releases/tag/v0.9.0
+[0.10.0]: https://github.com/felix-run/felix/releases/tag/v0.10.0
