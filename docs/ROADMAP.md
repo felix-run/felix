@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-10-04 (after 0.6.1 rolled to production; the full open-item check was
+**Last reviewed:** 2026-10-07 (after 0.9.0 rolled to production; the full open-item check was
 2026-09-29, after 0.5.0)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
@@ -1597,6 +1597,12 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 - [x] **Governed demo path (decide)** — either enable on GCE (RBAC scopes for chat keys) **or**
       keep the demo anonymous and document that choice in `deploy/GOVERNANCE.md`. Decided
       2026-10-02: **anonymous**; written into `deploy/GOVERNANCE.md#example-agent`.
+- [ ] **Scheduled smoke and live eval are red, and have been since 2026-10-04** — `smoke.yml`
+      gets `401 invalid_token` from api.felix.run: its `API_KEY` secret no longer matches a key
+      production accepts. `eval-live.yml` runs with an empty `FELIX_ANTHROPIC_API_KEY`. Neither
+      blocks PR CI, which is why both stayed red through three releases. 0.9.0 was verified by
+      hand instead: `felix doctor` and a compile of all twelve bundled manifests in the container.
+      Re-mint the smoke key, set the eval key, and confirm one green run of each.
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.
 - [ ] **AWS smoke checklist** — mirror the GCP path (Secrets Manager / S3) in `deploy/aws/`.
 - [ ] **Postgres RLS dogfood** — migration `0006` + `FELIX_DATABASE_RLS=true` on a non-prod
