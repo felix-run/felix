@@ -9,8 +9,12 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # `wrangler types` writes the gateway's runtime types; edited by hand they would only be
+      # regenerated back.
       - id: trailing-whitespace
+        exclude: ^deploy/cloudflare/workspace-gateway/worker-configuration\.d\.ts$
       - id: end-of-file-fixer
+        exclude: ^deploy/cloudflare/workspace-gateway/worker-configuration\.d\.ts$
       - id: check-yaml
         # Helm templates are Go templates, and the Compose overlays use the
         # `!override` / `!reset` tags, which a plain YAML parser cannot

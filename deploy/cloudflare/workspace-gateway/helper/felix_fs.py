@@ -15,9 +15,8 @@ operations a model can drive are done here instead, with the harness's local bac
 The functions between the PORTED markers are copied from the harness
 (`felix/tools/workspace.py` and `felix/tools/workspace_local.py`) and must stay the same code:
 `tests/unit/test_workspace_gateway_helper.py` compares them with their source as syntax trees, so
-a change to either fails until the other matches. Multi-exception `except` clauses are
-parenthesised here -- the harness runs Python 3.14, this runs on the image's 3.13 -- which parses
-to the same tree.
+a change to either fails until the other matches. The image runs the harness's Python, 3.14, so the
+copy is the harness's code as it is.
 
 Standard library only: the sandbox image has Python and nothing else of ours.
 
@@ -285,7 +284,7 @@ def _create_edit_temp(parent: int) -> tuple[int, str]:
         tmp = f"{_EDIT_TMP_PREFIX}{secrets.token_hex(8)}"
         try:
             return open_at(parent, tmp, flags, tmp, 0o600), tmp
-        except (FileExistsError, SymlinkRefusedError):
+        except FileExistsError, SymlinkRefusedError:
             continue  # 64 random bits taken already: draw again, never reuse or delete it
     raise FileExistsError("no free temporary name for the edit")
 
@@ -340,7 +339,7 @@ def _scan_file(
 ) -> None:
     try:
         fd = open_regular(parent, name, os.O_RDONLY, rel)
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return  # a symlink, a FIFO, a file that vanished: not searched
     try:
         if os.fstat(fd).st_size > _MAX_SEARCH_FILE_BYTES:
@@ -391,7 +390,7 @@ def _scan_tree(
                 continue
             try:
                 sub = open_at(fd, name, _DIR_FLAGS, child)
-            except (ValueError, OSError):
+            except ValueError, OSError:
                 continue
             try:
                 batch = sorted(_dir_batch(sub, dirs_and_files_only=True), key=_by_name, reverse=True)

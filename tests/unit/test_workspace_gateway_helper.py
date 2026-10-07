@@ -222,19 +222,10 @@ class ProtocolTests(HelperCase):
         self.refused("rm", "bad_request")
 
 
-class ImagePythonTests(unittest.TestCase):
-    def test_the_helper_parses_as_the_images_python(self) -> None:
-        """The image runs 3.13. `except A, B` is 3.14 syntax, and the harness's formatter writes it,
-        which is how this broke once already (`per-file-target-version` in pyproject.toml)."""
-        ast.parse(HELPER.read_text(encoding="utf-8"), feature_version=(3, 13))
-
-
 class PortedCodeTests(unittest.TestCase):
     """The helper's copied functions are the harness's, compared as syntax trees.
 
-    A tree, not text: `except A, B:` (the harness, Python 3.14) and `except (A, B):` (the helper,
-    which runs on the image's 3.13) parse to the same tree, and so do differences in formatting.
-    Anything else that differs fails here, which is the point -- the hosted and local backends are
+    A tree, not text, so formatting and docstrings may differ. Anything else that differs fails here, which is the point -- the hosted and local backends are
     meant to be one implementation of the rules.
     """
 

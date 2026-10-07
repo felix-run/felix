@@ -75,9 +75,6 @@ felix-worker = { workspace = true }
 line-length = 110
 target-version = "py314"
 src = ["packages", "apps", "tests"]
-# The workspace gateway's helper runs inside the sandbox image's Python 3.13, not the harness's
-# 3.14: formatting it for 3.14 drops the parentheses 3.13 needs around `except A, B`.
-per-file-target-version = { "deploy/cloudflare/workspace-gateway/helper/*.py" = "py313" }
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM", "RUF"]
