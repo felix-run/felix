@@ -1,8 +1,10 @@
-"""Jev, reached directly (`api.typesafe.ai`) or through Cloudflare Workers AI.
+"""Jev, reached directly (`api.typesafe.ai`) or through Cloudflare Workers AI — and Clef.
 
-Both endpoints take the same `{state, questions}` and answer with the same `{answers,
+Every endpoint takes the same `{state, questions}` and answers with the same `{answers,
 usage}`; they differ in where the model name goes and in Cloudflare's response envelope.
-One class with two constructors keeps that difference to the two places it lives.
+Clef, Cloudflare's own decision model, is Jev-API compatible, so it is the Workers AI
+constructor with a `@cf/` model rather than a third provider. One class with two
+constructors keeps those differences to the places they live.
 
 A plain POST rather than `typesafe_sdk`: the request is one JSON body, and the SDK would be
 a dependency on the default install for the sake of a retry loop `post_with_retry` already
@@ -38,10 +40,13 @@ class JevDecider:
         timeout_s: float,
         label: str,
         nest_input: bool,
+        body_model: str = "",
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
         self.model_id = model_id
+        # What the catalog prices; the body may name the model differently (`body_model`).
         self.wire_model = wire_model
+        self._body_model = body_model or wire_model
         self._url = url
         self._api_key = api_key
         self._timeout_s = timeout_s
@@ -83,22 +88,38 @@ class JevDecider:
                 "decision provider 'workers_ai' needs account_id — set it in "
                 'FELIX_MODEL_PROVIDER_OPTIONS, e.g. {"workers_ai": {"account_id": "..."}}'
             )
+        base = template.replace("{account_id}", account_id)
+        headers = {"cf-aig-gateway-id": gateway_id} if gateway_id else None
+        if wire_model.startswith("@cf/"):
+            # A Cloudflare-hosted model (Clef) is run by path, takes the Jev fields flat, and
+            # wants its short name in `model` — `clef`, not `@cf/cloudflare/clef`.
+            return cls(
+                model_id=model_id,
+                wire_model=wire_model,
+                url=f"{base}/run/{wire_model}",
+                api_key=api_key,
+                timeout_s=timeout_s,
+                label="workers_ai",
+                nest_input=False,
+                body_model=wire_model.rsplit("/", 1)[-1],
+                extra_headers=headers,
+            )
         return cls(
             model_id=model_id,
             wire_model=wire_model,
-            url=f"{template.replace('{account_id}', account_id)}/run",
+            url=f"{base}/run",
             api_key=api_key,
             timeout_s=timeout_s,
             label="workers_ai",
             nest_input=True,
-            extra_headers={"cf-aig-gateway-id": gateway_id} if gateway_id else None,
+            extra_headers=headers,
         )
 
     def _body(self, state: Any, questions: Mapping[str, Question]) -> dict[str, Any]:
         payload = {"state": state, "questions": {k: question_to_wire(q) for k, q in questions.items()}}
         if self._nest_input:
-            return {"model": self.wire_model, "input": payload}
-        return {"model": self.wire_model, **payload}
+            return {"model": self._body_model, "input": payload}
+        return {"model": self._body_model, **payload}
 
     async def decide(
         self, state: str | Mapping[str, Any] | list[Any], questions: Mapping[str, Question]

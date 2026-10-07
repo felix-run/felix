@@ -255,5 +255,5 @@ async def test_the_stream_names_the_unconfigured_decider() -> None:
             "/chat/stream",
             json={"manifest": "decider-support", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert "decision provider 'typesafe' needs api_key" in streamed.text
+    assert "decision provider 'workers_ai' needs account_id" in streamed.text
     assert "internal error" not in streamed.text

@@ -93,7 +93,7 @@ def test_effort_is_clamped_to_what_the_model_accepts() -> None:
 
 # Decision models answer typed questions and generate no text, so their output is unbilled
 # by design — the "output costs at least input" rule is a property of chat models.
-_OUTPUT_UNBILLED = {"jev"}
+_OUTPUT_UNBILLED = {"jev", "@cf/cloudflare/clef", "@cf/cloudflare/clef-flash"}
 
 
 @pytest.mark.parametrize("model_id", sorted(all_entries()))
@@ -109,6 +109,13 @@ def test_every_entry_is_internally_coherent(model_id: str) -> None:
             assert entry.pricing.output >= entry.pricing.input, "output is never cheaper than input"
         assert entry.pricing.cache_read <= entry.pricing.input, "cache reads are a discount"
     assert "text" in entry.input_modalities
+
+
+def test_clef_flash_is_priced_at_its_own_rate_not_clefs() -> None:
+    """`@cf/cloudflare/clef` is a substring of the flash id; only longest-match keeps them apart."""
+    flash, clef = entry_for("@cf/cloudflare/clef-flash").pricing, entry_for("@cf/cloudflare/clef").pricing
+    assert flash is not None and clef is not None
+    assert flash.input < clef.input
 
 
 def test_the_unpriced_set_is_exactly_this() -> None:

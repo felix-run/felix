@@ -1,7 +1,7 @@
 """The bundled `decider-support` manifest, compiled and run the way a deployment would.
 
 It is the example every decider consumer is copied from, so the test is that each one it
-switches on is actually reached: one turn, a scripted decider standing in for Jev, and the
+switches on is actually reached: one turn, a scripted decider standing in for Clef, and the
 questions it was asked. A consumer that validates and then asks nothing is the defect shape
 this repo keeps producing — and an example is where it would be copied from.
 """
@@ -16,7 +16,7 @@ import pytest
 from felix_ai.decide import Choice, ChoiceAnswer, NoulAnswer
 from felix_ai.providers.scripted import ScriptedTurn
 
-ENV = {"FELIX_DECISION_ROUTES": json.dumps({"jev": {"provider": "scripted", "model": "jev-latest"}})}
+ENV = {"FELIX_DECISION_ROUTES": json.dumps({"clef": {"provider": "scripted", "model": "clef"}})}
 SCREENING = {"override", "jailbreak", "exfiltrate"}
 
 
@@ -72,7 +72,7 @@ async def test_every_consumer_the_example_switches_on_is_asked(boot: Any, asked:
 
 
 async def test_without_a_route_the_example_refuses_to_compile_and_says_why(boot: Any) -> None:
-    """The documented failure: no key, no compile — never an agent that decides nothing."""
+    """The documented failure: no account, no compile — never an agent that decides nothing."""
     async with boot() as app:
         resp = await app.client.post(
             "/v1/chat/completions",
@@ -80,4 +80,4 @@ async def test_without_a_route_the_example_refuses_to_compile_and_says_why(boot:
         )
     # Unavailable, not a server fault: the deployment has not configured the provider.
     assert resp.status_code == 503, resp.text
-    assert "decision provider 'typesafe' needs api_key" in resp.text
+    assert "decision provider 'workers_ai' needs account_id" in resp.text

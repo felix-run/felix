@@ -560,10 +560,15 @@ the same name in `FELIX_MODEL_PROVIDER_OPTIONS`:
 
 | Logical id | Provider | Wire model | Configured with |
 |---|---|---|---|
+| `clef` | `workers_ai` (`…/accounts/{account_id}/ai/run/@cf/cloudflare/clef`) | `@cf/cloudflare/clef` | `api_key`, `account_id`, optional `gateway_id` |
+| `clef-flash` | `workers_ai` (`…/ai/run/@cf/cloudflare/clef-flash`) | `@cf/cloudflare/clef-flash` | as `clef` |
 | `jev` | `typesafe` (`api.typesafe.ai/v1/systemone`) | `jev-latest` | `api_key` |
 | `jev-cf` | `workers_ai` (`…/accounts/{account_id}/ai/run`) | `typesafe/jev` | `api_key`, `account_id`, optional `gateway_id` |
 
-Jev is TypeSafe's decision model, priced at $0.042 per million input tokens with output free.
+Clef is Cloudflare's open-weight (Apache-2.0) decision model, Jev-API compatible, with a 64K
+context: $0.24 per million input tokens, or $0.09 for the faster `clef-flash`, output free. It
+shares the Workers AI credential the chat routes already use, so a deployment on Workers AI needs
+nothing new. Jev is TypeSafe's, priced at $0.042 per million input tokens with output free.
 The `llm` provider answers the same questions with any chat route —
 `FELIX_DECISION_ROUTES={"haiku-decider":{"provider":"llm","model":"claude-haiku"}}` — so nothing
 depends on a second vendor; it reports its pick with no confidence, because a chat model's
