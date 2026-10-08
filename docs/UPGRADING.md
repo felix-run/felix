@@ -49,8 +49,15 @@ holds the two to the same answers. To turn it on:
 on the host. The sandbox image is a slim Debian with Python and little else, so a command that is
 not installed there fails as a missing binary. What `hosted` does not serve, and refuses rather than
 serving from the host: an image tool's `path`, `publish_commits` and a thread's repository checkout,
-for any scope but `deployment` (which stays on the host). Files already in a local scope are not copied across: a
-scope starts empty on the hosted backend.
+for any scope but `deployment` (which stays on the host).
+
+A scope starts empty on the hosted backend. To carry what local scopes already hold, once, after
+turning `hosted` on (the local files stay where they are):
+
+```bash
+docker compose exec api felix workspace upload --dry-run
+docker compose exec api felix workspace upload
+```
 
 ## Workspaces are per thread by default
 
