@@ -260,7 +260,7 @@ the same caller could approve its own mutation (the `cowork.yaml` comment record
 
 Trigger a rung-0 run by hand: `POST /chat` with `{"manifest": "triage", "messages": [{"role":
 "user", "content": "draft tickets"}]}` and a fresh `thread_id`. Decide approvals at
-`POST /approvals/{id}/decide` with a key holding `approvals:write`, or from chat.felix.run.
+`POST /approvals/{id}/decide` with a key holding `approvals:write`, or from make.felix.run.
 
 ## What Felix never does, at any rung in this document
 
