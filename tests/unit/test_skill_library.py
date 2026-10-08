@@ -438,7 +438,7 @@ async def test_the_gate_rescans_bytes_whose_digest_was_updated(
     assert row["security_status"] == "pass"
     bad = _bundle(body=BAD_BODY)["SKILL.md"].encode()
     await store.put(_key("0.1.0"), bad)
-    for meta in _twin_files(settings)[("acme", "invoice-triage", "0.1.0")]:
+    for meta in _twin_files(settings)[("acme", "", "invoice-triage", "0.1.0")]:
         if meta["path"] == "SKILL.md":
             meta["sha256"] = hashlib.sha256(bad).hexdigest()
 
