@@ -217,7 +217,7 @@ async def ensure_thread_pin(
     resolved_out: dict[str, Manifest | None] | None = None,
 ) -> dict[str, Any]:
     """Check drift against prior pin; store pin when ``pin_compile`` is enabled."""
-    from felix.session.thread_state import get_thread_meta, update_thread_meta
+    from felix.session.thread_state import LAST_MANIFEST_KEY, get_thread_meta, update_thread_meta
 
     fields = pin_fields(manifest, version=version)
     if not thread_id:
@@ -239,6 +239,11 @@ async def ensure_thread_pin(
     if pinned.get("manifest_hash"):
         assert_pin_matches(pinned, manifest, version=version, sub_agents=fields.get("sub_agents_hash"))
 
+    # The manifest this turn runs under, for the session index. `manifest_name` is the pin's
+    # first-touch record and a thread without `pin_compile` may move to another manifest after
+    # it, so the index reads this instead. Written with the pin when the pin writes, and on its
+    # own only when it changed -- `meta` is already in hand, so an unchanged turn costs nothing.
+    current = fields["manifest_name"]
     if fields["pin_compile"] or not pinned.get("manifest_hash"):
         # Always record hash on first touch; enforce only when pin_compile.
         if fields["pin_compile"]:
@@ -247,6 +252,7 @@ async def ensure_thread_pin(
                 tenant_id=tenant_id,
                 thread_id=thread_id,
                 **fields,
+                **{LAST_MANIFEST_KEY: current},
             )
         elif not pinned.get("manifest_hash"):
             # Soft record without enforcement for observability.
@@ -258,7 +264,15 @@ async def ensure_thread_pin(
                 manifest_version=fields["manifest_version"],
                 manifest_hash=fields["manifest_hash"],
                 pin_compile=False,
+                **{LAST_MANIFEST_KEY: current},
             )
+    elif meta.get(LAST_MANIFEST_KEY) != current:
+        await update_thread_meta(
+            settings=settings,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            **{LAST_MANIFEST_KEY: current},
+        )
     return fields
 
 
