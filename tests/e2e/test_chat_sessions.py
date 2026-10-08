@@ -66,6 +66,40 @@ async def test_a_turn_shows_up_in_the_session_list_and_snapshot(boot: Any) -> No
         assert ("assistant", "noted") in roles, roles
 
 
+async def _listed_row(app: Booted, namespaced: str) -> dict[str, Any]:
+    listing = await app.client.get("/chat/sessions")
+    assert listing.status_code == 200, listing.text
+    rows = [s for s in listing.json()["sessions"] if s.get("id") == namespaced]
+    assert len(rows) == 1, listing.json()
+    return rows[0]
+
+
+async def test_the_session_list_names_a_thread_by_its_first_message_and_manifest(boot: Any) -> None:
+    """A client that did not start a thread recognises it by these, rather than by its id.
+
+    Two turns, because "first" is the property: the second message must not replace it.
+    """
+    thread = "e2e-list-preview"
+    async with boot([_answer(), _answer()]) as app:
+        body = await _seed(app, thread, "  what should\n\nwe plant   this spring?  ")
+        await _seed(app, thread, "and in the autumn?")
+
+        row = await _listed_row(app, body["thread_id"])
+        assert row["preview"] == "what should we plant this spring?", row
+        assert row["manifest"] == "quick", row
+
+
+async def test_a_fork_lists_under_its_sources_first_message(boot: Any) -> None:
+    source, forked = "e2e-list-fork-src", "e2e-list-fork-dst"
+    async with boot([_answer()]) as app:
+        await _seed(app, source, "original question")
+        fork = await app.client.post("/chat/fork", json={"thread_id": source, "new_thread_id": forked})
+        assert fork.status_code == 200, fork.text
+
+        row = await _listed_row(app, f"default:{forked}")
+        assert (row["preview"], row["manifest"]) == ("original question", "quick"), row
+
+
 async def test_reading_an_unknown_thread_does_not_add_it_to_the_session_list(boot: Any) -> None:
     """A GET is not a write: asking about a thread nobody created must not create it.
 

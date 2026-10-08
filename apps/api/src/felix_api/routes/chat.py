@@ -1491,6 +1491,13 @@ async def append_custom_entry(
 
 @router.get("/sessions")
 async def list_sessions(request: Request) -> dict[str, Any]:
+    """The caller's tenant's threads, from their stored metadata (one read, no session logs).
+
+    Each row is `{id, createdAt, updatedAt, parentSessionId, sessionName, preview, manifest}`.
+    `preview` is the thread's first user message, masked, whitespace-collapsed and cut to 120
+    characters; `manifest` is the manifest its newest turn ran under. Either is `null` for a
+    thread that has none, or that was written before the harness recorded it.
+    """
     from felix.session.thread_state import list_thread_metadata
 
     auth = _auth_from_request(request)
