@@ -327,9 +327,12 @@ those disagree, this one is current.
 - **No `workspace_sandboxes` table in phase 3.** The Durable Object name is deterministic, which
   replaces the mapping table above. The R2 prefix is what phase 4's sweeps reconcile against.
 - **One sandbox per `tenant` scope**, shared by that tenant's threads.
-- **Local files move once.** On a scope's first hosted use, its local files are uploaded once and
-  the upload is recorded. *Not built yet* (2026-10-07): until it is, a scope starts empty on
-  `hosted`, which `UPGRADING.md` says.
+- **Local files move once — as an operator command, not on first use.** `felix workspace upload`
+  copies each local scope (`<root>/.felix-scopes/<tenant>/<key>`) into the sandbox of the same
+  `tenant/key` and backs it up. Automatic upload on first use would have needed the scope's local
+  directory from inside a call, and a thread key is a hash that cannot be turned back into the
+  thread; the scope directory already *is* the key, so a one-time command needs nothing new. Files
+  over the write cap and symlinks are skipped and reported, never forced.
 - **Some tools still need a local directory:** an image tool's `path`, `publish_commits`, AGENTS.md
   loading and a thread's repository checkout. Under `hosted`, these are refused for any scope but
   `deployment`, never served from the host.
@@ -360,8 +363,8 @@ those disagree, this one is current.
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
-| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508 gateway, #509 persistence, feat/hosted-workspace-backend; not yet run against a deployed gateway |
-| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` feat/hosted-shell: the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
+| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508, #509, #510 (v0.11.0); **on the reference deployment since 2026-10-07** |
+| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` #511 (v0.11.0): the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
 
@@ -398,11 +401,23 @@ and a `scope: thread` workspace starts empty. So:
    stored by a third party. That is a data-handling decision for each operator, which is why the
    requirements include running the provider in the operator's own cloud, and why `broker` remains.
    With Cloudflare Sandboxes the files stay in the deployment's own Cloudflare account and R2 bucket.
-4. **Cost.** One sandbox per thread, paused when idle, adds up with the number of threads. The
-   retention default, the idle timeout and whether `scope: tenant` suits some manifests better all
-   follow from the chosen provider's pricing.
-5. **Latency.** Every file operation becomes a network round trip. Measure a typical cowork turn
-   before and after, and batch writes where the provider supports it.
+4. **Cost — answered (2026-10-07).** A stopped Container is not billed, so the cost is the time a
+   sandbox is awake: about $0.003 an hour on `lite`, stopped after 10 idle minutes. Each backup is
+   one R2 write (Class A) plus storage at R2's rate. One sandbox per active thread is affordable;
+   retention (phase 4) is what bounds the stored side.
+5. **Latency — measured (2026-10-07), on the reference deployment.** From the harness on GCE
+   `us-central1` to `workspace-gateway.felix.run`:
+
+   | | Time |
+   |---|---|
+   | first operation on a stopped scope (cold start, restore) | 2.6–11 s, typically under 10 |
+   | each operation after it, file or `exec` | ~0.45 s |
+   | a checkpoint to R2 | ~2.3 s, once at the end of a run that wrote |
+
+   A cold start is paid once per scope per 10 idle minutes. The steady per-operation cost is the
+   helper's process start plus a round trip; a turn of five tool calls adds about two seconds. That
+   is acceptable for a background or cowork turn, and the place to cut further is the helper's
+   start (a resident process instead of one per call), not batching.
 6. **Reading a workspace from chat-ui.** The web client's "Touched this session" list is derived from
    tool arguments today. The export route in phase 4 is the natural source for a real file list, and
    the client should wait for it rather than invent one.

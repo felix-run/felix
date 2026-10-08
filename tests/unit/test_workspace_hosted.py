@@ -397,3 +397,55 @@ async def test_an_unreachable_gateway_runs_nothing_anywhere(tmp_path: Path, gate
     )
     assert "the command did not run" in out
     assert not any(tmp_path.rglob("made.txt"))
+
+
+# --- carrying local scopes into their sandboxes ---------------------------------------------
+
+
+async def test_upload_copies_each_local_scope_into_its_sandbox_and_backs_it_up(
+    tmp_path: Path, gateway: FakeGateway
+) -> None:
+    from felix.tools.workspace_hosted import upload_local_scopes
+
+    settings = _settings(tmp_path, "hosted")
+    scopes = tmp_path / "workspace" / SCOPES_DIR
+    shared = scopes / "default" / "shared"
+    (shared / "notes").mkdir(parents=True)
+    (shared / "README.md").write_text("read me")
+    (shared / "notes" / "a.txt").write_text("a")
+    os.symlink("/etc/passwd", shared / "passwd")
+    (shared / "big.bin").write_bytes(b"x" * 600_000)
+    thread = scopes / "acme" / thread_key("acme", "acme:t1")
+    thread.mkdir(parents=True)
+    (thread / "t.txt").write_text("thread file")
+    (scopes / "acme" / "not-a-scope").mkdir()
+    (scopes / "acme" / "not-a-scope" / "x.txt").write_text("ignored")
+
+    reports = {r.scope: r for r in await upload_local_scopes(settings)}
+
+    assert set(reports) == {"default/shared", f"acme/{thread_key('acme', 'acme:t1')}"}
+    assert reports["default/shared"].uploaded == ["README.md", "notes/a.txt"]
+    assert sorted(reports["default/shared"].skipped) == [
+        ("big.bin", "over 512000 bytes"),
+        ("passwd", "a symlink"),
+    ]
+    assert (gateway.root / "default" / "shared" / "notes" / "a.txt").read_text() == "a"
+    assert not (gateway.root / "default" / "shared" / "passwd").exists()
+    assert sorted(gateway.checkpoints) == sorted(reports)
+    assert (shared / "README.md").exists(), "the local files stay"
+
+
+async def test_upload_dry_run_and_tenant_filter(tmp_path: Path, gateway: FakeGateway) -> None:
+    from felix.tools.workspace_hosted import upload_local_scopes
+
+    settings = _settings(tmp_path, "hosted")
+    for tenant in ("acme", "globex"):
+        d = tmp_path / "workspace" / SCOPES_DIR / tenant / "shared"
+        d.mkdir(parents=True)
+        (d / "f.txt").write_text(tenant)
+    dry = await upload_local_scopes(settings, dry_run=True)
+    assert [r.uploaded for r in dry] == [["f.txt"], ["f.txt"]]
+    assert gateway.calls == []
+    only = await upload_local_scopes(settings, tenant="globex")
+    assert [r.scope for r in only] == ["globex/shared"]
+    assert {scope for scope, _ in gateway.calls} == {"globex/shared"}
