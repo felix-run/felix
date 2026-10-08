@@ -1811,14 +1811,21 @@ async def build_agent(
             except Exception:
                 logger.warning("sandbox tool binding failed", exc_info=True)
 
-        # Allowlisted argv on the API host, in the workspace checkout.
+        # Allowlisted argv on the API host, in the workspace checkout. A prefix the operator does
+        # not allow refuses the compile: logged and dropped, the agent ran without its shell and
+        # told the caller "I don't have a run tool", while the cause sat in a warning.
         if m.spec.shell_tools:
+            from felix.manifests.governance import GovernanceError
+            from felix.security.shell_policy import ShellNotAllowedError
+
             try:
                 from felix.tools.shell import tools_from_shell_refs
 
                 _append_unique_tools(
                     resolved, tools_from_shell_refs(list(m.spec.shell_tools), settings=deps.settings)
                 )
+            except ShellNotAllowedError as exc:
+                raise GovernanceError(str(exc)) from exc
             except Exception:
                 logger.warning("shell tool binding failed", exc_info=True)
 
