@@ -151,6 +151,24 @@ describe('workspace gateway', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('takes a clone with a repository, a branch and a token, and nothing looser', async () => {
+    const ok = { repo: 'felix-run/felix', branch: 'main', token: 'ghs_x' };
+    await send(post('/v1/workspaces/acme/shared/clone', ok));
+    expect(calls[0]?.request).toEqual({ op: 'clone', ...ok });
+    for (const body of [
+      { ...ok, repo: 'felix' },
+      { ...ok, repo: 'a/../b' },
+      { ...ok, branch: '--upload-pack=x' },
+      { ...ok, branch: 'a..b' },
+      { ...ok, token: '' },
+      { repo: ok.repo, branch: ok.branch },
+    ]) {
+      const res = await send(post('/v1/workspaces/acme/shared/clone', body));
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+    expect(calls).toHaveLength(1);
+  });
+
   it('names no sandbox for a malformed scope', async () => {
     for (const path of [
       `/v1/workspaces/..//shared/list`,

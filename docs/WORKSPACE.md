@@ -355,6 +355,42 @@ those disagree, this one is current.
    live conformance job.
 5. Latency and cost measured on the reference deployment, and this file brought in line.
 
+## Phase 3c: repository checkouts in the sandbox (decided 2026-10-07)
+
+Under `hosted`, a thread with a repository was refused: its checkout is a clone on the host. 3c
+puts the clone in the thread's sandbox instead.
+
+- **The sandbox reaches GitHub only through an intercept.** The Durable Object registers
+  `interceptOutboundHttps('github.com', GitHubGateway)` when a Container starts. With the internet
+  off, `github.com` resolves only because of it, and every other name does not resolve.
+- **Denied, except for one clone.** `GitHubGateway` (`src/github.ts`) refuses everything unless a
+  clone has granted it. A grant is one repository, read-only: git's smart-HTTP fetch
+  (`info/refs?service=git-upload-pack`, `POST git-upload-pack`), never `git-receive-pack`.
+  - Publishing stays the harness's, through GitHub's API (`publish_commits`), so nothing in a
+    sandbox ever pushes.
+  - The grant is replaced by a deny the moment the clone ends, whether it worked or not.
+  - Clones are serialised per scope, because a grant is per Container.
+- **The token never enters the container.** It travels as the intercept entrypoint's props, and
+  `Authorization` is set there after anything the container sent is dropped. git trusts only the
+  runtime's re-signing CA (`GIT_SSL_CAINFO`).
+- **What a grant still allows:** while it is registered, any process in the sandbox could fetch
+  that one repository with the person's access. That is the clone's own permission, for the
+  clone's duration.
+- **Verified locally (`wrangler dev`, Docker), 2026-10-07:**
+  - a clone of felix-run/felix (9 MB) took 4.1s;
+  - afterwards, the sandbox's own `git ls-remote` got 403;
+  - `api.github.com` and `example.com` did not resolve;
+  - no token was found in the workspace, `/root`, `/tmp`, `/etc` or any process environment;
+  - a second clone into the non-empty workspace was refused with 409.
+
+  Not yet measured: a clone near the 500 MB cap, on the deployed gateway.
+- **Still to do, on the harness side:**
+  - `open_checkout` clones through the gateway when the backend is `hosted` (the state file stays
+    local; the files do not);
+  - the thread's scope stops being refused once its checkout is ready;
+  - `list_files` (`git status`) and `publish_commits`' commit reads run in the sandbox through
+    `exec`.
+
 ## Phases
 
 | Phase | What | Changes behaviour? | Status |
@@ -364,6 +400,7 @@ those disagree, this one is current.
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
 | 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508, #509, #510 (v0.11.0); **on the reference deployment since 2026-10-07** |
+| 3c | A thread's repository checkout in its sandbox: cloned there through a `github.com`-only intercept that adds the person's token outside the container | opt-in, with 3a | `[~]` gateway `clone` (feat/gateway-clone); the harness side (`open_checkout`, `list_files`, `publish_commits` reading commits in the sandbox) next |
 | 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` #511 (v0.11.0): the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
