@@ -20,6 +20,7 @@ Modelled over one 300-second idle window, floor 1s and ceiling 10s:
 from __future__ import annotations
 
 import contextlib
+from typing import Any
 
 import pytest
 from felix.config import Settings
@@ -225,6 +226,34 @@ async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
 
     assert max(slept) > 10.0, "a notified stream stayed on the un-notified ceiling"
     assert max(slept) <= NOTIFIED_POLL_CEILING_SECONDS, f"waited past the ceiling: {max(slept)}"
+
+
+@pytest.mark.asyncio
+async def test_a_notified_stream_stays_on_the_short_ceiling_while_a_durable_run_is_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """felix-run/felix#530: with a durable run in flight the reattach stream also announces
+    what the run is blocked on, and an approval or a client request landing publishes no thread
+    notification -- so the long ceiling would ask a person about a waiting write up to a minute
+    late. Only then; the test above pins the long ceiling for every other reattach."""
+    import felix.durability.runs as runs_mod
+
+    calls = 0
+
+    async def _active(*_a: Any, **_k: Any) -> dict[str, Any] | None:
+        nonlocal calls
+        calls += 1
+        # In flight when the stream opens -- read twice there, by the cold snapshot's `activeRun`
+        # and by the stream's own ceiling choice -- and over by the time it reaches its idle
+        # limit, so the stream still ends and the test does not hang.
+        return {"resume_token": "fib", "status": "running", "expires_at": None} if calls <= 2 else None
+
+    monkeypatch.setattr(runs_mod, "active_durable_run", _active)
+    slept, _ = await _record_waits(monkeypatch, delivering=True, idle_limit=600.0)
+
+    assert max(slept) <= 10.0, (
+        f"a notified stream relaxed past the ceiling with a run in flight: {max(slept)}"
+    )
 
 
 @pytest.mark.asyncio

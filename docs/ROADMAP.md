@@ -575,6 +575,17 @@ First, because everything else governs it.
       The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
       column**, anywhere in the models or migrations. Sleeping is already distinguishable from
       crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
+- [x] **What a durable run is blocked on outlives its stream** (felix-run/felix#530). The durable
+      `POST /chat/stream` closed at the run's `expires_at` -- 300s by default -- whether or not
+      the run had stopped, and expiry is checked only between steps, so a durable chat (one
+      step) went on. `cowork`'s approvals wait 600s. Only that stream announced a pending
+      `tool_request` or `approval_required`, so everything the run asked for after the close
+      reached nobody and timed out. `GateAnnouncer` now serves both loops: the reattach stream
+      announces the thread's gates too (approvals behind `approvals:read`, as before), stays
+      open past its idle limit while a durable run is in flight (on the short poll ceiling then,
+      since a gate landing publishes no notification), and the durable stream closes at its
+      deadline only when no worker holds the run (`run_in_flight`, #529's predicate). Each
+      stream announces a gate once; a client attached twice must dedupe by id.
 - [x] **One durable run per thread** (felix-run/felix#529). A send to a thread whose durable run
       was still going started a second run beside it: the fiber did not record its thread, so
       nothing could ask, and the lease is advisory and the run holds none. The two appended to one

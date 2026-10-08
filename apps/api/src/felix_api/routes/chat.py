@@ -727,6 +727,10 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
     transcript. A warm one replays only the session events after that cursor. Both
     then tail the session log, which is shared state, so this works regardless of
     which replica served the original turn.
+
+    It also announces what the thread's run is blocked on -- `tool_request` for a client
+    tool, and `approval_required` for a caller with `approvals:read` -- each once per
+    stream, and stays open past the idle limit while a durable run is in flight.
     """
     settings = request.app.state.settings
     auth = _auth_from_request(request)
@@ -750,6 +754,9 @@ async def chat_stream_resume(request: Request, thread_id: str) -> StreamingRespo
             poll=poll,
             poll_max=max(poll, float(getattr(settings, "stream_resume_poll_max_seconds", 10.0) or 10.0)),
             idle_limit=float(getattr(settings, "stream_resume_idle_seconds", 300.0) or 300.0),
+            # As on `POST /chat/stream`: the thread is a name the caller chose, so what its run
+            # is blocked on is read only by a caller `GET /approvals` would answer.
+            may_read_approvals=holds_mgmt_scopes(settings, auth.scopes, SCOPE_APPROVALS_READ),
         )
     )
 
