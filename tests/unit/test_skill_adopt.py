@@ -156,7 +156,12 @@ async def test_activation_stops_screening_an_adopted_version_once_it_is_live(
 
     async def untrusted() -> bool:
         catalog = await load_manifest_skills(
-            [], tenant_id="acme", object_store=store, settings=settings, bundled_dir=Path("/nonexistent")
+            [],
+            tenant_id="acme",
+            object_store=store,
+            settings=settings,
+            bundled_dir=Path("/nonexistent"),
+            owner=None,
         )
         skill = catalog.get(NAME)
         assert skill is not None

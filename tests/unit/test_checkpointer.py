@@ -134,12 +134,14 @@ async def test_checkpointer_none_builds_a_stateless_agent() -> None:
         manifest=Manifest.model_validate(_manifest("none")),
         tools=InMemoryToolProvider(),
         tenant_id="t",
+        skill_owner=None,
     )
     stateful = await build_tenant_agent(
         MEMORY,
         manifest=Manifest.model_validate(_manifest("postgres")),
         tools=InMemoryToolProvider(),
         tenant_id="t",
+        skill_owner=None,
     )
 
     assert stateless.session_store is None
@@ -208,7 +210,9 @@ async def test_runtime_enforces_the_cross_check() -> None:
         }
     )
     with pytest.raises(ValueError, match="silently drops"):
-        await build_tenant_agent(MEMORY, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t")
+        await build_tenant_agent(
+            MEMORY, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
+        )
 
 
 @pytest.mark.asyncio
@@ -226,7 +230,9 @@ async def test_runtime_rejects_an_unknown_checkpointer() -> None:
         }
     )
     with pytest.raises(ValueError, match="unknown checkpointer"):
-        await build_tenant_agent(MEMORY, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t")
+        await build_tenant_agent(
+            MEMORY, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
+        )
 
 
 def test_the_cli_rejects_a_bad_checkpointer(tmp_path: Any) -> None:
@@ -333,7 +339,7 @@ async def test_none_is_stateless_across_turns_and_postgres_is_not() -> None:
             }
         )
         agent = await build_tenant_agent(
-            settings, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t"
+            settings, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
         )
         agent._resolve_model = lambda _i: _Model()  # type: ignore[attr-defined]
         for text in ("first", "second"):

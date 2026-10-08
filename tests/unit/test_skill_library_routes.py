@@ -663,7 +663,9 @@ async def test_list_and_activate_name_the_newest_version_an_update_must_cite(app
 
     await app.create(publish=True)
     await _agent_draft(app, body=BODY + "\nA draft on top.\n")  # 0.1.1, not live
-    catalog = await load_manifest_skills([], tenant_id="acme", object_store=app.store, settings=app.settings)
+    catalog = await load_manifest_skills(
+        [], tenant_id="acme", object_store=app.store, settings=app.settings, owner=None
+    )
     tools = {
         t.name: t
         for t in make_skill_tools(

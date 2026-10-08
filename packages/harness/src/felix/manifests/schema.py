@@ -1116,6 +1116,13 @@ class Spec(_Strict):
     # hash is over the manifest and the drift is on the host's disk. A manifest that has to
     # be reviewable sets this; one using the host as a library does not.
     skills_declared_only: bool = False
+    # Whether the caller's personal skill library joins the catalog. `off`, the default, so no
+    # stored manifest's prompt changes; `read` loads the live skills the caller owns, ahead of the
+    # tenant's own library, so one of theirs shadows a tenant skill of its name for them alone.
+    # A closed list on purpose: each value is a decision about whose instructions reach the model,
+    # not a swappable implementation. `write` (saving into it) comes with the routes that let a
+    # person review what was saved; accepting it before then would be a setting that did nothing.
+    personal_skills: Literal["off", "read"] = "off"
     mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers", max_length=MAX_REFS)
     peers: list[A2APeerRef] = Field(default_factory=list, max_length=MAX_REFS)
     # How to use a tool well, one line per tool name or glob, appended to the system prompt only
@@ -1204,6 +1211,17 @@ class Spec(_Strict):
     extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _a_declared_catalog_has_no_personal_skills(self) -> Spec:
+        """`skills_declared_only` promises a reviewer can enumerate every skill the agent may load
+        from the manifest alone; a caller's own library is a set no reviewer of it can see."""
+        if self.skills_declared_only and self.personal_skills != "off":
+            raise ValueError(
+                "personal_skills must be off when skills_declared_only is set: a caller's own "
+                "skills are not named in the manifest"
+            )
+        return self
 
     @model_validator(mode="after")
     def _publishing_agents_need_an_approval(self) -> Spec:

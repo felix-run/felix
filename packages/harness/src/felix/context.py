@@ -30,6 +30,11 @@ class AuthContext:
     # who it is for, which is what `bind_principal` needs to keep an approval valid across a
     # resume. Authorization reads it deliberately and in one place; audit does not.
     on_behalf_of: str = ""
+    # The caller's personal skill library (`skills.library_keys.personal_owner`), worked out once
+    # from the verified principal where its issuer is still known. None for an anonymous caller
+    # and for every machine actor but a resumed fiber, which carries its starter's: a compile
+    # with None loads the tenant's library and no one's own.
+    skill_owner: str | None = None
 
 
 @dataclass

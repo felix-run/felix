@@ -133,12 +133,19 @@ async def build_tenant_agent(
     manifest: Any,
     tools: ToolProvider,
     tenant_id: str,
+    skill_owner: str | None,
     object_store: Any | None = None,
     workspace_root: str | None = None,
     load_agents_md: bool = False,
     sub_agents: Mapping[str, Manifest | None] | None = None,
 ) -> Agent:
     """Compile `manifest` for `tenant_id`.
+
+    `skill_owner` is the caller's personal skill library (`AuthContext.skill_owner`), loaded
+    when the manifest sets `spec.personal_skills`; None loads the tenant's alone. It has no
+    default: a request path that forgot it would compile without the caller's skills and look
+    like it worked, and a resumed fiber that forgot it would differ from the request that
+    started it, so every call site says which it means.
 
     `sub_agents` is `ResolvedManifest.sub_agents` — the children a pin check resolved for this
     request. Every caller that ran `prepare_tenant_invoke` passes it, so a pinned thread runs
@@ -196,6 +203,7 @@ async def build_tenant_agent(
         ),
         object_store=store,
         tenant_id=tenant_id,
+        skill_owner=skill_owner,
         workspace_root=workspace_root or getattr(settings, "workspace_root", None) or None,
         load_agents_md=load_agents_md or bool(getattr(settings, "load_agents_md", False)),
     )

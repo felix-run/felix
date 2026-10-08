@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.publish_gate import gate_source
 from felix.skills.types import SkillCatalog
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
@@ -197,7 +198,9 @@ class _SkillAuthor:
         from felix.skills.library_store import is_rejected
 
         parent = str(args.get("parent_version") or "")
-        newest = (await library.newest_buildable_versions(self.settings, self.tenant_id, [name])).get(name)
+        newest = (
+            await library.newest_buildable_versions(self.settings, self.tenant_id, [name], owner=ORG_OWNER)
+        ).get(name)
         if newest is None:
             raise _ComposeError({"error": "unknown_skill", "name": name})
         if parent != newest:

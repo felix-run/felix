@@ -343,13 +343,15 @@ async def _library_skill(store: Any, lib: Any, *, tenant_id: str, row: dict[str,
     skill.source = "library"
     skill.version = version
     skill.untrusted = carries_imported_text(row)
+    skill.library_owner = lib.owner
     return skill
 
 
 async def _library_catalog(
-    settings: Any, *, tenant_id: str, object_store: Any, wanted: Callable[[str], bool]
+    settings: Any, *, tenant_id: str, object_store: Any, wanted: Callable[[str], bool], owner: str
 ) -> dict[str, Skill]:
-    """The live library skills `wanted` keeps, by name.
+    """The live skills of one library (``owner``: the tenant's, or one person's) that `wanted`
+    keeps, by name.
 
     One query for each live skill's version and SKILL.md digest, then those SKILL.md files,
     fetched concurrently. Only `live_version` is followed: a draft, a rejected draft and a
@@ -364,7 +366,7 @@ async def _library_catalog(
     from felix.skills.library_store import get_skill_library_store
 
     try:
-        lib = get_skill_library_store(settings)
+        lib = get_skill_library_store(settings, owner=owner)
         rows = await lib.list_live(tenant_id)
     except Exception:
         # The library is an addition to the catalog, never a precondition for one.
@@ -572,6 +574,7 @@ async def load_manifest_skills(
     bundled_dir: Path | None = None,
     declared_only: bool = False,
     settings: Any | None = None,
+    owner: str | None,
 ) -> SkillCatalog:
     """Resolve a SkillRef list into a SkillCatalog.
 
@@ -600,6 +603,12 @@ async def load_manifest_skills(
     are under their own prefix, and only a live, digest-checked version is read from it --
     so a declared name the library does not serve falls through to operator uploads only.
 
+    With ``owner`` (the caller's personal library, `spec.personal_skills`), that library's live
+    skills come ahead of the tenant's, so one of theirs shadows a tenant skill of its name for
+    that caller alone; the host still wins over both. Each library fails closed on its own: an
+    unreadable personal library leaves the tenant's, and the reverse. No default, so a catalog
+    built for a caller says whose it is.
+
     One exception to library-before-uploads: **an explicit pin to an operator upload wins.** A
     ref naming `version: 0.1.0` where `skills/{tenant}/{name}/0.1.0/SKILL.md` (or the shared
     `skills/{name}/0.1.0/SKILL.md`) exists is served that upload, not the library's live
@@ -614,12 +623,19 @@ async def load_manifest_skills(
         catalog.skills.update(host.skills)
 
     declared = {str(n) for n, _ in map(_ref_name_and_version, refs or []) if n}
+    from felix.skills.library_keys import ORG_OWNER
+
+    def wanted(n: str) -> bool:
+        return n not in host.skills and (not declared_only or n in declared)
+
     library = await _library_catalog(
-        settings,
-        tenant_id=tenant_id,
-        object_store=object_store,
-        wanted=lambda n: n not in host.skills and (not declared_only or n in declared),
+        settings, tenant_id=tenant_id, object_store=object_store, wanted=wanted, owner=ORG_OWNER
     )
+    if owner is not None and owner != ORG_OWNER:
+        personal = await _library_catalog(
+            settings, tenant_id=tenant_id, object_store=object_store, wanted=wanted, owner=owner
+        )
+        library = {**library, **personal}
     if not declared_only:
         for name, skill in library.items():
             catalog.skills.setdefault(name, skill)

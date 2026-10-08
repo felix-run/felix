@@ -285,6 +285,25 @@ async def _checkpoint_state(settings: Settings, row: dict[str, Any]) -> bool:
 _RESUMABLE_PATTERNS = frozenset({"react", "deep"})
 
 
+def _stored_skill_owner(stored_auth: object) -> str | None:
+    """The personal skill library a fiber's starter had, as recorded at enqueue, or None.
+
+    A row is read back from storage, so a value that is not a well-formed owner is dropped
+    rather than trusted: the resume then loads the tenant's library only, which is also what a
+    fiber enqueued before owners were recorded gets.
+    """
+    from felix.skills.library_keys import ORG_OWNER, InvalidSkillOwner, require_owner
+
+    owner = stored_auth.get("skill_owner") if isinstance(stored_auth, dict) else None
+    if not isinstance(owner, str) or owner == ORG_OWNER:
+        return None
+    try:
+        return require_owner(owner)
+    except InvalidSkillOwner:
+        logger.warning("fiber recorded an unusable skill owner; resuming on the tenant's library")
+        return None
+
+
 def _resumable(manifest: Any) -> bool:
     spec = getattr(manifest, "spec", None)
     if str(getattr(spec, "pattern", "react") or "react") not in _RESUMABLE_PATTERNS:
@@ -471,6 +490,7 @@ async def _run_fiber_step(
                     ),
                     anonymous=bool(stored_auth.get("anonymous", False)),
                     scheme=str(stored_auth.get("scheme") or "anonymous"),
+                    skill_owner=_stored_skill_owner(stored_auth),
                 )
                 thread = thread_id or fiber_thread_id(tenant_id, str(row["id"]))
                 req_ctx = RequestContext(
@@ -545,6 +565,7 @@ async def _run_fiber_step(
                             sub_agents=resolved.sub_agents,
                             tools=provider,
                             tenant_id=tenant_id,
+                            skill_owner=auth.skill_owner,
                         )
                         result = await agent.invoke(
                             InvokeInput(

@@ -68,7 +68,12 @@ async def _events(settings: Settings, event_type: str) -> list[dict[str, Any]]:
 
 async def _tool(settings: Settings, **kw: Any) -> Tool:
     catalog = await load_manifest_skills(
-        [], tenant_id=TENANT, object_store=object_store(settings), bundled_dir=REPO_SKILLS, settings=settings
+        [],
+        tenant_id=TENANT,
+        object_store=object_store(settings),
+        bundled_dir=REPO_SKILLS,
+        settings=settings,
+        owner=None,
     )
     return make_skill_feedback_tool(
         settings, tenant_id=TENANT, manifest_id="contributor", catalog=catalog, **kw

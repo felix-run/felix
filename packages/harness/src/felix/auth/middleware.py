@@ -27,6 +27,7 @@ from felix.context import AuthContext as CtxAuth
 from felix.context import LimitState, RequestContext, async_run_with_context
 from felix.security.constant_time import constant_time_equal
 from felix.security.rate_limit import PROBE_PATHS
+from felix.skills.library_keys import personal_owner
 
 logger = logging.getLogger("felix.auth.middleware")
 
@@ -285,6 +286,7 @@ class AuthMiddleware:
             anonymous=auth.anonymous,
             raw_claims=auth.raw_claims,
             scheme=getattr(auth.principal, "scheme", "anonymous"),
+            skill_owner=caller_skill_owner(auth),
         )
         req_ctx = RequestContext(
             settings=settings,
@@ -293,6 +295,15 @@ class AuthMiddleware:
         )
         async with async_run_with_context(req_ctx):
             await self.app(scope, receive, send)
+
+
+def caller_skill_owner(auth: AuthContext) -> str | None:
+    """The personal skill library of the caller ``auth`` verified, or None. Here, because this
+    is the last place the principal's issuer is known: the request context keeps the subject
+    alone, and a subject is unique only within its issuer."""
+    if auth.anonymous:
+        return None
+    return personal_owner(auth.principal.issuer, auth.principal.subject)
 
 
 def require_authenticated(auth: AuthContext) -> None:

@@ -34,6 +34,14 @@ if TYPE_CHECKING:  # imports stay lazy at runtime; the annotations are the point
 router = APIRouter(tags=["Skills"])
 
 
+def _caller_skill_owner() -> str | None:
+    """The caller's personal skill library, as the request's compile would see it."""
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    return ctx.auth.skill_owner if ctx is not None else None
+
+
 async def _catalog_for(
     settings: Settings, tenant_id: str, manifest_name: str
 ) -> tuple[SkillCatalog, set[str], bool]:
@@ -74,6 +82,8 @@ async def _catalog_for(
         declared_only=declared_only,
         # And the same settings, so the tenant's published library skills are listed too.
         settings=settings,
+        # And the caller's own skills where the manifest loads them: a turn they started would.
+        owner=_caller_skill_owner() if resolved.manifest.spec.personal_skills != "off" else None,
     )
     if declared_only:
         # Nothing reached the catalogue except through a ref, so asking the catalogue is

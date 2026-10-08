@@ -41,7 +41,7 @@ async def test_a_configured_dir_adds_skills(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr("felix.config.get_settings", lambda: Settings(skills_dir=str(extra)))
 
-    catalog = await load_manifest_skills([{"name": "acme-refunds"}])
+    catalog = await load_manifest_skills([{"name": "acme-refunds"}], owner=None)
     skill = catalog.get("acme-refunds")
 
     assert skill is not None
@@ -67,7 +67,7 @@ async def test_the_configured_dir_wins_over_a_same_named_bundled_skill(
     monkeypatch.setattr("felix.skills.loader._default_bundled_dir", lambda: bundled)
     monkeypatch.setattr("felix.config.get_settings", lambda: Settings(skills_dir=str(configured)))
 
-    catalog = await load_manifest_skills([{"name": "shared"}])
+    catalog = await load_manifest_skills([{"name": "shared"}], owner=None)
 
     assert catalog.get("shared").description == "From the configured directory."
 

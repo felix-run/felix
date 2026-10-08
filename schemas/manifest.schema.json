@@ -2109,6 +2109,15 @@
           "title": "Skills Declared Only",
           "type": "boolean"
         },
+        "personal_skills": {
+          "default": "off",
+          "enum": [
+            "off",
+            "read"
+          ],
+          "title": "Personal Skills",
+          "type": "string"
+        },
         "mcp_servers": {
           "items": {
             "$ref": "#/$defs/McpServerRef"

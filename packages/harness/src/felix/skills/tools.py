@@ -57,6 +57,13 @@ def _list_dir_bundle(root: Path) -> list[str]:
     return files
 
 
+def _library_of(skill: Skill) -> str:
+    """The library a library skill was loaded from: its own, never one looked up by name."""
+    from felix.skills.library_keys import ORG_OWNER
+
+    return skill.library_owner if skill.library_owner is not None else ORG_OWNER
+
+
 def _bundle_root(skill: Skill) -> Path | None:
     """A host skill's directory — only for a `SKILL.md` in its own folder. A root-level
     `foo.md` skill shares its directory with every other skill, so it has no bundle."""
@@ -74,7 +81,8 @@ async def bundle_files(skill: Skill, *, settings: Any | None, tenant_id: str) ->
     if skill.source == "library" and settings is not None and skill.version:
         from felix.skills.library_store import get_skill_library_store
 
-        rows = await get_skill_library_store(settings).list_files(tenant_id, skill.name, skill.version)
+        lib = get_skill_library_store(settings, owner=_library_of(skill))
+        rows = await lib.list_files(tenant_id, skill.name, skill.version)
         return [str(r["path"]) for r in rows if r["path"] != "SKILL.md"]
     root = _bundle_root(skill)
     if root is None:
@@ -107,7 +115,13 @@ async def read_bundle_file(
         from felix.skills.library import read_version_file
 
         text = await read_version_file(
-            settings, tenant_id, skill.name, skill.version, path, object_store=object_store
+            settings,
+            tenant_id,
+            skill.name,
+            skill.version,
+            path,
+            owner=_library_of(skill),
+            object_store=object_store,
         )
         return None if text is None else text.encode("utf-8")
     if skill.source == "store":
@@ -174,28 +188,35 @@ def make_skill_tools(
             },
         )
 
-    async def _newest(names: list[str]) -> dict[str, str]:
+    async def _newest(skills: list[Skill]) -> dict[str, str]:
         """Each library skill's newest version that was not rejected, which `update_skill` must
-        name as its parent.
+        name as its parent -- read in the skill's own library, since a personal skill and the
+        tenant's may share a name.
 
         Newer than the live version when a draft is waiting; never a rejected draft, whose files
-        an edit must not inherit. One query for every name; empty when there is no library to
-        ask, and a failed read only drops the field.
+        an edit must not inherit. One query per library; empty when there is no library to ask,
+        and a failed read only drops the field.
         """
-        if settings is None or not names:
+        if settings is None or not skills:
             return {}
         from felix.skills.library import newest_buildable_versions
 
+        by_library: dict[str, list[str]] = {}
+        for s in skills:
+            by_library.setdefault(_library_of(s), []).append(s.name)
+        newest: dict[str, str] = {}
         try:
-            return await newest_buildable_versions(settings, tenant_id, names)
+            for owner, names in by_library.items():
+                newest.update(await newest_buildable_versions(settings, tenant_id, names, owner=owner))
         except Exception:
             logger.warning("skill library versions read failed", exc_info=True)
             return {}
+        return newest
 
     async def _list(_args: dict[str, Any] | None = None, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         active = await activation_store.get_active(tenant_id, manifest_id)
         public = catalog.list_public()
-        newest = await _newest([s.name for s in public if s.source == "library"])
+        newest = await _newest([s for s in public if s.source == "library"])
         payload = [
             {
                 "name": s.name,
@@ -225,7 +246,10 @@ def make_skill_tools(
         _audit("activate", skill.name, status="ok", ctx=_ctx)
         result: dict[str, Any] = {
             "activated": skill.name,
-            "active_skills": active,
+            # Activation is kept per manifest, for every caller of it, so the stored set can
+            # hold a name only someone else's catalog has -- one of their personal skills.
+            # This caller is told about their own catalog's names and no one else's.
+            "active_skills": [n for n in active if catalog.get(n) is not None],
             "instructions": skill.body or "(no body)",
         }
         try:
@@ -238,7 +262,7 @@ def make_skill_tools(
             result["files"] = files
         if skill.source == "library":
             result["version"] = skill.version
-            newest = (await _newest([skill.name])).get(skill.name)
+            newest = (await _newest([skill])).get(skill.name)
             if newest:
                 result["newest_version"] = newest
         return _relayed(skill, json.dumps(result))
@@ -285,7 +309,8 @@ def make_skill_tools(
             _audit("deactivate", args.name, status="unknown_skill", ctx=_ctx)
         else:
             _audit("deactivate", skill.name, status="ok", ctx=_ctx)
-        return json.dumps({"deactivated": args.name, "active_skills": active})
+        mine = [n for n in active if catalog.get(n) is not None]  # as `activate`: this caller's names
+        return json.dumps({"deactivated": args.name, "active_skills": mine})
 
     return [
         define_tool(

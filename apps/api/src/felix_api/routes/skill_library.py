@@ -283,7 +283,7 @@ async def get_library_file(name: str, version: str, path: str, request: Request)
         return not_found(f"{name}@{version}/{path}")
     try:
         content = await library.read_version_file(
-            ctx.settings, ctx.tenant_id, name, version, path, object_store=ctx.store
+            ctx.settings, ctx.tenant_id, name, version, path, owner=ctx.lib.owner, object_store=ctx.store
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)

@@ -460,11 +460,11 @@ async def _check_parent(
 
 
 async def newest_buildable_versions(
-    settings: Settings, tenant_id: str, names: Iterable[str]
+    settings: Settings, tenant_id: str, names: Iterable[str], *, owner: str
 ) -> dict[str, str]:
-    """Each named skill's newest version an agent may build on: the newest that is not a
-    rejected draft. One query for every name."""
-    rows = await get_skill_library_store(settings).buildable_versions(tenant_id, list(names))
+    """Each named skill's newest version an agent may build on in ``owner``'s library: the
+    newest that is not a rejected draft. One query for every name."""
+    rows = await get_skill_library_store(settings, owner=owner).buildable_versions(tenant_id, list(names))
     return {n: v for n, vs in rows.items() if (v := newest_version(vs)) is not None}
 
 
@@ -750,14 +750,21 @@ async def read_version_files(
 
 
 async def read_version_file(
-    settings: Settings, tenant_id: str, name: str, version: str, path: str, *, object_store: Any | None = None
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    path: str,
+    *,
+    owner: str,
+    object_store: Any | None = None,
 ) -> str | None:
-    """One file of a saved version, or None when the version holds no such path.
+    """One file of a saved version in ``owner``'s library, or None when it holds no such path.
 
     Only a path the version's `skill_file` rows name is read, and its bytes must match the
     recorded digest, so a reader cannot be steered at an object the save did not write.
     """
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=owner)
     rows = await lib.list_files(tenant_id, name, version)
     meta = next((r for r in rows if r["path"] == path), None)
     if meta is None:

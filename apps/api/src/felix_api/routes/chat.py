@@ -584,6 +584,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
                 sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
+                skill_owner=auth.skill_owner,
             )
             result = await agent.invoke(
                 InvokeInput(
@@ -1051,6 +1052,7 @@ async def chat_stream(
                     sub_agents=resolved.sub_agents,
                     tools=tools,
                     tenant_id=auth.tenant_id,
+                    skill_owner=auth.skill_owner,
                 )
                 stream = agent.stream_events(
                     InvokeInput(
@@ -1752,6 +1754,7 @@ async def chat_continue(body: ContinueRequest, request: Request, lease_token: Le
                 sub_agents=resolved.sub_agents,
                 tools=tools,
                 tenant_id=auth.tenant_id,
+                skill_owner=auth.skill_owner,
             )
             result = await agent.invoke(
                 InvokeInput(

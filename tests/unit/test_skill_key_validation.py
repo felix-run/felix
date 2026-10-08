@@ -105,7 +105,7 @@ async def test_a_bad_name_is_rejected_through_load_manifest_skills() -> None:
     store = _Store({"skills/victim/secrets/SKILL.md": SKILL})
 
     catalog = await load_manifest_skills(
-        [{"name": "../victim/secrets"}], tenant_id="attacker", object_store=store
+        [{"name": "../victim/secrets"}], tenant_id="attacker", object_store=store, owner=None
     )
 
     assert store.seen == [], f"attempted keys: {store.seen}"

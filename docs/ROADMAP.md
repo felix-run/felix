@@ -490,16 +490,18 @@ First, because everything else governs it.
         go under `skill-library/{tenant}/~{sha256(owner)[:32]}/{name}/…` (`~` cannot start a skill
         name; no raw subject or email in a key), spelled by the store's own `object_key`. Owner
         filtering lives in the store, beside the in-memory twin; tenant RLS is unchanged.
-      - **Compile.** `build_tenant_agent(..., skill_owner=)` → `BuildDeps` →
-        `load_manifest_skills(owner=)`. Request paths pass the principal; a durable fiber records
-        the owner at enqueue so a worker resume compiles the same catalog (the silent-default
-        branch to pin with a test); cron, continuous eval and scheduled jobs pass `None` (org
-        only); sub-agents inherit. Order: host dirs → caller's personal live skills → org library
+      - **Compile.** The auth middleware turns the verified principal into
+        `AuthContext.skill_owner`; `build_tenant_agent(..., skill_owner=)` takes it with no default
+        → `BuildDeps` → `load_manifest_skills(owner=)`. Request paths pass the caller's; a durable
+        fiber records it at enqueue and the worker's resume compiles with it; eval and scheduled
+        jobs pass `None` (org only); sub-agents inherit through the shared deps. Order: host dirs → caller's personal live skills → org library
         → operator uploads, so a personal skill shadows an org one of its name for its owner only;
         an explicit pin to an operator upload still wins.
-      - **Opt-in.** `spec.personal_skills: off | read | write`, default `off` so no stored
-        manifest's prompt changes. `read` loads the caller's skills; `write` also points
-        `create_skill` / `update_skill` at the caller's namespace. A validator refuses anything
+      - **Opt-in.** `spec.personal_skills: off | read` (step 2), default `off` so no stored
+        manifest's prompt changes; `read` loads the caller's skills. `write` — pointing
+        `create_skill` / `update_skill` at the caller's namespace — is added in step 3 with the
+        routes that review what it saves (widening the `Literal` is safe; accepting it earlier
+        would be a field that did nothing). A validator refuses anything
         but `off` with `skills_declared_only`, which promises an enumerable catalog.
       - **Lifecycle.** The owner publishes their own drafts — no org review queue, no `skills:write`
         — but the security scan, the import copy rule and approvals on the authoring tools all
@@ -529,9 +531,17 @@ First, because everything else governs it.
          Postgres (forced RLS binds the table owner) it reads zero and never refuses. A published
          revision, so not edited; the `deploy-runbook` checklist now says to count with
          `app.rls_bypass` on before rolling back past it.
-      2. [ ] Compile threading, durable-fiber owner, catalog order, `spec.personal_skills` +
-         `make schema`; e2e: two callers on one manifest get different catalogs, and a durable
-         resume keeps its owner.
+      2. [x] Compile threading, durable-fiber owner, catalog order, `spec.personal_skills: off |
+         read`, e2e (two callers on one manifest, and a durable resume, each shown its own catalog).
+         Found on the way: `activate_skill` and `read_skill_file` read a library skill's files by
+         name from the tenant's library, which for a personal skill sharing a name and version
+         with a tenant one would have served the tenant's files as hers — each catalog skill now
+         carries `library_owner`; and skill activation is stored per manifest for every caller,
+         so `activate_skill` echoed names another caller activated, personal ones included — its
+         answer is now filtered to the caller's catalog. Open: activation itself is still shared
+         per manifest (one caller's activation marks a same-named skill active for the next), as
+         it was between org users before; sub-agent inheritance is structural (shared deps) and
+         has no e2e of its own.
       3. [ ] `~me` routes, owner-scoped authoring tools, per-owner cap, `make contract`.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).
 

@@ -142,7 +142,11 @@ async def test_build_agent_applies_the_wrapper_outermost() -> None:
     settings = _settings()
     async with async_run_with_context(_ctx(settings)):
         agent = await build_tenant_agent(
-            settings, manifest=_manifest("quarantine"), tools=default_tool_provider(), tenant_id="acme"
+            settings,
+            manifest=_manifest("quarantine"),
+            tools=default_tool_provider(),
+            tenant_id="acme",
+            skill_owner=None,
         )
         plain = await build_tenant_agent(
             settings,
@@ -156,6 +160,7 @@ async def test_build_agent_applies_the_wrapper_outermost() -> None:
             ),
             tools=default_tool_provider(),
             tenant_id="acme",
+            skill_owner=None,
         )
     assert isinstance(agent, InboundScreeningAgent)
     assert not isinstance(plain, InboundScreeningAgent)
