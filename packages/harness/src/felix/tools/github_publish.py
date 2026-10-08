@@ -50,7 +50,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -81,6 +81,12 @@ MAX_LISTED_COMMITS = 50
 _HTTP_TIMEOUT_S = 30.0
 # The whole publish, every request and git call together.
 _PUBLISH_TIMEOUT_S = 300.0
+if TYPE_CHECKING:
+    from felix.tools.workspace_hosted import HostedRoot
+
+# Where git runs: a directory on this host, or a thread's repository in its hosted sandbox.
+type GitRoot = Path | HostedRoot
+
 _GIT_TIMEOUT_S = 60.0
 _GIT_OUTPUT_CAP = 4 * 1024 * 1024
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -103,6 +109,16 @@ _GIT_PRELUDE = (
 )
 # For the two diff invocations: no external diff driver, no textconv filter.
 _DIFF_SAFE = ("--no-ext-diff", "--no-textconv", "--no-color", "--no-renames")
+
+
+def _publish_root() -> GitRoot:
+    """The repository this call publishes from: the thread's, in its sandbox under the hosted
+    workspace backend, or the workspace directory here (`workspace_root()`, which refuses a scope
+    the hosted backend keeps in a sandbox)."""
+    from felix.tools.workspace_hosted import hosted_checkout_root
+
+    hosted = hosted_checkout_root()
+    return hosted if hosted is not None else workspace_root()
 
 
 class PublishArgs(BaseModel):
@@ -162,9 +178,18 @@ class _GitResult:
 
 
 async def _git_run(
-    root: Path, *args: str, stdin: bytes | None = None, limit: int = _GIT_OUTPUT_CAP
+    root: GitRoot, *args: str, stdin: bytes | None = None, limit: int = _GIT_OUTPUT_CAP
 ) -> _GitResult:
     """Run git in `root` and return stdout up to `limit` bytes, killing it past that."""
+    if not isinstance(root, Path):
+        # A repository in a hosted sandbox: the same call, run there by `_git_exec`'s copy in the
+        # gateway's helper (deploy/cloudflare/workspace-gateway/helper/felix_fs.py).
+        return await root.git(args, stdin=stdin, limit=limit)
+    return await _git_exec(root, *args, stdin=stdin, limit=limit)
+
+
+async def _git_exec(root: Path, *args: str, stdin: bytes | None, limit: int) -> _GitResult:
+    """`_git_run` on the host: git as a subprocess with a fixed prelude and environment."""
     proc = await asyncio.create_subprocess_exec(
         "git",
         *_GIT_PRELUDE,
@@ -213,7 +238,7 @@ async def _git_run(
     return _GitResult(out=out, code=code, err=err.decode("utf-8", "replace").strip(), truncated=truncated)
 
 
-async def _git(root: Path, *args: str, stdin: bytes | None = None, limit: int = _GIT_OUTPUT_CAP) -> bytes:
+async def _git(root: GitRoot, *args: str, stdin: bytes | None = None, limit: int = _GIT_OUTPUT_CAP) -> bytes:
     res = await _git_run(root, *args, stdin=stdin, limit=limit)
     if res.truncated:
         raise PublishFailed(f"git {args[0]} produced more than {limit} bytes")
@@ -222,12 +247,12 @@ async def _git(root: Path, *args: str, stdin: bytes | None = None, limit: int = 
     return res.out
 
 
-async def _is_commit(root: Path, sha: str) -> bool:
+async def _is_commit(root: GitRoot, sha: str) -> bool:
     res = await _git_run(root, "cat-file", "-e", f"{sha}^{{commit}}")
     return res.code == 0
 
 
-async def _rev(root: Path, spec: str) -> str:
+async def _rev(root: GitRoot, spec: str) -> str:
     return (await _git(root, "rev-parse", "--verify", "--end-of-options", spec)).decode().strip()
 
 
@@ -332,7 +357,7 @@ def _check_args(args: ToolInput, spec: GithubPublishSpec) -> tuple[str, str]:
     return branch, head
 
 
-async def _plan(root: Path, gh: _GitHub, spec: GithubPublishSpec, args: ToolInput) -> _Plan:
+async def _plan(root: GitRoot, gh: _GitHub, spec: GithubPublishSpec, args: ToolInput) -> _Plan:
     branch, head = _check_args(args, spec)
     if not await _is_commit(root, head):
         raise PublishRefused(f"{head} is not a commit in the workspace; commit first, then pass its sha")
@@ -370,7 +395,7 @@ async def _plan(root: Path, gh: _GitHub, spec: GithubPublishSpec, args: ToolInpu
     )
 
 
-async def _preview_text(root: Path, plan: _Plan, repo: str) -> str:
+async def _preview_text(root: GitRoot, plan: _Plan, repo: str) -> str:
     """What the approval row shows: header, commit list, `--stat`, then the diff, capped."""
     if plan.parent == plan.head:
         return f"nothing to publish: {repo}:{plan.branch} is already at {plan.head}"
@@ -404,7 +429,7 @@ def _message(plan: _Plan, title: str | None, single: str) -> str:
     return subject + "\n\n" + "\n".join(listed) + "\n"
 
 
-async def _blob_sizes(root: Path, shas: list[str]) -> dict[str, int]:
+async def _blob_sizes(root: GitRoot, shas: list[str]) -> dict[str, int]:
     if not shas:
         return {}
     out = await _git(root, "cat-file", "--batch-check", stdin=("\n".join(shas) + "\n").encode())
@@ -417,7 +442,7 @@ async def _blob_sizes(root: Path, shas: list[str]) -> dict[str, int]:
     return sizes
 
 
-async def _publish(root: Path, gh: _GitHub, plan: _Plan, title: str | None) -> tuple[str, int]:
+async def _publish(root: GitRoot, gh: _GitHub, plan: _Plan, title: str | None) -> tuple[str, int]:
     uploads = [c for c in plan.changes if c.status != "D" and c.mode != "160000"]
     sizes = await _blob_sizes(root, sorted({c.sha for c in uploads}))
     total = sum(sizes.values())
@@ -518,7 +543,7 @@ class _PublishExecutor:
 
     async def preview(self, args: ToolInput) -> str:
         """The approval preview: computed from `head_sha` in the workspace, never from the model."""
-        root = workspace_root()
+        root = _publish_root()
         async with self._client() as client:
             plan = await _plan(root, _GitHub(client, self._api_base, self._repo), self._spec, args)
         return await _preview_text(root, plan, self._repo)
@@ -526,7 +551,7 @@ class _PublishExecutor:
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         _ = ctx
         try:
-            root = workspace_root()
+            root = _publish_root()
         except ValueError as exc:
             return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, str(exc))
         title = str(args.get("title") or "")[:200] or None

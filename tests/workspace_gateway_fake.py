@@ -9,6 +9,7 @@ is the wire contract the Worker's own tests hold it to, and the file code the sa
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 import shutil
@@ -33,6 +34,8 @@ _STATUS = {
     "invalid_path": 422,
     "edit_refused": 422,
     "io_error": 500,
+    "conflict": 409,
+    "clone_failed": 502,
     "unavailable": 503,
     "timeout": 504,
 }
@@ -57,6 +60,9 @@ class FakeGateway:
     calls: list[tuple[str, str]] = field(default_factory=list)  # (scope, op)
     checkpoints: list[str] = field(default_factory=list)
     down: bool = False
+    # Where `clone` fetches `{repo}.git` from, standing in for github.com (the `git_server` fixture).
+    clone_base: str = ""
+    clone_tokens: list[str] = field(default_factory=list)
 
     def sandbox(self, scope: str) -> Path:
         return self.root / scope
@@ -82,6 +88,8 @@ class FakeGateway:
             return httpx.Response(200, json={"result": {}})
         directory = self.sandbox(scope)
         directory.mkdir(parents=True, exist_ok=True)
+        if op == "clone":
+            return await self._clone(directory, body)
         helper = _helper()
         previous, helper.ROOT = helper.ROOT, directory
         try:
@@ -93,6 +101,28 @@ class FakeGateway:
             return httpx.Response(200, json={"result": answer["result"]})
         refusal = {k: answer[k] for k in ("error", "message", "kind") if k in answer}
         return httpx.Response(_STATUS[answer["error"]], json=refusal)
+
+    async def _clone(self, directory: Path, body: dict[str, Any]) -> httpx.Response:
+        """The Worker's `clone`: refused into a non-empty workspace, and the token added to the
+        request outside the clone's config (the Worker's GitHub intercept). Run through the
+        helper's own `_git_exec`, whose environment is built from nothing -- the sandbox's git."""
+        if any(directory.iterdir()):
+            return httpx.Response(409, json={"error": "conflict", "message": "the workspace is not empty"})
+        self.clone_tokens.append(body["token"])
+        basic = base64.b64encode(f"x-access-token:{body['token']}".encode()).decode()
+        helper = _helper()
+        args = ("-c", f"http.extraHeader=Authorization: Basic {basic}", "-c", "credential.helper=",
+                "clone", "-q", "--branch", body["branch"], "--origin", "origin", "--",
+                f"{self.clone_base}/{body['repo']}.git", ".")  # fmt: skip
+        cloned = await helper._git_exec(directory, *args, stdin=None, limit=65_536)
+        if cloned.code != 0:
+            for child in directory.iterdir():
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
+            tail = " ".join(cloned.err.strip().splitlines()[-3:])
+            return httpx.Response(502, json={"error": "clone_failed", "message": f"git clone failed: {tail}"})
+        head = await helper._git_exec(directory, "rev-parse", "HEAD", stdin=None, limit=1024)
+        result = {"repo": body["repo"], "branch": body["branch"], "head": head.out.decode().strip()}
+        return httpx.Response(200, json={"result": result})
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handler))

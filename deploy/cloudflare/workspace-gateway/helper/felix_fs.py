@@ -12,8 +12,9 @@ operations a model can drive are done here instead, with the harness's local bac
 - an edit is written to a random sibling and renamed over the original;
 - a search holds one descriptor per level, stops at a depth, a hit cap and a deadline.
 
-The functions between the PORTED markers are copied from the harness
-(`felix/tools/workspace.py` and `felix/tools/workspace_local.py`) and must stay the same code:
+The functions between the PORTED markers are copied from the harness (`felix/tools/workspace.py`,
+`felix/tools/workspace_local.py`, `felix/tools/shell.py` and `felix/tools/github_publish.py`) and
+must stay the same code:
 `tests/unit/test_workspace_gateway_helper.py` compares them with their source as syntax trees, so
 a change to either fails until the other matches. The image runs the harness's Python, 3.14, so the
 copy is the harness's code as it is.
@@ -596,6 +597,109 @@ async def exec_argv(
 # --- end of PORTED from shell.py -------------------------------------------------------------
 
 
+# --- PORTED from the harness's felix/tools/github_publish.py: do not edit without editing it there
+
+
+_GIT_TIMEOUT_S = 60.0
+_GIT_OUTPUT_CAP = 4 * 1024 * 1024
+_GIT_PRELUDE = (
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.pager=cat",
+    "-c",
+    "color.ui=false",
+    # `log.showSignature` makes `git log` verify signatures, which runs `gpg.program` — another
+    # path the repository's config could name.
+    "-c",
+    "log.showSignature=false",
+)
+
+
+def _git_env() -> dict[str, str]:
+    """No credential and no configuration beyond the repository's own.
+
+    Built from nothing rather than copied: the harness environment holds the GitHub token and
+    every other secret the API has, and git hands its environment to anything it spawns.
+    """
+    path = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep) if os.path.isabs(p))
+    return {
+        "PATH": path or "/usr/local/bin:/usr/bin:/bin",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        # `refs/replace` would let the repository show different content under `head_sha` than
+        # the object that sha names; the tree check below would catch it, this prevents it.
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LITERAL_PATHSPECS": "1",
+        "LC_ALL": "C",
+    }
+
+
+@dataclass(slots=True)
+class _GitResult:
+    out: bytes
+    code: int
+    err: str
+    truncated: bool
+
+
+async def _git_exec(root: Path, *args: str, stdin: bytes | None, limit: int) -> _GitResult:
+    """`_git_run` on the host: git as a subprocess with a fixed prelude and environment."""
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *_GIT_PRELUDE,
+        *args,
+        cwd=str(root),
+        env=_git_env(),
+        stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = proc.stdout, proc.stderr
+    assert stdout is not None and stderr is not None
+
+    async def _read_out() -> tuple[bytes, bool]:
+        buf = bytearray()
+        while chunk := await stdout.read(65_536):
+            buf += chunk
+            if len(buf) > limit:
+                # Killed here, not after the gather: a child blocked on a full stdout pipe
+                # never closes stderr, so waiting for both first would wait forever.
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                return bytes(buf[:limit]), True
+        return bytes(buf), False
+
+    async def _read_err() -> bytes:
+        kept = bytearray()
+        while chunk := await stderr.read(65_536):
+            if len(kept) < 2048:
+                kept += chunk
+        return bytes(kept[:2048])
+
+    try:
+        async with asyncio.timeout(_GIT_TIMEOUT_S):
+            if stdin is not None and proc.stdin is not None:
+                proc.stdin.write(stdin)
+                await proc.stdin.drain()
+                proc.stdin.close()
+            (out, truncated), err = await asyncio.gather(_read_out(), _read_err())
+            code = await proc.wait()
+    finally:
+        if proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await proc.wait()
+    return _GitResult(out=out, code=code, err=err.decode("utf-8", "replace").strip(), truncated=truncated)
+
+
+# --- end of PORTED from github_publish.py ----------------------------------------------------
+
+
 def op_list(req: dict[str, Any]) -> dict[str, Any]:
     with open_workspace_dir(ROOT, req.get("path", ".")) as (fd, rel):
         entries: list[dict[str, Any]] = []
@@ -712,6 +816,46 @@ def op_exec(req: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def op_git(req: dict[str, Any]) -> dict[str, Any]:
+    """A read of the thread's repository for the harness (a listing, `publish_commits`' commits):
+    git run by the harness's own `_git_exec`, with its prelude and its environment, in /workspace.
+    Unlike `exec`, which keeps a command's *tail* for a model to read, this keeps stdout from the
+    start, up to `limit`, as the harness reads it locally."""
+    args = req["args"]
+    if not isinstance(args, list) or not args or not all(isinstance(a, str) for a in args):
+        raise KeyError("args")
+    limit = req.get("limit", _GIT_OUTPUT_CAP)
+    if not isinstance(limit, int) or not 1 <= limit <= _GIT_OUTPUT_CAP:
+        raise KeyError("limit")
+    stdin = base64.b64decode(req["stdin"], validate=True) if req.get("stdin") is not None else None
+    res = asyncio.run(_git_exec(ROOT, *args, stdin=stdin, limit=limit))
+    return {
+        "out": base64.b64encode(res.out).decode("ascii"),
+        "code": res.code,
+        "err": res.err,
+        "truncated": res.truncated,
+    }
+
+
+def op_lstat(req: dict[str, Any]) -> dict[str, Any]:
+    """`lstat` of each path under /workspace, as a repository listing reports sizes: `null` for one
+    that is not there. Paths come from git's own listing; nothing is opened or followed."""
+    paths = req["paths"]
+    if not isinstance(paths, list) or len(paths) > 10_000 or not all(isinstance(p, str) for p in paths):
+        raise KeyError("paths")
+    out: list[dict[str, Any] | None] = []
+    for path in paths:
+        workspace_parts(path)  # absolute or escaping: refused like any other workspace path
+        target = ROOT / path
+        try:
+            st = os.lstat(target)
+        except OSError:
+            out.append(None)
+            continue
+        out.append({"kind": "symlink" if stat.S_ISLNK(st.st_mode) else "file", "size": st.st_size})
+    return {"stats": out}
+
+
 def op_prepare(req: dict[str, Any]) -> dict[str, Any]:
     with open_workspace_dir(ROOT, "."):
         pass
@@ -726,6 +870,8 @@ OPS = {
     "edit": op_edit,
     "search": op_search,
     "exec": op_exec,
+    "git": op_git,
+    "lstat": op_lstat,
 }
 
 
