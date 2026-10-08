@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     # and access tokens (`felix.auth.github_connections`). Rotating it signs nobody out of
     # Felix, but every stored GitHub connection must then be re-made.
     github_token_key: str = Field(default="", repr=False)
-    # Comma-separated origins a sign-in may return to, e.g. `https://chat.felix.run`. The
+    # Comma-separated origins a sign-in may return to, e.g. `https://make.felix.run`. The
     # callback GitHub redirects to is `<origin><FELIX_GITHUB_CALLBACK_PATH>`, and each such URL
     # must be registered on the App. Nothing outside this list is ever a redirect target.
     github_redirect_origins: str = ""

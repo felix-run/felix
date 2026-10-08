@@ -4,7 +4,7 @@ Living tracker for what to build next. Update status in place; keep items
 concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
-**Live:** [api.felix.run](https://api.felix.run) · [chat.felix.run](https://chat.felix.run) · [docs.felix.run](https://docs.felix.run)
+**Live:** [api.felix.run](https://api.felix.run) · [make.felix.run](https://make.felix.run) · [docs.felix.run](https://docs.felix.run)
 **Last reviewed:** 2026-10-07 (after 0.9.0 rolled to production; the full open-item check was
 2026-09-29, after 0.5.0)
 
