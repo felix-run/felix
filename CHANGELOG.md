@@ -10,6 +10,20 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.11.3] — 2026-10-07
+
+### Added
+
+- `spec.personal_skills: read` offers each authenticated caller the live skills in their own library, ahead of the tenant's, never in place of a skill the manifest names; durable runs keep the starter's library. Off by default; refused with `skills_declared_only`. (#524)
+
+- `library` on skill activation audit rows and `/skills/{manifest}/activations/recent`: `org`, or a personal library's digest. (#524)
+
+- `felix sessions backfill-previews` fills the `preview` that `GET /chat/sessions` lists for threads created before #521, from each thread's first user message, masked and cut as a turn would. It never overwrites a preview, does not move `updated_at`, and is safe to re-run (`--tenant`, `--batch-size`, `--dry-run`; see `docs/UPGRADING.md`). (#526)
+
+### Changed
+
+- `activate_skill`, `deactivate_skill` and the `active` field of `GET /skills/{manifest}` name only skills in the caller's own catalog. (#524)
+
 ## [0.11.2] — 2026-10-07
 
 ### Added
@@ -4422,3 +4436,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.11.0]: https://github.com/felix-run/felix/releases/tag/v0.11.0
 [0.11.1]: https://github.com/felix-run/felix/releases/tag/v0.11.1
 [0.11.2]: https://github.com/felix-run/felix/releases/tag/v0.11.2
+[0.11.3]: https://github.com/felix-run/felix/releases/tag/v0.11.3
