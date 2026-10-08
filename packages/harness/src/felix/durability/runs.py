@@ -7,7 +7,7 @@ from typing import Any
 
 from felix.config import Settings
 from felix.context import try_get_context
-from felix.durability.fibers import create_fiber, get_fiber, now_ms
+from felix.durability.fibers import active_fiber_for_thread, create_fiber, get_fiber, now_ms
 from felix.manifests.schema import ABSOLUTE_LIMITS, ExecutionSpec
 from felix.patterns.types import ChatMessage
 
@@ -55,7 +55,11 @@ async def start_durable_chat(
     execution: ExecutionSpec,
     pin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Enqueue an invoke fiber; the worker's fiber scheduler runs it."""
+    """Enqueue an invoke fiber; the worker's fiber scheduler runs it.
+
+    Raises `RunInProgress` when `thread_id` already has a durable run in flight: one run per
+    thread, checked atomically with the enqueue (felix-run/felix#529).
+    """
     ttl = _ttl_seconds(settings, execution)
     expires_at = now_ms() + ttl * 1000
     state: dict[str, Any] = {
@@ -123,6 +127,8 @@ async def start_durable_chat(
         # Validated against the registry for this tenant before anything is written, so a
         # manifest naming an endpoint it may not use is refused at enqueue, not after the run.
         webhooks=endpoints_for_run(settings, tenant_id, list(execution.webhooks)),
+        thread_id=thread_id,
+        exclusive_on_thread=True,
     )
     return {
         "status": "accepted",
@@ -138,6 +144,23 @@ async def get_durable_run(settings: Settings, tenant_id: str, resume_token: str)
     if row is None:
         return None
     return run_view(row)
+
+
+async def active_durable_run(settings: Settings, tenant_id: str, thread_id: str) -> dict[str, Any] | None:
+    """The durable run in flight on `thread_id`, as a client needs it to watch -- or None.
+
+    The only way to learn a run's `resume_token` used to be the response that started it, so a
+    client that reloaded had no handle on a run still writing to the thread it was showing.
+    """
+    row = await active_fiber_for_thread(settings, tenant_id, thread_id)
+    if row is None:
+        return None
+    state = dict(row.get("state_json") or {})
+    return {
+        "resume_token": row.get("id"),
+        "status": row.get("status"),
+        "expires_at": state.get("expires_at"),
+    }
 
 
 def run_view(row: dict[str, Any]) -> dict[str, Any]:
@@ -170,4 +193,4 @@ def _webhook_view(row: dict[str, Any]) -> dict[str, Any]:
     return {"webhooks": {name: str((ep or {}).get("status") or "pending") for name, ep in endpoints.items()}}
 
 
-__all__ = ["get_durable_run", "run_view", "start_durable_chat"]
+__all__ = ["active_durable_run", "get_durable_run", "run_view", "start_durable_chat"]

@@ -7432,7 +7432,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too. `run_in_progress:<resume_token>`: the thread has a durable run in flight; watch it at `GET /chat/runs/{resume_token}` and send once it has finished."
           },
           "422": {
             "content": {
@@ -7504,7 +7504,7 @@
                 }
               }
             },
-            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too. `run_in_progress:<resume_token>`: the thread has a durable run in flight; watch it at `GET /chat/runs/{resume_token}` and send once it has finished."
           },
           "422": {
             "content": {
@@ -9098,7 +9098,7 @@
                 }
               }
             },
-            "description": "`lease_read_only` / `lease_held`: the `X-Felix-Lease-Token` presented does not drive the thread (or, under `FELIX_LEASE_ENFORCE=strict`, none was and another holder does). `idempotency_in_progress`: a request with this `Idempotency-Key` is still streaming; reattach with `GET /chat/stream/{thread_id}`."
+            "description": "`lease_read_only` / `lease_held`: the `X-Felix-Lease-Token` presented does not drive the thread (or, under `FELIX_LEASE_ENFORCE=strict`, none was and another holder does). `idempotency_in_progress`: a request with this `Idempotency-Key` is still streaming; reattach with `GET /chat/stream/{thread_id}`. `run_in_progress:<resume_token>`: the thread has a durable run in flight; watch it at `GET /chat/runs/{resume_token}` and send once it has finished."
           },
           "422": {
             "content": {

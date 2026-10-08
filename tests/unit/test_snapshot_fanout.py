@@ -27,12 +27,14 @@ from typing import Any
 
 import pytest
 
-CONCURRENT = 5
+# Five reads, and since felix-run/felix#529 a sixth: the durable run in flight on the thread.
+CONCURRENT = 6
 
 
 @pytest.mark.asyncio
 async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix import steer as steer_mod
+    from felix.durability import runs as runs_mod
     from felix.session import lease as lease_mod
     from felix.session import store as store_mod
     from felix.session import thread_state as ts_mod
@@ -60,6 +62,7 @@ async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(ts_mod, "get_thread_meta", lambda **k: _rendezvous({}))
     monkeypatch.setattr(steer_mod, "peek_steer_count", lambda *a, **k: _rendezvous(0))
     monkeypatch.setattr(lease_mod, "lease_status", lambda *a, **k: _rendezvous({}))
+    monkeypatch.setattr(runs_mod, "active_durable_run", lambda *a, **k: _rendezvous(None))
 
     snapshot = await gather_thread_snapshot(settings=object(), tenant_id="t", thread="t:thread")
     assert snapshot["id"] == "t:thread"
@@ -72,6 +75,7 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
     """Fanning out must not shuffle which result feeds which field — the five reads
     return different shapes and `gather` returns them positionally."""
     from felix import steer as steer_mod
+    from felix.durability import runs as runs_mod
     from felix.session import lease as lease_mod
     from felix.session import store as store_mod
     from felix.session import thread_state as ts_mod
@@ -102,6 +106,11 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
     monkeypatch.setattr(steer_mod, "peek_steer_count", _steer)
     monkeypatch.setattr(lease_mod, "lease_status", _lease)
 
+    async def _run(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {"resume_token": "fib-9", "status": "running", "expires_at": 99}
+
+    monkeypatch.setattr(runs_mod, "active_durable_run", _run)
+
     snap = await gather_thread_snapshot(settings=object(), tenant_id="t", thread="t:thread")
     assert snap["name"] == "named"
     assert snap["phase"] == "turn"
@@ -110,6 +119,7 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
     assert snap["queuedSteerCount"] == 3
     assert snap["attached"] is True
     assert snap["locked"] is False
+    assert snap["activeRun"] == {"resumeToken": "fib-9", "status": "running", "expiresAt": 99}
 
 
 # --- /v1/models ----------------------------------------------------------------------

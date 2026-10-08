@@ -157,3 +157,53 @@ async def test_a_mid_step_checkpoint_lands_under_the_claims_version_and_only_the
     assert await fibers._checkpoint_state(fiber_settings, stale) is False
     stored = await fibers.get_fiber(fiber_settings, TENANT, str(created["id"]))
     assert stored is not None and stored["state_json"]["invoke_began"]["seq"] == 3
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_one_run_per_thread_on_both_backends(fiber_settings: Any) -> None:
+    """felix-run/felix#529: the thread is recorded, a second run on it is refused, and the
+    refusal ends with the run. On Postgres this is the advisory lock, the `thread_id` column
+    and the partial index all at once -- none of which the memory twin has."""
+    state = {"steps": [{"op": "complete"}], "cursor": 0, "expires_at": fibers.now_ms() + 60_000}
+    first = await fibers.create_fiber(
+        fiber_settings, TENANT, state=state, thread_id="conf:t", exclusive_on_thread=True
+    )
+    stored = await fibers.get_fiber(fiber_settings, TENANT, str(first["id"]))
+    assert stored is not None and stored["thread_id"] == "conf:t"
+
+    with pytest.raises(fibers.RunInProgress) as refused:
+        await fibers.create_fiber(
+            fiber_settings, TENANT, state=state, thread_id="conf:t", exclusive_on_thread=True
+        )
+    assert refused.value.resume_token == first["id"]
+    active = await fibers.active_fiber_for_thread(fiber_settings, TENANT, "conf:t")
+    assert active is not None and active["id"] == first["id"]
+
+    assert await fibers.resume_due_fibers(fiber_settings) == 1  # `complete` ends it
+    assert await fibers.active_fiber_for_thread(fiber_settings, TENANT, "conf:t") is None
+    await fibers.create_fiber(
+        fiber_settings, TENANT, state=state, thread_id="conf:t", exclusive_on_thread=True
+    )
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_concurrent_sends_start_exactly_one_run(fiber_settings: Any) -> None:
+    """The check and the insert are one step: a pair racing past the route's pre-check must
+    not both enqueue."""
+    import asyncio
+
+    state = {"steps": [{"op": "complete"}], "cursor": 0, "expires_at": fibers.now_ms() + 60_000}
+
+    async def start() -> str:
+        try:
+            await fibers.create_fiber(
+                fiber_settings, TENANT, state=state, thread_id="conf:race", exclusive_on_thread=True
+            )
+            return "started"
+        except fibers.RunInProgress:
+            return "refused"
+
+    outcomes = await asyncio.gather(*(start() for _ in range(8)))
+    assert sorted(outcomes) == ["refused"] * 7 + ["started"]

@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from felix.config import Settings, process_identity
 from felix.db.models import Fiber
@@ -98,6 +98,46 @@ def fiber_thread_id(tenant_id: str, fiber_id: str) -> str:
     return f"{tenant_id}:fiber:{fiber_id}"
 
 
+class RunInProgress(Exception):
+    """A thread already has a durable run in flight, so another may not start on it.
+
+    Two runs on one thread both append to its log, and neither sees the other's work until a
+    whole tool batch lands (`patterns/react.py`), so each re-does what the other is doing:
+    the same writes twice, turns landing between another run's tool calls, a pending approval
+    per copy (felix-run/felix#529). `resume_token` is the run already there, for the caller
+    to watch instead.
+    """
+
+    def __init__(self, resume_token: str) -> None:
+        super().__init__(f"run_in_progress:{resume_token}")
+        self.resume_token = resume_token
+
+
+def run_in_flight(row: dict[str, Any], now: int) -> bool:
+    """Whether a fiber still holds its thread.
+
+    Not merely "not terminal". A fiber past its `expires_at` that no worker holds is over in
+    all but name -- the next claim marks it `expired` without running anything -- and on a
+    deployment with no worker it would never be claimed at all, so counting it would lock the
+    thread for good. One a worker *does* hold past its expiry is still running its step (expiry
+    is checked only between steps), so it counts until its lease lapses.
+    """
+    if row.get("status") in FIBER_TERMINAL_STATUSES:
+        return False
+    raw = (row.get("state_json") or {}).get("expires_at")
+    try:
+        expires_at = int(raw) if raw is not None else None
+    except TypeError, ValueError:
+        expires_at = None
+    # No readable deadline: the run is bounded by nothing we can see, so it holds the thread.
+    if expires_at is None:
+        return True
+    if now < expires_at:
+        return True
+    lease_until = row.get("lease_until")
+    return lease_until is not None and now < int(lease_until)
+
+
 def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         return dict(row)
@@ -105,6 +145,7 @@ def _fiber_dict(row: Fiber | dict[str, Any]) -> dict[str, Any]:
         "tenant_id": row.tenant_id,
         "id": row.id,
         "kind": row.kind,
+        "thread_id": row.thread_id,
         "status": row.status,
         "lease_owner": row.lease_owner,
         "lease_until": row.lease_until,
@@ -129,9 +170,17 @@ async def create_fiber(
     wake_at: int | None = None,
     status: str = "pending",
     webhooks: list[str] | None = None,
+    thread_id: str | None = None,
+    exclusive_on_thread: bool = False,
 ) -> dict[str, Any]:
     """Create a fiber. `webhooks` are endpoint ids announced when it reaches a terminal status
-    (see `felix.durability.webhooks`); already validated by the caller."""
+    (see `felix.durability.webhooks`); already validated by the caller.
+
+    `thread_id` is the thread the fiber writes to, recorded so a thread's run can be found
+    (`active_fiber_for_thread`). With `exclusive_on_thread`, raises `RunInProgress` instead of
+    creating a second fiber on a thread that already has one in flight -- checked and inserted
+    under one per-thread lock, so two concurrent sends cannot both pass the check.
+    """
     from felix.secrets import redact_json
 
     fiber_id = uuid.uuid4().hex
@@ -154,13 +203,20 @@ async def create_fiber(
         # writes through the returned dict (the Temporal backend did) had every write discarded.
         "version": 0,
         "attempts": 0,
+        "thread_id": thread_id,
         "webhook_status": "pending" if webhooks else None,
         "webhook_due_at": None,
         "webhook_state": {
             "endpoints": {name: {"status": "pending", "attempts": 0} for name in webhooks or []}
         },
     }
+    exclusive = bool(thread_id) and exclusive_on_thread
     if _use_memory(settings):
+        # No await between the check and the insert, so the event loop is the lock.
+        if exclusive:
+            active = _active_memory_fiber(tenant_id, str(thread_id), ts)
+            if active is not None:
+                raise RunInProgress(active["id"])
         _memory_fibers[(tenant_id, fiber_id)] = row
         return _fiber_dict(row)
 
@@ -171,9 +227,62 @@ async def create_fiber(
     from felix.db.session import tenant_session
 
     async with tenant_session(settings, tenant_id) as db:
+        if exclusive:
+            # Check-then-insert is a race under READ COMMITTED: two sends both see the thread
+            # free. One lock per thread for the length of this transaction makes it a check.
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": f"fiber-thread:{tenant_id}:{thread_id}"},
+            )
+            active = await _active_postgres_fiber(db, tenant_id, str(thread_id), ts)
+            if active is not None:
+                raise RunInProgress(active["id"])
         db.add(Fiber(**row))
         await db.commit()
         return row
+
+
+def _active_memory_fiber(tenant_id: str, thread_id: str, now: int) -> dict[str, Any] | None:
+    rows = [
+        row
+        for (tenant, _), row in _memory_fibers.items()
+        if tenant == tenant_id and row.get("thread_id") == thread_id and run_in_flight(row, now)
+    ]
+    # Newest first, then by id: the same tie-break the Postgres arm's ORDER BY uses.
+    rows.sort(key=lambda r: (-int(r.get("created_at") or 0), str(r.get("id"))))
+    return _fiber_dict(rows[0]) if rows else None
+
+
+async def _active_postgres_fiber(db: Any, tenant_id: str, thread_id: str, now: int) -> dict[str, Any] | None:
+    # Non-terminal rows on one thread: one in the normal case, a handful at worst, so the
+    # time-dependent half of the predicate runs here rather than in SQL.
+    result = await db.execute(
+        select(Fiber)
+        .where(
+            Fiber.tenant_id == tenant_id,
+            Fiber.thread_id == thread_id,
+            Fiber.status.not_in(sorted(FIBER_TERMINAL_STATUSES)),
+        )
+        .order_by(Fiber.created_at.desc(), Fiber.id)
+    )
+    for fiber in result.scalars():
+        row = _fiber_dict(fiber)
+        if run_in_flight(row, now):
+            return row
+    return None
+
+
+async def active_fiber_for_thread(
+    settings: Settings, tenant_id: str, thread_id: str
+) -> dict[str, Any] | None:
+    """The fiber in flight on `thread_id`, newest first, or None. See `run_in_flight`."""
+    ts = now_ms()
+    if _use_memory(settings):
+        return _active_memory_fiber(tenant_id, thread_id, ts)
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
+        return await _active_postgres_fiber(db, tenant_id, thread_id, ts)
 
 
 async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bool = False) -> None:
@@ -1137,6 +1246,8 @@ save_fiber = _save_fiber
 
 
 __all__ = [
+    "RunInProgress",
+    "active_fiber_for_thread",
     "advance_fiber",
     "create_fiber",
     "fiber_thread_id",
@@ -1144,5 +1255,6 @@ __all__ = [
     "now_ms",
     "resume_due_fibers",
     "run_fiber_loop",
+    "run_in_flight",
     "save_fiber",
 ]
