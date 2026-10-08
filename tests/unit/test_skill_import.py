@@ -17,6 +17,7 @@ from felix.config import Settings
 from felix.skills import github, importer, library
 from felix.skills.format import clamp_description
 from felix.skills.github import TreeEntry
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
@@ -353,7 +354,9 @@ async def test_an_import_saves_a_draft_with_its_origin(
     lib = get_skill_library_store(settings)
     stored = await lib.get_version("acme", NAME, "0.1.0")
     assert stored is not None and stored["origin_tree_hash"] == row["origin_tree_hash"]
-    files = await library.read_version_files(settings, "acme", NAME, "0.1.0", object_store=store)
+    files = await library.read_version_files(
+        settings, "acme", NAME, "0.1.0", object_store=store, owner=ORG_OWNER
+    )
     assert sorted(files) == ["SKILL.md", "assets/logo.png", "references/queues.md"]
 
     await audit_store.flush_pending(settings)
@@ -1235,7 +1238,9 @@ async def test_an_agent_copying_an_imported_file_into_a_new_skill_carries_the_li
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
     await _import(settings, store, gh)
-    imported = await library.read_version_files(settings, "acme", NAME, "0.1.0", object_store=store)
+    imported = await library.read_version_files(
+        settings, "acme", NAME, "0.1.0", object_store=store, owner=ORG_OWNER
+    )
     agent = library.DraftProvenance(source="agent", author="contributor", origin_manifest_id="contributor")
 
     def bundle(name: str, **extra: str) -> dict[str, str]:

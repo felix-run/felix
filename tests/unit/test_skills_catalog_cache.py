@@ -62,7 +62,7 @@ async def test_the_directory_is_walked_once_not_once_per_request(
     )
 
     for _ in range(10):
-        catalog = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+        catalog = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
         assert "alpha" in catalog.skills
 
     assert len(walks) == 1, f"walked the skills directory {len(walks)} times for 10 requests"
@@ -72,11 +72,11 @@ async def test_the_directory_is_walked_once_not_once_per_request(
 async def test_adding_a_skill_is_picked_up_without_waiting(tmp_path: Path) -> None:
     """The root's mtime moves when an entry is added, so this needs no TTL wait."""
     _write_skill(tmp_path, "alpha")
-    first = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+    first = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     assert set(first.skills) == {"alpha"}
 
     _write_skill(tmp_path, "beta")
-    second = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+    second = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     assert set(second.skills) == {"alpha", "beta"}, "a new skill directory was not noticed"
 
 
@@ -87,14 +87,14 @@ async def test_an_edit_to_an_existing_skill_lands_once_the_ttl_expires(
     """Editing a nested file does not move the root directory's mtime, and nothing
     cheap detects that — which is the whole reason there is a TTL as well as a stamp."""
     _write_skill(tmp_path, "alpha", description="before")
-    first = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+    first = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     assert first.skills["alpha"].description == "before"
 
     _write_skill(tmp_path, "alpha", description="after")
     monkeypatch.setattr(skills_loader, "_CATALOG_TTL_SECONDS", 0.0)
     skills_loader._bundled_cache.clear()  # re-stamp with the zero TTL in force
 
-    again = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+    again = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     assert again.skills["alpha"].description == "after"
 
 
@@ -115,7 +115,7 @@ async def test_the_walk_happens_off_the_event_loop(tmp_path: Path, monkeypatch: 
         return await real_to_thread(fn, *args, **kwargs)
 
     monkeypatch.setattr(skills_loader.asyncio, "to_thread", _spy)
-    await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+    await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     assert skills_loader.load_skills_from_dir in threaded, "the walk ran on the event loop"
 
 
@@ -124,10 +124,12 @@ async def test_a_caller_cannot_corrupt_the_cached_catalog(tmp_path: Path) -> Non
     """The returned catalog is per-request; the cached one is shared by every request
     that follows. Placeholder entries for unresolved refs are written into the former."""
     _write_skill(tmp_path, "alpha")
-    first = await skills_loader.load_manifest_skills([{"name": "not-a-real-skill"}], bundled_dir=tmp_path)
+    first = await skills_loader.load_manifest_skills(
+        [{"name": "not-a-real-skill"}], bundled_dir=tmp_path, owner=None
+    )
     assert "not-a-real-skill" in first.skills, "the placeholder should reach the caller"
 
-    second = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path)
+    second = await skills_loader.load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     assert set(second.skills) == {"alpha"}, "a placeholder leaked into the shared catalog"
 
 
@@ -149,7 +151,7 @@ async def test_the_bundled_directory_is_probed_once_per_process(
     if resolver is None:
         # No resolver at all means the probing is still inline in load_manifest_skills.
         for _ in range(5):
-            await skills_loader.load_manifest_skills([])
+            await skills_loader.load_manifest_skills([], owner=None)
     else:
         for _ in range(5):
             resolver()

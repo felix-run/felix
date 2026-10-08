@@ -25,6 +25,10 @@ export const OPS = [
   'exec',
   // A thread's repository, cloned into its empty /workspace with the person's token (`github.ts`).
   'clone',
+  // The harness reading that repository: git run by its own `_git_run`, output kept from the start.
+  'git',
+  // Sizes for a repository listing.
+  'lstat',
   // Not file operations: back `/workspace` up to R2 now, and stop the sandbox and delete its backup.
   'checkpoint',
   'destroy',
@@ -41,6 +45,9 @@ export const MAX_ARGV_ITEMS = 256;
 export const MAX_ARGV_BYTES = 64_000;
 export const MAX_STDIN_CHARS = 256_000;
 export const MAX_EXEC_TIMEOUT_MS = 3_600_000;
+/** The harness's git output cap (`_GIT_OUTPUT_CAP`) and listing ceiling (`LIST_MAX`). */
+export const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
+export const MAX_LSTAT_PATHS = 10_000;
 /** A write's base64 body plus JSON framing, rounded up. Anything larger is not a tool call. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -63,6 +70,8 @@ export type HelperRequest =
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
   | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
   | { op: 'clone'; repo: string; branch: string; token: string }
+  | { op: 'git'; args: string[]; stdin?: string; limit: number }
+  | { op: 'lstat'; paths: string[] }
   | { op: 'checkpoint' }
   | { op: 'destroy' };
 
@@ -215,6 +224,36 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
       }
       if (token === null || token.length === 0 || token.length > 512) return '`token` must be a token';
       return { op, repo, branch, token };
+    }
+    case 'git': {
+      const args = body.args;
+      const limit = int(body, 'limit', MAX_GIT_OUTPUT_BYTES, 1, MAX_GIT_OUTPUT_BYTES);
+      const stdin = body.stdin;
+      if (
+        !Array.isArray(args) ||
+        args.length === 0 ||
+        args.length > MAX_ARGV_ITEMS ||
+        !args.every((a) => typeof a === 'string')
+      ) {
+        return `\`args\` must be 1 to ${MAX_ARGV_ITEMS} strings`;
+      }
+      if (limit === null) return `\`limit\` must be an integer from 1 to ${MAX_GIT_OUTPUT_BYTES}`;
+      if (stdin !== undefined && stdin !== null && typeof stdin !== 'string') {
+        return '`stdin` must be a base64 string';
+      }
+      return {
+        op,
+        args: args as string[],
+        limit,
+        ...(typeof stdin === 'string' ? { stdin } : {}),
+      };
+    }
+    case 'lstat': {
+      const paths = body.paths;
+      if (!Array.isArray(paths) || paths.length > MAX_LSTAT_PATHS || !paths.every((p) => typeof p === 'string')) {
+        return `\`paths\` must be at most ${MAX_LSTAT_PATHS} strings`;
+      }
+      return { op, paths: paths as string[] };
     }
     case 'search': {
       const path = str(body, 'path', '.');

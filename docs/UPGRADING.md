@@ -71,9 +71,12 @@ holds the two to the same answers. To turn it on:
 
 `shell_tools` run in the scope's sandbox as well, after the same allowlist and command screening as
 on the host. The sandbox image is a slim Debian with Python and little else, so a command that is
-not installed there fails as a missing binary. What `hosted` does not serve, and refuses rather than
-serving from the host: an image tool's `path`, `publish_commits` and a thread's repository checkout,
-for any scope but `deployment` (which stays on the host).
+not installed there fails as a missing binary. A repository opened in a thread is cloned into that
+thread's sandbox, and `publish_commits` reads its commits there; the thread's workspace must be
+empty when the repository is opened. A checkout made on the host before `hosted` was turned on is
+still refused: remove it and open the repository again. What `hosted` does not serve, and refuses
+rather than serving from the host: an image tool's `path`, and `publish_commits` in a thread with
+no repository, for any scope but `deployment` (which stays on the host).
 
 A scope starts empty on the hosted backend. To carry what local scopes already hold, once, after
 turning `hosted` on (the local files stay where they are):

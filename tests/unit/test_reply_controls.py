@@ -452,7 +452,7 @@ async def test_a_governed_manifest_streams_its_reply_redacted_end_to_end() -> No
     ctx = RequestContext(settings=settings, auth=AuthContext(tenant_id="default"), manifest_id="reply-e2e")
     async with async_run_with_context(ctx):
         agent = await build_tenant_agent(
-            settings, manifest=manifest, tools=default_tool_provider(), tenant_id="default"
+            settings, manifest=manifest, tools=default_tool_provider(), tenant_id="default", skill_owner=None
         )
         # Inbound screening wraps outermost (the manifest targets `input`); the reply
         # controls sit inside it, around the pattern.

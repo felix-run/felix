@@ -98,6 +98,9 @@ async def start_durable_chat(
             "scopes": sorted(caller.auth.scopes),
             "anonymous": bool(caller.auth.anonymous),
             "scheme": caller.auth.scheme,
+            # The starter's personal skill library, so the resumed compile loads the catalog the
+            # request would have. Without it the resume silently ran on the org's skills alone.
+            "skill_owner": caller.auth.skill_owner,
         }
         # The token's own expiry, as a single integer — not the claims. Without it this would
         # be the first path in Felix where authority survives `exp`: there is no revocation

@@ -205,3 +205,59 @@ async def test_a_github_failure_answers_in_fixed_words_not_the_exception_s(
                 "message": "GitHub could not be reached or answered unexpectedly; try again shortly",
             }
             assert "egress-proxy" not in answer.text
+
+
+async def test_under_the_hosted_backend_the_repository_lives_in_the_threads_sandbox(
+    boot: Any,
+    fake_github: FakeGitHub,
+    git_server: Any,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from felix.tools import workspace_hosted
+    from felix.tools.workspace_scope import thread_key
+
+    from tests.workspace_gateway_fake import TOKEN, URL, FakeGateway
+
+    gateway = FakeGateway(root=tmp_path / "sandboxes", clone_base=git_server.base)
+    monkeypatch.setattr(workspace_hosted, "gateway_client", lambda settings: gateway.client())
+    env = _env(
+        tmp_path,
+        FELIX_WORKSPACE_BACKEND="hosted",
+        FELIX_WORKSPACE_GATEWAY_URL=URL,
+        FELIX_WORKSPACE_GATEWAY_TOKEN=TOKEN,
+    )
+    async with boot([], env=env) as app:
+        bearer = await _sign_in(app.client)
+        opened = await app.client.post(
+            "/chat/sessions/t1/workspace/repo", json={"full_name": "acme/widgets"}, headers=bearer
+        )
+        assert opened.status_code == 202, opened.text
+        await checkouts.wait_for_clones()
+
+        status = await app.client.get("/chat/sessions/t1/workspace/repo", headers=bearer)
+        assert {k: status.json()[k] for k in ("state", "branch", "ahead", "dirty")} == {
+            "state": "ready",
+            "branch": "main",
+            "ahead": 0,
+            "dirty": False,
+        }, status.text
+        sandbox = gateway.sandbox(f"acme/{thread_key('acme', 'acme:t1')}")
+        assert (sandbox / "app.py").is_file()
+        # The App token went to the gateway for the clone; no response carried it.
+        assert len(gateway.clone_tokens) == 1
+        files = await app.client.get("/chat/sessions/t1/workspace/repo/files", headers=bearer)
+        assert [(f["path"], f["status"]) for f in files.json()["files"]] == [
+            ("README.md", "clean"),
+            ("app.py", "clean"),
+        ]
+        assert gateway.clone_tokens[0] not in status.text + files.text
+
+        # A sandbox that cannot be cleared keeps the checkout and says so.
+        gateway.down = True
+        refused = await app.client.delete("/chat/sessions/t1/workspace/repo", headers=bearer)
+        assert refused.status_code == 503 and refused.json()["error"] == "workspace_unavailable"
+        gateway.down = False
+        removed = await app.client.delete("/chat/sessions/t1/workspace/repo", headers=bearer)
+        assert removed.status_code == 204
+        assert not sandbox.exists()

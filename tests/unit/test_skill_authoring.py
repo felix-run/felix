@@ -75,7 +75,13 @@ async def _catalog(
     settings: Settings, store: MemoryObjectStore, refs: list[Any] | None = None, **kw: Any
 ) -> Any:
     return await load_manifest_skills(
-        refs or [], tenant_id="acme", object_store=store, bundled_dir=REPO_SKILLS, settings=settings, **kw
+        refs or [],
+        tenant_id="acme",
+        object_store=store,
+        bundled_dir=REPO_SKILLS,
+        settings=settings,
+        **kw,
+        owner=None,
     )
 
 
@@ -180,7 +186,7 @@ async def test_another_tenants_library_is_not_in_the_catalog(
 ) -> None:
     await _published(settings, store)
     catalog = await load_manifest_skills(
-        [], tenant_id="globex", object_store=store, bundled_dir=REPO_SKILLS, settings=settings
+        [], tenant_id="globex", object_store=store, bundled_dir=REPO_SKILLS, settings=settings, owner=None
     )
     assert catalog.get("invoice-triage") is None
 
@@ -189,7 +195,9 @@ async def test_without_settings_the_catalog_is_what_it_was(
     settings: Settings, store: MemoryObjectStore
 ) -> None:
     await _published(settings, store)
-    catalog = await load_manifest_skills([], tenant_id="acme", object_store=store, bundled_dir=REPO_SKILLS)
+    catalog = await load_manifest_skills(
+        [], tenant_id="acme", object_store=store, bundled_dir=REPO_SKILLS, owner=None
+    )
     assert catalog.get("invoice-triage") is None
 
 
@@ -378,7 +386,7 @@ async def test_read_skill_file_on_a_host_skill_stays_inside_its_directory(
     (tmp_path / "secret.md").write_text("outside")
     (skill_dir / "references" / "link.md").symlink_to(tmp_path / "secret.md")
 
-    catalog = await load_manifest_skills([], bundled_dir=tmp_path)
+    catalog = await load_manifest_skills([], bundled_dir=tmp_path, owner=None)
     tools = _skill_tools(catalog, settings, store)
     activated = await _call(tools["activate_skill"], {"name": "host-skill"})
     assert "references/a.md" in activated["files"]
@@ -619,7 +627,7 @@ async def test_a_shared_store_skill_cannot_reach_a_tenants_library_bytes(
         object_store=store,
     )
     catalog = await load_manifest_skills(
-        [{"name": "acme"}], tenant_id="globex", object_store=store, bundled_dir=REPO_SKILLS
+        [{"name": "acme"}], tenant_id="globex", object_store=store, bundled_dir=REPO_SKILLS, owner=None
     )
     assert catalog.get("acme").source == "store"
     tools = _skill_tools(catalog, settings, store)

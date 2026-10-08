@@ -43,6 +43,7 @@ async def test_load_bundled_calculator_help() -> None:
     catalog = await load_manifest_skills(
         [{"name": "calculator-help"}],
         bundled_dir=root,
+        owner=None,
     )
     assert "calculator-help" in catalog.skills
     xml = skill_catalog_xml(catalog)
@@ -55,6 +56,7 @@ async def test_skill_tools_activate() -> None:
     catalog = await load_manifest_skills(
         [{"name": "calculator-help"}],
         bundled_dir=Path(__file__).resolve().parents[2] / "skills",
+        owner=None,
     )
     store = InMemorySkillActivationStore()
     tools = {

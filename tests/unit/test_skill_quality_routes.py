@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from felix.config import Settings
+from felix.skills.library_keys import ORG_OWNER
 from httpx import ASGITransport, AsyncClient
 
 from tests.skill_quality import NAME, published
@@ -275,7 +276,7 @@ async def test_an_evaluation_says_whether_it_counts_for_the_gate(app: App) -> No
         app.settings, bundle(**{"evals/scenarios.json": '[{"name": "s", "prompt": "p"}]'})
     )
     files = await library.read_version_files(
-        app.settings, "acme", NAME, operator, object_store=object_store(app.settings)
+        app.settings, "acme", NAME, operator, object_store=object_store(app.settings), owner=ORG_OWNER
     )
     agent = await library.save_draft(
         app.settings,

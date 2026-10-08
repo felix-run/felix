@@ -10,6 +10,24 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-10-07
+
+### Added
+
+- `felix workspace upload [--tenant T] [--dry-run]` copies local workspace scopes into their hosted sandboxes once after turning on `FELIX_WORKSPACE_BACKEND=hosted`, backing each up and leaving the local files in place; symlinks and files over the write cap are skipped and reported. (#520)
+
+- `GET /chat/sessions` rows now carry `preview` (the thread's first user message, masked, whitespace-collapsed and cut to 120 characters) and `manifest` (the manifest its newest turn ran under). Each is `null` when unknown, so a client can recognise a thread it did not start. Threads from before this change list them as `null` (or the manifest they were first run under). (#521)
+
+- Under `FELIX_WORKSPACE_BACKEND=hosted`, a repository opened in a thread is cloned into that thread's sandbox, and the file listing, `describe` and `publish_commits` read it there through the gateway's new read-only `git` and `lstat` operations. A repository opens only into an empty thread workspace. Removing it, or the worker expiring it, destroys the sandbox; a removal the gateway cannot carry out answers `503 workspace_unavailable` and keeps the checkout. Redeploy the gateway with this release. (#523)
+
+### Changed
+
+- Migration `0033_skill_owner` adds an owner to the skill library's keys, the groundwork for personal skills. Skill saves fail on replicas still running older code until a rollout completes, and a downgrade past it refuses while any personal skill exists (`docs/UPGRADING.md`). (#517)
+
+### Fixed
+
+- A manifest whose `shell_tools` the host does not allow (`FELIX_SHELL_ALLOWED_COMMANDS` unset or not covering a prefix) is now refused at compile with a message naming the cause. Before, it compiled without the shell tool and the agent reported it had none. (#518)
+
 ## [0.11.1] — 2026-10-07
 
 ### Changed
@@ -4403,3 +4421,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.10.0]: https://github.com/felix-run/felix/releases/tag/v0.10.0
 [0.11.0]: https://github.com/felix-run/felix/releases/tag/v0.11.0
 [0.11.1]: https://github.com/felix-run/felix/releases/tag/v0.11.1
+[0.11.2]: https://github.com/felix-run/felix/releases/tag/v0.11.2

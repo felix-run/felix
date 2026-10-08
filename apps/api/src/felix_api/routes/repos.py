@@ -292,7 +292,7 @@ async def list_thread_repo_files(
     "/{thread_id}/workspace/repo",
     status_code=204,
     response_model=None,
-    responses={404: {"model": RepoErrorOut}, 409: {"model": RepoErrorOut}},
+    responses={404: {"model": RepoErrorOut}, 409: {"model": RepoErrorOut}, 503: {"model": RepoErrorOut}},
 )
 async def remove_thread_repo(thread_id: str, request: Request) -> Any:
     """Delete this thread's checkout. Commits not yet published are lost with it."""
@@ -303,8 +303,10 @@ async def remove_thread_repo(thread_id: str, request: Request) -> Any:
     settings = request.app.state.settings
     tenant, scoped = _thread(request, thread_id)
     try:
-        removed = checkouts.remove_checkout(settings, tenant, scoped)
+        removed = await checkouts.remove_checkout(settings, tenant, scoped)
     except checkouts.CheckoutRefused as exc:
+        if exc.code == "workspace_unavailable":
+            return _refusal(503, exc.code, "the thread's sandbox could not be cleared; try again shortly")
         return _refusal(409, exc.code, _checkout_refusal_message(exc.code, settings))
     if not removed:
         return _refusal(404, "no_repository", "this thread has no repository")

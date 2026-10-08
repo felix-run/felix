@@ -32,6 +32,10 @@ class Skill:
     # Imported third-party text, or built on it (`skill_version.lineage_import`): what the skill
     # tools return of it is marked untrusted output, so content screening covers it.
     untrusted: bool = False
+    # A library skill's library (`library_keys.ORG_OWNER` or a personal owner): where its bundle
+    # files and versions are read from. None for every other source. A personal skill may share
+    # its name and version with the tenant's, so the name alone does not say whose files are whose.
+    library_owner: str | None = None
 
     def listed_description(self) -> str:
         """The description as the model is shown it -- in the system-prompt catalog and by

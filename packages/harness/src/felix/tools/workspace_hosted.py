@@ -28,6 +28,7 @@ writes touches this host.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -251,6 +252,83 @@ class HostedBackend:
         return await self._call(scope, "checkpoint", {})
 
 
+# The gateway's `lstat` bounds (deploy/cloudflare/workspace-gateway/src/protocol.ts): 10,000 paths
+# and a 1 MiB body. The byte budget leaves room for the JSON around the paths.
+_LSTAT_BATCH_PATHS = 10_000
+_LSTAT_BATCH_BYTES = 768 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class HostedRoot:
+    """A thread's repository in its sandbox, where git would otherwise take a directory.
+
+    `felix.tools.github_publish._git_run` sends a call on one of these to the gateway's `git` op,
+    which runs the harness's own `_git_exec` (ported into `felix-fs`) in the sandbox's /workspace --
+    so a listing and `publish_commits` read the repository with the same prelude, environment and
+    output cap wherever it lives.
+    """
+
+    settings: Any
+    path: str  # tenant/key
+
+    async def git(self, args: tuple[str, ...], *, stdin: bytes | None, limit: int) -> Any:
+        from felix.tools.github_publish import _GitResult
+
+        body: dict[str, Any] = {"args": list(args), "limit": limit}
+        if stdin is not None:
+            body["stdin"] = base64.b64encode(stdin).decode("ascii")
+        out = await HostedBackend(self.settings)._post(
+            self.path, "git", body, httpx.Timeout(90.0, connect=10.0)
+        )
+        return _GitResult(
+            out=base64.b64decode(out["out"]),
+            code=int(out["code"]),
+            err=str(out.get("err", "")),
+            truncated=bool(out.get("truncated")),
+        )
+
+    async def lstat(self, paths: list[str]) -> list[dict[str, Any] | None]:
+        """In batches the gateway takes: at most `_LSTAT_BATCH_PATHS` paths, and well inside its
+        1 MiB body cap, since a deep tree's paths are long."""
+        stats: list[dict[str, Any] | None] = []
+        backend = HostedBackend(self.settings)
+        start = 0
+        while start < len(paths):
+            end, size = start, 0
+            while end < len(paths) and end - start < _LSTAT_BATCH_PATHS:
+                size += len(json.dumps(paths[end])) + 1
+                if size > _LSTAT_BATCH_BYTES and end > start:
+                    break
+                end += 1
+            out = await backend._post(self.path, "lstat", {"paths": paths[start:end]})
+            stats.extend(out["stats"])
+            start = end
+        return stats
+
+
+def thread_scope_path(settings: Settings, tenant_id: str, thread_id: str) -> str:
+    """The gateway path of a thread's own scope: where its repository is cloned under `hosted`."""
+    return gateway_path(settings, WorkspaceScope(tenant_id, thread_id, "thread"))
+
+
+def hosted_checkout_root() -> HostedRoot | None:
+    """This call's thread's repository in its sandbox, when there is one ready under `hosted`."""
+    from felix.context import try_get_context
+    from felix.repos.checkouts import READY, read_checkout
+    from felix.tools.workspace_scope import current_scope
+
+    ctx = try_get_context()
+    if ctx is None or getattr(ctx.settings, "workspace_backend", "local") != "hosted":
+        return None
+    tenant = str(getattr(ctx.auth, "tenant_id", "") or "")
+    if current_scope() != "thread" or not ctx.thread_id or not tenant:
+        return None
+    state = read_checkout(ctx.settings, tenant, ctx.thread_id)
+    if not state or not state.get("hosted") or state.get("state") != READY:
+        return None
+    return HostedRoot(ctx.settings, thread_scope_path(ctx.settings, tenant, ctx.thread_id))
+
+
 async def checkpoint_written(ctx: Any) -> None:
     """Back up every scope this request wrote. Called as the request ends; never raises.
 
@@ -353,10 +431,13 @@ __all__ = [
     "WRITTEN_SCOPES_KEY",
     "GatewayUnavailable",
     "HostedBackend",
+    "HostedRoot",
     "UploadReport",
     "checkpoint_written",
     "gateway_client",
     "gateway_path",
+    "hosted_checkout_root",
     "local_only_refusal",
+    "thread_scope_path",
     "upload_local_scopes",
 ]
