@@ -163,7 +163,7 @@ async def test_an_unused_checkout_expires_and_says_so(git_server: Any, settings:
     directory = checkouts.thread_dir(settings, "acme", "acme:t1")
     old = time.time() - (settings.repo_checkout_ttl_days + 1) * 86_400
     os.utime(directory / checkouts.USED_FILE, (old, old))
-    assert checkouts.sweep_expired(settings) == 1
+    assert await checkouts.sweep_expired(settings) == 1
     assert not (directory / "repo").exists()
     with pytest.raises(ValueError, match="removed after 14 days unused"):
         _in_thread(settings, "acme:t1")
@@ -172,7 +172,7 @@ async def test_an_unused_checkout_expires_and_says_so(git_server: Any, settings:
 async def test_a_checkout_in_use_is_not_swept(git_server: Any, settings: Settings) -> None:
     await _open(settings)
     _in_thread(settings, "acme:t1")  # a tool call marks it used
-    assert checkouts.sweep_expired(settings) == 0
+    assert await checkouts.sweep_expired(settings) == 0
 
 
 async def test_describe_reports_branch_commits_ahead_and_dirty(git_server: Any, settings: Settings) -> None:
@@ -202,10 +202,10 @@ def test_a_checkout_root_inside_the_shared_workspace_is_refused(tmp_path: Path) 
 
 async def test_removing_a_checkout_deletes_it(git_server: Any, settings: Settings) -> None:
     await _open(settings)
-    assert checkouts.remove_checkout(settings, "acme", "acme:t1") is True
+    assert await checkouts.remove_checkout(settings, "acme", "acme:t1") is True
     assert checkouts.read_checkout(settings, "acme", "acme:t1") is None
     assert _in_thread(settings, "acme:t1") == _thread_scope(settings, "acme", "acme:t1")
-    assert checkouts.remove_checkout(settings, "acme", "acme:t1") is False
+    assert await checkouts.remove_checkout(settings, "acme", "acme:t1") is False
 
 
 def test_the_remote_shell_runner_is_refused_for_a_thread_checkout(settings: Settings, tmp_path: Path) -> None:

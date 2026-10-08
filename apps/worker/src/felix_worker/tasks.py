@@ -244,12 +244,10 @@ async def retention_sweep() -> None:
 @_instrumented("repo_checkout_sweep")
 async def repo_checkout_sweep() -> None:
     """Remove threads' repository checkouts unused for FELIX_REPO_CHECKOUT_TTL_DAYS."""
-    import asyncio
-
     from felix.repos.checkouts import sweep_expired
 
-    # Directory walks and deletes: off the event loop, which is serving fibers.
-    await asyncio.to_thread(sweep_expired, _settings)
+    # Its directory walks and deletes run off the event loop, which is serving fibers.
+    await sweep_expired(_settings)
 
 
 @broker.task(schedule=[{"cron": "*/30 * * * *"}])

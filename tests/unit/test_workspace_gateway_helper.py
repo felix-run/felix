@@ -205,6 +205,51 @@ class SearchTests(HelperCase):
         self.assertEqual(len(self.ok("search", query="needle", max_hits=5)["hits"]), 5)
 
 
+class GitTests(HelperCase):
+    """The `git` op is `_git_exec` in /workspace: stdout from the start, base64, capped."""
+
+    def git(self, *args: str, **req: object) -> dict:
+        return self.ok("git", args=["-c", "user.name=t", "-c", "user.email=t@t", *args], **req)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.git("init", "-q", "-b", "main")
+        (self.ws / "a.txt").write_text("one\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "first")
+
+    def test_output_exit_code_and_stdin(self) -> None:
+        out = self.git("log", "--format=%s")
+        self.assertEqual(
+            (base64.b64decode(out["out"]), out["code"], out["truncated"]), (b"first\n", 0, False)
+        )
+        hashed = self.git("hash-object", "--stdin", stdin=base64.b64encode(b"hi\n").decode())
+        self.assertEqual(len(base64.b64decode(hashed["out"]).strip()), 40)
+        self.assertNotEqual(self.git("rev-parse", "--verify", "nope")["code"], 0)
+
+    def test_a_limit_cuts_stdout_and_says_so(self) -> None:
+        out = self.git("log", "--format=%H", limit=5)
+        self.assertEqual((len(base64.b64decode(out["out"])), out["truncated"]), (5, True))
+
+    def test_bad_arguments_are_refused(self) -> None:
+        self.refused("git", "bad_request", args=[])
+        self.refused("git", "bad_request", args=["status"], limit=0)
+
+
+class LstatTests(HelperCase):
+    def test_sizes_links_and_absent_paths(self) -> None:
+        (self.ws / "f.txt").write_text("12345")
+        os.symlink("/etc/passwd", self.ws / "link")
+        out = self.ok("lstat", paths=["f.txt", "link", "gone"])
+        self.assertEqual(
+            out["stats"], [{"kind": "file", "size": 5}, {"kind": "symlink", "size": len("/etc/passwd")}, None]
+        )
+
+    def test_escaping_and_absolute_paths_are_refused(self) -> None:
+        self.refused("lstat", "invalid_path", paths=["../x"])
+        self.refused("lstat", "invalid_path", paths=["/etc/passwd"])
+
+
 class ProtocolTests(HelperCase):
     def test_main_answers_one_request_from_stdin(self) -> None:
         (self.ws / "f.txt").write_text("hi")
@@ -235,6 +280,7 @@ class PortedCodeTests(unittest.TestCase):
         "packages/harness/src/felix/tools/workspace.py",
         "packages/harness/src/felix/tools/workspace_local.py",
         "packages/harness/src/felix/tools/shell.py",
+        "packages/harness/src/felix/tools/github_publish.py",
     )
     PORTED = (
         "SymlinkRefusedError",
@@ -266,6 +312,12 @@ class PortedCodeTests(unittest.TestCase):
         "_feed",
         "resolve_cwd",
         "exec_argv",
+        # github_publish.py: the git a listing and `publish_commits` read a sandboxed repository
+        # with. `_git_run` is not here: on the harness it is the dispatcher that sends a hosted
+        # repository's calls to the gateway, and `_git_exec` is the half that runs git.
+        "_git_env",
+        "_GitResult",
+        "_git_exec",
     )
 
     @staticmethod
@@ -322,3 +374,9 @@ class PortedCodeTests(unittest.TestCase):
         ):
             self.assertEqual(getattr(felix_fs, name), getattr(shell, name), name)
         self.assertEqual(felix_fs._MAX_EXEC_TIMEOUT_MS, MAX_INTEGRATION_TIMEOUT_MS)
+
+    def test_the_helpers_git_is_the_publish_tools(self) -> None:
+        from felix.tools import github_publish
+
+        for name in ("_GIT_TIMEOUT_S", "_GIT_OUTPUT_CAP", "_GIT_PRELUDE"):
+            self.assertEqual(getattr(felix_fs, name), getattr(github_publish, name), name)

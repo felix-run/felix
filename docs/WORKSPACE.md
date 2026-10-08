@@ -333,9 +333,10 @@ those disagree, this one is current.
   directory from inside a call, and a thread key is a hash that cannot be turned back into the
   thread; the scope directory already *is* the key, so a one-time command needs nothing new. Files
   over the write cap and symlinks are skipped and reported, never forced.
-- **Some tools still need a local directory:** an image tool's `path`, `publish_commits`, AGENTS.md
-  loading and a thread's repository checkout. Under `hosted`, these are refused for any scope but
-  `deployment`, never served from the host.
+- **Some tools still need a local directory:** an image tool's `path`, AGENTS.md loading, and
+  `publish_commits` in a thread with no repository of its own. Under `hosted`, these are refused
+  for any scope but `deployment`, never served from the host. A thread's repository checkout, and
+  `publish_commits` from it, run in the thread's sandbox (3c).
 
 - **The gateway lives in this repository** (`deploy/cloudflare/workspace-gateway`), not in
   `felix-run/web`. It is harness infrastructure, like the database: an operator running Felix
@@ -384,12 +385,23 @@ puts the clone in the thread's sandbox instead.
   - a second clone into the non-empty workspace was refused with 409.
 
   Not yet measured: a clone near the 500 MB cap, on the deployed gateway.
-- **Still to do, on the harness side:**
-  - `open_checkout` clones through the gateway when the backend is `hosted` (the state file stays
-    local; the files do not);
-  - the thread's scope stops being refused once its checkout is ready;
-  - `list_files` (`git status`) and `publish_commits`' commit reads run in the sandbox through
-    `exec`.
+- **The harness side.** Under `hosted`, `open_checkout` clones through the gateway's `clone` op into
+  the thread's own sandbox: the scope's whole `/workspace` is the repository, as the checkout
+  directory is on the host. The state file stays on the host (recording `hosted` and the sandbox's
+  gateway path); the files do not.
+  - A thread whose workspace already has files cannot open a repository (`conflict`): a clone goes
+    into an empty workspace, and nothing is cloned over a person's files.
+  - Once the checkout is ready, the thread's workspace tools and `shell_tools` work in it like any
+    hosted scope, and the end-of-request checkpoint backs it up.
+  - Reading the repository -- the file listing, `describe`, and every git call `publish_commits`
+    makes -- goes through two read-only gateway ops, `git` and `lstat`. `git` runs the harness's
+    own `_git_exec` (ported into `felix-fs` and held to it like the file code), so the prelude, the
+    environment built from nothing and the output cap are the same in both places. Publishing
+    itself stays the harness's, through GitHub's API: the sandbox never pushes.
+  - Removing the repository, and the worker's unused-checkout sweep, destroy the sandbox and its
+    backup. A removal the gateway cannot carry out is refused (503 `workspace_unavailable`) and the
+    sweep leaves it for its next run; neither marks the checkout gone over a workspace that still
+    holds it.
 
 ## Phases
 
@@ -400,7 +412,7 @@ puts the clone in the thread's sandbox instead.
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
 | 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508, #509, #510 (v0.11.0); **on the reference deployment since 2026-10-07** |
-| 3c | A thread's repository checkout in its sandbox: cloned there through a `github.com`-only intercept that adds the person's token outside the container | opt-in, with 3a | `[~]` gateway `clone` (feat/gateway-clone); the harness side (`open_checkout`, `list_files`, `publish_commits` reading commits in the sandbox) next |
+| 3c | A thread's repository checkout in its sandbox: cloned there through a `github.com`-only intercept that adds the person's token outside the container | opt-in, with 3a | `[x]` gateway `clone` (#522); the harness side, with the gateway's `git` and `lstat` (feat/hosted-checkouts) |
 | 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` #511 (v0.11.0): the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |

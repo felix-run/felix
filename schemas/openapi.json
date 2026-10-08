@@ -8697,6 +8697,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Remove Thread Repo",

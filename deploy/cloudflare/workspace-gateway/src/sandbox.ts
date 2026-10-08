@@ -36,6 +36,8 @@ export const IDLE_BACKUP_AFTER_MS = INACTIVITY_TIMEOUT_MS - 2 * 60 * 1000;
 const OPERATION_TIMEOUT_MS = 30 * 1000;
 /** An `exec` is bounded by its own timeout; the helper kills at it and drains for up to 5s. */
 const EXEC_GRACE_MS = 30 * 1000;
+/** `git` is bounded by the harness's `_GIT_TIMEOUT_S` (60s) inside the helper. */
+const GIT_DEADLINE_MS = 75 * 1000;
 /** A backup or a restore moves the whole workspace; give it room, but not forever. */
 const TRANSFER_TIMEOUT_MS = 5 * 60 * 1000;
 const HELPER = ['python3', '-I', '/opt/felix-fs/felix_fs.py'];
@@ -82,7 +84,9 @@ export class WorkspaceSandbox extends DurableObject<Env> {
     const answer = await (request.op === 'read' ||
     request.op === 'list' ||
     request.op === 'search' ||
-    request.op === 'prepare'
+    request.op === 'prepare' ||
+    request.op === 'git' ||
+    request.op === 'lstat'
       ? this.#run(scope, request)
       : this.#oneAtATime(() => this.#run(scope, request)));
     if (request.op !== 'destroy') await this.ctx.storage.setAlarm(Date.now() + IDLE_BACKUP_AFTER_MS);
@@ -132,7 +136,11 @@ export class WorkspaceSandbox extends DurableObject<Env> {
 
   async #helper(scope: string, request: HelperRequest): Promise<HelperAnswer> {
     const deadline =
-      request.op === 'exec' ? request.timeout_ms + EXEC_GRACE_MS : OPERATION_TIMEOUT_MS;
+      request.op === 'exec'
+        ? request.timeout_ms + EXEC_GRACE_MS
+        : request.op === 'git'
+          ? GIT_DEADLINE_MS
+          : OPERATION_TIMEOUT_MS;
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(), deadline);
     try {

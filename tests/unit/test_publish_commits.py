@@ -308,6 +308,44 @@ async def test_a_new_branch_is_published_as_blobs_tree_commit_ref(ws: Path) -> N
     assert BIG_MARKER not in text and len(text) < 500
 
 
+async def test_a_repository_in_a_hosted_sandbox_is_published_through_the_gateway(
+    ws: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under the hosted backend the thread's repository is in its sandbox: every git call of the
+    plan and the upload goes to the gateway's `git` op, and the result is the same publish."""
+    import shutil
+
+    from felix.tools import workspace_hosted
+
+    from tests.workspace_gateway_fake import TOKEN as GATEWAY_TOKEN
+    from tests.workspace_gateway_fake import URL, FakeGateway
+
+    base = git(ws, "rev-parse", "HEAD").strip()
+    head = feature_commit(ws)
+    gateway = FakeGateway(root=tmp_path / "sandboxes")
+    sandbox = gateway.sandbox("default/thread-key")
+    shutil.copytree(ws, sandbox, symlinks=True)
+    hosted = Settings(
+        workspace_root=str(ws), workspace_backend="hosted", workspace_gateway_url=URL,
+        workspace_gateway_token=GATEWAY_TOKEN,
+    )  # fmt: skip
+    monkeypatch.setattr(workspace_hosted, "gateway_client", lambda settings: gateway.client())
+    root = workspace_hosted.HostedRoot(hosted, "default/thread-key")
+    monkeypatch.setattr(workspace_hosted, "hosted_checkout_root", lambda: root)
+
+    fake = FakeGitHub(sandbox, {"main": base})
+    async with serve(fake) as api:
+        out = await _call(_tool(api), ws, {"branch": "felix/307-publish", "head_sha": head})
+
+    text = tool_output_content(out)
+    assert read_tool_error_code(out) is None, text
+    (commit_body,) = fake.bodies("POST", "/git/commits")
+    assert commit_body["parents"] == [base]
+    assert commit_body["tree"] == git(ws, "rev-parse", f"{head}^{{tree}}").strip()
+    assert fake.refs["felix/307-publish"] in text
+    assert {op for _, op in gateway.calls} == {"git"}
+
+
 async def test_an_existing_branch_is_fast_forwarded_from_its_remote_tip(ws: Path) -> None:
     base = git(ws, "rev-parse", "HEAD").strip()
     first = feature_commit(ws)
