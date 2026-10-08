@@ -90,6 +90,8 @@ async def _invoke_job_manifest(
             sub_agents=resolved.sub_agents,
             tools=provider,
             tenant_id=tenant_id,
+            # A job runs as `cron`, for no one: the tenant's library only.
+            skill_owner=None,
         )
         result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
     return {

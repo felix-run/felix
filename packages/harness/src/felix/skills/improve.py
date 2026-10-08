@@ -34,6 +34,7 @@ from felix.security.fencing import fence
 from felix.skills import library
 from felix.skills.feedback import audit_feedback
 from felix.skills.feedback_store import get_skill_feedback_store
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store, is_rejected
 from felix.skills.model_calls import DeadlineExceeded, Lease, LeaseLost, ask, build_route, tenant_job
 
@@ -113,7 +114,7 @@ async def _improve(
     if existing is not None:
         return existing
     lib = get_skill_library_store(settings)
-    newest = (await library.newest_buildable_versions(settings, tenant_id, [name])).get(name)
+    newest = (await library.newest_buildable_versions(settings, tenant_id, [name], owner=ORG_OWNER)).get(name)
     if newest != target:
         # Checked before the model call so a stale feedback costs nothing; `expect_newest`
         # below checks it again, atomically with the save. The basis is the newest version that
@@ -123,7 +124,9 @@ async def _improve(
             raise _Failed(f"parent_rejected: {name}@{target} was rejected")
         raise _Failed(f"parent_changed: {name} is at {newest or 'no version'}, the feedback is on {target}")
     try:
-        files = await library.read_version_files(settings, tenant_id, name, target, object_store=object_store)
+        files = await library.read_version_files(
+            settings, tenant_id, name, target, object_store=object_store, owner=ORG_OWNER
+        )
     except library.SkillLibraryError as exc:
         raise _Failed(f"{exc.code}: {exc}") from exc
     prompt = improve_prompt(name, files.get("SKILL.md", ""), str(row["body"]), row.get("suggested_patch"))

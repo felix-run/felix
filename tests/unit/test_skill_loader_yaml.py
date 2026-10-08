@@ -342,7 +342,7 @@ async def test_a_store_skill_that_names_itself_otherwise_is_rejected() -> None:
     store = _Store({"skills/t/wanted/SKILL.md": b"---\nname: other\ndescription: d\n---\nb"})
     assert await loader.load_skill_from_store(store, tenant_id="t", name="wanted") is None
     catalog = await loader.load_manifest_skills(
-        [{"name": "wanted"}], tenant_id="t", object_store=store, bundled_dir=Path("/nonexistent")
+        [{"name": "wanted"}], tenant_id="t", object_store=store, bundled_dir=Path("/nonexistent"), owner=None
     )
     assert catalog.names() == ["wanted"]
     assert catalog.skills["wanted"].body == ""  # the placeholder, as for a missing skill

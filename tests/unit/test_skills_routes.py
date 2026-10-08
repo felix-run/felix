@@ -314,7 +314,7 @@ async def test_recent_activations_name_the_skill_not_just_the_tool(skills_dir: P
     client, settings = await _client(skills_dir)
     async with client:
         await _store_manifest(settings, "triage", ["invoice-triage"])
-        catalog = await load_manifest_skills([{"name": "invoice-triage"}], tenant_id="acme")
+        catalog = await load_manifest_skills([{"name": "invoice-triage"}], tenant_id="acme", owner=None)
         tools = make_skill_tools(
             catalog,
             activation_store=get_skill_activation_store(settings),
@@ -399,7 +399,7 @@ async def _drive_skill_tool(settings: Settings, tool_name: str, skill_name: str)
     from felix.skills.tools import make_skill_tools
     from felix.tools.types import ToolInvocationCtx
 
-    catalog = await load_manifest_skills([{"name": "invoice-triage"}], tenant_id="acme")
+    catalog = await load_manifest_skills([{"name": "invoice-triage"}], tenant_id="acme", owner=None)
     tools = make_skill_tools(
         catalog,
         activation_store=get_skill_activation_store(settings),

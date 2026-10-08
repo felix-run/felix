@@ -52,6 +52,7 @@ async def _compiled_tools(
         sub_agents=resolved.sub_agents,
         tools=tools,
         tenant_id=auth.tenant_id,
+        skill_owner=auth.skill_owner,
     )
     agent_tools = list(getattr(agent, "tools", None) or [])
     return agent, agent_tools, resolved.manifest

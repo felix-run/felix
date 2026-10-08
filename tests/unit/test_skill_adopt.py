@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.skills import library
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 from httpx import ASGITransport, AsyncClient
@@ -116,7 +117,10 @@ async def test_adopt_saves_an_operator_draft_of_the_same_bytes_without_the_mark(
     assert digests(await lib.list_files("acme", NAME, "0.1.1")) == digests(
         await lib.list_files("acme", NAME, "0.1.0")
     )
-    assert await library.read_version_files(settings, "acme", NAME, "0.1.1", object_store=store) == _files()
+    assert (
+        await library.read_version_files(settings, "acme", NAME, "0.1.1", object_store=store, owner=ORG_OWNER)
+        == _files()
+    )
 
     # Versions are immutable: the import keeps its mark.
     original = await lib.get_version("acme", NAME, "0.1.0")
@@ -156,7 +160,12 @@ async def test_activation_stops_screening_an_adopted_version_once_it_is_live(
 
     async def untrusted() -> bool:
         catalog = await load_manifest_skills(
-            [], tenant_id="acme", object_store=store, settings=settings, bundled_dir=Path("/nonexistent")
+            [],
+            tenant_id="acme",
+            object_store=store,
+            settings=settings,
+            bundled_dir=Path("/nonexistent"),
+            owner=None,
         )
         skill = catalog.get(NAME)
         assert skill is not None
@@ -214,7 +223,9 @@ async def test_an_agent_tool_edit_of_an_adopted_skill_stays_clean(
     assert result["version"] == "0.1.2", result
     row = await get_skill_library_store(settings).get_version("acme", NAME, "0.1.2")
     assert row is not None and row["source"] == "agent" and row["lineage_import"] is False
-    kept = await library.read_version_files(settings, "acme", NAME, "0.1.2", object_store=store)
+    kept = await library.read_version_files(
+        settings, "acme", NAME, "0.1.2", object_store=store, owner=ORG_OWNER
+    )
     assert kept["references/queues.md"] == QUEUES
 
 
@@ -247,7 +258,9 @@ async def test_the_improvers_edit_of_an_adopted_skill_stays_clean(tmp_path: Path
     draft = await get_skill_library_store(settings).get_version("acme", NAME, "0.1.2")
     assert draft is not None and (draft["source"], draft["author"]) == ("agent", improve.IMPROVER)
     assert draft["lineage_import"] is False
-    kept = await library.read_version_files(settings, "acme", NAME, "0.1.2", object_store=store)
+    kept = await library.read_version_files(
+        settings, "acme", NAME, "0.1.2", object_store=store, owner=ORG_OWNER
+    )
     assert kept["references/queues.md"] == QUEUES and "due date" in kept["SKILL.md"]
 
 

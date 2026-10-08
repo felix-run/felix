@@ -15,13 +15,31 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.publish_gate import gate_source
-from felix.skills.types import SkillCatalog
+from felix.skills.types import Skill, SkillCatalog
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 logger = logging.getLogger("felix.skills.authoring")
 
 SKILL_AUTHORING_TOOL_NAMES = frozenset({"create_skill", "update_skill", "submit_skill_feedback"})
+
+_PERSONAL_REFUSAL = {
+    "detail": "this is one of the caller's own skills; saving to or filing feedback on a personal "
+    "skill is not available, and these tools would act on the tenant's skill of that name instead"
+}
+
+
+def is_personal(skill: Skill) -> bool:
+    """Whether ``skill`` came from a caller's personal library rather than the tenant's."""
+    from felix.skills.library_keys import ORG_OWNER
+
+    return skill.source == "library" and skill.library_owner not in (None, ORG_OWNER)
+
+
+def personal_names(catalog: SkillCatalog) -> frozenset[str]:
+    """The names in ``catalog`` that are the caller's own skills."""
+    return frozenset(n for n, s in catalog.skills.items() if is_personal(s))
 
 
 class _CreateSkillArgs(BaseModel):
@@ -146,12 +164,14 @@ class _SkillAuthor:
         max_pending: int,
         object_store: Any | None,
         auto_eval: bool = False,
+        personal: frozenset[str] = frozenset(),
     ) -> None:
         from felix.skills.library_store import get_skill_library_store
 
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.auto_eval = auto_eval
+        self.personal = personal
         self.lib = get_skill_library_store(settings)
 
     async def queue_eval(self, row: dict[str, Any]) -> str | None:
@@ -197,7 +217,9 @@ class _SkillAuthor:
         from felix.skills.library_store import is_rejected
 
         parent = str(args.get("parent_version") or "")
-        newest = (await library.newest_buildable_versions(self.settings, self.tenant_id, [name])).get(name)
+        newest = (
+            await library.newest_buildable_versions(self.settings, self.tenant_id, [name], owner=ORG_OWNER)
+        ).get(name)
         if newest is None:
             raise _ComposeError({"error": "unknown_skill", "name": name})
         if parent != newest:
@@ -207,7 +229,7 @@ class _SkillAuthor:
         parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
         file_rows = await self.lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
-            self.settings, self.tenant_id, name, parent, object_store=self.object_store
+            self.settings, self.tenant_id, name, parent, object_store=self.object_store, owner=ORG_OWNER
         )
         parsed = parse_skill_md(files.get("SKILL.md", ""))
         frontmatter = dict(parsed.frontmatter) if parsed and isinstance(parsed.frontmatter, dict) else {}
@@ -254,6 +276,11 @@ class _SkillAuthor:
     async def save(self, args: ToolInput, ctx: ToolInvocationCtx | None, *, update: bool) -> str:
         from felix.skills import library
 
+        if str(args.get("name") or "") in self.personal:
+            # These tools write the tenant's library. A name that is the caller's own skill in
+            # this catalog would be saved -- and in publish mode published -- as the tenant's,
+            # built on the tenant's skill of that name rather than the one the model read.
+            return json.dumps({"error": "personal_skill", **_PERSONAL_REFUSAL, "name": args.get("name")})
         try:
             composed = await self.compose(args, update=update)
             row = await library.save_draft(
@@ -316,6 +343,7 @@ def make_skill_authoring_tools(
     max_pending: int = 20,
     object_store: Any | None = None,
     auto_eval: bool = False,
+    personal: frozenset[str] = frozenset(),
 ) -> list[Tool]:
     """`create_skill` and `update_skill`, writing drafts to the tenant's skill library.
 
@@ -334,6 +362,7 @@ def make_skill_authoring_tools(
         max_pending=max_pending,
         object_store=object_store,
         auto_eval=auto_eval,
+        personal=personal,
     )
 
     async def _create(args: _CreateSkillArgs, ctx: ToolInvocationCtx | None = None) -> str:
@@ -426,10 +455,16 @@ def make_skill_feedback_tool(
     from felix.logging_setup import loggable
 
     library_skills = {s.name: s for s in catalog.skills.values() if s.source == "library"}
+    personal = {n for n, s in library_skills.items() if is_personal(s)}
 
     async def _submit(args: _FeedbackArgs, ctx: ToolInvocationCtx | None = None) -> str:
         from felix.skills import feedback, library
 
+        if args.name in personal:
+            # Feedback is filed against, and accepted into, the tenant's skill of a name.
+            return json.dumps(
+                {"error": "personal_skill", **_PERSONAL_REFUSAL, "name": loggable(args.name, limit=64)}
+            )
         skill = library_skills.get(args.name)
         if skill is None:
             return json.dumps(

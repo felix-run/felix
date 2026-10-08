@@ -71,6 +71,9 @@ class BuildDeps:
     session_strategy: Any | None = None
     object_store: Any | None = None
     tenant_id: str | None = None
+    # Whose personal skill library this compile may load (`spec.personal_skills`), or None for
+    # the tenant's alone. Sub-agents compile with these deps, so they inherit it.
+    skill_owner: str | None = None
     workspace_root: str | None = None
     load_agents_md: bool = False
     # Manifests whose sub-agents are being compiled right now, outermost first. A router that
@@ -1534,7 +1537,7 @@ def _bind_skill_authoring(
     block like every tool, so an approvals rule on them holds the call until a person has read
     what the harness renders as its preview. Feedback is restricted to the library skills in
     ``catalog`` -- the ones this agent was actually given."""
-    from felix.skills.authoring import make_skill_authoring_tools, make_skill_feedback_tool
+    from felix.skills.authoring import make_skill_authoring_tools, make_skill_feedback_tool, personal_names
 
     spec = m.spec.skill_authoring
     _append_unique_tools(
@@ -1548,6 +1551,8 @@ def _bind_skill_authoring(
                 max_pending=spec.max_pending,
                 object_store=deps.object_store,
                 auto_eval=spec.auto_eval,
+                # They write the tenant's library; a name that is the caller's own is refused.
+                personal=personal_names(catalog),
             ),
             make_skill_feedback_tool(
                 deps.settings,
@@ -1905,7 +1910,12 @@ async def build_agent(
         )
 
         authoring = m.spec.skill_authoring.enabled and deps.settings is not None
-        wants_skills = bool(m.spec.skills) or authoring or any(t.name in SKILL_TOOL_NAMES for t in resolved)
+        # A caller's own skills are reachable only through the skill tools, so asking for them
+        # binds the tools as declaring a skill does; otherwise the field would load nothing.
+        personal = m.spec.personal_skills != "off"
+        wants_skills = (
+            bool(m.spec.skills) or authoring or personal or any(t.name in SKILL_TOOL_NAMES for t in resolved)
+        )
         if wants_skills:
             catalog = await load_manifest_skills(
                 list(m.spec.skills),
@@ -1913,6 +1923,7 @@ async def build_agent(
                 object_store=deps.object_store,
                 declared_only=m.spec.skills_declared_only,
                 settings=deps.settings,
+                owner=deps.skill_owner if personal else None,
             )
             skill_tools = {
                 t.name: t
@@ -1931,7 +1942,7 @@ async def build_agent(
             # only it can read.
             have = {t.name for t in resolved}
             for name, tool in skill_tools.items():
-                if name not in have and (m.spec.skills or authoring or name == "read_skill_file"):
+                if name not in have and (m.spec.skills or authoring or personal or name == "read_skill_file"):
                     resolved.append(tool)
             _warn_imported_skills_are_unscreened(m, catalog)
             imported_skills = any(s.untrusted for s in catalog.skills.values())

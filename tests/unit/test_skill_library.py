@@ -488,7 +488,13 @@ async def test_reading_a_version_checks_paths_and_digests(
     await _draft(settings, store, files=_bundle(**{"references/a.md": "a"}))
     assert (
         await library.read_version_file(
-            settings, "acme", "invoice-triage", "0.1.0", "references/a.md", object_store=store
+            settings,
+            "acme",
+            "invoice-triage",
+            "0.1.0",
+            "references/a.md",
+            object_store=store,
+            owner=ORG_OWNER,
         )
         == "a"
     )
@@ -496,17 +502,31 @@ async def test_reading_a_version_checks_paths_and_digests(
     await store.put(_key("0.1.0", "references/planted.md"), b"x")
     assert (
         await library.read_version_file(
-            settings, "acme", "invoice-triage", "0.1.0", "references/planted.md", object_store=store
+            settings,
+            "acme",
+            "invoice-triage",
+            "0.1.0",
+            "references/planted.md",
+            object_store=store,
+            owner=ORG_OWNER,
         )
         is None
     )
     await store.put(_key("0.1.0", "references/a.md"), b"changed")
     with pytest.raises(library.SkillVersionCorrupt):
         await library.read_version_file(
-            settings, "acme", "invoice-triage", "0.1.0", "references/a.md", object_store=store
+            settings,
+            "acme",
+            "invoice-triage",
+            "0.1.0",
+            "references/a.md",
+            object_store=store,
+            owner=ORG_OWNER,
         )
     with pytest.raises(library.SkillVersionCorrupt):
-        await library.read_version_files(settings, "acme", "invoice-triage", "0.1.0", object_store=store)
+        await library.read_version_files(
+            settings, "acme", "invoice-triage", "0.1.0", object_store=store, owner=ORG_OWNER
+        )
 
 
 async def test_the_draft_audit_redacts_the_reason_and_names_the_principal(store: MemoryObjectStore) -> None:
