@@ -294,14 +294,22 @@ def _stored_skill_owner(stored_auth: object) -> str | None:
     """
     from felix.skills.library_keys import ORG_OWNER, InvalidSkillOwner, require_owner
 
-    owner = stored_auth.get("skill_owner") if isinstance(stored_auth, dict) else None
+    if not isinstance(stored_auth, dict):
+        return None
+    owner = stored_auth.get("skill_owner")
     if not isinstance(owner, str) or owner == ORG_OWNER:
         return None
     try:
-        return require_owner(owner)
+        require_owner(owner)
     except InvalidSkillOwner:
         logger.warning("fiber recorded an unusable skill owner; resuming on the tenant's library")
         return None
+    # The owner is `issuer|subject`, and the subject is recorded beside it: a pair that disagrees
+    # was not written by the enqueue (a redacted subject, say), so it names no one's library.
+    if owner.partition("|")[2] != stored_auth.get("principal_sub"):
+        logger.warning("fiber's skill owner does not match its caller; resuming on the tenant's library")
+        return None
+    return owner
 
 
 def _resumable(manifest: Any) -> bool:

@@ -64,6 +64,13 @@ def _library_of(skill: Skill) -> str:
     return skill.library_owner if skill.library_owner is not None else ORG_OWNER
 
 
+def _label(skill: Skill) -> str:
+    """The audit label of a library skill's library; empty for a host or store skill."""
+    from felix.skills.library_keys import library_label
+
+    return library_label(_library_of(skill)) if skill.source == "library" else ""
+
+
 def _bundle_root(skill: Skill) -> Path | None:
     """A host skill's directory — only for a `SKILL.md` in its own folder. A root-level
     `foo.md` skill shares its directory with every other skill, so it has no bundle."""
@@ -153,7 +160,9 @@ def make_skill_tools(
     files; without them `read_skill_file` serves host skills only.
     """
 
-    def _audit(action: str, skill: str, *, status: str, ctx: ToolInvocationCtx | None) -> None:
+    def _audit(
+        action: str, skill: str, *, status: str, ctx: ToolInvocationCtx | None, library: str = ""
+    ) -> None:
         """Name the skill in the trail, which the generic tool-call event cannot.
 
         `tool_runner` already emits a `tool_call` event for every tool, but its payload
@@ -185,6 +194,9 @@ def make_skill_tools(
                 "skill": loggable(skill, limit=64),
                 "thread_id": getattr(ctx, "thread_id", None) or "",
                 "tool_call_id": getattr(ctx, "tool_call_id", None) or "",
+                # A library skill's library (`library_keys.library_label`): a personal skill and the
+                # tenant's may share a name, and the row has to say whose instructions ran.
+                **({"library": library} if library else {}),
             },
         )
 
@@ -243,7 +255,7 @@ def make_skill_tools(
             _audit("activate", args.name, status="unknown_skill", ctx=_ctx)
             return json.dumps({"error": "unknown_skill", "name": args.name})
         active = await activation_store.activate(tenant_id, manifest_id, skill.name)
-        _audit("activate", skill.name, status="ok", ctx=_ctx)
+        _audit("activate", skill.name, status="ok", ctx=_ctx, library=_label(skill))
         result: dict[str, Any] = {
             "activated": skill.name,
             # Activation is kept per manifest, for every caller of it, so the stored set can
@@ -308,7 +320,7 @@ def make_skill_tools(
         if skill is None:
             _audit("deactivate", args.name, status="unknown_skill", ctx=_ctx)
         else:
-            _audit("deactivate", skill.name, status="ok", ctx=_ctx)
+            _audit("deactivate", skill.name, status="ok", ctx=_ctx, library=_label(skill))
         mine = [n for n in active if catalog.get(n) is not None]  # as `activate`: this caller's names
         return json.dumps({"deactivated": args.name, "active_skills": mine})
 

@@ -124,7 +124,9 @@ async def _improve(
             raise _Failed(f"parent_rejected: {name}@{target} was rejected")
         raise _Failed(f"parent_changed: {name} is at {newest or 'no version'}, the feedback is on {target}")
     try:
-        files = await library.read_version_files(settings, tenant_id, name, target, object_store=object_store)
+        files = await library.read_version_files(
+            settings, tenant_id, name, target, object_store=object_store, owner=ORG_OWNER
+        )
     except library.SkillLibraryError as exc:
         raise _Failed(f"{exc.code}: {exc}") from exc
     prompt = improve_prompt(name, files.get("SKILL.md", ""), str(row["body"]), row.get("suggested_patch"))

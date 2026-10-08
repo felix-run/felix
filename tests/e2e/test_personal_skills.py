@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
+from felix_ai.types import ToolCall
 
 ALICE_KEY, BOB_KEY = "sk-alice-e2e-not-a-secret", "sk-bob-e2e-not-a-secret"
 ENV = {
@@ -45,6 +47,9 @@ MANIFESTS = {
     "e2e-org-only": _manifest("e2e-org-only", skills=[{"name": "notes"}]),
     "e2e-personal-durable": _manifest(
         "e2e-personal-durable", personal_skills="read", execution={"mode": "durable"}
+    ),
+    "e2e-router": _manifest(
+        "e2e-router", pattern="router", sub_agents=["e2e-personal"], system_prompt={"inline": "Route it."}
     ),
 }
 
@@ -82,10 +87,21 @@ async def _seed(settings: Any) -> None:
     await _publish(settings, BOB, "bob-ledger", "Bob's ledger rules")
 
 
-async def _system_prompt(app: Any, key: str, manifest: str) -> str:
+# Every HTTP surface that compiles a turn for a caller. Each passes the caller's owner on its own
+# line of code, so each is a place it could be dropped -- and a dropped one looks like it works.
+TRANSPORTS = {
+    "chat": ("/chat", lambda m: {"manifest": m}),
+    "chat-stream": ("/chat/stream", lambda m: {"manifest": m}),
+    "v1": ("/v1/chat/completions", lambda m: {"model": m}),
+    "v1-stream": ("/v1/chat/completions", lambda m: {"model": m, "stream": True}),
+}
+
+
+async def _system_prompt(app: Any, key: str, manifest: str, transport: str = "chat") -> str:
+    path, body = TRANSPORTS[transport]
     resp = await app.client.post(
-        "/chat",
-        json={"manifest": manifest, "messages": [{"role": "user", "content": "hi"}]},
+        path,
+        json={**body(manifest), "messages": [{"role": "user", "content": "hi"}]},
         headers={"authorization": f"Bearer {key}"},
     )
     assert resp.status_code == 200, resp.text
@@ -96,11 +112,12 @@ def _system(prompt: list[Any]) -> str:
     return "\n".join(str(m.content) for m in prompt if m.role == "system")
 
 
-async def test_each_caller_is_offered_their_own_skills_and_no_one_elses(boot: Any) -> None:
+@pytest.mark.parametrize("transport", list(TRANSPORTS))
+async def test_each_caller_is_offered_their_own_skills_and_no_one_elses(boot: Any, transport: str) -> None:
     async with boot([ScriptedTurn(content="ok")] * 2, env=ENV, manifests=MANIFESTS) as app:
         await _seed(app.settings)
-        alice = await _system_prompt(app, ALICE_KEY, "e2e-personal")
-        bob = await _system_prompt(app, BOB_KEY, "e2e-personal")
+        alice = await _system_prompt(app, ALICE_KEY, "e2e-personal", transport)
+        bob = await _system_prompt(app, BOB_KEY, "e2e-personal", transport)
 
     assert "Alice's drafting habits" in alice and "Alice's own notes" in alice
     assert "The tenant's shared notes" not in alice, "her notes shadow the tenant's, for her"
@@ -137,3 +154,60 @@ async def test_a_durable_run_resumes_with_its_starters_skills(boot: Any) -> None
 
     assert "Alice's drafting habits" in resumed and "Alice's own notes" in resumed
     assert "The tenant's shared notes" not in resumed
+
+
+async def test_a_sub_agent_compiles_with_its_callers_skills(boot: Any) -> None:
+    """The child is compiled with the parent's deps; nothing else carries the owner to it."""
+    script = [ScriptedTurn(content="e2e-personal"), ScriptedTurn(content="ok")] * 2
+    async with boot(script, env=ENV, manifests=MANIFESTS) as app:
+        await _seed(app.settings)
+        await _system_prompt(app, ALICE_KEY, "e2e-router", "v1")
+        alice = _system(app.spy.prompts[1])
+        await _system_prompt(app, BOB_KEY, "e2e-router", "v1")
+        bob = _system(app.spy.prompts[3])
+
+    assert "Alice's drafting habits" in alice
+    assert "Bob's ledger rules" in bob and "Alice" not in bob
+
+
+async def test_the_skills_listing_is_the_callers_and_activation_says_whose_skill_ran(boot: Any) -> None:
+    """`/skills` lists what the caller's turn would compile. Activation is stored per manifest,
+    shared by its callers, so Bob is never shown Alice's activated name -- while the audit trail,
+    read by whoever holds `skills:read`, says which library each activation came from."""
+    from felix.skills.library_keys import library_label
+
+    activate = ToolCall(id="call-1", name="activate_skill", args={"name": "alice-drafts"})
+    script = [
+        ScriptedTurn(content="", tool_calls=[activate], stop_reason="tool_use"),
+        ScriptedTurn(content="ok"),
+    ]
+    alice, bob = {"authorization": f"Bearer {ALICE_KEY}"}, {"authorization": f"Bearer {BOB_KEY}"}
+    async with boot(script, env=ENV, manifests=MANIFESTS) as app:
+        await _seed(app.settings)
+        resp = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-personal", "messages": [{"role": "user", "content": "draft"}]},
+            headers=alice,
+        )
+        assert resp.status_code == 200, resp.text
+
+        hers = (await app.client.get("/skills/e2e-personal", headers=alice)).json()
+        his = (await app.client.get("/skills/e2e-personal", headers=bob)).json()
+        org_only = (await app.client.get("/skills/e2e-org-only", headers=alice)).json()
+        from felix.audit import store as audit_store
+
+        await audit_store.flush_pending(app.settings)
+        recent = (await app.client.get("/skills/e2e-personal/activations/recent", headers=bob)).json()
+
+    described = {i["name"]: i["description"] for i in hers["items"]}
+    assert described["alice-drafts"] == "Alice's drafting habits"
+    assert described["notes"] == "Alice's own notes"
+    assert hers["active"] == ["alice-drafts"]
+    assert "alice-drafts" not in {i["name"] for i in his["items"]} and "bob-ledger" in {
+        i["name"] for i in his["items"]
+    }
+    assert his["active"] == [], "Alice's activation is not Bob's to see"
+    assert {i["name"] for i in org_only["items"]} & {"alice-drafts", "bob-ledger"} == set()
+    [row] = [r for r in recent["items"] if r["skill"] == "alice-drafts"]
+    assert row["library"] == library_label(ALICE) and row["library"].startswith("~")
+    assert "alice" not in row["library"]

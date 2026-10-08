@@ -15,6 +15,7 @@ from felix.config import Settings
 from felix.skills import github, importer, library, upstream
 from felix.skills.bundle_diff import Content, DiffBuilder, diff_bundles, git_blob_id
 from felix.skills.format import MAX_DESCRIPTION_CHARS
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.upstream_store import get_upstream_store
 from felix.storage import MemoryObjectStore
@@ -479,7 +480,9 @@ async def test_an_update_keeps_the_imports_origin_rules(
 ) -> None:
     """The newest version is an operator's edit of the import: nothing to update from."""
     await _import(settings, store, gh)
-    files = await library.read_version_files(settings, "acme", NAME, "0.1.0", object_store=store)
+    files = await library.read_version_files(
+        settings, "acme", NAME, "0.1.0", object_store=store, owner=ORG_OWNER
+    )
     await library.save_draft(
         settings,
         "acme",
@@ -839,7 +842,9 @@ async def test_a_skill_that_stops_being_an_import_keeps_its_row_and_comes_back(
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
     await _import(settings, store, gh, clock=lambda: T0)
-    files = await library.read_version_files(settings, "acme", NAME, "0.1.0", object_store=store)
+    files = await library.read_version_files(
+        settings, "acme", NAME, "0.1.0", object_store=store, owner=ORG_OWNER
+    )
     await library.save_draft(
         settings,
         "acme",

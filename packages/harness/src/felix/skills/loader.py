@@ -605,7 +605,9 @@ async def load_manifest_skills(
 
     With ``owner`` (the caller's personal library, `spec.personal_skills`), that library's live
     skills come ahead of the tenant's, so one of theirs shadows a tenant skill of its name for
-    that caller alone; the host still wins over both. Each library fails closed on its own: an
+    that caller alone -- but only a skill the catalog picked up without the manifest naming it.
+    A name in ``refs`` is the author's reviewed choice and never resolves to a caller's own, and
+    the host still wins over both. Each library fails closed on its own: an
     unreadable personal library leaves the tenant's, and the reverse. No default, so a catalog
     built for a caller says whose it is.
 
@@ -631,13 +633,20 @@ async def load_manifest_skills(
     library = await _library_catalog(
         settings, tenant_id=tenant_id, object_store=object_store, wanted=wanted, owner=ORG_OWNER
     )
+    offered = library
     if owner is not None and owner != ORG_OWNER:
+        # A name the manifest declares is the author's choice and resolves from the tenant's
+        # library below; only the skills it picked up without naming may be the caller's own.
         personal = await _library_catalog(
-            settings, tenant_id=tenant_id, object_store=object_store, wanted=wanted, owner=owner
+            settings,
+            tenant_id=tenant_id,
+            object_store=object_store,
+            wanted=lambda n: wanted(n) and n not in declared,
+            owner=owner,
         )
-        library = {**library, **personal}
+        offered = {**library, **personal}
     if not declared_only:
-        for name, skill in library.items():
+        for name, skill in offered.items():
             catalog.skills.setdefault(name, skill)
 
     for ref in refs or []:

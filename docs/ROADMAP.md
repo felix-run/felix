@@ -538,10 +538,21 @@ First, because everything else governs it.
          with a tenant one would have served the tenant's files as hers — each catalog skill now
          carries `library_owner`; and skill activation is stored per manifest for every caller,
          so `activate_skill` echoed names another caller activated, personal ones included — its
-         answer is now filtered to the caller's catalog. Open: activation itself is still shared
-         per manifest (one caller's activation marks a same-named skill active for the next), as
-         it was between org users before; sub-agent inheritance is structural (shared deps) and
-         has no e2e of its own.
+         answer is now filtered to the caller's catalog. From review: a skill the manifest names
+         in `spec.skills` never resolves to a caller's own (only ambient skills are shadowed);
+         `create_skill` / `update_skill` / `submit_skill_feedback` refuse a name that is the
+         caller's own in the catalog (`personal_skill`) — they write the tenant's library and
+         would have edited, or filed feedback on, the tenant's skill of that name; activation audit
+         rows carry `library` (`org` or the owner's digest); an API key configured without its
+         own `sub` has no personal library; a fiber's recorded owner must match its recorded
+         subject. Open: activation is still shared per manifest (one caller's activation marks a
+         same-named skill active for the next), as it was between org users before.
+         For step 3: lift the `personal_skill` refusal by pointing those tools at the caller's
+         library under `personal_skills: write`; run the full publish gate on a personal publish
+         and search the caller's own rows in the copy rule (`holds_imported_file` from the org
+         store looks at the org's alone); scope idempotency keys by owner rather than
+         `principal_sub` (a reply now depends on the caller's library); `read_version_files`,
+         `read_version_file` and `newest_buildable_versions` already take a required `owner`.
       3. [ ] `~me` routes, owner-scoped authoring tools, per-owner cap, `make contract`.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).
 

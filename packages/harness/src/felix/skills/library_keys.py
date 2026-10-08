@@ -69,6 +69,13 @@ def _owner_segment(owner: str) -> str:
     return "~" + hashlib.sha256(owner.encode()).hexdigest()[:32]
 
 
+def library_label(owner: str) -> str:
+    """Which library a skill came from, fit for an audit row: `org`, or a personal library's
+    digest (`~` and 128 bits) -- stable per owner, so an investigator can tell two people's
+    `notes` apart and match one across rows, without the row naming the subject."""
+    return "org" if require_owner(owner) == ORG_OWNER else _owner_segment(owner)
+
+
 def library_object_key(tenant_id: str, name: str, version: str, path: str, *, owner: str) -> str:
     """Where one file of one library version lives. The only spelling of that key; a store's
     `object_key` is this with the store's owner."""
@@ -89,6 +96,7 @@ __all__ = [
     "MAX_OWNER_LENGTH",
     "ORG_OWNER",
     "InvalidSkillOwner",
+    "library_label",
     "library_object_key",
     "pending_lock_key",
     "personal_owner",

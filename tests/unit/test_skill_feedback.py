@@ -21,6 +21,7 @@ from felix.security.fencing import BREAK
 from felix.skills import feedback, improve, library
 from felix.skills.authoring import make_skill_feedback_tool
 from felix.skills.feedback_store import get_skill_feedback_store
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.loader import load_manifest_skills
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
@@ -262,7 +263,7 @@ async def test_an_accepted_improvement_saves_a_draft_for_review(
     )
     assert draft["reason"] == f"feedback {accepted['id']}" and draft["origin_manifest_id"] is None
     files = await library.read_version_files(
-        settings, TENANT, NAME, "0.1.1", object_store=object_store(settings)
+        settings, TENANT, NAME, "0.1.1", object_store=object_store(settings), owner=ORG_OWNER
     )
     assert "the due date" in files["SKILL.md"] and files["SKILL.md"] == IMPROVED
     # Never published: the live version is unchanged and the draft is in the review queue.

@@ -30,6 +30,7 @@ from felix.logging_setup import loggable
 from felix.skills.binary import encode_base64, is_binary_asset_path
 from felix.skills.copy_rule import copy_digests, digest, file_digest, normalized_digest, stored_bytes
 from felix.skills.format import ValidationIssue, validate_skill_bundle
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import (
     ANY_LIVE,
     MAX_VERSIONS_PER_SKILL,
@@ -733,12 +734,18 @@ def _checked(path: str, data: bytes | None, expected: str) -> str:
 
 
 async def read_version_files(
-    settings: Settings, tenant_id: str, name: str, version: str, *, object_store: Any | None = None
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    owner: str,
+    object_store: Any | None = None,
 ) -> dict[str, str]:
-    """Every file of a saved version as bundle text (binary assets base64), checked against
-    the digests recorded when it was saved. A missing or altered file raises
-    `SkillVersionCorrupt`."""
-    lib = get_skill_library_store(settings)
+    """Every file of a saved version in ``owner``'s library as bundle text (binary assets
+    base64), checked against the digests recorded when it was saved. A missing or altered file
+    raises `SkillVersionCorrupt`."""
+    lib = get_skill_library_store(settings, owner=owner)
     store = _object_store(settings, object_store)
     files: dict[str, str] = {}
     for meta in await lib.list_files(tenant_id, name, version):
@@ -806,7 +813,9 @@ async def evaluate_version(
             tenant_id, name, version, scenario_source=gate_scenario_source(source)
         )
     try:
-        files = await read_version_files(settings, tenant_id, name, version, object_store=object_store)
+        files = await read_version_files(
+            settings, tenant_id, name, version, object_store=object_store, owner=ORG_OWNER
+        )
     except SkillVersionCorrupt as exc:
         return Verdict(valid=False, reasons=[str(exc)])
     return await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
@@ -989,7 +998,9 @@ async def adopt(
     saved = await save_draft(
         settings,
         tenant_id,
-        files=await read_version_files(settings, tenant_id, name, version, object_store=store),
+        files=await read_version_files(
+            settings, tenant_id, name, version, object_store=store, owner=ORG_OWNER
+        ),
         provenance=DraftProvenance(
             source="operator", author=by, reason=reason, principal=by, adopted_from=version
         ),

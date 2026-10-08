@@ -1537,7 +1537,7 @@ def _bind_skill_authoring(
     block like every tool, so an approvals rule on them holds the call until a person has read
     what the harness renders as its preview. Feedback is restricted to the library skills in
     ``catalog`` -- the ones this agent was actually given."""
-    from felix.skills.authoring import make_skill_authoring_tools, make_skill_feedback_tool
+    from felix.skills.authoring import make_skill_authoring_tools, make_skill_feedback_tool, personal_names
 
     spec = m.spec.skill_authoring
     _append_unique_tools(
@@ -1551,6 +1551,8 @@ def _bind_skill_authoring(
                 max_pending=spec.max_pending,
                 object_store=deps.object_store,
                 auto_eval=spec.auto_eval,
+                # They write the tenant's library; a name that is the caller's own is refused.
+                personal=personal_names(catalog),
             ),
             make_skill_feedback_tool(
                 deps.settings,

@@ -16,6 +16,7 @@ import pytest
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.eval_store import get_skill_eval_store
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.policy import delete_publish_policy, load_publish_policy, set_publish_policy
 from felix.skills.publish_gate import (
     TUNABLE_FIELDS,
@@ -51,7 +52,7 @@ async def _draft(
         files = {
             **(
                 await library.read_version_files(
-                    settings, TENANT, NAME, parent, object_store=object_store(settings)
+                    settings, TENANT, NAME, parent, object_store=object_store(settings), owner=ORG_OWNER
                 )
             ),
             "SKILL.md": files["SKILL.md"],

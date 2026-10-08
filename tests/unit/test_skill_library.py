@@ -524,7 +524,9 @@ async def test_reading_a_version_checks_paths_and_digests(
             owner=ORG_OWNER,
         )
     with pytest.raises(library.SkillVersionCorrupt):
-        await library.read_version_files(settings, "acme", "invoice-triage", "0.1.0", object_store=store)
+        await library.read_version_files(
+            settings, "acme", "invoice-triage", "0.1.0", object_store=store, owner=ORG_OWNER
+        )
 
 
 async def test_the_draft_audit_redacts_the_reason_and_names_the_principal(store: MemoryObjectStore) -> None:

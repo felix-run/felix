@@ -44,6 +44,7 @@ from felix.skills import library
 from felix.skills.eval_store import get_skill_eval_store
 from felix.skills.format import parse_skill_md
 from felix.skills.library import SkillLibraryError, SkillNotFound
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.model_calls import DeadlineExceeded, Lease, LeaseLost, ask, build_route, tenant_job
 from felix.skills.quality_store import ScenarioSource, SkillEvalInFlight
@@ -286,7 +287,7 @@ class _Run:
         name, version = str(self.row["name"]), str(self.row["version"])
         try:
             files = await library.read_version_files(
-                self.settings, self.tenant_id, name, version, object_store=object_store
+                self.settings, self.tenant_id, name, version, object_store=object_store, owner=ORG_OWNER
             )
         except SkillLibraryError as exc:
             raise _Failed(f"{exc.code}: {exc}") from exc

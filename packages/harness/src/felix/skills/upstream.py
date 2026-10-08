@@ -47,6 +47,7 @@ from felix.skills.github import (
     TreeEntry,
     resolve,
 )
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.upstream_store import get_upstream_store
 
@@ -82,7 +83,9 @@ async def _stored_files(
     (`library.read_version_files`); nothing for no version."""
     if version is None:
         return {}
-    files = await library.read_version_files(settings, tenant_id, name, version, object_store=object_store)
+    files = await library.read_version_files(
+        settings, tenant_id, name, version, object_store=object_store, owner=ORG_OWNER
+    )
     return {p: decode_base64(t) if is_binary_asset_path(p) else t.encode("utf-8") for p, t in files.items()}
 
 

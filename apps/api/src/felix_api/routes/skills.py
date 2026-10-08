@@ -146,7 +146,9 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
         "manifest": manifest_name,
         "declared_only": declared_only,
         "items": items,
-        "active": list(active),
+        # Activation is stored per manifest for every caller; this caller is shown the names in
+        # their own catalog, never a name only someone else's personal library holds.
+        "active": [n for n in active if n in catalog.skills],
     }
 
 
@@ -245,6 +247,9 @@ async def recent_activations(
             "ts": event.get("ts"),
             "skill": (event.get("payload_json") or {}).get("skill", ""),
             "action": (event.get("payload_json") or {}).get("action", ""),
+            # `org`, or a personal library's digest: whose `notes` it was. Empty for a host skill
+            # and for rows written before it was recorded.
+            "library": (event.get("payload_json") or {}).get("library", ""),
             "thread_id": (event.get("payload_json") or {}).get("thread_id", ""),
             # Joins this row to the `tool_call` row `tool_runner` wrote for the same
             # invocation, which is the only way to tell two parallel calls in one batch apart.

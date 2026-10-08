@@ -27,7 +27,6 @@ from felix.context import AuthContext as CtxAuth
 from felix.context import LimitState, RequestContext, async_run_with_context
 from felix.security.constant_time import constant_time_equal
 from felix.security.rate_limit import PROBE_PATHS
-from felix.skills.library_keys import personal_owner
 
 logger = logging.getLogger("felix.auth.middleware")
 
@@ -301,7 +300,13 @@ def caller_skill_owner(auth: AuthContext) -> str | None:
     """The personal skill library of the caller ``auth`` verified, or None. Here, because this
     is the last place the principal's issuer is known: the request context keeps the subject
     alone, and a subject is unique only within its issuer."""
+    from felix.skills.library_keys import personal_owner
+
     if auth.anonymous:
+        return None
+    if auth.principal.scheme == "api_key" and not auth.raw_claims.get("sub"):
+        # A key configured without its own `sub` is named `api_key`, like every other such key
+        # in the tenant: one library for all of them would be no one's own.
         return None
     return personal_owner(auth.principal.issuer, auth.principal.subject)
 
