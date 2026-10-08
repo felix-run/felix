@@ -378,3 +378,34 @@ def test_the_bound_tool_carries_the_shell_transport(tmp_path: Path) -> None:
     assert tool.name == "run"
     assert tool.executor.transport == "shell"
     assert "git status" in tool.description and "./scripts/test.sh" in tool.description
+
+
+@pytest.mark.asyncio
+async def test_a_compile_the_host_does_not_allow_is_refused_not_stripped(tmp_path: Path) -> None:
+    """Found in a real run: production has no FELIX_SHELL_ALLOWED_COMMANDS, and `contributor`
+    compiled without `run` — the refusal was a logged warning, so the agent told the caller it
+    had no run tool and could not say why. A stored or bundled manifest never passes
+    `validate_for_write`, so the compile is where an operator who has not allowed it hears so."""
+    from felix.manifests.builder import build_agent
+    from felix.tools.builtins import default_tool_provider
+
+    manifest = {
+        "apiVersion": "felix/v1",
+        "kind": "Agent",
+        "metadata": {"name": "m"},
+        "spec": {"pattern": "react", "shell_tools": [{"name": "run", "commands": ["git status"]}]},
+    }
+    base = {
+        "database_url": "memory://ci",
+        "object_store": "memory",
+        "auth_mode": "none",
+        "allow_insecure": True,
+        "host": "127.0.0.1",
+        "workspace_root": str(tmp_path),
+    }
+    with pytest.raises(GovernanceError, match=r"shell_tools\[run\]: shell tools are disabled"):
+        await build_agent(manifest, default_tool_provider(), settings=Settings(**base))
+
+    allowed = Settings(**base, shell_allowed_commands="git status")
+    agent = await build_agent(manifest, default_tool_provider(), settings=allowed)
+    assert "run" in {t.name for t in agent.tools}
