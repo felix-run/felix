@@ -1020,6 +1020,12 @@ call. The properties above hold unchanged, with three additions:
 - **Bounded.** A repository over FELIX_REPO_CLONE_MAX_MB is refused before cloning; a checkout its
   thread has not used for FELIX_REPO_CHECKOUT_TTL_DAYS is removed by the worker, and the thread is
   told so.
+- **Under `FELIX_WORKSPACE_BACKEND=hosted` the clone is in the thread's sandbox.** The token goes to
+  the gateway for the one clone and is added to the sandbox's requests to github.com by an
+  intercept outside the container, which allows only fetching that one repository and only while
+  the clone runs: the sandbox never holds the token and cannot push. The harness reads the
+  repository there with the same git (`git` and `lstat` ops) and still publishes through GitHub's
+  API. Removing the repository destroys the sandbox. See `docs/WORKSPACE.md` phase 3c.
 
 A publish whose opener's connection has lapsed or been revoked publishes nothing and returns
 `[github disconnected]`, naming who must reconnect.

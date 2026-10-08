@@ -275,11 +275,31 @@ async def fork_and_persist(
     The source is only read (`stored_leaf`), never moved, so it is not locked: a turn
     mid-append there is copied up to the leaf its row held.
     """
-    from felix.session.thread_state import claim_thread, persist_leaf, thread_exists
+    from felix.session.thread_state import (
+        LAST_MANIFEST_KEY,
+        PREVIEW_KEY,
+        claim_thread,
+        get_thread_meta,
+        persist_leaf,
+        thread_exists,
+    )
 
+    # The fork copies the source's conversation from its start, so it begins with the same
+    # first message and was last run under the same manifest: the session index shows it so
+    # rather than as a bare id until its first turn of its own.
+    source_meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=source.id)
+    # Not the pin itself (`manifest_name`, `manifest_hash`): the fork's own first turn takes it.
+    inherited = {
+        PREVIEW_KEY: source_meta.get(PREVIEW_KEY),
+        LAST_MANIFEST_KEY: source_meta.get(LAST_MANIFEST_KEY) or source_meta.get("manifest_name"),
+    }
     async with leaf_lock(dest):
         if await thread_exists(dest, settings=settings, tenant_id=tenant_id) or not await claim_thread(
-            settings=settings, tenant_id=tenant_id, thread_id=dest.id, parent_session_id=source.id
+            settings=settings,
+            tenant_id=tenant_id,
+            thread_id=dest.id,
+            parent_session_id=source.id,
+            **inherited,
         ):
             return {"ok": False, "error": "thread_exists", "thread_id": dest.id}
         result = await fork_thread(source, dest, from_event_id=from_event_id)

@@ -12,6 +12,8 @@
  * the scope scheme.
  */
 
+import { REPO } from './github-rules';
+
 export const OPS = [
   'prepare',
   'list',
@@ -21,6 +23,12 @@ export const OPS = [
   'search',
   // A `shell_tools` command, run in the sandbox by the shell tool's own exec path.
   'exec',
+  // A thread's repository, cloned into its empty /workspace with the person's token (`github.ts`).
+  'clone',
+  // The harness reading that repository: git run by its own `_git_run`, output kept from the start.
+  'git',
+  // Sizes for a repository listing.
+  'lstat',
   // Not file operations: back `/workspace` up to R2 now, and stop the sandbox and delete its backup.
   'checkpoint',
   'destroy',
@@ -37,6 +45,9 @@ export const MAX_ARGV_ITEMS = 256;
 export const MAX_ARGV_BYTES = 64_000;
 export const MAX_STDIN_CHARS = 256_000;
 export const MAX_EXEC_TIMEOUT_MS = 3_600_000;
+/** The harness's git output cap (`_GIT_OUTPUT_CAP`) and listing ceiling (`LIST_MAX`). */
+export const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
+export const MAX_LSTAT_PATHS = 10_000;
 /** A write's base64 body plus JSON framing, rounded up. Anything larger is not a tool call. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -58,6 +69,9 @@ export type HelperRequest =
   | { op: 'edit'; path: string; old: string; new: string; replace_all: boolean }
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
   | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
+  | { op: 'clone'; repo: string; branch: string; token: string }
+  | { op: 'git'; args: string[]; stdin?: string; limit: number }
+  | { op: 'lstat'; paths: string[] }
   | { op: 'checkpoint' }
   | { op: 'destroy' };
 
@@ -74,7 +88,9 @@ export type ErrorCode =
   | 'timeout'
   | 'unauthorized'
   | 'misconfigured'
-  | 'payload_too_large';
+  | 'payload_too_large'
+  | 'conflict'
+  | 'clone_failed';
 
 /** What the sandbox's `felix-fs` helper prints, and what the Durable Object returns. */
 export type HelperAnswer =
@@ -90,6 +106,8 @@ export const STATUS: Record<ErrorCode, number> = {
   not_a_directory: 409,
   not_a_file: 409,
   payload_too_large: 413,
+  conflict: 409,
+  clone_failed: 502,
   invalid_path: 422,
   edit_refused: 422,
   io_error: 500,
@@ -190,6 +208,52 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
         timeout_ms: timeoutMs,
         ...(stdin === undefined ? {} : { stdin: stdin as string }),
       };
+    }
+    case 'clone': {
+      const repo = str(body, 'repo');
+      const branch = str(body, 'branch');
+      const token = str(body, 'token');
+      if (repo === null || !REPO.test(repo)) return '`repo` must be `owner/name`';
+      // A ref git accepts and cannot read as an option: no leading `-`, no `..`, no control bytes.
+      if (
+        branch === null ||
+        !/^[A-Za-z0-9._/][A-Za-z0-9._/-]{0,254}$/.test(branch) ||
+        branch.includes('..')
+      ) {
+        return '`branch` must be a branch name';
+      }
+      if (token === null || token.length === 0 || token.length > 512) return '`token` must be a token';
+      return { op, repo, branch, token };
+    }
+    case 'git': {
+      const args = body.args;
+      const limit = int(body, 'limit', MAX_GIT_OUTPUT_BYTES, 1, MAX_GIT_OUTPUT_BYTES);
+      const stdin = body.stdin;
+      if (
+        !Array.isArray(args) ||
+        args.length === 0 ||
+        args.length > MAX_ARGV_ITEMS ||
+        !args.every((a) => typeof a === 'string')
+      ) {
+        return `\`args\` must be 1 to ${MAX_ARGV_ITEMS} strings`;
+      }
+      if (limit === null) return `\`limit\` must be an integer from 1 to ${MAX_GIT_OUTPUT_BYTES}`;
+      if (stdin !== undefined && stdin !== null && typeof stdin !== 'string') {
+        return '`stdin` must be a base64 string';
+      }
+      return {
+        op,
+        args: args as string[],
+        limit,
+        ...(typeof stdin === 'string' ? { stdin } : {}),
+      };
+    }
+    case 'lstat': {
+      const paths = body.paths;
+      if (!Array.isArray(paths) || paths.length > MAX_LSTAT_PATHS || !paths.every((p) => typeof p === 'string')) {
+        return `\`paths\` must be at most ${MAX_LSTAT_PATHS} strings`;
+      }
+      return { op, paths: paths as string[] };
     }
     case 'search': {
       const path = str(body, 'path', '.');

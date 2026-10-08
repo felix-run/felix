@@ -151,6 +151,53 @@ describe('workspace gateway', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('takes a clone with a repository, a branch and a token, and nothing looser', async () => {
+    const ok = { repo: 'felix-run/felix', branch: 'main', token: 'ghs_x' };
+    await send(post('/v1/workspaces/acme/shared/clone', ok));
+    expect(calls[0]?.request).toEqual({ op: 'clone', ...ok });
+    for (const body of [
+      { ...ok, repo: 'felix' },
+      { ...ok, repo: 'a/../b' },
+      { ...ok, branch: '--upload-pack=x' },
+      { ...ok, branch: 'a..b' },
+      { ...ok, token: '' },
+      { repo: ok.repo, branch: ok.branch },
+    ]) {
+      const res = await send(post('/v1/workspaces/acme/shared/clone', body));
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+    expect(calls).toHaveLength(1);
+  });
+
+  it('takes git and lstat for a repository listing, within their bounds', async () => {
+    await send(post('/v1/workspaces/acme/shared/git', { args: ['status', '--porcelain=v2'] }));
+    await send(post('/v1/workspaces/acme/shared/git', { args: ['hash-object', '--stdin'], stdin: 'aGkK', limit: 64 }));
+    await send(post('/v1/workspaces/acme/shared/lstat', { paths: ['a.txt', 'src/b.py'] }));
+    expect(calls.map((c) => c.request)).toEqual([
+      { op: 'git', args: ['status', '--porcelain=v2'], limit: 4 * 1024 * 1024 },
+      { op: 'git', args: ['hash-object', '--stdin'], stdin: 'aGkK', limit: 64 },
+      { op: 'lstat', paths: ['a.txt', 'src/b.py'] },
+    ]);
+    const bad: [string, unknown][] = [
+      ['git', {}],
+      ['git', { args: [] }],
+      ['git', { args: [1] }],
+      ['git', { args: Array(257).fill('x') }],
+      ['git', { args: ['log'], limit: 0 }],
+      ['git', { args: ['log'], limit: 4 * 1024 * 1024 + 1 }],
+      ['git', { args: ['log'], stdin: 7 }],
+      ['lstat', {}],
+      ['lstat', { paths: 'a.txt' }],
+      ['lstat', { paths: [1] }],
+      ['lstat', { paths: Array(10_001).fill('a') }],
+    ];
+    for (const [op, body] of bad) {
+      const res = await send(post(`/v1/workspaces/acme/shared/${op}`, body));
+      expect(res.status, `${op} ${JSON.stringify(body).slice(0, 60)}`).toBe(400);
+    }
+    expect(calls).toHaveLength(3);
+  });
+
   it('names no sandbox for a malformed scope', async () => {
     for (const path of [
       `/v1/workspaces/..//shared/list`,

@@ -33,8 +33,11 @@ harness ──HTTPS, bearer──▶ gateway Worker ──getByName(tenant/key)�
 
 `POST /v1/workspaces/{tenant}/{key}/{op}` with `Authorization: Bearer <WORKSPACE_GATEWAY_TOKEN>`,
 `op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `exec` (a
-`shell_tools` command, run by the shell tool's own exec path in the sandbox), `checkpoint` and
-`destroy`. Answers `{"result": {...}}` or
+`shell_tools` command, run by the shell tool's own exec path in the sandbox), `clone` (a thread's
+repository, into its empty `/workspace`, through the `github.com` intercept in `src/github.ts`,
+which adds the person's token outside the container and allows only that one repository's fetch),
+`git` and `lstat` (read-only, for the harness's repository listing and `publish_commits`: git run
+by the harness's own `_git_exec`, ported into the helper), `checkpoint` and `destroy`. Answers `{"result": {...}}` or
 `{"error": CODE, "message": TEXT}`; `src/protocol.ts` has the shapes and codes. `GET /health`
 needs no credential.
 

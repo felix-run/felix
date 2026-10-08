@@ -474,6 +474,48 @@ def workspace_migrate(
         raise typer.Exit(1)
 
 
+@workspace_app.command("upload")
+def workspace_upload(
+    tenant: str = typer.Option(None, "--tenant", help="Only this tenant's scopes."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Say what would be copied; copy nothing."),
+) -> None:
+    """Copy local workspace scopes into their hosted sandboxes, once, after turning on `hosted`.
+
+    A scope starts empty under FELIX_WORKSPACE_BACKEND=hosted; this carries each local scope's files
+    (`<root>/.felix-scopes/<tenant>/<key>`) into the sandbox of the same scope and backs it up. The
+    local files are left in place. Run it where the workspace is mounted, with the hosted settings.
+    """
+    import asyncio
+
+    from felix.config import get_settings
+    from felix.tools.workspace_hosted import upload_local_scopes
+
+    settings = get_settings()
+    if settings.workspace_backend != "hosted":
+        rprint("[red]FELIX_WORKSPACE_BACKEND is not `hosted`: there is nothing to upload to.[/red]")
+        raise typer.Exit(2)
+    try:
+        settings.validate_runtime()
+        reports = asyncio.run(upload_local_scopes(settings, tenant=tenant, dry_run=dry_run))
+    except (ValueError, OSError, RuntimeError) as exc:
+        rprint(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    verb = "would copy" if dry_run else "copied"
+    skipped = 0
+    for report in reports:
+        rprint(
+            f"{report.scope}: {verb} {len(report.uploaded)} file(s)"
+            + (", backed up" if report.checkpointed else "")
+        )
+        for path, why in report.skipped:
+            skipped += 1
+            rprint(f"  [yellow]skipped {path}: {why}[/yellow]")
+    if not reports:
+        rprint("no local scopes to copy")
+    if skipped:
+        raise typer.Exit(1)
+
+
 @app.command("bundle-manifests")
 def bundle_manifests(
     out: Path | None = typer.Option(None, "--out", "-o", help="Write JSON Schema / bundle summary here."),

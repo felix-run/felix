@@ -432,6 +432,34 @@ class _ReactAgent:
         except Exception:
             logger.debug("model_change persist failed", exc_info=True)
 
+    async def _note_preview(self, input: InvokeInput) -> None:
+        """Stash the thread's first user message for the session index, once per thread.
+
+        `GET /chat/sessions` lists threads from their metadata alone, so this is what lets a
+        client recognise a thread it did not start. Every turn passes here; only a thread's
+        first one writes (`thread_state.note_first_message`).
+        """
+        if not input.thread_id or self.session_store is None:
+            return
+        text = next(
+            (m.content for m in input.messages if m.role == "user" and m.content and m.content.strip()),
+            None,
+        )
+        if text is None:
+            return
+        try:
+            from felix.session.thread_state import note_first_message
+
+            await note_first_message(
+                settings=self.settings,
+                tenant_id=input.tenant_id or self.tenant_id,
+                thread_id=input.thread_id,
+                text=text,
+            )
+        except Exception:
+            # A missing preview lists the thread by its id, as before; not worth a turn.
+            logger.warning("session preview write failed for thread=%s", input.thread_id, exc_info=True)
+
     async def _append_produced(
         self,
         thread_id: str | None,
@@ -893,6 +921,7 @@ class _ReactAgent:
 
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
+        await self._note_preview(input)
         if input.thread_id:
             # A steer sent while the thread was idle is held for the next run and delivered
             # here, after that run's own turn. The loop below only drains steers between tool

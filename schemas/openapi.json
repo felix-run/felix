@@ -8064,6 +8064,7 @@
     },
     "/chat/sessions": {
       "get": {
+        "description": "The caller's tenant's threads, from their stored metadata (one read, no session logs).\n\nEach row is `{id, createdAt, updatedAt, parentSessionId, sessionName, preview, manifest}`.\n`preview` is the thread's first user message, masked, whitespace-collapsed and cut to 120\ncharacters; `manifest` is the manifest its newest turn ran under. Either is `null` for a\nthread that has none, or that was written before the harness recorded it.",
         "operationId": "list_sessions_chat_sessions_get",
         "responses": {
           "200": {
@@ -8696,6 +8697,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "summary": "Remove Thread Repo",

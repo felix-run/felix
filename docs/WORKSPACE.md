@@ -327,12 +327,16 @@ those disagree, this one is current.
 - **No `workspace_sandboxes` table in phase 3.** The Durable Object name is deterministic, which
   replaces the mapping table above. The R2 prefix is what phase 4's sweeps reconcile against.
 - **One sandbox per `tenant` scope**, shared by that tenant's threads.
-- **Local files move once.** On a scope's first hosted use, its local files are uploaded once and
-  the upload is recorded. *Not built yet* (2026-10-07): until it is, a scope starts empty on
-  `hosted`, which `UPGRADING.md` says.
-- **Some tools still need a local directory:** an image tool's `path`, `publish_commits`, AGENTS.md
-  loading and a thread's repository checkout. Under `hosted`, these are refused for any scope but
-  `deployment`, never served from the host.
+- **Local files move once — as an operator command, not on first use.** `felix workspace upload`
+  copies each local scope (`<root>/.felix-scopes/<tenant>/<key>`) into the sandbox of the same
+  `tenant/key` and backs it up. Automatic upload on first use would have needed the scope's local
+  directory from inside a call, and a thread key is a hash that cannot be turned back into the
+  thread; the scope directory already *is* the key, so a one-time command needs nothing new. Files
+  over the write cap and symlinks are skipped and reported, never forced.
+- **Some tools still need a local directory:** an image tool's `path`, AGENTS.md loading, and
+  `publish_commits` in a thread with no repository of its own. Under `hosted`, these are refused
+  for any scope but `deployment`, never served from the host. A thread's repository checkout, and
+  `publish_commits` from it, run in the thread's sandbox (3c).
 
 - **The gateway lives in this repository** (`deploy/cloudflare/workspace-gateway`), not in
   `felix-run/web`. It is harness infrastructure, like the database: an operator running Felix
@@ -352,6 +356,53 @@ those disagree, this one is current.
    live conformance job.
 5. Latency and cost measured on the reference deployment, and this file brought in line.
 
+## Phase 3c: repository checkouts in the sandbox (decided 2026-10-07)
+
+Under `hosted`, a thread with a repository was refused: its checkout is a clone on the host. 3c
+puts the clone in the thread's sandbox instead.
+
+- **The sandbox reaches GitHub only through an intercept.** The Durable Object registers
+  `interceptOutboundHttps('github.com', GitHubGateway)` when a Container starts. With the internet
+  off, `github.com` resolves only because of it, and every other name does not resolve.
+- **Denied, except for one clone.** `GitHubGateway` (`src/github.ts`) refuses everything unless a
+  clone has granted it. A grant is one repository, read-only: git's smart-HTTP fetch
+  (`info/refs?service=git-upload-pack`, `POST git-upload-pack`), never `git-receive-pack`.
+  - Publishing stays the harness's, through GitHub's API (`publish_commits`), so nothing in a
+    sandbox ever pushes.
+  - The grant is replaced by a deny the moment the clone ends, whether it worked or not.
+  - Clones are serialised per scope, because a grant is per Container.
+- **The token never enters the container.** It travels as the intercept entrypoint's props, and
+  `Authorization` is set there after anything the container sent is dropped. git trusts only the
+  runtime's re-signing CA (`GIT_SSL_CAINFO`).
+- **What a grant still allows:** while it is registered, any process in the sandbox could fetch
+  that one repository with the person's access. That is the clone's own permission, for the
+  clone's duration.
+- **Verified locally (`wrangler dev`, Docker), 2026-10-07:**
+  - a clone of felix-run/felix (9 MB) took 4.1s;
+  - afterwards, the sandbox's own `git ls-remote` got 403;
+  - `api.github.com` and `example.com` did not resolve;
+  - no token was found in the workspace, `/root`, `/tmp`, `/etc` or any process environment;
+  - a second clone into the non-empty workspace was refused with 409.
+
+  Not yet measured: a clone near the 500 MB cap, on the deployed gateway.
+- **The harness side.** Under `hosted`, `open_checkout` clones through the gateway's `clone` op into
+  the thread's own sandbox: the scope's whole `/workspace` is the repository, as the checkout
+  directory is on the host. The state file stays on the host (recording `hosted` and the sandbox's
+  gateway path); the files do not.
+  - A thread whose workspace already has files cannot open a repository (`conflict`): a clone goes
+    into an empty workspace, and nothing is cloned over a person's files.
+  - Once the checkout is ready, the thread's workspace tools and `shell_tools` work in it like any
+    hosted scope, and the end-of-request checkpoint backs it up.
+  - Reading the repository -- the file listing, `describe`, and every git call `publish_commits`
+    makes -- goes through two read-only gateway ops, `git` and `lstat`. `git` runs the harness's
+    own `_git_exec` (ported into `felix-fs` and held to it like the file code), so the prelude, the
+    environment built from nothing and the output cap are the same in both places. Publishing
+    itself stays the harness's, through GitHub's API: the sandbox never pushes.
+  - Removing the repository, and the worker's unused-checkout sweep, destroy the sandbox and its
+    backup. A removal the gateway cannot carry out is refused (503 `workspace_unavailable`) and the
+    sweep leaves it for its next run; neither marks the checkout gone over a workspace that still
+    holds it.
+
 ## Phases
 
 | Phase | What | Changes behaviour? | Status |
@@ -360,8 +411,9 @@ those disagree, this one is current.
 | 1 | Register a failure prefix for workspace tool errors | audit rows become truthful | `[x]` #308 — every failure goes through `tool_error_output` |
 | 2a | `spec.workspace.scope` (default `thread`) through `workspace_root()`, the `deployment` scope gated to the operator's tenants, `felix workspace migrate` | yes — see migration | `[x]` feat/workspace-scopes |
 | 2b | `WorkspaceBackend` seam with the `local` backend: the tools stop touching the filesystem directly | no | `[x]` refactor/workspace-backend |
-| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508 gateway, #509 persistence, feat/hosted-workspace-backend; not yet run against a deployed gateway |
-| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` feat/hosted-shell: the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
+| 3a | `hosted` backend for the five file tools: the gateway Worker in `deploy/cloudflare/` (SDK 1.0, `felix-fs` helper, R2 `DirectoryBackup`), `HostedBackend`, the conformance suite over both backends | opt-in via `FELIX_WORKSPACE_BACKEND=hosted` | `[x]` #508, #509, #510 (v0.11.0); **on the reference deployment since 2026-10-07** |
+| 3c | A thread's repository checkout in its sandbox: cloned there through a `github.com`-only intercept that adds the person's token outside the container | opt-in, with 3a | `[x]` gateway `clone` (#522); the harness side, with the gateway's `git` and `lstat` (feat/hosted-checkouts) |
+| 3b | `shell_tools` exec inside the scope's sandbox | opt-in, with 3a | `[x]` #511 (v0.11.0): the shell tool's own exec path (`exec_argv`, ported and held to it) runs in the sandbox |
 | 4 | Retention and reconcile sweeps, and the export route | opt-in | `[ ]` |
 | 5 | `broker` backend, only if a deployment needs one | opt-in | `[ ]` |
 
@@ -398,11 +450,23 @@ and a `scope: thread` workspace starts empty. So:
    stored by a third party. That is a data-handling decision for each operator, which is why the
    requirements include running the provider in the operator's own cloud, and why `broker` remains.
    With Cloudflare Sandboxes the files stay in the deployment's own Cloudflare account and R2 bucket.
-4. **Cost.** One sandbox per thread, paused when idle, adds up with the number of threads. The
-   retention default, the idle timeout and whether `scope: tenant` suits some manifests better all
-   follow from the chosen provider's pricing.
-5. **Latency.** Every file operation becomes a network round trip. Measure a typical cowork turn
-   before and after, and batch writes where the provider supports it.
+4. **Cost — answered (2026-10-07).** A stopped Container is not billed, so the cost is the time a
+   sandbox is awake: about $0.003 an hour on `lite`, stopped after 10 idle minutes. Each backup is
+   one R2 write (Class A) plus storage at R2's rate. One sandbox per active thread is affordable;
+   retention (phase 4) is what bounds the stored side.
+5. **Latency — measured (2026-10-07), on the reference deployment.** From the harness on GCE
+   `us-central1` to `workspace-gateway.felix.run`:
+
+   | | Time |
+   |---|---|
+   | first operation on a stopped scope (cold start, restore) | 2.6–11 s, typically under 10 |
+   | each operation after it, file or `exec` | ~0.45 s |
+   | a checkpoint to R2 | ~2.3 s, once at the end of a run that wrote |
+
+   A cold start is paid once per scope per 10 idle minutes. The steady per-operation cost is the
+   helper's process start plus a round trip; a turn of five tool calls adds about two seconds. That
+   is acceptable for a background or cowork turn, and the place to cut further is the helper's
+   start (a resident process instead of one per call), not batching.
 6. **Reading a workspace from chat-ui.** The web client's "Touched this session" list is derived from
    tool arguments today. The export route in phase 4 is the natural source for a real file list, and
    the client should wait for it rather than invent one.

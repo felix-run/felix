@@ -43,6 +43,7 @@ from felix.logging_setup import loggable
 
 if TYPE_CHECKING:
     from felix.config import Settings
+    from felix.tools.github_publish import GitRoot
 
 logger = logging.getLogger("felix.repos.checkouts")
 
@@ -132,6 +133,11 @@ def thread_workspace(settings: Settings, tenant_id: str, thread_id: str) -> Path
         return None
     status = state.get("state")
     repo = state.get("repo", "the repository")
+    if status == READY and state.get("hosted"):
+        # Cloned into the thread's own sandbox (the hosted workspace backend): its scope serves it.
+        with contextlib.suppress(OSError):
+            (directory / USED_FILE).touch()
+        return None
     if status == READY:
         path = directory / REPO_DIR
         if path.is_symlink() or not path.is_dir():
@@ -212,8 +218,10 @@ async def open_checkout(
     except FileExistsError as exc:
         raise CheckoutRefused("checkout_busy", "a checkout of this thread is already being made") from exc
     os.close(fd)
+    hosted = settings.workspace_backend == "hosted"
     state = {
         "state": CLONING,
+        "hosted": hosted,
         "repo": full_name,
         "base": branch,
         "private": bool(repo.get("private")),
@@ -222,9 +230,17 @@ async def open_checkout(
         "size_kb": size_kb,
         "created_at": int(time.time() * 1000),
     }
+    if hosted:
+        from felix.tools.workspace_hosted import thread_scope_path
+
+        # The directory is named by a hash, so the sweep has no other way back to the sandbox.
+        state["sandbox"] = thread_scope_path(settings, tenant_id, thread_id)
     try:
         _write_state(directory, state)
-        task = asyncio.create_task(_clone(settings, directory, state, token))
+        if hosted:
+            task = asyncio.create_task(_clone_hosted(settings, directory, state, token, tenant_id, thread_id))
+        else:
+            task = asyncio.create_task(_clone(settings, directory, state, token))
     except BaseException:
         with contextlib.suppress(OSError):
             (directory / LOCK_FILE).unlink()
@@ -309,6 +325,51 @@ async def _clone(settings: Settings, directory: Path, state: dict[str, Any], tok
             (directory / LOCK_FILE).unlink()
 
 
+async def _clone_hosted(
+    settings: Settings, directory: Path, state: dict[str, Any], token: str, tenant_id: str, thread_id: str
+) -> None:
+    """Clone into the thread's sandbox through the gateway (`WORKSPACE.md` phase 3c).
+
+    The token goes to the gateway for this one clone and is added to the sandbox's requests to
+    github.com outside the container; the sandbox never holds it, and its grant ends with the
+    clone. The state stays here, in the thread's directory, like a local checkout's; the files do
+    not. The sandbox backs the clone up like any write, at the end of the request or before its
+    idle stop.
+    """
+    import httpx
+
+    from felix.tools.workspace_hosted import HostedBackend, thread_scope_path
+
+    final = {**state}
+    try:
+        path = thread_scope_path(settings, tenant_id, thread_id)
+        body = {"repo": state["repo"], "branch": state["base"], "token": token}
+        wait = httpx.Timeout(settings.repo_clone_timeout_seconds + 60.0, connect=10.0)
+        out = await HostedBackend(settings)._post(path, "clone", body, wait)
+        await HostedBackend(settings)._post(path, "checkpoint", {})
+        final.update(state=READY, ready_at=int(time.time() * 1000), head=str(out.get("head", "")))
+        (directory / USED_FILE).touch()
+        logger.info("hosted checkout ready: %s", loggable(state["repo"], limit=200))
+    except Exception as exc:
+        detail = _scrub(str(exc), token)
+        if "conflict" in detail or "not empty" in detail:
+            reason = "this thread's workspace already has files; a repository is opened in an empty one"
+        elif "clone_failed" in detail or "git clone failed" in detail:
+            reason = _failure_reason(detail, settings)
+        else:
+            reason = "the hosted workspace could not clone the repository; the cause is in the server's log"
+        final.update(state=FAILED, error=reason)
+        logger.warning(
+            "hosted checkout failed: %s: %s",
+            loggable(state["repo"], limit=200),
+            loggable(detail[-600:], limit=600),
+        )
+    finally:
+        _write_state(directory, final)
+        with contextlib.suppress(OSError):
+            (directory / LOCK_FILE).unlink()
+
+
 def _failure_reason(detail: str, settings: Settings) -> str:
     """What a failed clone tells a client, classified from git's (scrubbed) error."""
     lowered = detail.lower()
@@ -334,8 +395,14 @@ async def describe(settings: Settings, tenant_id: str, thread_id: str) -> dict[s
     out: dict[str, Any] = {
         k: state.get(k) for k in ("state", "repo", "base", "private", "opened_by", "created_at", "error")
     }
-    if state.get("state") == READY and (directory / REPO_DIR).is_dir():
+    root: GitRoot | None = None
+    if state.get("state") == READY and state.get("hosted"):
+        from felix.tools.workspace_hosted import HostedRoot, thread_scope_path
+
+        root = HostedRoot(settings, thread_scope_path(settings, tenant_id, thread_id))
+    elif state.get("state") == READY and (directory / REPO_DIR).is_dir():
         root = directory / REPO_DIR
+    if root is not None:
         branch = await _git_run(root, "rev-parse", "--abbrev-ref", "HEAD")
         ahead = await _git_run(root, "rev-list", "--count", f"origin/{state['base']}..HEAD")
         dirty = await _git_run(root, "status", "--porcelain", "--untracked-files=normal")
@@ -408,9 +475,15 @@ async def list_files(
         raise ListRefused("checkout_cloning", "the repository is still cloning")
     if status != READY:
         return {"state": status, "files": [], "truncated": False}
-    root = directory / REPO_DIR
-    if root.is_symlink() or not root.is_dir():
-        return {"state": FAILED, "files": [], "truncated": False}
+    root: GitRoot
+    if state.get("hosted"):
+        from felix.tools.workspace_hosted import HostedRoot, thread_scope_path
+
+        root = HostedRoot(settings, thread_scope_path(settings, tenant_id, thread_id))
+    else:
+        root = directory / REPO_DIR
+        if root.is_symlink() or not root.is_dir():
+            return {"state": FAILED, "files": [], "truncated": False}
     want = _clean_prefix(prefix)
     limit = max(1, min(limit, LIST_MAX))
     pathspec = ["--", want] if want else []
@@ -454,39 +527,103 @@ async def list_files(
     ordered = sorted(paths)
     truncated = len(ordered) > limit or listed.truncated or changed.truncated
     files: list[dict[str, Any]] = []
-    for path in ordered[:limit]:
-        target = root / path
-        try:
-            st = os.lstat(target)
-        except OSError:
+    stats = await _lstat_all(root, ordered[:limit])
+    for path, found in zip(ordered[:limit], stats, strict=True):
+        if found is None:
             files.append(
                 {"path": path, "kind": "missing", "size": None, "status": statuses.get(path, "deleted")}
             )
             continue
-        kind = "symlink" if os.path.islink(target) else "file"
-        files.append({"path": path, "kind": kind, "size": st.st_size, "status": statuses.get(path, "clean")})
+        files.append(
+            {
+                "path": path,
+                "kind": found["kind"],
+                "size": found["size"],
+                "status": statuses.get(path, "clean"),
+            }
+        )
     return {"state": READY, "files": files, "truncated": truncated}
 
 
-def remove_checkout(settings: Settings, tenant_id: str, thread_id: str) -> bool:
-    """Delete the thread's checkout and its state. True when there was one."""
+async def _lstat_all(root: GitRoot, paths: list[str]) -> list[dict[str, Any] | None]:
+    """`lstat` of each path under `root`, here or in the thread's sandbox: never followed."""
+    if not isinstance(root, Path):
+        return await root.lstat(paths) if paths else []
+    out: list[dict[str, Any] | None] = []
+    for path in paths:
+        target = root / path
+        try:
+            st = os.lstat(target)
+        except OSError:
+            out.append(None)
+            continue
+        out.append({"kind": "symlink" if os.path.islink(target) else "file", "size": st.st_size})
+    return out
+
+
+async def remove_checkout(settings: Settings, tenant_id: str, thread_id: str) -> bool:
+    """Delete the thread's checkout and its state. True when there was one.
+
+    A checkout cloned in the thread's sandbox is that scope's whole /workspace, so the sandbox and
+    its backup are destroyed first. If that fails the state is kept and the removal refused: the
+    next clone would otherwise meet a workspace that still holds the old repository.
+    """
     directory = thread_dir(settings, tenant_id, thread_id)
-    if not (directory / STATE_FILE).exists():
+    state = _read_state(directory)
+    if state is None:
         return False
     if (directory / LOCK_FILE).exists():
         raise CheckoutRefused("checkout_busy", "the repository is still cloning; remove it once it finishes")
+    if state.get("hosted"):
+        from felix.tools.workspace_hosted import GatewayUnavailable, HostedBackend, thread_scope_path
+
+        try:
+            await HostedBackend(settings)._post(
+                thread_scope_path(settings, tenant_id, thread_id), "destroy", {}
+            )
+        except (GatewayUnavailable, OSError, ValueError) as exc:
+            logger.warning("could not destroy the sandbox of a removed checkout: %s", exc)
+            raise CheckoutRefused(
+                "workspace_unavailable", "the thread's sandbox could not be cleared; try again shortly"
+            ) from exc
     shutil.rmtree(directory)
     return True
 
 
-def sweep_expired(settings: Settings, *, now: float | None = None) -> int:
+async def sweep_expired(settings: Settings, *, now: float | None = None) -> int:
     """Remove every checkout unused for FELIX_REPO_CHECKOUT_TTL_DAYS, keeping its state as
-    `expired` so the thread says why its repository is gone. Returns how many were removed."""
+    `expired` so the thread says why its repository is gone. Returns how many were removed.
+
+    A checkout cloned in a sandbox has that sandbox destroyed first; one the gateway cannot clear
+    now is left as it is for the next sweep, rather than marked expired over a workspace that still
+    holds the clone (which a re-opened repository would then be refused into)."""
+    expired = await asyncio.to_thread(_expired, settings, now)
+    removed = 0
+    for directory, state in expired:
+        if state.get("hosted"):
+            from felix.tools.workspace_hosted import GatewayUnavailable, HostedBackend
+
+            try:
+                await HostedBackend(settings)._post(str(state["sandbox"]), "destroy", {})
+            except (GatewayUnavailable, KeyError, OSError, ValueError) as exc:
+                logger.warning("could not destroy an unused checkout's sandbox; next sweep: %r", exc)
+                continue
+        else:
+            await asyncio.to_thread(shutil.rmtree, directory / REPO_DIR, ignore_errors=True)
+        _write_state(directory, {**state, "state": EXPIRED, "expired_at": int(time.time() * 1000)})
+        removed += 1
+    if removed:
+        logger.info("removed %d unused checkout(s)", removed)
+    return removed
+
+
+def _expired(settings: Settings, now: float | None) -> list[tuple[Path, dict[str, Any]]]:
+    """The checkouts `sweep_expired` removes: ready or failed, not cloning, unused past the TTL."""
     root = checkout_root(settings)
     if not root.is_dir():
-        return 0
+        return []
     cutoff = (now if now is not None else time.time()) - settings.repo_checkout_ttl_days * 86_400
-    removed = 0
+    out: list[tuple[Path, dict[str, Any]]] = []
     for directory in root.iterdir():
         if not directory.is_dir() or directory.is_symlink():
             continue
@@ -501,9 +638,5 @@ def sweep_expired(settings: Settings, *, now: float | None = None) -> int:
             used = (directory / STATE_FILE).stat().st_mtime
         if used >= cutoff:
             continue
-        shutil.rmtree(directory / REPO_DIR, ignore_errors=True)
-        _write_state(directory, {**state, "state": EXPIRED, "expired_at": int(time.time() * 1000)})
-        removed += 1
-    if removed:
-        logger.info("removed %d unused checkout(s)", removed)
-    return removed
+        out.append((directory, state))
+    return out
