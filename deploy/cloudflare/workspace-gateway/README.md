@@ -53,6 +53,13 @@ npx wrangler deploy                             # builds the image: needs Docker
 
 The same token goes to the harness as `FELIX_WORKSPACE_GATEWAY_TOKEN`, with the Worker's URL.
 
+`WORKSPACE_INSTANCE` (a plain var) sizes each sandbox: `standard-1` by default (1/2 vCPU, 4 GiB,
+8 GB disk), or `lite`, `standard-2`, `standard-3`, `standard-4`. Anything else and the gateway
+serves nobody (`503 misconfigured`). `lite` (1/16 vCPU, 256 MiB, 2 GB) is about a tenth of the
+price while awake, but every operation starts a process, and at 1/16 vCPU that takes seconds: a
+repository listing took 15 s on it against under 1 s on `standard-1`, and git or a package install
+can run out of memory. CPU is billed on use; memory and disk as provisioned while a sandbox is awake.
+
 ## Develop
 
 ```bash

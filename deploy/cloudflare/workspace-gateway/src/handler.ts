@@ -10,6 +10,8 @@ import {
   type ErrorCode,
   type HelperAnswer,
   type HelperRequest,
+  INSTANCE_TYPES,
+  instanceType,
   MAX_BODY_BYTES,
   OPS,
   type Op,
@@ -27,6 +29,8 @@ export interface Env {
   SANDBOX: { getByName(name: string): WorkspaceStub };
   /** The harness's bearer. A secret (`wrangler secret put`), at least 32 characters. */
   WORKSPACE_GATEWAY_TOKEN?: string;
+  /** The sandbox's instance type (`INSTANCE_TYPES`); `standard-1` when unset. A plain var. */
+  WORKSPACE_INSTANCE?: string;
 }
 
 export const MIN_TOKEN_CHARS = 32;
@@ -86,6 +90,10 @@ export default {
     if (token.length < MIN_TOKEN_CHARS) {
       // Refused before anything else: a gateway with no token, or a guessable one, serves nobody.
       return refuse('misconfigured', 'WORKSPACE_GATEWAY_TOKEN is not set to 32 or more characters');
+    }
+    if (instanceType(env.WORKSPACE_INSTANCE) === null) {
+      // Refused rather than quietly sized some other way: the operator named a size on purpose.
+      return refuse('misconfigured', `WORKSPACE_INSTANCE must be one of ${INSTANCE_TYPES.join(', ')}`);
     }
     if (!authorized(request, token)) {
       return refuse('unauthorized', 'a valid bearer is required');

@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import handler from '../src/handler';
+import { DEFAULT_INSTANCE, instanceType } from '../src/protocol';
 
 interface Stub {
   operate(scope: string, request: unknown): Promise<unknown>;
@@ -20,6 +21,7 @@ interface Stub {
 interface GatewayEnv {
   SANDBOX: { getByName(name: string): Stub };
   WORKSPACE_GATEWAY_TOKEN?: string;
+  WORKSPACE_INSTANCE?: string;
 }
 
 interface WorkspaceGatewayWorker {
@@ -84,6 +86,32 @@ describe('workspace gateway', () => {
       expect(((await res.json()) as { error: string }).error).toBe('misconfigured');
     }
     expect(calls).toEqual([]);
+  });
+
+  it('sizes a sandbox standard-1 unless WORKSPACE_INSTANCE names another type', () => {
+    expect(DEFAULT_INSTANCE).toBe('standard-1');
+    expect([undefined, '', '  '].map(instanceType)).toEqual(['standard-1', 'standard-1', 'standard-1']);
+    expect([' lite ', 'standard-3'].map(instanceType)).toEqual(['lite', 'standard-3']);
+    expect(['basic', 'Standard-1', 'standard-5'].map(instanceType)).toEqual([null, null, null]);
+  });
+
+  it('serves nobody while WORKSPACE_INSTANCE names no instance type', async () => {
+    for (const instance of ['basic', 'dev', 'standard', 'huge']) {
+      const res = await send(post(`/v1/workspaces/acme/shared/list`, {}), {
+        WORKSPACE_GATEWAY_TOKEN: TOKEN,
+        WORKSPACE_INSTANCE: instance,
+      });
+      expect(res.status, instance).toBe(503);
+      expect(((await res.json()) as { message: string }).message).toContain('WORKSPACE_INSTANCE');
+    }
+    expect(calls).toEqual([]);
+    for (const instance of [undefined, '', 'lite', 'standard-1', 'standard-4']) {
+      const res = await send(post(`/v1/workspaces/acme/shared/list`, {}), {
+        WORKSPACE_GATEWAY_TOKEN: TOKEN,
+        WORKSPACE_INSTANCE: instance,
+      });
+      expect(res.status, String(instance)).toBe(200);
+    }
   });
 
   it('refuses a missing, wrong, or prefix-of bearer', async () => {

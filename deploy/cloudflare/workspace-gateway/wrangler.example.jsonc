@@ -21,6 +21,10 @@
       "images": { "workspace": { "dockerfile": "./Dockerfile" } }
     }
   ],
+  // Each sandbox's size, passed to ctx.container.start() (the `durable_object` policy takes no
+  // `instance_type` here): lite, standard-1 (the default), standard-2, standard-3 or standard-4.
+  // `lite` is 1/16 vCPU and 256 MiB, too little for git over a repository or a package install.
+  "vars": { "WORKSPACE_INSTANCE": "standard-1" },
   "exports": {
     "WorkspaceSandbox": { "type": "durable-object", "storage": "sqlite" }
   },
