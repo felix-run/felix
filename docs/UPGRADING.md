@@ -143,6 +143,26 @@ now the one durable path.
 
 ---
 
+## `0034_fiber_thread`: one durable run per thread
+
+**A catalog-only column, a small index, and a refusal clients may not have seen before.**
+`fibers.thread_id` records the thread a durable chat writes to, backfilled from `state_json` for
+every existing `durable_chat` row (under the RLS bypass, as `0029` does), with a partial index over
+runs that can still be in flight. Once the new image serves, a send to a thread whose durable run
+is in flight -- `POST /chat` or `POST /chat/stream`, durable or not -- is refused with
+`409 run_in_progress:<resume_token>` instead of starting a second run beside it, and
+`GET /chat/sessions/{id}` names the run as `activeRun`.
+
+- **Clients.** A client that treated every 409 from `/chat` as a lease refusal should read the
+  `detail` code. A resend under the `Idempotency-Key` of the message that started the run is
+  still answered from its key, not refused.
+- **During the roll.** Old replicas create fibers without `thread_id`, so a send landing on an old
+  replica is not refused, and a run an old replica starts is invisible to new ones' check until
+  it ends. Roll quickly; nothing needs re-running afterwards.
+- **A thread is never held for good.** A run past its `expires_at` that no worker holds does not
+  count, so a deployment with no worker cannot lock a thread with a fiber nothing will claim.
+- **Rollback.** The downgrade drops the index and the column; old code never reads either.
+
 ## `0033_skill_owner` re-keys the skill library
 
 **Brief locks on three small tables, failed skill saves until the roll completes, and a rollback

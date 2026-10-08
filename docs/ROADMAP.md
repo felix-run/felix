@@ -575,6 +575,19 @@ First, because everything else governs it.
       The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
       column**, anywhere in the models or migrations. Sleeping is already distinguishable from
       crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
+- [x] **One durable run per thread** (felix-run/felix#529). A send to a thread whose durable run
+      was still going started a second run beside it: the fiber did not record its thread, so
+      nothing could ask, and the lease is advisory and the run holds none. The two appended to one
+      log and neither saw the other's tool batch until it landed, so on a production `cowork`
+      thread the same files were written twice, user turns landed between another run's tool
+      calls and three write approvals were pending at once. `fibers.thread_id` (`0034`) records
+      it; the enqueue checks and inserts under a per-thread advisory lock; both send routes
+      refuse `409 run_in_progress:<resume_token>` after the idempotency key is judged, so a
+      resend still reattaches; and the snapshot names the run as `activeRun`, the handle a
+      reloaded client had no way to get. "In flight" is not "not terminal": a run past its
+      expiry that no worker holds does not count, or a deployment with no worker would lock the
+      thread for good. Still open on the same path: #530 (client tools after the stream's
+      deadline) and #531 (a re-run repeats tool calls).
 - [x] **A durable run streams its transcript** (felix-run/felix#238). `POST /chat/stream` on a
       durable manifest sent `run_accepted` → `run_status` → `final` and nothing between, so the
       answer arrived and the tool calls behind it did not. Correction to the premise this started

@@ -77,6 +77,12 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         return HTTPException(status_code=exc.status_code, detail=client_safe_message(exc))
     if isinstance(exc, ManifestDriftError):
         return HTTPException(status_code=409, detail=client_safe_message(exc))
+    from felix.durability.fibers import RunInProgress
+
+    if isinstance(exc, RunInProgress):
+        # The enqueue's own check, which a send racing another past `_refuse_if_run_in_flight`
+        # reaches: the advisory lock admitted one of them.
+        return HTTPException(status_code=409, detail=f"run_in_progress:{exc.resume_token}")
     from felix_ai.providers.base import ProviderConfigError
 
     if isinstance(exc, ProviderConfigError):
@@ -327,6 +333,37 @@ LEASE_REFUSALS: dict[int | str, dict[str, Any]] = {
     }
 }
 
+# `POST /chat` starts a turn, so it can also be refused for the run already on the thread.
+CHAT_REFUSALS: dict[int | str, dict[str, Any]] = {
+    409: {
+        "model": ChatRefusalOut,
+        "description": LEASE_REFUSALS[409]["description"]
+        + " `run_in_progress:<resume_token>`: the thread has a durable run in flight; watch it at "
+        "`GET /chat/runs/{resume_token}` and send once it has finished.",
+    }
+}
+
+
+async def _refuse_if_run_in_flight(request: Request, tenant_id: str, thread: str | None) -> None:
+    """`409 run_in_progress:<resume_token>` when `thread` has a durable run in flight.
+
+    A second send would run beside it -- durable or not, it appends to the same log -- and
+    neither run sees the other's work until a whole tool batch lands, so each re-does it
+    (felix-run/felix#529). The token is the run to watch instead. Refused before a transient
+    turn as well as a durable one; the durable enqueue checks again under a per-thread lock,
+    so two sends racing past this cannot both start a run.
+
+    Called *after* an `Idempotency-Key` is judged, never before: a resend of the message that
+    started the run is answered by reattaching to it, not by this refusal.
+    """
+    if thread is None:
+        return
+    from felix.durability.runs import active_durable_run
+
+    active = await active_durable_run(request.app.state.settings, tenant_id, thread)
+    if active is not None:
+        raise HTTPException(status_code=409, detail=f"run_in_progress:{active['resume_token']}")
+
 
 async def _refuse_unless_driver(request: Request, thread: str | None, lease_token: str | None) -> None:
     """409 when the caller may not drive `thread`: see `lease.driving_refusal`."""
@@ -451,8 +488,8 @@ async def _apply_template(
 IDEMPOTENCY_HEADER = "idempotency-key"
 
 
-@router.post("", responses=LEASE_REFUSALS)
-@router.post("/", responses=LEASE_REFUSALS)
+@router.post("", responses=CHAT_REFUSALS)
+@router.post("/", responses=CHAT_REFUSALS)
 async def chat(body: ChatRequest, request: Request, lease_token: LeaseToken = None) -> Any:
     """Run a turn. With an `Idempotency-Key`, run it once per key per principal.
 
@@ -507,6 +544,8 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     if not (body.manifest or "").strip():
         raise HTTPException(status_code=400, detail="manifest_required")
+    # Inside the turn `once` runs, so a refusal frees the key rather than becoming its answer.
+    await _refuse_if_run_in_flight(request, auth.tenant_id, thread)
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
@@ -746,7 +785,9 @@ STREAM_IDEMPOTENCY_REFUSALS: dict[int | str, dict[str, Any]] = {
         "description": "`lease_read_only` / `lease_held`: the `X-Felix-Lease-Token` presented does not "
         "drive the thread (or, under `FELIX_LEASE_ENFORCE=strict`, none was and another holder does). "
         "`idempotency_in_progress`: a request with this `Idempotency-Key` is still streaming; "
-        "reattach with `GET /chat/stream/{thread_id}`.",
+        "reattach with `GET /chat/stream/{thread_id}`. "
+        "`run_in_progress:<resume_token>`: the thread has a durable run in flight; watch it at "
+        "`GET /chat/runs/{resume_token}` and send once it has finished.",
     },
 }
 
@@ -923,6 +964,10 @@ async def chat_stream(
             raise HTTPException(status_code=400, detail="idempotency_key_requires_thread_id")
     if not (body.manifest or "").strip():
         raise HTTPException(status_code=400, detail="manifest_required")
+    if key is None:
+        # Before the manifest is compiled and the input screened: there is no key whose
+        # resend this could be, so nothing to judge first.
+        await _refuse_if_run_in_flight(request, auth.tenant_id, thread)
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
@@ -963,6 +1008,14 @@ async def chat_stream(
         if isinstance(claimed, StreamingResponse):
             return claimed
         held = claimed
+        # After the claim: a resend of the message that started the run was answered above,
+        # by reattaching. Anything else on a thread with a run in flight is a second run.
+        try:
+            await _refuse_if_run_in_flight(request, auth.tenant_id, thread)
+        except HTTPException:
+            held.settled = True
+            await held.store.release(held.scope, held.key, held.token)
+            raise
     execution = getattr(getattr(resolved.manifest, "spec", None), "execution", None)
     if execution is not None and getattr(execution, "mode", "transient") == "durable":
         from felix.durability.runs import start_durable_chat

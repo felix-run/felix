@@ -217,7 +217,10 @@ async def _drop_migrator(url: str) -> None:
 
 
 async def _as_migrator(url: str) -> str:
-    """A URL for a role that owns the skill tables and `alembic_version` and is bound by RLS."""
+    """A URL for a role that owns the skill tables and `alembic_version` and is bound by RLS.
+
+    Plus every table a migration *after* `0033` alters, because reaching `0033` from head
+    downgrades through each of them first: `fibers` (`0034_fiber_thread`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -225,7 +228,7 @@ async def _as_migrator(url: str) -> str:
         url,
         f"CREATE ROLE {_MIGRATOR} LOGIN PASSWORD '{_MIGRATOR_PASSWORD}' NOSUPERUSER NOBYPASSRLS",
         f"GRANT USAGE, CREATE ON SCHEMA public TO {_MIGRATOR}",
-        *(f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}' for t in (*_SKILL_TABLES, "alembic_version")),
+        *(f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}' for t in (*_SKILL_TABLES, "fibers", "alembic_version")),
     )
     return (
         make_url(url)
@@ -290,9 +293,12 @@ async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgra
         assert await _scalar(migrator, "SELECT count(*) FROM skill") == 0, (
             "the migrator role sees rows without the bypass, so this test cannot catch a guard missing it"
         )
+        # Head, read rather than spelled: the refused downgrade rolls back whole, so the schema stays
+        # wherever it started, and that is `0033` only until a later migration lands.
+        head = await _scalar(url, "SELECT version_num FROM alembic_version")
         with pytest.raises(RuntimeError, match="personal libraries"):
             await _downgrade_past_0033(migrator)
-        assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0033_skill_owner"
+        assert await _scalar(url, "SELECT version_num FROM alembic_version") == head
 
         # Versions removed and the skill row left behind still refuses: that row would re-key into
         # an org skill whose live version no longer exists.

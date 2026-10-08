@@ -53,6 +53,7 @@ def build_snapshot(
     attached: bool = False,
     locked: bool = False,
     revision: int | None = None,
+    active_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an authoritative session snapshot for clients."""
     wake = analyze_wake(events)
@@ -91,6 +92,19 @@ def build_snapshot(
         # `{"rating": "up" | "down", "note": str, "at": epoch ms}`.
         "feedback": feedback or {},
         "transcript": transcript,
+        # The durable run in flight on this thread, or null. `phase` cannot say so -- a durable
+        # run's agent is in the worker, which writes no thread phase -- and the run's token was
+        # otherwise only in the response that started it, so a client that reloaded showed a
+        # thread that looked finished while the run went on, and its next send started a second.
+        "activeRun": (
+            {
+                "resumeToken": active_run.get("resume_token"),
+                "status": active_run.get("status"),
+                "expiresAt": active_run.get("expires_at"),
+            }
+            if active_run
+            else None
+        ),
         "queuedSteer": queued_steer or [],
         "queuedSteerCount": len(queued_steer or []),
         "wake": {
@@ -139,6 +153,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
     """
     import asyncio
 
+    from felix.durability.runs import active_durable_run
     from felix.session.lease import lease_status
     from felix.session.store import get_session_store
     from felix.session.thread_state import get_thread_meta
@@ -146,7 +161,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
     from felix.steer import peek_steer_count
 
     store = get_session_store(settings, tenant_id=tenant_id)
-    # Five reads against four different stores, none of which depends on another. They
+    # Six reads against five different stores, none of which depends on another. They
     # ran in series on `GET /chat/sessions/{id}`, on both lease endpoints and on every
     # cold SSE reconnect -- the reattach path, where latency is the most visible thing
     # in the product.
@@ -154,7 +169,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
     # `gather` holds more pool connections at once, which is why it waited for the pool
     # to become a setting rather than a hardcoded 5 + 10.
     session = store.open(thread)
-    events, meta, leaf, steer_n, lease = await asyncio.gather(
+    events, meta, leaf, steer_n, lease, active_run = await asyncio.gather(
         session.get_events(),
         get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread),
         # Resolved the way a turn resolves it -- a legacy row's stale leaf yields to the newest
@@ -163,6 +178,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
         stored_leaf(session),
         peek_steer_count(tenant_id, thread),
         lease_status(thread),
+        active_durable_run(settings, tenant_id, thread),
     )
     return build_snapshot(
         thread_id=thread,
@@ -179,6 +195,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
         revision=int(meta.get("revision") or 0),
         attached=bool(lease.get("attached")),
         locked=bool(lease.get("locked")),
+        active_run=active_run,
     )
 
 

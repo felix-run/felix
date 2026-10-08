@@ -534,6 +534,9 @@ class Fiber(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     kind: Mapped[str] = mapped_column(Text, nullable=False, default="step")
     status: Mapped[str] = mapped_column(Text, server_default="pending", default="pending")
+    # The thread a durable chat writes to, so a thread's run can be found and a second one
+    # refused (felix-run/felix#529). Null for a fiber with no thread of its own. Migration 0034.
+    thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     state_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
@@ -570,6 +573,15 @@ class Fiber(Base):
             "idx_fibers_webhook_due",
             "webhook_due_at",
             postgresql_where=text("webhook_status = 'pending'"),
+        ),
+        # A thread's run in flight (`active_fiber_for_thread`): read on every send and snapshot.
+        Index(
+            "idx_fibers_thread_active",
+            "tenant_id",
+            "thread_id",
+            postgresql_where=text(
+                "thread_id IS NOT NULL AND status NOT IN ('completed', 'failed', 'expired', 'dead')"
+            ),
         ),
     )
 
