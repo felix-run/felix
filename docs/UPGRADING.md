@@ -31,6 +31,30 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## Thread previews for threads from before the session index listed them
+
+**One command after the roll, optional, and safe to repeat.** `GET /chat/sessions` lists each thread
+with `preview` (its first user message, masked and cut to 120 characters) and `manifest`. A turn
+records the preview, so a thread that has not had one since the upgrade lists `preview: null`, and
+a client shows it by id. To fill those from each thread's session log, once:
+
+```bash
+docker compose exec api felix sessions backfill-previews --dry-run   # counts per tenant, writes nothing
+docker compose exec api felix sessions backfill-previews             # every tenant; --tenant <id> for one
+```
+
+Run it in the `api` container: the preview is masked with the secret values that process can see,
+the same rule a turn applies. It never overwrites a preview, leaves `updated_at` alone (so the thread
+list keeps its order, and retention's idle clock does not restart), and creates no thread. A thread
+with no user text in its log stays null. Each thread is one read of the start of its log and, if it
+is filled, one short write locked to that thread's row, 200 threads to a page (`--batch-size`). So it
+can run with the API serving. A thread that fails is named and the command exits 1; running it again
+retries exactly the threads still missing a preview.
+
+`manifest` needs no backfill: it falls back to the pin's `manifest_name`, which every thread that has
+had a turn on 0.2.0 or later carries. The session log does not record which manifest a turn ran under, so
+the thread's latest manifest is not recovered for a thread that has not had a turn since the upgrade.
+
 ## Hosted workspaces (opt-in)
 
 **Nothing changes unless you set `FELIX_WORKSPACE_BACKEND=hosted`.** With it, each thread's or

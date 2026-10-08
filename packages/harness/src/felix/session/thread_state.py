@@ -96,6 +96,19 @@ def thread_preview(text: str | None) -> str | None:
     return flat[: PREVIEW_CHARS - 1].rstrip() + "\u2026"
 
 
+def masked_preview(text: str | None) -> str | None:
+    """``text`` as the stored `preview`: masked (`secrets.redact_text`) first, then `thread_preview`.
+
+    The one rule both writers apply -- a turn's `note_first_message` and the backfill's
+    `backfill_preview` -- so a thread listed from a backfill reads exactly as it would had
+    the turn recorded it. Masked before the cut, so a secret straddling the cut is masked
+    rather than half-kept.
+    """
+    from felix.secrets import redact_text
+
+    return thread_preview(redact_text(text) if text else text)
+
+
 def leaf_epoch(labels_json: dict[str, Any] | None) -> int:
     """The row's rewind/fork epoch; 0 for a row that never had one."""
     try:
@@ -469,11 +482,9 @@ async def note_first_message(
 
     The text is masked with the same rule the session log applies on the way in
     (`secrets.redact_text`), before it is cut, so the metadata never holds what the log would
-    not -- and a secret straddling the cut is masked rather than half-kept.
+    not -- and a secret straddling the cut is masked rather than half-kept (`masked_preview`).
     """
-    from felix.secrets import redact_text
-
-    preview = thread_preview(redact_text(text) if text else text)
+    preview = masked_preview(text)
     if preview is None:
         return False
     if _use_memory(settings):
@@ -508,6 +519,125 @@ async def note_first_message(
     return True
 
 
+# --- the preview backfill's store half (`session/preview_backfill.py`) ------------------------
+#
+# A thread written before `preview` existed lists as null until something records one. These
+# are the reads and the one write the backfill needs, on both arms. The write is not
+# `note_first_message`: that is a turn, so it moves `updated_at` -- which reorders a client's
+# thread list and, on Postgres, is the column retention reads to spare a thread from the idle
+# sweep (`jobs/retention.py:_delete_idle_threads`). Backfilling every old thread through it
+# would make all of them look touched today and keep them a full retention window longer. And
+# it inserts a missing row, where the backfill must never re-create a row retention just
+# deleted.
+
+
+async def list_thread_tenants(*, settings: Settings | None) -> list[str]:
+    """Every tenant holding session metadata, sorted. Cross-tenant: Postgres reads under `rls_bypass`."""
+    if _use_memory(settings):
+        return sorted({tid.split(":", 1)[0] for tid in _meta_by_thread if ":" in tid})
+    assert settings is not None
+    from sqlalchemy import select
+
+    from felix.db.models import ThreadState
+    from felix.db.session import get_session_factory, rls_bypass
+
+    with rls_bypass():
+        async with get_session_factory(settings=settings)() as db:
+            rows = await db.scalars(select(ThreadState.tenant_id).distinct().order_by(ThreadState.tenant_id))
+            return list(rows.all())
+
+
+async def threads_missing_preview(
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    after: str | None = None,
+    limit: int = 200,
+) -> list[str]:
+    """One page of ``tenant_id``'s thread ids with no `preview`, in id order, after ``after``.
+
+    Keyset rather than offset, so a page costs the same however far in it is, and a thread
+    filled between two pages cannot shift the next one. A null, absent or empty preview all
+    count as missing, which is what `_session_index_dict` lists as null.
+    """
+    if _use_memory(settings):
+        prefix = f"{tenant_id}:"
+        ids = sorted(
+            tid
+            for tid, meta in _meta_by_thread.items()
+            if tid.startswith(prefix) and not meta.get(PREVIEW_KEY) and (after is None or tid > after)
+        )
+        return ids[:limit]
+    assert settings is not None
+    from sqlalchemy import func, select
+
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+
+    stmt = select(ThreadState.thread_id).where(
+        ThreadState.tenant_id == tenant_id,
+        func.coalesce(ThreadState.labels_json[PREVIEW_KEY].astext, "") == "",
+    )
+    if after is not None:
+        stmt = stmt.where(ThreadState.thread_id > after)
+    async with tenant_session(settings, tenant_id) as db:
+        rows = await db.scalars(stmt.order_by(ThreadState.thread_id).limit(limit))
+        return list(rows.all())
+
+
+async def backfill_preview(
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    thread_id: str,
+    text: str | None,
+) -> bool:
+    """Record ``text`` as an existing thread's `preview` if it still has none; whether this did.
+
+    Through `masked_preview`, as a turn would have recorded it. Leaves `updated_at` (both the
+    metadata's and the Postgres column) where it was, and never creates a thread: an id with
+    no metadata, or one deleted since it was listed, is left alone. On Postgres it takes the
+    row's lock for one short transaction and checks again under it, so a turn that recorded a
+    preview in the meantime keeps its own. `revision` still counts the write, so a client that
+    watches it sees the metadata changed.
+    """
+    preview = masked_preview(text)
+    if preview is None:
+        return False
+    if _use_memory(settings):
+        meta = _meta_by_thread.get(thread_id)
+        if meta is None or meta.get(PREVIEW_KEY):
+            return False
+        meta[PREVIEW_KEY] = preview
+        meta["revision"] = int(meta.get("revision") or 0) + 1
+        return True
+
+    assert settings is not None
+    from sqlalchemy import select
+
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
+        row = (
+            await db.execute(
+                select(ThreadState)
+                .where(ThreadState.tenant_id == tenant_id, ThreadState.thread_id == thread_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        stored = dict(row.labels_json or {}) if row is not None else {}
+        if row is None or stored.get(PREVIEW_KEY):
+            await db.rollback()
+            return False
+        stored[PREVIEW_KEY] = preview
+        stored["revision"] = int(stored.get("revision") or 0) + 1
+        row.labels_json = stored
+        await db.commit()
+    return True
+
+
 def reset_thread_meta_for_tests() -> None:
     _meta_by_thread.clear()
 
@@ -519,16 +649,20 @@ __all__ = [
     "LEAF_TRACKED_VERSION",
     "PREVIEW_CHARS",
     "PREVIEW_KEY",
+    "backfill_preview",
     "claim_thread",
     "get_thread_meta",
     "leaf_epoch",
     "leaf_is_tracked",
     "list_thread_metadata",
+    "list_thread_tenants",
     "load_leaf",
+    "masked_preview",
     "note_first_message",
     "persist_leaf",
     "reset_thread_meta_for_tests",
     "thread_exists",
     "thread_preview",
+    "threads_missing_preview",
     "update_thread_meta",
 ]

@@ -516,6 +516,58 @@ def workspace_upload(
         raise typer.Exit(1)
 
 
+sessions_app = typer.Typer(name="sessions", help="Maintain stored chat sessions.", no_args_is_help=True)
+app.add_typer(sessions_app, name="sessions")
+
+
+@sessions_app.command("backfill-previews")
+def sessions_backfill_previews(
+    tenant: str = typer.Option(None, "--tenant", help="Only this tenant's threads (default: every tenant)."),
+    batch_size: int = typer.Option(200, "--batch-size", min=1, help="Threads listed per page."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Count what would be filled; write nothing."),
+) -> None:
+    """Give threads from before the session index's `preview` their first message as one.
+
+    A turn records the preview only for threads it touches, so every thread that existed before
+    the upgrade lists as `preview: null` in GET /chat/sessions. This reads each such thread's
+    first user message from its session log and records it, masked and cut exactly as a turn
+    would. A thread that already has a preview is never touched, `updated_at` does not move, and
+    running it again is harmless. Run it once per deployment, with the API's own settings (its
+    secret values are what the preview is masked with).
+    """
+    import asyncio
+
+    from felix.config import get_settings
+    from felix.db.session import _use_memory
+    from felix.session.preview_backfill import backfill_previews
+
+    settings = get_settings()
+    if _use_memory(settings):
+        typer.echo(
+            "FELIX_DATABASE_URL is memory:// — an in-memory store lives and dies with the process "
+            "that wrote it, so there is nothing stored to backfill.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    reports = asyncio.run(
+        backfill_previews(settings, tenant_id=tenant, batch_size=batch_size, dry_run=dry_run)
+    )
+    verb = "would fill" if dry_run else "filled"
+    failed = 0
+    for report in reports:
+        rprint(
+            f"{report.tenant_id}: {verb} {report.filled}/{report.scanned} missing "
+            f"({report.no_text} no user text, {report.skipped} filled meanwhile)"
+        )
+        for thread_id in report.failed:
+            failed += 1
+            rprint(f"  [yellow]failed {thread_id} (see the log; a re-run retries it)[/yellow]")
+    if not reports:
+        rprint("no threads stored")
+    if failed:
+        raise typer.Exit(1)
+
+
 @app.command("bundle-manifests")
 def bundle_manifests(
     out: Path | None = typer.Option(None, "--out", "-o", help="Write JSON Schema / bundle summary here."),
