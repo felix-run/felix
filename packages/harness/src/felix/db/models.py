@@ -151,7 +151,7 @@ class SkillRow(Base):
 
     tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
     # Whose library the skill is in: `""` is the tenant's own (every skill before `0033`), anything
-    # else is one principal's personal namespace (`library_store.skill_owner`). Part of the key, so a
+    # else is one principal's personal namespace (`library_keys.personal_owner`). Part of the key, so a
     # personal skill and an org skill may share a name.
     owner: Mapped[str] = mapped_column(Text, primary_key=True, server_default="")
     name: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -163,7 +163,7 @@ class SkillRow(Base):
 
 class SkillVersionRow(Base):
     """One immutable version of a library skill. Content lives in the object store at
-    `library_store.library_object_key`; this row is its review record."""
+    `library_keys.library_object_key`; this row is its review record."""
 
     __tablename__ = "skill_version"
 

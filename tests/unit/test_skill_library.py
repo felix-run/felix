@@ -14,7 +14,8 @@ import pytest
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.format import serialize_skill_md
-from felix.skills.library_store import get_skill_library_store, library_object_key
+from felix.skills.library_keys import ORG_OWNER, library_object_key
+from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
 BODY = """
@@ -64,7 +65,7 @@ async def _draft(settings: Settings, store: MemoryObjectStore, **kw: Any) -> dic
 
 
 def _key(version: str, path: str = "SKILL.md", *, tenant: str = "acme", name: str = "invoice-triage") -> str:
-    return library_object_key(tenant, name, version, path)
+    return library_object_key(tenant, name, version, path, owner=ORG_OWNER)
 
 
 async def _events(settings: Settings, tenant: str = "acme") -> list[dict[str, Any]]:
