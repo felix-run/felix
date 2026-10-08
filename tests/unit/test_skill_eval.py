@@ -284,11 +284,13 @@ async def test_a_failed_job_is_recorded_and_the_sweep_carries_on(
 ) -> None:
     """The worker's sweep: one evaluation fails (its version's bytes are gone), the next runs."""
     from felix.skills.jobs import run_skill_jobs
-    from felix.skills.library_store import library_object_key
+    from felix.skills.library_keys import ORG_OWNER, library_object_key
 
     broken = await published(settings, bundle("broken-skill"))
     good = await published(settings, bundle(**{"evals/scenarios.json": json.dumps(TWO[:1])}))
-    await object_store(settings).delete(library_object_key(TENANT, "broken-skill", broken, "SKILL.md"))
+    await object_store(settings).delete(
+        library_object_key(TENANT, "broken-skill", broken, "SKILL.md", owner=ORG_OWNER)
+    )
     first = await evaluate.queue_eval(settings, TENANT, "broken-skill", broken, requested_by="ops")
     second = await evaluate.queue_eval(settings, TENANT, NAME, good, requested_by="ops")
     _script(routes, [(0.4, 0.8)])

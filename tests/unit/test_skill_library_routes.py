@@ -17,7 +17,8 @@ import pytest
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.format import serialize_skill_md
-from felix.skills.library_store import get_skill_library_store, library_object_key
+from felix.skills.library_keys import ORG_OWNER, library_object_key
+from felix.skills.library_store import get_skill_library_store
 from httpx import ASGITransport, AsyncClient
 
 KEYS = json.dumps(
@@ -387,7 +388,9 @@ async def test_a_file_is_digest_checked_redacted_and_confined_to_the_bundle(app:
         assert resp.status_code == 422 and resp.json()["error"] == "invalid_path", (path, resp.text)
     assert (await app.client.get(f"{base}/references/missing.md", headers=_h(READ))).status_code == 404
 
-    await app.store.put(library_object_key("acme", NAME, "0.1.0", "references/notes.md"), b"Tampered.\n")
+    await app.store.put(
+        library_object_key("acme", NAME, "0.1.0", "references/notes.md", owner=ORG_OWNER), b"Tampered.\n"
+    )
     corrupt = await app.client.get(f"{base}/references/notes.md", headers=_h(READ))
     assert corrupt.status_code == 500 and corrupt.json()["error"] == "version_corrupt"
     assert "Tampered" not in corrupt.text
@@ -571,7 +574,8 @@ async def test_a_filtered_page_can_be_empty_and_still_lead_on(app: App) -> None:
 async def test_preview_after_the_bytes_were_altered_names_the_digest(app: App) -> None:
     await app.create()
     await app.store.put(
-        library_object_key("acme", NAME, "0.1.0", "SKILL.md"), b"---\nname: x\n---\nAltered.\n"
+        library_object_key("acme", NAME, "0.1.0", "SKILL.md", owner=ORG_OWNER),
+        b"---\nname: x\n---\nAltered.\n",
     )
     body = (await app.client.get(f"/skill-library/{NAME}/versions/0.1.0/preview", headers=_h(READ))).json()
     assert (body["valid"], body["policy_passes"]) == (False, False)
