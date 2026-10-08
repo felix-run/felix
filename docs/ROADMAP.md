@@ -475,6 +475,52 @@ First, because everything else governs it.
          imported is `superseded`, never sent. `FELIX_WEBHOOK_TIMEOUT_SECONDS` is now at most 60.
          State on the `skill_upstream` row (migration `0030`). Open: the felix-web docs for it.
 
+- [ ] **Per-user (personal) skills** — the library is tenant-scoped: `skill`, `skill_version`
+      and `skill_file` key on `(tenant_id, name)`, `created_by` / `author` are attribution only,
+      and `build_tenant_agent` (`runtime.py`) never sees the caller, so a skill one person or
+      their agent saves is the whole org's once published. A personal skill is visible only to
+      the principal that owns it, inside one tenant (tenants stay orgs; nothing follows a user
+      across tenants).
+      - **Owner.** `owner TEXT NOT NULL DEFAULT ''` joins the key of `skill`, `skill_version`,
+        `skill_file` and every other table keyed by skill name (check `skill_feedback`,
+        `skill_upstream` and the quality store first); `''` is an org skill, so existing rows need
+        no rewrite. The value is `{issuer}|{subject}` from `Principal` — a bare subject collides
+        across an API key and a JWT. Anonymous callers and `auth_mode=none` have no personal
+        skills. Objects go under `skill-library/{tenant}/~{sha256(owner)[:16]}/{name}/…` (`~`
+        cannot start a skill name; no raw subject or email in a key). Owner filtering lives in the
+        store, beside the in-memory twin; tenant RLS is unchanged.
+      - **Compile.** `build_tenant_agent(..., skill_owner=)` → `BuildDeps` →
+        `load_manifest_skills(owner=)`. Request paths pass the principal; a durable fiber records
+        the owner at enqueue so a worker resume compiles the same catalog (the silent-default
+        branch to pin with a test); cron, continuous eval and scheduled jobs pass `None` (org
+        only); sub-agents inherit. Order: host dirs → caller's personal live skills → org library
+        → operator uploads, so a personal skill shadows an org one of its name for its owner only;
+        an explicit pin to an operator upload still wins.
+      - **Opt-in.** `spec.personal_skills: off | read | write`, default `off` so no stored
+        manifest's prompt changes. `read` loads the caller's skills; `write` also points
+        `create_skill` / `update_skill` at the caller's namespace. A validator refuses anything
+        but `off` with `skills_declared_only`, which promises an enumerable catalog.
+      - **Lifecycle.** The owner publishes their own drafts — no org review queue, no `skills:write`
+        — but the security scan, the import copy rule and approvals on the authoring tools all
+        still apply: an injected agent persisting a skill into every later session of its user is
+        the threat. A per-owner skill cap beside the pending and per-skill version caps.
+        `holds_imported_file`'s tenant-wide digest lookup narrows to the owner's and org rows, or it
+        answers whether another user holds given bytes. `admin` / `*` may list and archive any
+        personal skill; org reviewers do not see them.
+      - **API.** `/skill-library/~me/…` mirrors list, get, create, versions, publish, rollback and
+        archive for the caller alone. `POST /skill-library/~me/{name}/versions/{v}/promote` copies
+        the bytes server-side into an **org draft** (`source="promoted"`) that takes the normal
+        review queue — promotion never skips review.
+      - **Open decisions:** whether owner self-publish is right or a reviewer is required;
+        whether an admin may read a personal skill's content or only see and archive it.
+      1. [ ] Migration, store `owner` column, in-memory twin, a conformance case (personal shadows
+         org, per-owner listing) on both arms, run against a throwaway Postgres.
+      2. [ ] Compile threading, durable-fiber owner, catalog order, `spec.personal_skills` +
+         `make schema`; e2e: two callers on one manifest get different catalogs, and a durable
+         resume keeps its owner.
+      3. [ ] `~me` routes, owner-scoped authoring tools, per-owner cap, `make contract`.
+      4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).
+
 ### B. Close the durable loop
 
 - [x] **Run a fiber to suspension inside one claim.** Closed. The entry undercounted it: the
