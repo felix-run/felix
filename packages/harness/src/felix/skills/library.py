@@ -44,7 +44,6 @@ from felix.skills.library_store import (
     SkillVersionExists,
     get_skill_library_store,
     is_rejected,
-    library_object_key,
 )
 from felix.skills.publish_gate import (
     PublishPolicy,
@@ -289,7 +288,7 @@ async def host_owns(settings: Settings, tenant_id: str, name: str, object_store:
     """True when ``name`` is a host skill or an operator-uploaded object-store skill.
 
     The uploaded check is the unversioned `skills/{tenant}/{name}/SKILL.md` and the shared
-    `skills/{name}/SKILL.md`. Library bytes never land under `skills/` (`library_object_key`),
+    `skills/{name}/SKILL.md`. Library bytes never land under `skills/` (`library_keys.library_object_key`),
     so an operator's versioned upload cannot be overwritten whatever this answers.
 
     The library may not save one. The catalog would keep serving the host's copy (host wins),
@@ -365,9 +364,11 @@ def _next_version(newest: str | None, *, explicit: str | None, bump: SemverBump)
     return resolve_next_semver(newest, bump=bump)
 
 
-async def _write_files(store: Any, tenant_id: str, name: str, version: str, files: Mapping[str, str]) -> None:
+async def _write_files(
+    lib: SkillLibraryStore, store: Any, tenant_id: str, name: str, version: str, files: Mapping[str, str]
+) -> None:
     for path, content in files.items():
-        await store.put(library_object_key(tenant_id, name, version, path), stored_bytes(path, content))
+        await store.put(lib.object_key(tenant_id, name, version, path), stored_bytes(path, content))
 
 
 def _file_rows(files: Mapping[str, str]) -> list[dict[str, Any]]:
@@ -573,7 +574,7 @@ async def save_draft(
         max_pending=_pending_cap(provenance, max_pending),
     )
     try:
-        await _write_files(store, tenant_id, skill_name, row["version"], files)
+        await _write_files(lib, store, tenant_id, skill_name, row["version"], files)
     except Exception:
         # The row is a draft, so nothing loaded it in the meantime; take it and any bytes
         # already written back out.
@@ -711,7 +712,7 @@ async def _discard(
 ) -> None:
     for path in files:
         try:
-            await store.delete(library_object_key(tenant_id, row["name"], row["version"], path))
+            await store.delete(lib.object_key(tenant_id, row["name"], row["version"], path))
         except Exception:
             logger.warning("could not remove %s of a failed save", loggable(path, limit=200), exc_info=True)
     await lib.delete_draft(tenant_id, row["name"], row["version"])
@@ -743,7 +744,7 @@ async def read_version_files(
     for meta in await lib.list_files(tenant_id, name, version):
         path = str(meta["path"])
         files[path] = _checked(
-            path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"]
+            path, await store.get(lib.object_key(tenant_id, name, version, path)), meta["sha256"]
         )
     return files
 
@@ -756,12 +757,13 @@ async def read_version_file(
     Only a path the version's `skill_file` rows name is read, and its bytes must match the
     recorded digest, so a reader cannot be steered at an object the save did not write.
     """
-    rows = await get_skill_library_store(settings).list_files(tenant_id, name, version)
+    lib = get_skill_library_store(settings)
+    rows = await lib.list_files(tenant_id, name, version)
     meta = next((r for r in rows if r["path"] == path), None)
     if meta is None:
         return None
     store = _object_store(settings, object_store)
-    return _checked(path, await store.get(library_object_key(tenant_id, name, version, path)), meta["sha256"])
+    return _checked(path, await store.get(lib.object_key(tenant_id, name, version, path)), meta["sha256"])
 
 
 async def evaluate_version(

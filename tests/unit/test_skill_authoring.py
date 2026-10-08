@@ -19,7 +19,8 @@ from felix.manifests.schema import SkillAuthoringSpec
 from felix.skills import library
 from felix.skills.authoring import make_skill_authoring_tools
 from felix.skills.format import serialize_skill_md
-from felix.skills.library_store import get_skill_library_store, library_object_key
+from felix.skills.library_keys import ORG_OWNER, library_object_key
+from felix.skills.library_store import get_skill_library_store
 from felix.skills.loader import load_manifest_skills
 from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import make_skill_tools
@@ -147,7 +148,7 @@ async def test_the_host_wins_on_a_name(settings: Settings, store: MemoryObjectSt
     await lib.insert_version("acme", row, [], created_by="ops", at=1)
     await lib.publish("acme", "calculator-help", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
     await store.put(
-        library_object_key("acme", "calculator-help", "0.1.0", "SKILL.md"),
+        library_object_key("acme", "calculator-help", "0.1.0", "SKILL.md", owner=ORG_OWNER),
         _bundle("calculator-help")["SKILL.md"].encode(),
     )
 
@@ -272,10 +273,14 @@ async def test_update_skill_keeps_the_bundle_and_records_the_parent(
     row = await get_skill_library_store(settings).get_version("acme", "invoice-triage", "0.1.1")
     assert row is not None and row["parent_version"] == "0.1.0" and row["description"] == "Route invoices."
     assert (
-        await store.get(library_object_key("acme", "invoice-triage", "0.1.1", "references/limits.md"))
+        await store.get(
+            library_object_key("acme", "invoice-triage", "0.1.1", "references/limits.md", owner=ORG_OWNER)
+        )
         == b"Limit: 500\n"
     )
-    skill_md = await store.get(library_object_key("acme", "invoice-triage", "0.1.1", "SKILL.md"))
+    skill_md = await store.get(
+        library_object_key("acme", "invoice-triage", "0.1.1", "SKILL.md", owner=ORG_OWNER)
+    )
     assert skill_md is not None and b"3. Log it." in skill_md
 
 
@@ -572,7 +577,7 @@ async def test_a_live_skill_whose_bytes_changed_is_not_served(
 ) -> None:
     version = await _published(settings, store)
     await store.put(
-        library_object_key("acme", "invoice-triage", version, "SKILL.md"),
+        library_object_key("acme", "invoice-triage", version, "SKILL.md", owner=ORG_OWNER),
         _bundle(body="Swapped.")["SKILL.md"].encode(),
     )
     assert (await _catalog(settings, store)).get("invoice-triage") is None
@@ -583,7 +588,8 @@ async def test_read_skill_file_serves_only_the_versions_own_files(
 ) -> None:
     version = await _published(settings, store, **{"references/limits.md": "Limit: 500\n"})
     await store.put(
-        library_object_key("acme", "invoice-triage", version, "references/planted.md"), b"planted"
+        library_object_key("acme", "invoice-triage", version, "references/planted.md", owner=ORG_OWNER),
+        b"planted",
     )
     tools = _skill_tools(await _catalog(settings, store), settings, store)
     planted = await _call(
@@ -591,7 +597,8 @@ async def test_read_skill_file_serves_only_the_versions_own_files(
     )
     assert planted["error"] == "file_not_found"
     await store.put(
-        library_object_key("acme", "invoice-triage", version, "references/limits.md"), b"Limit: 5000\n"
+        library_object_key("acme", "invoice-triage", version, "references/limits.md", owner=ORG_OWNER),
+        b"Limit: 5000\n",
     )
     changed = await _call(
         tools["read_skill_file"], {"name": "invoice-triage", "path": "references/limits.md"}

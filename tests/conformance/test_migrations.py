@@ -234,6 +234,16 @@ async def _as_migrator(url: str) -> str:
     )
 
 
+async def _primary_key(url: str, table: str) -> object:
+    return await _scalar(
+        url,
+        "SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM pg_index i "
+        "CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+        f"WHERE i.indrelid = '{table}'::regclass AND i.indisprimary",
+    )
+
+
 async def _downgrade_past_0033(url: str) -> None:
     from alembic import command
     from felix.db.migrations import alembic_config
@@ -257,13 +267,7 @@ async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgra
             ("skill_version", "tenant_id,owner,name,version"),
             ("skill_file", "tenant_id,owner,name,version,path"),
         ):
-            columns = await _scalar(
-                url,
-                "SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM pg_index i "
-                "CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) "
-                "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
-                f"WHERE i.indrelid = '{table}'::regclass AND i.indisprimary",
-            )
+            columns = await _primary_key(url, table)
             assert columns == key, f"{table} is keyed on {columns}"
             default = await _scalar(
                 url,
@@ -295,11 +299,20 @@ async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgra
         await _execute(
             url, "DELETE FROM skill_version WHERE owner <> ''", "DELETE FROM skill_file WHERE owner <> ''"
         )
-        with pytest.raises(RuntimeError, match="1 in skill"):
+        with pytest.raises(RuntimeError, match=r"\(1 in skill\)"):
             await _downgrade_past_0033(migrator)
 
         await _execute(url, "DELETE FROM skill WHERE owner <> ''")
         await _downgrade_past_0033(migrator)
+        # `DROP COLUMN owner` would take the composite key with it and leave each table keyless,
+        # so the old keys being back is the downgrade's work, not a side effect. Code before
+        # 0033 upserts on `(tenant_id, name)` and fails on every save without it.
+        for table, key in (
+            ("skill", "tenant_id,name"),
+            ("skill_version", "tenant_id,name,version"),
+            ("skill_file", "tenant_id,name,version,path"),
+        ):
+            assert await _primary_key(url, table) == key, f"{table} lost its key on the way down"
         assert (
             await _scalar(
                 url,

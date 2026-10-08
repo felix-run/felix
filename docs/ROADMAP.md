@@ -475,20 +475,21 @@ First, because everything else governs it.
          imported is `superseded`, never sent. `FELIX_WEBHOOK_TIMEOUT_SECONDS` is now at most 60.
          State on the `skill_upstream` row (migration `0030`). Open: the felix-web docs for it.
 
-- [ ] **Per-user (personal) skills** — the library is tenant-scoped: `skill`, `skill_version`
+- [~] **Per-user (personal) skills** — the library was tenant-scoped: `skill`, `skill_version`
       and `skill_file` key on `(tenant_id, name)`, `created_by` / `author` are attribution only,
       and `build_tenant_agent` (`runtime.py`) never sees the caller, so a skill one person or
       their agent saves is the whole org's once published. A personal skill is visible only to
       the principal that owns it, inside one tenant (tenants stay orgs; nothing follows a user
       across tenants).
-      - **Owner.** `owner TEXT NOT NULL DEFAULT ''` joins the key of `skill`, `skill_version`,
-        `skill_file` and every other table keyed by skill name (check `skill_feedback`,
-        `skill_upstream` and the quality store first); `''` is an org skill, so existing rows need
-        no rewrite. The value is `{issuer}|{subject}` from `Principal` — a bare subject collides
-        across an API key and a JWT. Anonymous callers and `auth_mode=none` have no personal
-        skills. Objects go under `skill-library/{tenant}/~{sha256(owner)[:16]}/{name}/…` (`~`
-        cannot start a skill name; no raw subject or email in a key). Owner filtering lives in the
-        store, beside the in-memory twin; tenant RLS is unchanged.
+      - **Owner.** `owner TEXT NOT NULL DEFAULT ''` joins the key of `skill`, `skill_version` and
+        `skill_file`; `''` is an org skill, so existing rows needed no rewrite. `skill_feedback`,
+        `skill_eval` and `skill_upstream` stay keyed by name alone: feedback, evaluation, import
+        and update checks are org-only, and the `~me` routes refuse them. The value is
+        `{issuer}|{subject}` (`library_keys.personal_owner`) — a bare subject collides across an
+        API key and a JWT. Anonymous callers and `auth_mode=none` have no personal skills. Objects
+        go under `skill-library/{tenant}/~{sha256(owner)[:32]}/{name}/…` (`~` cannot start a skill
+        name; no raw subject or email in a key), spelled by the store's own `object_key`. Owner
+        filtering lives in the store, beside the in-memory twin; tenant RLS is unchanged.
       - **Compile.** `build_tenant_agent(..., skill_owner=)` → `BuildDeps` →
         `load_manifest_skills(owner=)`. Request paths pass the principal; a durable fiber records
         the owner at enqueue so a worker resume compiles the same catalog (the silent-default
@@ -513,8 +514,21 @@ First, because everything else governs it.
         review queue — promotion never skips review.
       - **Open decisions:** whether owner self-publish is right or a reviewer is required;
         whether an admin may read a personal skill's content or only see and archive it.
-      1. [ ] Migration, store `owner` column, in-memory twin, a conformance case (personal shadows
-         org, per-owner listing) on both arms, run against a throwaway Postgres.
+      1. [x] (#517, #519) Migration `0033_skill_owner`, a store bound to one owner
+         (`get_skill_library_store(settings, owner=)`, org by default), the twin, and contracts on
+         both arms — including one that walks every `SkillLibraryStore` member as a stranger's
+         store, so a new query cannot skip the isolation decision. The downgrade refuses while any
+         personal row exists, counted under `app.rls_bypass`. Skill saves fail on replicas still
+         running pre-`0033` code until a rollout completes (`docs/UPGRADING.md`). Open: make
+         `get_skill_library_store`'s `owner` keyword-required in step 3, where personal requests
+         first reach the store, so a flow that forgets it cannot write to the org's library; drop
+         `owner`'s `''` server default a release after `0033`, once nothing writes without one, so
+         a raw insert that omits it fails rather than landing in the org's library; the felix-web
+         `internals/persistence.mdx` key change. Found on the way: `0026_skill_import_origin`'s
+         downgrade guard counts imported `skill_version` rows with no RLS bypass, so on managed
+         Postgres (forced RLS binds the table owner) it reads zero and never refuses. A published
+         revision, so not edited; the `deploy-runbook` checklist now says to count with
+         `app.rls_bypass` on before rolling back past it.
       2. [ ] Compile threading, durable-fiber owner, catalog order, `spec.personal_skills` +
          `make schema`; e2e: two callers on one manifest get different catalogs, and a durable
          resume keeps its owner.

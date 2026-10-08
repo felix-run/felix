@@ -928,15 +928,26 @@ async def test_a_personal_skill_and_an_org_skill_share_a_name_and_never_see_each
     assert [v["version"] for v in await org.list_versions("acme", "invoice-triage")] == ["0.1.0"]
     assert [v["version"] for v in await alice.list_versions("acme", "invoice-triage")] == ["0.2.0", "0.1.0"]
     assert await org.version_ids("acme", "invoice-triage") == ["0.1.0"]
-    assert set(
-        await alice.get_versions("acme", [("invoice-triage", "0.1.0"), ("invoice-triage", "0.2.0")])
-    ) == {
-        ("invoice-triage", "0.1.0"),
-        ("invoice-triage", "0.2.0"),
+    # Keyed by (name, version), so a read that crossed owners would collide on 0.1.0 and still
+    # look right: the owner on each row and the org's miss on 0.2.0 are what tell.
+    got = await alice.get_versions("acme", [("invoice-triage", "0.1.0"), ("invoice-triage", "0.2.0")])
+    assert {k: v["owner"] for k, v in got.items()} == {
+        ("invoice-triage", "0.1.0"): ALICE,
+        ("invoice-triage", "0.2.0"): ALICE,
     }
+    assert await org.get_versions("acme", [("invoice-triage", "0.2.0")]) == {}
     assert await org.get_version("acme", "invoice-triage", "0.2.0") is None
-    assert (await org.summarize("acme", ["invoice-triage"]))["invoice-triage"]["pending"] == 1
-    assert (await alice.summarize("acme", ["invoice-triage"]))["invoice-triage"]["pending"] == 2
+    assert (await org.get_skills("acme", ["invoice-triage"]))["invoice-triage"]["owner"] == ""
+    assert (await alice.get_skills("acme", ["invoice-triage"]))["invoice-triage"]["owner"] == ALICE
+    assert (
+        await get_skill_library_store(store_settings, owner=BOB).get_skills("acme", ["invoice-triage"]) == {}
+    )
+    org_summary = (await org.summarize("acme", ["invoice-triage"]))["invoice-triage"]
+    alice_summary = (await alice.summarize("acme", ["invoice-triage"]))["invoice-triage"]
+    assert (org_summary["pending"], org_summary["latest"]["version"]) == (1, "0.1.0"), (
+        "alice's 0.2.0 is newer"
+    )
+    assert (alice_summary["pending"], alice_summary["latest"]["version"]) == (2, "0.2.0")
     assert [f["owner"] for f in await alice.list_files("acme", "invoice-triage", "0.1.0")] == [ALICE, ALICE]
 
     # The review queue is the org's: a personal draft is not in it.
@@ -948,21 +959,26 @@ async def test_a_personal_skill_and_an_org_skill_share_a_name_and_never_see_each
 
 @parametrized
 async def test_publishing_and_archiving_a_personal_skill_leave_the_org_one_alone(store_settings: Any) -> None:
+    """Alice publishes a different version from the org's live one: publishing archives every
+    other published version of the name, so only a version that differs shows that the archive
+    stays in her namespace. Her SKILL.md differs too, so each live listing's digest is its own."""
     org = get_skill_library_store(store_settings)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     await _save(org, "0.1.0", at=1)
-    await _save(alice, "0.1.0", at=2)
+    alices = [{"path": "SKILL.md", "sha256": "9" * 64, "size": 10}]
+    await alice.insert_version("acme", _row("0.2.0", at=2), alices, created_by=ALICE, at=2)
     await org.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=5)
 
-    assert (
-        await alice.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by=ALICE, at=6)
-        is None
+    published = await alice.publish(
+        "acme", "invoice-triage", "0.2.0", from_statuses={"draft"}, by=ALICE, at=6, expected_live=None
     )
-    assert [r["version"] for r in await org.list_live("acme")] == ["0.1.0"]
-    assert [r["version"] for r in await alice.list_live("acme")] == ["0.1.0"]
-    assert (await org.get_version("acme", "invoice-triage", "0.1.0") or {})["decided_by"] == "ops"
+    assert published is None, "nothing of hers was live, whatever the org's skill of the name is at"
+    assert [(r["version"], r["sha256"]) for r in await org.list_live("acme")] == [("0.1.0", "a" * 64)]
+    assert [(r["version"], r["sha256"]) for r in await alice.list_live("acme")] == [("0.2.0", "9" * 64)]
+    org_version = await org.get_version("acme", "invoice-triage", "0.1.0") or {}
+    assert (org_version["status"], org_version["decided_by"]) == ("published", "ops")
 
-    assert await alice.archive_skill("acme", "invoice-triage", by=ALICE, at=7) == "0.1.0"
+    assert await alice.archive_skill("acme", "invoice-triage", by=ALICE, at=7) == "0.2.0"
     assert await alice.list_live("acme") == []
     org_live = await org.get_skill("acme", "invoice-triage")
     assert org_live is not None and org_live["live_version"] == "0.1.0"
@@ -980,16 +996,31 @@ async def test_a_personal_draft_is_deleted_and_rejected_in_its_own_namespace(sto
     await alice.delete_draft("acme", "invoice-triage", "0.1.0")
     await alice.reject("acme", "invoice-triage", "0.1.1", by=ALICE, note="no", at=4)
     assert (await org.get_version("acme", "invoice-triage", "0.1.0") or {})["status"] == "draft"
+    assert [f["path"] for f in await org.list_files("acme", "invoice-triage", "0.1.0")] == [
+        "SKILL.md",
+        "references/x.md",
+    ], "her delete took the org's files of the same version"
     with pytest.raises(SkillStateConflict):
         await org.reject("acme", "invoice-triage", "0.1.1", by="ops", note="not mine", at=5)
     assert await alice.buildable_versions("acme", ["invoice-triage"]) == {}
     assert await org.buildable_versions("acme", ["invoice-triage"]) == {"invoice-triage": ["0.1.0"]}
 
-    # The last version of a personal skill gone takes the skill row with it, and only that one.
-    await _save(alice, "0.2.0", at=6)
-    await alice.delete_draft("acme", "invoice-triage", "0.2.0")
-    assert await alice.get_skill("acme", "invoice-triage") is not None, "the rejected 0.1.1 still holds it"
-    assert await org.get_skill("acme", "invoice-triage") is not None
+
+@parametrized
+async def test_deleting_a_personal_skills_last_draft_removes_its_skill_row_only(store_settings: Any) -> None:
+    """The skill row goes when its owner's last version does -- counted in her namespace, so the
+    org's versions of the name neither keep her row nor go with it."""
+    org = get_skill_library_store(store_settings)
+    alice = get_skill_library_store(store_settings, owner=ALICE)
+    await _save(org, "0.1.0", at=1)
+    await _save(alice, "0.1.0", at=2)
+
+    await alice.delete_draft("acme", "invoice-triage", "0.1.0")
+    assert await alice.get_skill("acme", "invoice-triage") is None
+    org_skill = await org.get_skill("acme", "invoice-triage")
+    assert org_skill is not None and org_skill["owner"] == ""
+    assert await org.version_ids("acme", "invoice-triage") == ["0.1.0"]
+    assert len(await org.list_files("acme", "invoice-triage", "0.1.0")) == 2
 
 
 @parametrized
@@ -1028,6 +1059,23 @@ async def test_the_copy_rule_searches_its_own_namespace_and_the_orgs_only(store_
 
 
 @parametrized
+async def test_the_copy_rule_judges_a_file_by_its_own_namespaces_version(store_settings: Any) -> None:
+    """A file counts as imported by the version it belongs to. The org's own `invoice-triage@0.1.0`
+    is an agent's text; alice's version of the same name and number is an import. Joined without
+    the owner, the org's bytes would borrow her version's lineage and read as third-party."""
+    org = get_skill_library_store(store_settings)
+    alice = get_skill_library_store(store_settings, owner=ALICE)
+    own = [{"path": "SKILL.md", "sha256": "e" * 64, "size": 4}]
+    await org.insert_version("acme", _row("0.1.0", at=1), own, created_by="c", at=1)
+    imported = {**_row("0.1.0", at=2, source="import", origin=None), **ORIGIN, "lineage_import": True}
+    await alice.insert_version("acme", imported, FILES, created_by=ALICE, at=2)
+
+    bob = get_skill_library_store(store_settings, owner=BOB)
+    assert await bob.holds_imported_file("acme", ["e" * 64], normalized=[]) is False
+    assert await org.holds_imported_file("acme", ["e" * 64], normalized=[]) is False
+
+
+@parametrized
 async def test_personal_rows_carry_exactly_the_table_columns(store_settings: Any) -> None:
     from felix.db.models import SkillFileRow, SkillRow, SkillVersionRow
 
@@ -1046,6 +1094,77 @@ async def test_a_row_cannot_name_its_own_owner(store_settings: Any) -> None:
     namespace by putting `owner` in what it saves."""
     org = get_skill_library_store(store_settings)
     alice = get_skill_library_store(store_settings, owner=ALICE)
-    await org.insert_version("acme", {**_row("0.1.0", at=1), "owner": ALICE}, FILES, created_by="x", at=1)
+    files = [{**FILES[0], "owner": ALICE}, FILES[1]]
+    await org.insert_version("acme", {**_row("0.1.0", at=1), "owner": ALICE}, files, created_by="x", at=1)
     assert await alice.get_skill("acme", "invoice-triage") is None
+    assert await alice.list_files("acme", "invoice-triage", "0.1.0") == []
     assert (await org.get_version("acme", "invoice-triage", "0.1.0") or {})["owner"] == ""
+    assert [f["owner"] for f in await org.list_files("acme", "invoice-triage", "0.1.0")] == ["", ""]
+
+
+# Every `SkillLibraryStore` method, and how a stranger's store must answer it. A method added to
+# the Protocol fails `test_a_stranger_reaches_nothing_through_any_method` until it is listed here,
+# so a new query cannot ship without someone deciding what owner isolation means for it.
+_STRANGER_EMPTY = {
+    "get_skill": (("acme", "invoice-triage"), None),
+    "get_skills": (("acme", ["invoice-triage"]), {}),
+    "list_skills": (("acme",), []),
+    "summarize": (("acme", ["invoice-triage"]), {}),
+    "list_drafts": (("acme",), []),
+    "list_live": (("acme",), []),
+    "get_version": (("acme", "invoice-triage", "0.1.0"), None),
+    "get_versions": (("acme", [("invoice-triage", "0.1.0"), ("invoice-triage", "0.2.0")]), {}),
+    "list_versions": (("acme", "invoice-triage"), []),
+    "version_ids": (("acme", "invoice-triage"), []),
+    "list_files": (("acme", "invoice-triage", "0.1.0"), []),
+    "count_pending": (("acme", "contributor"), 0),
+    "buildable_versions": (("acme", ["invoice-triage"]), {}),
+}
+_STRANGER_REFUSED = {
+    "publish": ("acme", "invoice-triage", "0.2.0"),
+    "reject": ("acme", "invoice-triage", "0.2.0"),
+    "archive_skill": ("acme", "invoice-triage"),
+}
+_STRANGER_OTHER = {
+    # Searches the org's rows by design (`test_the_copy_rule_searches_...`); only org text found.
+    "holds_imported_file",
+    # A no-op on a version that is not there, checked below by the rows it leaves.
+    "delete_draft",
+    # Writes into the caller's own namespace (`test_a_row_cannot_name_its_own_owner`).
+    "insert_version",
+    # Pure: the store's owner in a key (`tests/unit/test_skill_owner.py`).
+    "object_key",
+    "owner",
+}
+
+
+@parametrized
+async def test_a_stranger_reaches_nothing_through_any_method(store_settings: Any) -> None:
+    from felix.skills.library_store import SkillLibraryStore
+
+    org = get_skill_library_store(store_settings)
+    alice = get_skill_library_store(store_settings, owner=ALICE)
+    for store, version in ((org, "0.1.0"), (alice, "0.1.0"), (alice, "0.2.0")):
+        await _save(store, version, at=int(version[2]) + 1)
+    await org.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=5)
+    await alice.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by=ALICE, at=6)
+
+    members = {m for m in vars(SkillLibraryStore) if not m.startswith("_")}
+    listed = set(_STRANGER_EMPTY) | set(_STRANGER_REFUSED) | _STRANGER_OTHER
+    assert members == listed, f"classify for owner isolation: {sorted(members ^ listed)}"
+
+    bob = get_skill_library_store(store_settings, owner=BOB)
+    for method, (args, empty) in _STRANGER_EMPTY.items():
+        assert await getattr(bob, method)(*args) == empty, method
+    for method, args in _STRANGER_REFUSED.items():
+        kw: dict[str, Any] = {"by": BOB, "at": 9}
+        if method == "publish":
+            kw["from_statuses"] = {"draft", "published", "archived"}
+        if method == "reject":
+            kw["note"] = "not mine"
+        with pytest.raises(SkillStateConflict):
+            await getattr(bob, method)(*args, **kw)
+    await bob.delete_draft("acme", "invoice-triage", "0.2.0")
+    assert await alice.version_ids("acme", "invoice-triage") == ["0.1.0", "0.2.0"]
+    assert (await alice.get_skill("acme", "invoice-triage") or {})["live_version"] == "0.1.0"
+    assert (await org.get_skill("acme", "invoice-triage") or {})["live_version"] == "0.1.0"

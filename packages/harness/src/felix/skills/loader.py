@@ -312,16 +312,15 @@ async def _pinned_upload(store: Any, *, tenant_id: str, name: str, version: str)
 _LIBRARY_FETCH_CONCURRENCY = 16
 
 
-async def _library_skill(store: Any, *, tenant_id: str, row: dict[str, Any]) -> Skill | None:
+async def _library_skill(store: Any, lib: Any, *, tenant_id: str, row: dict[str, Any]) -> Skill | None:
     """The live version of one library skill, or None when its SKILL.md is missing, does not
     match the digest saved with it, or cannot be read."""
 
     from felix.skills.copy_rule import digest
-    from felix.skills.library_store import library_object_key
     from felix.skills.publish_gate import carries_imported_text
 
     name, version = str(row["name"]), str(row["version"])
-    key = library_object_key(tenant_id, name, version, "SKILL.md")
+    key = lib.object_key(tenant_id, name, version, "SKILL.md")
     try:
         data = await store.get(key)
     except Exception:
@@ -358,14 +357,15 @@ async def _library_catalog(
 
     Fails closed. If the library store cannot be read, the catalog has no library skills --
     and nothing else can stand in for them, because library bytes live under their own
-    prefix (`library_object_key`) that no other source in this module reads.
+    prefix (`library_keys.library_object_key`) that no other source in this module reads.
     """
     if settings is None or object_store is None:
         return {}
     from felix.skills.library_store import get_skill_library_store
 
     try:
-        rows = await get_skill_library_store(settings).list_live(tenant_id)
+        lib = get_skill_library_store(settings)
+        rows = await lib.list_live(tenant_id)
     except Exception:
         # The library is an addition to the catalog, never a precondition for one.
         logger.warning("skill library unavailable; catalog built without it", exc_info=True)
@@ -375,7 +375,7 @@ async def _library_catalog(
 
     async def fetch(row: dict[str, Any]) -> Skill | None:
         async with gate:
-            return await _library_skill(object_store, tenant_id=tenant_id, row=row)
+            return await _library_skill(object_store, lib, tenant_id=tenant_id, row=row)
 
     skills = await asyncio.gather(*(fetch(r) for r in live))
     return {s.name: s for s in skills if s is not None}
