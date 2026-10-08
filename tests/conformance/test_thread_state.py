@@ -422,3 +422,108 @@ async def test_a_key_added_to_the_defaults_later_still_answers(store_settings: A
     assert meta["session_name"] == "old"
     assert meta["thinking_level"] == "off"
     assert meta["labels"] == {}
+
+
+# --- the session index: what a client recognises a thread by --------------------------------
+#
+# `GET /chat/sessions` is one read over the metadata, so `preview` and `manifest` are stashed
+# there at write time. These hold the write rules on both arms and the null a thread written
+# before them reads as.
+
+
+async def _row(settings: Any, thread: str) -> dict[str, Any]:
+    from felix.session.thread_state import list_thread_metadata
+
+    rows = [m for m in await list_thread_metadata(settings=settings, tenant_id=TENANT) if m["id"] == thread]
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_first_message_is_the_preview_and_a_later_one_does_not_move_it(store_settings: Any) -> None:
+    from felix.session.thread_state import note_first_message
+
+    thread = _unknown_thread()
+    assert await note_first_message(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, text="  plan the\n\n  garden  "
+    )
+    assert not await note_first_message(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, text="something else"
+    )
+    row = await _row(store_settings, thread)
+    assert row["preview"] == "plan the garden"
+    assert set(row) == {
+        "id",
+        "createdAt",
+        "updatedAt",
+        "parentSessionId",
+        "sessionName",
+        "preview",
+        "manifest",
+    }
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_blank_message_writes_nothing_and_leaves_the_slot_for_the_next(store_settings: Any) -> None:
+    from felix.session.thread_state import note_first_message
+
+    thread = _unknown_thread()
+    assert not await note_first_message(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, text=" \n "
+    )
+    assert thread not in await _listed(store_settings), "a blank message created the thread"
+    assert await note_first_message(settings=store_settings, tenant_id=TENANT, thread_id=thread, text="hello")
+    assert (await _row(store_settings, thread))["preview"] == "hello"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_preview_keeps_the_rest_of_the_metadata(store_settings: Any) -> None:
+    from felix.session.thread_state import get_thread_meta, note_first_message, update_thread_meta
+
+    thread = _unknown_thread()
+    await update_thread_meta(
+        settings=store_settings,
+        tenant_id=TENANT,
+        thread_id=thread,
+        session_name="named",
+        thinking_level="high",
+    )
+    await note_first_message(settings=store_settings, tenant_id=TENANT, thread_id=thread, text="hi")
+    meta = await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread)
+    assert (meta["session_name"], meta["thinking_level"], meta["preview"]) == ("named", "high", "hi")
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_manifest_is_the_newest_and_falls_back_to_the_pin(store_settings: Any) -> None:
+    from felix.session.thread_state import update_thread_meta
+
+    thread = _unknown_thread()
+    await update_thread_meta(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, manifest_name="quick"
+    )
+    assert (await _row(store_settings, thread))["manifest"] == "quick", "a pin from before last_manifest"
+    await update_thread_meta(
+        settings=store_settings, tenant_id=TENANT, thread_id=thread, last_manifest="cowork"
+    )
+    assert (await _row(store_settings, thread))["manifest"] == "cowork"
+
+
+@pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_row_from_before_the_index_fields_lists_them_as_null(store_settings: Any) -> None:
+    from felix.db.models import ThreadState
+    from felix.db.session import tenant_session
+
+    thread = _unknown_thread()
+    async with tenant_session(store_settings, TENANT) as db:
+        db.add(
+            ThreadState(tenant_id=TENANT, thread_id=thread, labels_json={"session_name": "old"}, updated_at=1)
+        )
+        await db.commit()
+    row = await _row(store_settings, thread)
+    assert (row["sessionName"], row["preview"], row["manifest"]) == ("old", None, None)
+    assert row["createdAt"] == row["updatedAt"] == 1000

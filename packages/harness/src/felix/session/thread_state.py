@@ -65,6 +65,37 @@ def leaf_is_tracked(labels_json: dict[str, Any] | None) -> bool:
 LEAF_EPOCH_KEY = "leaf_epoch"
 
 
+# What `GET /chat/sessions` shows a client to recognise a thread by, beside its name. Both are
+# stashed in the metadata at write time so listing a tenant's threads stays one query over
+# `thread_state` rather than a read of every thread's log. A thread written before they existed
+# lacks both and lists them as null.
+#
+# `preview` is the thread's first user message, masked and whitespace-collapsed, cut to
+# `PREVIEW_CHARS` -- written once (`note_first_message`) and never moved by a later turn.
+# `last_manifest` is the manifest the thread's newest turn ran under (`manifests.pin`), where
+# `manifest_name` is the pin's own record of the *first*; a row older than this key falls back
+# to that.
+PREVIEW_KEY = "preview"
+LAST_MANIFEST_KEY = "last_manifest"
+PREVIEW_CHARS = 120
+
+
+def thread_preview(text: str | None) -> str | None:
+    """``text`` as a one-line preview: whitespace collapsed, cut to `PREVIEW_CHARS`, or None.
+
+    Cut after collapsing, so a pasted block of blank lines does not spend the budget, and the
+    cut ends in an ellipsis so a client can tell a short message from a truncated one.
+    """
+    if not text:
+        return None
+    flat = " ".join(text.split())
+    if not flat:
+        return None
+    if len(flat) <= PREVIEW_CHARS:
+        return flat
+    return flat[: PREVIEW_CHARS - 1].rstrip() + "\u2026"
+
+
 def leaf_epoch(labels_json: dict[str, Any] | None) -> int:
     """The row's rewind/fork epoch; 0 for a row that never had one."""
     try:
@@ -373,25 +404,40 @@ async def claim_thread(
     return inserted is not None
 
 
+def _str_or_none(value: Any) -> str | None:
+    return str(value) if value else None
+
+
+def _session_index_dict(
+    thread_id: str, meta: dict[str, Any], fallback_ms: int | None = None
+) -> dict[str, Any]:
+    """One row of `GET /chat/sessions`, from a thread's stored metadata -- both arms.
+
+    ``fallback_ms`` stands in for a row's missing timestamps (the Postgres arm passes the row's
+    own `updated_at`). Every key is spelled out: this literal is the response's contract.
+    """
+    return {
+        "id": thread_id,
+        "createdAt": meta.get("created_at") or fallback_ms,
+        "updatedAt": meta.get("updated_at") or fallback_ms,
+        "parentSessionId": meta.get("parent_session_id"),
+        "sessionName": meta.get("session_name"),
+        "preview": _str_or_none(meta.get(PREVIEW_KEY)),
+        "manifest": _str_or_none(meta.get(LAST_MANIFEST_KEY) or meta.get("manifest_name")),
+    }
+
+
 async def list_thread_metadata(
     *,
     settings: Settings | None,
     tenant_id: str,
 ) -> list[dict[str, Any]]:
-    """List durable session metadata for a tenant."""
+    """List durable session metadata for a tenant -- `GET /chat/sessions`, one query."""
     items: list[dict[str, Any]] = []
     if _use_memory(settings):
         for tid, meta in _meta_by_thread.items():
             if tid.startswith(f"{tenant_id}:") or tenant_id == "default":
-                items.append(
-                    {
-                        "id": tid,
-                        "createdAt": meta.get("created_at"),
-                        "updatedAt": meta.get("updated_at"),
-                        "parentSessionId": meta.get("parent_session_id"),
-                        "sessionName": meta.get("session_name"),
-                    }
-                )
+                items.append(_session_index_dict(tid, meta))
         return items
 
     from sqlalchemy import select
@@ -403,17 +449,63 @@ async def list_thread_metadata(
     async with factory() as db:
         rows = (await db.scalars(select(ThreadState).where(ThreadState.tenant_id == tenant_id))).all()
         for row in rows:
-            lj = row.labels_json or {}
-            items.append(
-                {
-                    "id": row.thread_id,
-                    "createdAt": lj.get("created_at") or row.updated_at * 1000,
-                    "updatedAt": lj.get("updated_at") or row.updated_at * 1000,
-                    "parentSessionId": lj.get("parent_session_id"),
-                    "sessionName": lj.get("session_name"),
-                }
-            )
+            items.append(_session_index_dict(row.thread_id, row.labels_json or {}, row.updated_at * 1000))
     return items
+
+
+async def note_first_message(
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    thread_id: str,
+    text: str | None,
+) -> bool:
+    """Record ``text`` as the thread's `preview` unless it already has one; whether this did.
+
+    Called with every turn's first user message, so the common case -- a thread that already
+    has its preview -- must cost as little as possible: a primary-key read on Postgres and
+    nothing written. Only a thread without one takes the row lock, and it checks again under
+    it, so two first turns racing on two replicas keep whichever committed first.
+
+    The text is masked with the same rule the session log applies on the way in
+    (`secrets.redact_text`), before it is cut, so the metadata never holds what the log would
+    not -- and a secret straddling the cut is masked rather than half-kept.
+    """
+    from felix.secrets import redact_text
+
+    preview = thread_preview(redact_text(text) if text else text)
+    if preview is None:
+        return False
+    if _use_memory(settings):
+        current = _meta_by_thread.get(thread_id)
+        if current is not None and current.get(PREVIEW_KEY):
+            return False
+        meta = _mem_meta(thread_id)
+        meta[PREVIEW_KEY] = preview
+        _bump(meta)
+        return True
+
+    assert settings is not None
+    row = await _read_row(settings, tenant_id, thread_id)
+    if row is not None and (row.labels_json or {}).get(PREVIEW_KEY):
+        return False
+    from felix.db.session import tenant_session
+
+    async with tenant_session(settings, tenant_id) as db:
+        # The same new-row leaf as `update_thread_meta`, for the same reason.
+        row = await _locked_row(
+            db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=_mem_get_leaf(thread_id)
+        )
+        stored = dict(row.labels_json or {})
+        if stored.get(PREVIEW_KEY):
+            await db.rollback()
+            return False
+        stored[PREVIEW_KEY] = preview
+        _bump(stored)
+        row.labels_json = stored
+        row.updated_at = int(time.time())
+        await db.commit()
+    return True
 
 
 def reset_thread_meta_for_tests() -> None:
@@ -421,17 +513,22 @@ def reset_thread_meta_for_tests() -> None:
 
 
 __all__ = [
+    "LAST_MANIFEST_KEY",
     "LEAF_EPOCH_KEY",
     "LEAF_TRACKED_KEY",
     "LEAF_TRACKED_VERSION",
+    "PREVIEW_CHARS",
+    "PREVIEW_KEY",
     "claim_thread",
     "get_thread_meta",
     "leaf_epoch",
     "leaf_is_tracked",
     "list_thread_metadata",
     "load_leaf",
+    "note_first_message",
     "persist_leaf",
     "reset_thread_meta_for_tests",
     "thread_exists",
+    "thread_preview",
     "update_thread_meta",
 ]
