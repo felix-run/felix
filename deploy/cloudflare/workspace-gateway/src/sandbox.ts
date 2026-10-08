@@ -26,7 +26,7 @@ import {
 import { DurableObject } from 'cloudflare:workers';
 import type { GitHubProps } from './github-rules';
 import type { Env } from './handler';
-import type { HelperAnswer, HelperRequest } from './protocol';
+import { DEFAULT_INSTANCE, type HelperAnswer, type HelperRequest, instanceType } from './protocol';
 
 /** Stopped after this long with no operation, and not billed while stopped. */
 export const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -192,7 +192,8 @@ export class WorkspaceSandbox extends DurableObject<Env> {
     if (image === undefined) throw new Error('no `workspace` image is configured');
     this.#container.start({
       image,
-      instance: 'lite',
+      // The handler refuses every request while WORKSPACE_INSTANCE names no type.
+      instance: instanceType(this.env.WORKSPACE_INSTANCE) ?? DEFAULT_INSTANCE,
       enableInternet: false,
       env: {},
       labels: { app: 'felix-workspace' },

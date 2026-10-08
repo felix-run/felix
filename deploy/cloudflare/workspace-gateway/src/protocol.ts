@@ -51,6 +51,24 @@ export const MAX_LSTAT_PATHS = 10_000;
 /** A write's base64 body plus JSON framing, rounded up. Anything larger is not a tool call. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
+/**
+ * The sandbox's size, from the `WORKSPACE_INSTANCE` var: the named types `ctx.container.start()`
+ * takes under the `durable_object` scheduling policy (`basic` is not one of them). `standard-1`
+ * (1/2 vCPU, 4 GiB, 8 GB) unless set: on `lite` (1/16 vCPU, 256 MiB, 2 GB) starting the helper and
+ * git takes seconds per operation, a repository listing about 15, and git or a package install can
+ * run out of memory. CPU is billed on use; memory and disk as provisioned while a sandbox is awake.
+ */
+export const INSTANCE_TYPES = ['lite', 'standard-1', 'standard-2', 'standard-3', 'standard-4'] as const;
+export type InstanceType = (typeof INSTANCE_TYPES)[number];
+export const DEFAULT_INSTANCE: InstanceType = 'standard-1';
+
+/** The instance type `raw` names, the default when it is unset, or null when it names none. */
+export function instanceType(raw: string | undefined): InstanceType | null {
+  const value = (raw ?? '').trim();
+  if (value === '') return DEFAULT_INSTANCE;
+  return (INSTANCE_TYPES as readonly string[]).includes(value) ? (value as InstanceType) : null;
+}
+
 const TENANT = /^[A-Za-z0-9._-]{1,128}$/;
 const KEY = /^(shared|[0-9a-f]{40})$/;
 

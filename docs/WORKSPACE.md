@@ -322,7 +322,8 @@ those disagree, this one is current.
 - **SDK 1.0, the gateway's own Durable Object.**
   - The Durable Object is named from `(tenant_id, scope_key)`, which the Worker derives and
     validates.
-  - Containers start with `enableInternet: false` on the smallest instance type.
+  - Containers start with `enableInternet: false` on `standard-1` (the gateway's
+    `WORKSPACE_INSTANCE`; see item 4 under the open questions for why not `lite`).
   - There is a 10-minute idle timeout and a `/health` route.
 - **No `workspace_sandboxes` table in phase 3.** The Durable Object name is deterministic, which
   replaces the mapping table above. The R2 prefix is what phase 4's sweeps reconcile against.
@@ -450,10 +451,20 @@ and a `scope: thread` workspace starts empty. So:
    stored by a third party. That is a data-handling decision for each operator, which is why the
    requirements include running the provider in the operator's own cloud, and why `broker` remains.
    With Cloudflare Sandboxes the files stay in the deployment's own Cloudflare account and R2 bucket.
-4. **Cost — answered (2026-10-07).** A stopped Container is not billed, so the cost is the time a
-   sandbox is awake: about $0.003 an hour on `lite`, stopped after 10 idle minutes. Each backup is
-   one R2 write (Class A) plus storage at R2's rate. One sandbox per active thread is affordable;
-   retention (phase 4) is what bounds the stored side.
+4. **Cost — answered (2026-10-07), and the size revised (2026-10-08).** A stopped Container is not
+   billed, so the cost is the time a sandbox is awake, stopped after 10 idle minutes. CPU is billed
+   on use; memory and disk as provisioned. Each backup is one R2 write (Class A) plus storage at R2's
+   rate. One sandbox per active thread is affordable; retention (phase 4) is what bounds the stored
+   side.
+   - Phase 3 shipped on `lite` (1/16 vCPU, 256 MiB, 2 GB disk), about $0.003 an awake hour. On the
+     reference deployment a listing of a 1,001-file repository took 15 s, against 0.75 s on a local
+     Container. Capping the same image to lite's CPU in Docker reproduced it: `python3 -c pass`
+     took 3–5 s and each git command as long, at 1/4 vCPU 0.4–0.7 s, at 1/2 vCPU 0.2–0.3 s. Every
+     operation starts the helper and most start git, so on `lite` each one costs seconds, and 256
+     MiB is too little for git over a large repository or a package install.
+   - The default is now `standard-1` (1/2 vCPU, 4 GiB, 8 GB): about $0.038 an awake hour, almost
+     all of it the provisioned memory. The gateway's `WORKSPACE_INSTANCE` var picks another size;
+     `basic` is not one `ctx.container.start()` accepts.
 5. **Latency — measured (2026-10-07), on the reference deployment.** From the harness on GCE
    `us-central1` to `workspace-gateway.felix.run`:
 
