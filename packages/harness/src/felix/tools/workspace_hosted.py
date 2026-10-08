@@ -29,6 +29,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -141,7 +144,13 @@ class HostedBackend:
         self, scope: WorkspaceScope, op: str, body: dict[str, Any], timeout: httpx.Timeout = _TIMEOUT
     ) -> dict[str, Any]:
         self._refuse_checkout(scope)
-        url = f"{self._url}/v1/workspaces/{gateway_path(self._settings, scope)}/{op}"
+        return await self._post(gateway_path(self._settings, scope), op, body, timeout)
+
+    async def _post(
+        self, path: str, op: str, body: dict[str, Any], timeout: httpx.Timeout = _TIMEOUT
+    ) -> dict[str, Any]:
+        """One gateway call for the scope `path` (`tenant/key`)."""
+        url = f"{self._url}/v1/workspaces/{path}/{op}"
         headers = {"authorization": f"Bearer {self._settings.workspace_gateway_token}"}
         try:
             async with gateway_client(self._settings) as client:
@@ -264,6 +273,74 @@ async def checkpoint_written(ctx: Any) -> None:
             )
 
 
+@dataclass
+class UploadReport:
+    """What `upload_local_scopes` did for one scope (`tenant/key`)."""
+
+    scope: str
+    uploaded: list[str] = field(default_factory=list)
+    # (path, why): a symlink is never followed and never recreated; a file over the write cap
+    # cannot be sent in one write; anything unreadable is named rather than dropped silently.
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+    checkpointed: bool = False
+
+
+async def upload_local_scopes(
+    settings: Settings, *, tenant: str | None = None, dry_run: bool = False
+) -> list[UploadReport]:
+    """Copy each local scope's files into its hosted sandbox, once, and back each one up.
+
+    The local layout is `<root>/.felix-scopes/<tenant>/<key>`, and a scope's sandbox is named by
+    the same `tenant/key`, so the copy needs no thread ids -- which the key, a hash, could not give
+    back anyway. Files go through the gateway's ordinary `write` (the helper's rules apply on the
+    way in), so a file the tools could not have written is skipped and reported, never forced: over
+    the write cap, or a symlink. What is already in the sandbox under the same path is
+    overwritten; nothing else there is touched. The local files stay where they are.
+    """
+    from felix.tools.workspace import _MAX_WRITE_BYTES, deployment_workspace
+    from felix.tools.workspace_scope import SCOPES_DIR, is_scope_relpath
+
+    base = deployment_workspace(settings.workspace_root) / SCOPES_DIR
+    backend = HostedBackend(settings)
+    reports: list[UploadReport] = []
+    if not base.is_dir():
+        return reports
+    for tenant_dir in sorted(p for p in base.iterdir() if p.is_dir() and not p.is_symlink()):
+        if tenant is not None and tenant_dir.name != tenant:
+            continue
+        for key_dir in sorted(p for p in tenant_dir.iterdir() if p.is_dir() and not p.is_symlink()):
+            path = f"{tenant_dir.name}/{key_dir.name}"
+            if not is_scope_relpath(f"{SCOPES_DIR}/{path}"):
+                continue
+            report = UploadReport(scope=path)
+            reports.append(report)
+            for dirpath, dirnames, filenames in os.walk(key_dir, followlinks=False):
+                here = Path(dirpath)
+                for name in sorted(filenames) + sorted(d for d in dirnames if (here / d).is_symlink()):
+                    file = here / name
+                    rel = file.relative_to(key_dir).as_posix()
+                    if file.is_symlink():
+                        report.skipped.append((rel, "a symlink"))
+                        continue
+                    try:
+                        data = file.read_bytes()
+                    except OSError as exc:
+                        report.skipped.append((rel, type(exc).__name__))
+                        continue
+                    if len(data) > _MAX_WRITE_BYTES:
+                        report.skipped.append((rel, f"over {_MAX_WRITE_BYTES} bytes"))
+                        continue
+                    if not dry_run:
+                        body = {"path": rel, "data": base64.b64encode(data).decode("ascii"), "append": False}
+                        await backend._post(path, "write", body)
+                    report.uploaded.append(rel)
+                dirnames[:] = [d for d in dirnames if not (here / d).is_symlink()]
+            if report.uploaded and not dry_run:
+                await backend._post(path, "checkpoint", {})
+                report.checkpointed = True
+    return reports
+
+
 def local_only_refusal(scope_name: str) -> str:
     """The message for a consumer that needs a directory on this host, under `hosted`."""
     return (
@@ -276,8 +353,10 @@ __all__ = [
     "WRITTEN_SCOPES_KEY",
     "GatewayUnavailable",
     "HostedBackend",
+    "UploadReport",
     "checkpoint_written",
     "gateway_client",
     "gateway_path",
     "local_only_refusal",
+    "upload_local_scopes",
 ]
