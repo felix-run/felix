@@ -109,6 +109,42 @@ now the one durable path.
 
 ---
 
+## `0033_skill_owner` re-keys the skill library
+
+**Brief locks on three small tables, failed skill saves until the roll completes, and a rollback
+past it can refuse.**
+
+`skill`, `skill_version` and `skill_file` gain an `owner` column (`''` for every existing row,
+which stays the tenant's own library) and their primary keys gain it beside the name, which is
+what lets a personal skill share a name with an org one. Adding the column is catalog-only; each
+primary key index is rebuilt under an ACCESS EXCLUSIVE lock, so skill saves and catalog loads
+(every agent compile that reads the library) wait for the build. The tables hold one row per
+skill, version and file, so the wait is short on any deployment this repo has seen.
+
+Code from before this revision saves a skill with an upsert on `(tenant_id, name)`, which is no
+longer a unique key. Once the migration has run, every skill save — an agent's draft, an
+operator's edit, an import — fails on a replica still running the old code, until that replica is
+replaced. Reads are unaffected. Helm migrates in a pre-upgrade hook while old pods still serve, so
+roll quickly, or hold skill writes for the length of the rollout.
+
+The downgrade refuses while any of the three tables holds a personal row (`owner <> ''`): the old
+key cannot hold two owners' skills of one name, and a personal skill that did fit would silently
+become the org's. Remove the rows from all three tables, or stay on the newer code:
+
+```bash
+psql "$FELIX_DATABASE_URL" -c "set app.rls_bypass = 'on'" -c "
+  select 'skill' as t, count(*) from skill where owner <> ''
+  union all select 'skill_version', count(*) from skill_version where owner <> ''
+  union all select 'skill_file', count(*) from skill_file where owner <> ''"
+```
+
+`app.rls_bypass` is needed on managed Postgres, where the forced tenant policy binds the table
+owner and a plain count reads zero. A downgrade leaves the personal skills' files in the object
+store under `skill-library/{tenant}/~…/`; nothing reads them afterwards, so delete that prefix if
+you want them gone.
+
+---
+
 ## `0020_ordering_indexes` locks tables while it builds
 
 **Six indexes rebuilt, one added — plan a quiet window on a large deployment.**

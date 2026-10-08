@@ -68,6 +68,12 @@ Adding a heavy dependency to the base image is a regression. Extras only.
 - [ ] Rolling code back past `0026_skill_import_origin` (skill imports): its downgrade refuses while
       any imported skill version exists. Archive the imported skills (`DELETE /skill-library/{name}`)
       and remove their `skill_version` rows first, or stay on the newer code.
+- [ ] Rolling forward over `0033_skill_owner` (personal skills): skill saves fail on replicas still
+      running older code until they are replaced (their upsert key is gone); roll quickly.
+- [ ] Rolling code back past `0033_skill_owner`: its downgrade refuses while `skill`, `skill_version`
+      or `skill_file` holds a row with `owner <> ''` (count with `app.rls_bypass` on, or managed
+      Postgres reads zero). Remove those rows from all three, or stay on the newer code
+      (`docs/UPGRADING.md`).
 
 ## Validate before proposing a change
 

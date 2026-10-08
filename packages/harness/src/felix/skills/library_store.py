@@ -1,4 +1,10 @@
-"""Rows for the tenant skill library: `skill`, `skill_version`, `skill_file`.
+"""Rows for the skill library: `skill`, `skill_version`, `skill_file`.
+
+A store is bound to one namespace of one tenant's library: its `owner`. `ORG_OWNER` (`""`) is the
+tenant's own library, the one every caller used before personal skills and still gets by default;
+any other owner is one principal's personal library (`skill_owner`). Every read and write is
+confined to the store's owner, except the copy rule's lookup, which a personal save runs over its
+own rows and the org's (`holds_imported_file`).
 
 Data access only. What a version may become, and who may make it so, is `skills/library.py`;
 this module stores what it decides and enforces the things only storage can — that a version is
@@ -15,6 +21,7 @@ File bytes are not here. They live in the object store under `library_object_key
 from __future__ import annotations
 
 import copy
+import hashlib
 from collections.abc import Collection
 from dataclasses import dataclass, fields
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -37,10 +44,57 @@ SkillStatus = Literal["draft", "published", "archived"]
 # overwrite an operator's pinned skill, and be served by a ref that pinned the draft's version.
 LIBRARY_PREFIX = "skill-library"
 
+# The tenant's own library. Every row written before `0033` has it.
+ORG_OWNER = ""
+# A personal owner is `{issuer}|{subject}`; the key column is text, so this is a sanity bound.
+MAX_OWNER_LENGTH = 512
 
-def library_object_key(tenant_id: str, name: str, version: str, path: str) -> str:
+
+class InvalidSkillOwner(ValueError):
+    """An owner that is not `ORG_OWNER` and not a usable personal owner."""
+
+
+def skill_owner(issuer: str, subject: str) -> str | None:
+    """The personal library owner for a principal, or None when it cannot have one.
+
+    The issuer is part of it because a subject is only unique within its issuer: an API key's
+    subject and a JWT's could be the same string. An anonymous caller (no subject) has no personal
+    library, and neither does an issuer spelled with `|`, which would make two pairs one owner.
+    """
+    if not subject or not issuer or "|" in issuer:
+        return None
+    owner = f"{issuer}|{subject}"
+    try:
+        return check_owner(owner)
+    except InvalidSkillOwner:
+        return None
+
+
+def check_owner(owner: str) -> str:
+    """``owner`` when it is `ORG_OWNER` or a well-formed personal owner, else `InvalidSkillOwner`."""
+    if not isinstance(owner, str):
+        raise InvalidSkillOwner("an owner is a string")
+    if owner == ORG_OWNER:
+        return owner
+    issuer, _, subject = owner.partition("|")
+    if len(owner) > MAX_OWNER_LENGTH or not owner.isprintable() or not issuer or not subject:
+        raise InvalidSkillOwner("not a personal owner: expected issuer|subject, printable, at most 512")
+    return owner
+
+
+def _owner_segment(owner: str) -> str:
+    """The object-key segment ahead of a personal skill's name: `~` and a digest of the owner.
+    `~` cannot start a skill name, so no personal key can be an org one; the digest keeps a
+    subject (often an email) out of every key. 128 bits, so no one can mint an owner whose keys
+    land on someone else's."""
+    return "~" + hashlib.sha256(owner.encode()).hexdigest()[:32]
+
+
+def library_object_key(tenant_id: str, name: str, version: str, path: str, *, owner: str = ORG_OWNER) -> str:
     """Where one file of one library version lives. The only spelling of that key."""
-    return f"{LIBRARY_PREFIX}/{tenant_id}/{name}/{version}/{path}"
+    if check_owner(owner) == ORG_OWNER:
+        return f"{LIBRARY_PREFIX}/{tenant_id}/{name}/{version}/{path}"
+    return f"{LIBRARY_PREFIX}/{tenant_id}/{_owner_segment(owner)}/{name}/{version}/{path}"
 
 
 # Where the review queue resumes: the `(created_at, name, version)` of the last draft a page held.
@@ -63,9 +117,13 @@ class SkillPendingFull(Exception):
         self.held, self.limit = held, limit
 
 
-def pending_lock_key(tenant_id: str, origin_manifest_id: str) -> str:
-    """The advisory lock a capped draft save takes: one per origin manifest."""
-    return f"skill_drafts:{tenant_id}:{origin_manifest_id}"
+def pending_lock_key(tenant_id: str, origin_manifest_id: str, *, owner: str = ORG_OWNER) -> str:
+    """The advisory lock a capped draft save takes: one per origin manifest in one namespace.
+    The org's key is spelled as it was before owners, so replicas either side of a deploy that
+    adds them still take the same lock."""
+    if owner == ORG_OWNER:
+        return f"skill_drafts:{tenant_id}:{origin_manifest_id}"
+    return f"skill_drafts:{tenant_id}:{_owner_segment(owner)}:{origin_manifest_id}"
 
 
 class SkillStateConflict(Exception):
@@ -90,6 +148,11 @@ ExpectedLive = str | None | _AnyLive
 
 @runtime_checkable
 class SkillLibraryStore(Protocol):
+    @property
+    def owner(self) -> str:
+        """The namespace this store reads and writes: `ORG_OWNER` or one personal owner."""
+        ...
+
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None: ...
 
     async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]: ...
@@ -129,7 +192,9 @@ class SkillLibraryStore(Protocol):
     ) -> bool:
         """Whether any file of a version that `publish_gate.holds_third_party_bytes` -- import
         lineage, or adopted from it -- in the tenant has one of ``digests`` as its sha256, or one
-        of ``normalized`` as its `normalized_sha256` (`copy_rule`)."""
+        of ``normalized`` as its `normalized_sha256` (`copy_rule`). Searched over the store's own
+        namespace and the org's, never another person's: a save copying org text is caught, and
+        the answer cannot say whether someone else holds given bytes."""
         ...
 
     async def insert_version(
@@ -222,32 +287,65 @@ _VERSION_DEFAULTS: dict[str, Any] = {
 }
 
 
-class InMemorySkillLibraryStore:
-    """The `memory://` twin. Copies on the way in and out, as a row read from Postgres is."""
+class _TwinRows:
+    """The twin's tables, shared by every owner's view of them as one database is."""
 
     def __init__(self) -> None:
-        self._skills: dict[tuple[str, str], dict[str, Any]] = {}
-        self._versions: dict[tuple[str, str, str], dict[str, Any]] = {}
-        self._files: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self.skills: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.versions: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        self.files: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+        # One view per owner, so the store `get_skill_library_store` returns is the same object
+        # on every call, as it was when there was only the org's.
+        self.views: dict[str, InMemorySkillLibraryStore] = {}
+
+
+class InMemorySkillLibraryStore:
+    """The `memory://` twin. Copies on the way in and out, as a row read from Postgres is.
+
+    Keys lead with `(tenant, owner)`, as the tables' do; `for_owner` is another namespace's view
+    of the same rows."""
+
+    def __init__(self, owner: str = ORG_OWNER, *, rows: _TwinRows | None = None) -> None:
+        self._owner = check_owner(owner)
+        self._rows = rows if rows is not None else _TwinRows()
+        self._rows.views.setdefault(self._owner, self)
+        self._skills = self._rows.skills
+        self._versions = self._rows.versions
+        self._files = self._rows.files
+
+    @property
+    def owner(self) -> str:
+        return self._owner
+
+    def for_owner(self, owner: str) -> InMemorySkillLibraryStore:
+        view = self._rows.views.get(check_owner(owner))
+        return view if view is not None else InMemorySkillLibraryStore(owner, rows=self._rows)
 
     def clear(self) -> None:
         self._skills.clear()
         self._versions.clear()
         self._files.clear()
 
+    def _mine(self, tenant_id: str, key: tuple[str, ...]) -> bool:
+        return key[0] == tenant_id and key[1] == self._owner
+
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None:
-        row = self._skills.get((tenant_id, name))
+        row = self._skills.get((tenant_id, self._owner, name))
         return copy.deepcopy(row) if row is not None else None
 
     async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
-        found = {n: self._skills.get((tenant_id, n)) for n in set(names)}
+        found = {n: self._skills.get((tenant_id, self._owner, n)) for n in set(names)}
         return {n: copy.deepcopy(r) for n, r in found.items() if r is not None}
 
     async def list_skills(
         self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS, after: str | None = None
     ) -> list[dict[str, Any]]:
         rows = sorted(
-            (r for (t, n), r in self._skills.items() if t == tenant_id and (after is None or n > after)),
+            (
+                r
+                for k, r in self._skills.items()
+                if self._mine(tenant_id, k) and (after is None or k[2] > after)
+            ),
             key=lambda r: r["name"],
         )
         return copy.deepcopy(rows[:limit])
@@ -255,8 +353,9 @@ class InMemorySkillLibraryStore:
     async def summarize(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
         wanted = set(names)
         out: dict[str, dict[str, Any]] = {}
-        for (t, n, _), row in self._versions.items():
-            if t != tenant_id or n not in wanted:
+        for k, row in self._versions.items():
+            n = k[2]
+            if not self._mine(tenant_id, k) or n not in wanted:
                 continue
             entry = out.setdefault(n, {"latest": None, "pending": 0})
             entry["pending"] += row["status"] == "draft"
@@ -265,7 +364,7 @@ class InMemorySkillLibraryStore:
                 latest["created_at"],
                 latest["version"],
             ):
-                entry["latest"] = {k: row[k] for k in SUMMARY_COLUMNS}
+                entry["latest"] = {c: row[c] for c in SUMMARY_COLUMNS}
         return copy.deepcopy(out)
 
     async def list_drafts(
@@ -273,8 +372,8 @@ class InMemorySkillLibraryStore:
     ) -> list[dict[str, Any]]:
         rows = [
             r
-            for (t, _, _), r in self._versions.items()
-            if t == tenant_id
+            for k, r in self._versions.items()
+            if self._mine(tenant_id, k)
             and r["status"] == "draft"
             and (after is None or (r["created_at"], r["name"], r["version"]) > after)
         ]
@@ -284,41 +383,41 @@ class InMemorySkillLibraryStore:
 
     async def list_live(self, tenant_id: str, *, limit: int = MAX_LIBRARY_SKILLS) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for (t, name), skill in self._skills.items():
+        for (t, o, name), skill in self._skills.items():
             version = skill["live_version"]
-            if t != tenant_id or not version:
+            if t != tenant_id or o != self._owner or not version:
                 continue
-            files = self._files.get((t, name, version), [])
+            files = self._files.get((t, o, name, version), [])
             digest = next((f["sha256"] for f in files if f["path"] == "SKILL.md"), None)
-            row = self._versions.get((t, name, version)) or {}
+            row = self._versions.get((t, o, name, version)) or {}
             lineage = bool(row.get("lineage_import"))
             rows.append({"name": name, "version": version, "sha256": digest, "lineage_import": lineage})
         rows = sorted(rows, key=lambda r: r["name"])
         return rows[:limit]
 
     async def get_version(self, tenant_id: str, name: str, version: str) -> dict[str, Any] | None:
-        row = self._versions.get((tenant_id, name, version))
+        row = self._versions.get((tenant_id, self._owner, name, version))
         return copy.deepcopy(row) if row is not None else None
 
     async def get_versions(
         self, tenant_id: str, keys: Collection[tuple[str, str]]
     ) -> dict[tuple[str, str], dict[str, Any]]:
-        found = {(n, v): self._versions.get((tenant_id, n, v)) for n, v in set(keys)}
+        found = {(n, v): self._versions.get((tenant_id, self._owner, n, v)) for n, v in set(keys)}
         return {k: copy.deepcopy(r) for k, r in found.items() if r is not None}
 
     async def list_versions(
         self, tenant_id: str, name: str, *, limit: int = MAX_VERSIONS_LISTED
     ) -> list[dict[str, Any]]:
-        rows = [r for (t, n, _), r in self._versions.items() if t == tenant_id and n == name]
+        rows = [r for k, r in self._versions.items() if self._mine(tenant_id, k) and k[2] == name]
         # Newest first, ending on the version so two saved in one millisecond keep one order.
         rows.sort(key=lambda r: (r["created_at"], r["version"]), reverse=True)
         return copy.deepcopy(rows[:limit])
 
     async def version_ids(self, tenant_id: str, name: str) -> list[str]:
-        return sorted(v for (t, n, v) in self._versions if t == tenant_id and n == name)
+        return sorted(k[3] for k in self._versions if self._mine(tenant_id, k) and k[2] == name)
 
     async def list_files(self, tenant_id: str, name: str, version: str) -> list[dict[str, Any]]:
-        files = self._files.get((tenant_id, name, version), [])
+        files = self._files.get((tenant_id, self._owner, name, version), [])
         return copy.deepcopy(sorted(files, key=lambda f: f["path"]))
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
@@ -330,18 +429,19 @@ class InMemorySkillLibraryStore:
         from felix.skills.publish_gate import holds_third_party_bytes
 
         wanted, wanted_normalized = set(digests), set(normalized)
+        searched = {ORG_OWNER, self._owner}
         return any(
             f["sha256"] in wanted or f.get("normalized_sha256") in wanted_normalized
-            for (t, n, v), files in self._files.items()
-            if t == tenant_id and holds_third_party_bytes(self._versions.get((t, n, v)))
+            for k, files in self._files.items()
+            if k[0] == tenant_id and k[1] in searched and holds_third_party_bytes(self._versions.get(k))
             for f in files
         )
 
     def _pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         return sum(
             1
-            for (t, _, _), r in self._versions.items()
-            if t == tenant_id
+            for k, r in self._versions.items()
+            if self._mine(tenant_id, k)
             and r["status"] == "draft"
             and r["source"] == "agent"
             and r.get("origin_manifest_id") == origin_manifest_id
@@ -357,19 +457,20 @@ class InMemorySkillLibraryStore:
         at: int,
         max_pending: int | None = None,
     ) -> None:
-        name, version = row["name"], row["version"]
+        name, version, owner = row["name"], row["version"], self._owner
         # No await from the count to the write: one event loop cannot interleave another save.
         if (
             max_pending is not None
             and (held := self._pending(tenant_id, str(row.get("origin_manifest_id")))) >= max_pending
         ):
             raise SkillPendingFull(held, max_pending)
-        if (tenant_id, name, version) in self._versions:
+        if (tenant_id, owner, name, version) in self._versions:
             raise SkillVersionExists(f"{name}@{version}")
-        skill = self._skills.get((tenant_id, name))
+        skill = self._skills.get((tenant_id, owner, name))
         if skill is None:
-            self._skills[(tenant_id, name)] = {
+            self._skills[(tenant_id, owner, name)] = {
                 "tenant_id": tenant_id,
+                "owner": owner,
                 "name": name,
                 "live_version": None,
                 "created_by": created_by,
@@ -378,25 +479,33 @@ class InMemorySkillLibraryStore:
             }
         else:
             skill["updated_at"] = at
-        self._versions[(tenant_id, name, version)] = copy.deepcopy(
-            {**_VERSION_DEFAULTS, **row, "tenant_id": tenant_id}
+        self._versions[(tenant_id, owner, name, version)] = copy.deepcopy(
+            {**_VERSION_DEFAULTS, **row, "tenant_id": tenant_id, "owner": owner}
         )
-        self._files[(tenant_id, name, version)] = [
-            {"normalized_sha256": None, **f, "tenant_id": tenant_id, "name": name, "version": version}
+        self._files[(tenant_id, owner, name, version)] = [
+            {
+                "normalized_sha256": None,
+                **f,
+                "tenant_id": tenant_id,
+                "owner": owner,
+                "name": name,
+                "version": version,
+            }
             for f in copy.deepcopy(files)
         ]
 
     async def delete_draft(self, tenant_id: str, name: str, version: str) -> None:
-        row = self._versions.get((tenant_id, name, version))
+        key = (tenant_id, self._owner, name, version)
+        row = self._versions.get(key)
         if row is None or row["status"] != "draft":
             return
-        del self._versions[(tenant_id, name, version)]
-        self._files.pop((tenant_id, name, version), None)
-        if not any(t == tenant_id and n == name for (t, n, _) in self._versions):
-            self._skills.pop((tenant_id, name), None)
+        del self._versions[key]
+        self._files.pop(key, None)
+        if not any(self._mine(tenant_id, k) and k[2] == name for k in self._versions):
+            self._skills.pop((tenant_id, self._owner, name), None)
 
     async def reject(self, tenant_id: str, name: str, version: str, *, by: str, note: str, at: int) -> None:
-        row = self._versions.get((tenant_id, name, version))
+        row = self._versions.get((tenant_id, self._owner, name, version))
         if row is None or row["status"] != "draft":
             raise SkillStateConflict(f"{name}@{version}")
         row.update(status="archived", decided_by=by, decision_note=note, decided_at=at)
@@ -412,15 +521,20 @@ class InMemorySkillLibraryStore:
         at: int,
         expected_live: ExpectedLive = ANY_LIVE,
     ) -> str | None:
-        row = self._versions.get((tenant_id, name, version))
-        skill = self._skills.get((tenant_id, name))
+        row = self._versions.get((tenant_id, self._owner, name, version))
+        skill = self._skills.get((tenant_id, self._owner, name))
         if row is None or skill is None or row["status"] not in from_statuses:
             raise SkillStateConflict(f"{name}@{version}")
         previous = skill["live_version"]
         if expected_live is not ANY_LIVE and previous != expected_live:
             raise SkillLiveMismatch(f"{name} is live at {previous}, not {expected_live}")
-        for (t, n, v), other in self._versions.items():
-            if t == tenant_id and n == name and v != version and other["status"] == "published":
+        for k, other in self._versions.items():
+            if (
+                self._mine(tenant_id, k)
+                and k[2] == name
+                and k[3] != version
+                and other["status"] == "published"
+            ):
                 other["status"] = "archived"
         row.update(status="published", decided_by=by, decided_at=at)
         if row.get("published_at") is None:
@@ -431,26 +545,31 @@ class InMemorySkillLibraryStore:
     async def buildable_versions(self, tenant_id: str, names: Collection[str]) -> dict[str, list[str]]:
         wanted = set(names)
         out: dict[str, list[str]] = {}
-        for (t, n, v), row in self._versions.items():
-            if t == tenant_id and n in wanted and not is_rejected(row):
-                out.setdefault(n, []).append(v)
+        for k, row in self._versions.items():
+            if self._mine(tenant_id, k) and k[2] in wanted and not is_rejected(row):
+                out.setdefault(k[2], []).append(k[3])
         return {n: sorted(vs) for n, vs in out.items()}
 
     async def archive_skill(self, tenant_id: str, name: str, *, by: str, at: int) -> str | None:
-        skill = self._skills.get((tenant_id, name))
+        skill = self._skills.get((tenant_id, self._owner, name))
         if skill is None:
             raise SkillStateConflict(name)
         previous = skill["live_version"]
-        for (t, n, _), row in self._versions.items():
-            if t == tenant_id and n == name and row["status"] == "published":
+        for k, row in self._versions.items():
+            if self._mine(tenant_id, k) and k[2] == name and row["status"] == "published":
                 row.update(status="archived", decided_by=by, decided_at=at)
         skill.update(live_version=None, updated_at=at)
         return previous
 
 
 class PostgresSkillLibraryStore:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, owner: str = ORG_OWNER) -> None:
         self._settings = settings
+        self._owner = check_owner(owner)
+
+    @property
+    def owner(self) -> str:
+        return self._owner
 
     def _session(self, tenant_id: str) -> Any:
         from felix.db.session import tenant_session
@@ -465,7 +584,7 @@ class PostgresSkillLibraryStore:
         from felix.db.models import SkillRow
 
         async with self._session(tenant_id) as db:
-            row = await db.get(SkillRow, (tenant_id, name))
+            row = await db.get(SkillRow, (tenant_id, self._owner, name))
             return self._row(row) if row is not None else None
 
     async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]:
@@ -480,7 +599,9 @@ class PostgresSkillLibraryStore:
             rows = (
                 await db.scalars(
                     select(SkillRow).where(
-                        SkillRow.tenant_id == tenant_id, SkillRow.name.in_(list(set(names)))
+                        SkillRow.tenant_id == tenant_id,
+                        SkillRow.owner == self._owner,
+                        SkillRow.name.in_(list(set(names))),
                     )
                 )
             ).all()
@@ -493,7 +614,7 @@ class PostgresSkillLibraryStore:
 
         from felix.db.models import SkillRow
 
-        stmt = select(SkillRow).where(SkillRow.tenant_id == tenant_id)
+        stmt = select(SkillRow).where(SkillRow.tenant_id == tenant_id, SkillRow.owner == self._owner)
         if after is not None:
             stmt = stmt.where(collate(SkillRow.name, "C") > after)
         async with self._session(tenant_id) as db:
@@ -521,7 +642,11 @@ class PostgresSkillLibraryStore:
             newest = (
                 await db.execute(
                     select(SkillVersionRow.name, *columns)
-                    .where(SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.name.in_(names))
+                    .where(
+                        SkillVersionRow.tenant_id == tenant_id,
+                        SkillVersionRow.owner == self._owner,
+                        SkillVersionRow.name.in_(names),
+                    )
                     .distinct(SkillVersionRow.name)
                     .order_by(
                         SkillVersionRow.name,
@@ -535,6 +660,7 @@ class PostgresSkillLibraryStore:
                     select(SkillVersionRow.name, func.count())
                     .where(
                         SkillVersionRow.tenant_id == tenant_id,
+                        SkillVersionRow.owner == self._owner,
                         SkillVersionRow.name.in_(names),
                         SkillVersionRow.status == "draft",
                     )
@@ -558,7 +684,9 @@ class PostgresSkillLibraryStore:
         from felix.db.models import SkillVersionRow
 
         stmt = select(SkillVersionRow).where(
-            SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.status == "draft"
+            SkillVersionRow.tenant_id == tenant_id,
+            SkillVersionRow.owner == self._owner,
+            SkillVersionRow.status == "draft",
         )
         if after is not None:
             key = tuple_(
@@ -599,6 +727,7 @@ class PostgresSkillLibraryStore:
                         SkillVersionRow,
                         and_(
                             SkillVersionRow.tenant_id == SkillRow.tenant_id,
+                            SkillVersionRow.owner == SkillRow.owner,
                             SkillVersionRow.name == SkillRow.name,
                             SkillVersionRow.version == SkillRow.live_version,
                         ),
@@ -607,12 +736,17 @@ class PostgresSkillLibraryStore:
                         SkillFileRow,
                         and_(
                             SkillFileRow.tenant_id == SkillRow.tenant_id,
+                            SkillFileRow.owner == SkillRow.owner,
                             SkillFileRow.name == SkillRow.name,
                             SkillFileRow.version == SkillRow.live_version,
                             SkillFileRow.path == "SKILL.md",
                         ),
                     )
-                    .where(SkillRow.tenant_id == tenant_id, SkillRow.live_version.is_not(None))
+                    .where(
+                        SkillRow.tenant_id == tenant_id,
+                        SkillRow.owner == self._owner,
+                        SkillRow.live_version.is_not(None),
+                    )
                     .order_by(collate(SkillRow.name, "C"))
                     .limit(limit)
                 )
@@ -625,7 +759,7 @@ class PostgresSkillLibraryStore:
         from felix.db.models import SkillVersionRow
 
         async with self._session(tenant_id) as db:
-            row = await db.get(SkillVersionRow, (tenant_id, name, version))
+            row = await db.get(SkillVersionRow, (tenant_id, self._owner, name, version))
             return self._row(row) if row is not None else None
 
     async def get_versions(
@@ -642,7 +776,11 @@ class PostgresSkillLibraryStore:
         async with self._session(tenant_id) as db:
             rows = (
                 await db.scalars(
-                    select(R).where(R.tenant_id == tenant_id, tuple_(R.name, R.version).in_(wanted))
+                    select(R).where(
+                        R.tenant_id == tenant_id,
+                        R.owner == self._owner,
+                        tuple_(R.name, R.version).in_(wanted),
+                    )
                 )
             ).all()
             return {(r.name, r.version): self._row(r) for r in rows}
@@ -658,7 +796,11 @@ class PostgresSkillLibraryStore:
             rows = (
                 await db.scalars(
                     select(SkillVersionRow)
-                    .where(SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.name == name)
+                    .where(
+                        SkillVersionRow.tenant_id == tenant_id,
+                        SkillVersionRow.owner == self._owner,
+                        SkillVersionRow.name == name,
+                    )
                     .order_by(SkillVersionRow.created_at.desc(), collate(SkillVersionRow.version, "C").desc())
                     .limit(limit)
                 )
@@ -673,7 +815,11 @@ class PostgresSkillLibraryStore:
         async with self._session(tenant_id) as db:
             rows = await db.scalars(
                 select(SkillVersionRow.version)
-                .where(SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.name == name)
+                .where(
+                    SkillVersionRow.tenant_id == tenant_id,
+                    SkillVersionRow.owner == self._owner,
+                    SkillVersionRow.name == name,
+                )
                 .order_by(collate(SkillVersionRow.version, "C"))
             )
             return list(rows.all())
@@ -689,6 +835,7 @@ class PostgresSkillLibraryStore:
                     select(SkillFileRow)
                     .where(
                         SkillFileRow.tenant_id == tenant_id,
+                        SkillFileRow.owner == self._owner,
                         SkillFileRow.name == name,
                         SkillFileRow.version == version,
                     )
@@ -699,7 +846,7 @@ class PostgresSkillLibraryStore:
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         async with self._session(tenant_id) as db:
-            return await self._pending(db, tenant_id, origin_manifest_id)
+            return await self._pending(db, tenant_id, self._owner, origin_manifest_id)
 
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
@@ -718,10 +865,12 @@ class PostgresSkillLibraryStore:
         query = select(
             exists().where(
                 SkillFileRow.tenant_id == tenant_id,
+                SkillFileRow.owner.in_(sorted({ORG_OWNER, self._owner})),
                 or_(*matches),
                 exists().where(
                     and_(
                         SkillVersionRow.tenant_id == SkillFileRow.tenant_id,
+                        SkillVersionRow.owner == SkillFileRow.owner,
                         SkillVersionRow.name == SkillFileRow.name,
                         SkillVersionRow.version == SkillFileRow.version,
                         # `publish_gate.holds_third_party_bytes`, in SQL. An import's own row
@@ -738,7 +887,7 @@ class PostgresSkillLibraryStore:
             return bool(await db.scalar(query))
 
     @staticmethod
-    async def _pending(db: Any, tenant_id: str, origin_manifest_id: str) -> int:
+    async def _pending(db: Any, tenant_id: str, owner: str, origin_manifest_id: str) -> int:
         from sqlalchemy import func, select
 
         from felix.db.models import SkillVersionRow
@@ -748,6 +897,7 @@ class PostgresSkillLibraryStore:
             .select_from(SkillVersionRow)
             .where(
                 SkillVersionRow.tenant_id == tenant_id,
+                SkillVersionRow.owner == owner,
                 SkillVersionRow.origin_manifest_id == origin_manifest_id,
                 SkillVersionRow.status == "draft",
                 SkillVersionRow.source == "agent",
@@ -781,12 +931,13 @@ class PostgresSkillLibraryStore:
                 origin = str(row.get("origin_manifest_id"))
                 await db.execute(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-                    {"k": pending_lock_key(tenant_id, origin)},
+                    {"k": pending_lock_key(tenant_id, origin, owner=self._owner)},
                 )
-                if (held := await self._pending(db, tenant_id, origin)) >= max_pending:
+                if (held := await self._pending(db, tenant_id, self._owner, origin)) >= max_pending:
                     raise SkillPendingFull(held, max_pending)
             skill = pg_insert(cast(Any, SkillRow.__table__)).values(
                 tenant_id=tenant_id,
+                owner=self._owner,
                 name=name,
                 live_version=None,
                 created_by=created_by,
@@ -794,11 +945,23 @@ class PostgresSkillLibraryStore:
                 updated_at=at,
             )
             await db.execute(
-                skill.on_conflict_do_update(index_elements=["tenant_id", "name"], set_={"updated_at": at})
+                skill.on_conflict_do_update(
+                    index_elements=["tenant_id", "owner", "name"], set_={"updated_at": at}
+                )
             )
-            db.add(SkillVersionRow(**{**row, "tenant_id": tenant_id}))
+            db.add(SkillVersionRow(**{**row, "tenant_id": tenant_id, "owner": self._owner}))
             for f in files:
-                db.add(SkillFileRow(tenant_id=tenant_id, name=name, version=version, **f))
+                db.add(
+                    SkillFileRow(
+                        **{
+                            **f,
+                            "tenant_id": tenant_id,
+                            "owner": self._owner,
+                            "name": name,
+                            "version": version,
+                        }
+                    )
+                )
             try:
                 await db.commit()
             except IntegrityError as exc:
@@ -816,6 +979,7 @@ class PostgresSkillLibraryStore:
             gone = await db.execute(
                 delete(SkillVersionRow).where(
                     SkillVersionRow.tenant_id == tenant_id,
+                    SkillVersionRow.owner == self._owner,
                     SkillVersionRow.name == name,
                     SkillVersionRow.version == version,
                     SkillVersionRow.status == "draft",
@@ -825,16 +989,22 @@ class PostgresSkillLibraryStore:
                 await db.execute(
                     delete(SkillFileRow).where(
                         SkillFileRow.tenant_id == tenant_id,
+                        SkillFileRow.owner == self._owner,
                         SkillFileRow.name == name,
                         SkillFileRow.version == version,
                     )
                 )
                 others = select(SkillVersionRow.version).where(
-                    SkillVersionRow.tenant_id == tenant_id, SkillVersionRow.name == name
+                    SkillVersionRow.tenant_id == tenant_id,
+                    SkillVersionRow.owner == self._owner,
+                    SkillVersionRow.name == name,
                 )
                 await db.execute(
                     delete(SkillRow).where(
-                        SkillRow.tenant_id == tenant_id, SkillRow.name == name, ~exists(others)
+                        SkillRow.tenant_id == tenant_id,
+                        SkillRow.owner == self._owner,
+                        SkillRow.name == name,
+                        ~exists(others),
                     )
                 )
             await db.commit()
@@ -848,6 +1018,7 @@ class PostgresSkillLibraryStore:
             select(SkillVersionRow)
             .where(
                 SkillVersionRow.tenant_id == tenant_id,
+                SkillVersionRow.owner == self._owner,
                 SkillVersionRow.name == name,
                 SkillVersionRow.version == version,
             )
@@ -860,7 +1031,9 @@ class PostgresSkillLibraryStore:
         from felix.db.models import SkillRow
 
         return await db.scalar(
-            select(SkillRow).where(SkillRow.tenant_id == tenant_id, SkillRow.name == name).with_for_update()
+            select(SkillRow)
+            .where(SkillRow.tenant_id == tenant_id, SkillRow.owner == self._owner, SkillRow.name == name)
+            .with_for_update()
         )
 
     async def reject(self, tenant_id: str, name: str, version: str, *, by: str, note: str, at: int) -> None:
@@ -906,6 +1079,7 @@ class PostgresSkillLibraryStore:
                 update(SkillVersionRow)
                 .where(
                     SkillVersionRow.tenant_id == tenant_id,
+                    SkillVersionRow.owner == self._owner,
                     SkillVersionRow.name == name,
                     SkillVersionRow.version != version,
                     SkillVersionRow.status == "published",
@@ -932,6 +1106,7 @@ class PostgresSkillLibraryStore:
                 await db.execute(
                     select(V.name, V.version).where(
                         V.tenant_id == tenant_id,
+                        V.owner == self._owner,
                         V.name.in_(list(set(names))),
                         ~((V.status == "archived") & V.published_at.is_(None)),
                     )
@@ -957,6 +1132,7 @@ class PostgresSkillLibraryStore:
                 update(SkillVersionRow)
                 .where(
                     SkillVersionRow.tenant_id == tenant_id,
+                    SkillVersionRow.owner == self._owner,
                     SkillVersionRow.name == name,
                     SkillVersionRow.status == "published",
                 )
@@ -970,18 +1146,21 @@ class PostgresSkillLibraryStore:
 _memory_store = InMemorySkillLibraryStore()
 
 
-def get_skill_library_store(settings: Settings | None = None) -> SkillLibraryStore:
-    """The library store for these settings: the process twin under `memory://`, else Postgres.
+def get_skill_library_store(settings: Settings | None = None, *, owner: str = ORG_OWNER) -> SkillLibraryStore:
+    """The library store for these settings and ``owner``: the process twin under `memory://`,
+    else Postgres. Without an owner it is the tenant's own library, as it always was; a personal
+    one is asked for by name (`skill_owner`), so nothing reaches one by omission.
 
     Selected exactly as `skills/store.py:get_skill_activation_store` selects, so a deployment
     that keeps activations in memory keeps the library there too.
     """
+    check_owner(owner)
     if settings is None:
-        return _memory_store
+        return _memory_store.for_owner(owner)
     url = settings.database_url
     if ":memory:" in url or "sqlite" in url or url.startswith("memory://"):
-        return _memory_store
-    return PostgresSkillLibraryStore(settings)
+        return _memory_store.for_owner(owner)
+    return PostgresSkillLibraryStore(settings, owner)
 
 
 def clear_memory() -> None:
@@ -993,14 +1172,17 @@ __all__ = [
     "ANY_LIVE",
     "LIBRARY_PREFIX",
     "MAX_LIBRARY_SKILLS",
+    "MAX_OWNER_LENGTH",
     "MAX_VERSIONS_LISTED",
     "MAX_VERSIONS_PER_SKILL",
+    "ORG_OWNER",
     "ORIGIN_COLUMNS",
     "SUMMARY_COLUMNS",
     "DraftCursor",
     "ExpectedLive",
     "ImportOrigin",
     "InMemorySkillLibraryStore",
+    "InvalidSkillOwner",
     "PostgresSkillLibraryStore",
     "SkillLibraryStore",
     "SkillLiveMismatch",
@@ -1008,9 +1190,11 @@ __all__ = [
     "SkillStateConflict",
     "SkillStatus",
     "SkillVersionExists",
+    "check_owner",
     "clear_memory",
     "get_skill_library_store",
     "is_rejected",
     "library_object_key",
     "pending_lock_key",
+    "skill_owner",
 ]

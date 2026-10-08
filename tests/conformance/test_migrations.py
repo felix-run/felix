@@ -16,6 +16,8 @@ Postgres-only by construction: these assert against `pg_catalog`.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -182,3 +184,130 @@ async def test_downgrades_reverse_cleanly() -> None:
         assert await _scalar(url, "SELECT count(*) FROM alembic_version") == 1
     finally:
         await drop_everything(url)
+
+
+# A migration role the way managed Postgres hands one out: it owns the tables it migrates but is
+# neither a superuser nor BYPASSRLS, so the forced tenant policy binds it. A literal password for a
+# throwaway role on a test database, with no apostrophe (`CREATE ROLE` cannot take a parameter).
+_MIGRATOR = "felix_conformance_migrator"
+_MIGRATOR_PASSWORD = "conformance-migrator-not-a-secret"
+_SKILL_TABLES = ("skill", "skill_version", "skill_file")
+
+
+async def _execute(url: str, *statements: str) -> None:
+    engine = create_async_engine(url, future=True, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            for statement in statements:
+                await conn.execute(text(statement))
+    finally:
+        await engine.dispose()
+
+
+async def _drop_migrator(url: str) -> None:
+    await _execute(
+        url,
+        "DO $$ BEGIN "
+        f"IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_MIGRATOR}') THEN "
+        f"EXECUTE 'REASSIGN OWNED BY {_MIGRATOR} TO CURRENT_USER'; "
+        f"EXECUTE 'DROP OWNED BY {_MIGRATOR}'; "
+        "END IF; END $$",
+        f"DROP ROLE IF EXISTS {_MIGRATOR}",
+    )
+
+
+async def _as_migrator(url: str) -> str:
+    """A URL for a role that owns the skill tables and `alembic_version` and is bound by RLS."""
+    from sqlalchemy.engine import make_url
+
+    await _drop_migrator(url)
+    await _execute(
+        url,
+        f"CREATE ROLE {_MIGRATOR} LOGIN PASSWORD '{_MIGRATOR_PASSWORD}' NOSUPERUSER NOBYPASSRLS",
+        f"GRANT USAGE, CREATE ON SCHEMA public TO {_MIGRATOR}",
+        *(f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}' for t in (*_SKILL_TABLES, "alembic_version")),
+    )
+    return (
+        make_url(url)
+        .set(username=_MIGRATOR, password=_MIGRATOR_PASSWORD)
+        .render_as_string(hide_password=False)
+    )
+
+
+async def _downgrade_past_0033(url: str) -> None:
+    from alembic import command
+    from felix.db.migrations import alembic_config
+
+    await asyncio.to_thread(command.downgrade, alembic_config(url), "0032_skill_file_normalized")
+
+
+async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgrade() -> None:
+    """`0033_skill_owner`: the three library tables key on `owner` beside the name, every row
+    written before it is the org's (`''`), and the downgrade refuses while any of the three holds a
+    personal row -- the old key cannot hold two owners' skills of one name, and one that fit would
+    become the org's. Run as a role RLS binds: the compose superuser escapes the forced policy, so
+    a guard counting without the bypass would pass here and wave every downgrade through on managed
+    Postgres. A store test cannot see any of this: it never downgrades, and it always writes an owner.
+    """
+    url = _url_or_skip()
+    try:
+        await migrate_to_head(url)
+        for table, key in (
+            ("skill", "tenant_id,owner,name"),
+            ("skill_version", "tenant_id,owner,name,version"),
+            ("skill_file", "tenant_id,owner,name,version,path"),
+        ):
+            columns = await _scalar(
+                url,
+                "SELECT string_agg(a.attname, ',' ORDER BY k.ord) FROM pg_index i "
+                "CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) "
+                "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+                f"WHERE i.indrelid = '{table}'::regclass AND i.indisprimary",
+            )
+            assert columns == key, f"{table} is keyed on {columns}"
+            default = await _scalar(
+                url,
+                "SELECT column_default FROM information_schema.columns "
+                f"WHERE table_name = '{table}' AND column_name = 'owner' AND is_nullable = 'NO'",
+            )
+            assert default == "''::text", f"{table}.owner is nullable or has no '' default: {default!r}"
+
+        # Alice's skill, with no org skill of its name: the old key would take it without a collision.
+        await _execute(
+            url,
+            "INSERT INTO skill (tenant_id, owner, name, live_version, created_at, updated_at) "
+            "VALUES ('acme', 'iss|alice', 'notes', '0.1.0', 1, 1)",
+            "INSERT INTO skill_version (tenant_id, owner, name, version, status, source, security_status, "
+            "created_at) VALUES ('acme', 'iss|alice', 'notes', '0.1.0', 'published', 'agent', 'pass', 1)",
+            "INSERT INTO skill_file (tenant_id, owner, name, version, path, sha256, size) "
+            "VALUES ('acme', 'iss|alice', 'notes', '0.1.0', 'SKILL.md', 'a', 1)",
+        )
+        migrator = await _as_migrator(url)
+        assert await _scalar(migrator, "SELECT count(*) FROM skill") == 0, (
+            "the migrator role sees rows without the bypass, so this test cannot catch a guard missing it"
+        )
+        with pytest.raises(RuntimeError, match="personal libraries"):
+            await _downgrade_past_0033(migrator)
+        assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0033_skill_owner"
+
+        # Versions removed and the skill row left behind still refuses: that row would re-key into
+        # an org skill whose live version no longer exists.
+        await _execute(
+            url, "DELETE FROM skill_version WHERE owner <> ''", "DELETE FROM skill_file WHERE owner <> ''"
+        )
+        with pytest.raises(RuntimeError, match="1 in skill"):
+            await _downgrade_past_0033(migrator)
+
+        await _execute(url, "DELETE FROM skill WHERE owner <> ''")
+        await _downgrade_past_0033(migrator)
+        assert (
+            await _scalar(
+                url,
+                "SELECT count(*) FROM information_schema.columns WHERE column_name = 'owner' "
+                "AND table_name IN ('skill', 'skill_version', 'skill_file')",
+            )
+            == 0
+        )
+    finally:
+        await drop_everything(url)
+        await _drop_migrator(url)
