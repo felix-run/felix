@@ -12,6 +12,8 @@
  * the scope scheme.
  */
 
+import { REPO } from './github-rules';
+
 export const OPS = [
   'prepare',
   'list',
@@ -21,6 +23,8 @@ export const OPS = [
   'search',
   // A `shell_tools` command, run in the sandbox by the shell tool's own exec path.
   'exec',
+  // A thread's repository, cloned into its empty /workspace with the person's token (`github.ts`).
+  'clone',
   // Not file operations: back `/workspace` up to R2 now, and stop the sandbox and delete its backup.
   'checkpoint',
   'destroy',
@@ -58,6 +62,7 @@ export type HelperRequest =
   | { op: 'edit'; path: string; old: string; new: string; replace_all: boolean }
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
   | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
+  | { op: 'clone'; repo: string; branch: string; token: string }
   | { op: 'checkpoint' }
   | { op: 'destroy' };
 
@@ -74,7 +79,9 @@ export type ErrorCode =
   | 'timeout'
   | 'unauthorized'
   | 'misconfigured'
-  | 'payload_too_large';
+  | 'payload_too_large'
+  | 'conflict'
+  | 'clone_failed';
 
 /** What the sandbox's `felix-fs` helper prints, and what the Durable Object returns. */
 export type HelperAnswer =
@@ -90,6 +97,8 @@ export const STATUS: Record<ErrorCode, number> = {
   not_a_directory: 409,
   not_a_file: 409,
   payload_too_large: 413,
+  conflict: 409,
+  clone_failed: 502,
   invalid_path: 422,
   edit_refused: 422,
   io_error: 500,
@@ -190,6 +199,22 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
         timeout_ms: timeoutMs,
         ...(stdin === undefined ? {} : { stdin: stdin as string }),
       };
+    }
+    case 'clone': {
+      const repo = str(body, 'repo');
+      const branch = str(body, 'branch');
+      const token = str(body, 'token');
+      if (repo === null || !REPO.test(repo)) return '`repo` must be `owner/name`';
+      // A ref git accepts and cannot read as an option: no leading `-`, no `..`, no control bytes.
+      if (
+        branch === null ||
+        !/^[A-Za-z0-9._/][A-Za-z0-9._/-]{0,254}$/.test(branch) ||
+        branch.includes('..')
+      ) {
+        return '`branch` must be a branch name';
+      }
+      if (token === null || token.length === 0 || token.length > 512) return '`token` must be a token';
+      return { op, repo, branch, token };
     }
     case 'search': {
       const path = str(body, 'path', '.');
