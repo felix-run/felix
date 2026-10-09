@@ -61,7 +61,9 @@ async def _draft(settings: Settings, store: MemoryObjectStore, **kw: Any) -> dic
     }
     who.update({k: kw.pop(k) for k in list(kw) if k in _PROVENANCE})
     args: dict[str, Any] = {"files": _bundle(), "object_store": store, **kw}
-    return await library.save_draft(settings, "acme", provenance=library.DraftProvenance(**who), **args)
+    return await library.save_draft(
+        settings, "acme", provenance=library.DraftProvenance(**who), **args, owner=ORG_OWNER
+    )
 
 
 def _key(version: str, path: str = "SKILL.md", *, tenant: str = "acme", name: str = "invoice-triage") -> str:
@@ -91,7 +93,7 @@ async def test_a_first_draft_is_0_1_0_and_its_files_are_in_the_store(
     assert await store.get(_key("0.1.0", "references/guide.md")) == b"# Guide\n"
     skill_md = await store.get(_key("0.1.0"))
     assert skill_md is not None and b"Invoice triage" in skill_md
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert [f["path"] for f in await lib.list_files("acme", "invoice-triage", "0.1.0")] == [
         "SKILL.md",
         "references/guide.md",
@@ -121,7 +123,7 @@ async def test_a_save_that_loses_the_race_takes_the_next_version(
     settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _draft(settings, store)
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     real = lib.version_ids
     calls = 0
 
@@ -161,7 +163,7 @@ async def test_an_invalid_bundle_is_refused_with_its_issues(
     assert any(i.path == "../escape.md" for i in caught.value.issues)
     with pytest.raises(library.SkillBundleInvalid):
         await _draft(settings, store, name="other-name")
-    assert await get_skill_library_store(settings).list_skills("acme") == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).list_skills("acme") == []
 
 
 async def test_a_host_skill_name_cannot_be_shadowed(settings: Settings, store: MemoryObjectStore) -> None:
@@ -184,7 +186,9 @@ async def test_the_pending_cap_counts_one_manifests_agent_drafts(
     await _draft(settings, store, max_pending=2, origin_manifest_id="other")
     await _draft(settings, store, max_pending=2, source="operator")
     # Deciding a draft frees its slot.
-    await library.reject(settings, "acme", "invoice-triage", "0.1.0", by="ops", note="duplicate")
+    await library.reject(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", note="duplicate", owner=ORG_OWNER
+    )
     await _draft(settings, store, max_pending=2)
 
 
@@ -194,15 +198,21 @@ async def test_publish_goes_live_and_archives_the_previous_version(
     await _draft(settings, store)
     await _draft(settings, store)
 
-    await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    row = await library.publish(settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    row = await library.publish(
+        settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+    )
 
     assert row["status"] == "published"
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert (await lib.get_skill("acme", "invoice-triage") or {})["live_version"] == "0.1.1"
     assert (await lib.get_version("acme", "invoice-triage", "0.1.0") or {})["status"] == "archived"
     with pytest.raises(library.SkillVersionConflict):
-        await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+        await library.publish(
+            settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+        )
 
 
 async def test_a_failing_security_scan_always_blocks(settings: Settings, store: MemoryObjectStore) -> None:
@@ -211,10 +221,10 @@ async def test_a_failing_security_scan_always_blocks(settings: Settings, store: 
 
     with pytest.raises(library.SkillPublishBlocked) as caught:
         await library.publish(
-            settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store
+            settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
         )
     assert any("security scan failed" in r for r in caught.value.reasons)
-    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
     assert skill is not None and skill["live_version"] is None
 
 
@@ -225,7 +235,9 @@ async def test_the_settings_policy_adds_a_quality_floor_and_an_advisory_block(
     row = await _draft(strict, store)
     assert row["quality_score"] < 100
     with pytest.raises(library.SkillPublishBlocked) as caught:
-        await library.publish(strict, "acme", "invoice-triage", row["version"], by="ops", object_store=store)
+        await library.publish(
+            strict, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
+        )
     assert any("below the minimum 100" in r for r in caught.value.reasons)
 
     # Advisory publishes unless the setting says not to.
@@ -234,11 +246,11 @@ async def test_the_settings_policy_adds_a_quality_floor_and_an_advisory_block(
     assert row["security_status"] == "advisory", row["security_issues"]
     with pytest.raises(library.SkillPublishBlocked):
         await library.publish(
-            blocking, "acme", "invoice-triage", row["version"], by="ops", object_store=store
+            blocking, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
         )
     lenient = Settings(database_url="memory://skills")
     published = await library.publish(
-        lenient, "acme", "invoice-triage", row["version"], by="ops", object_store=store
+        lenient, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
     )
     assert published["status"] == "published"
 
@@ -249,7 +261,7 @@ async def test_the_gate_rereads_the_bytes_it_publishes(settings: Settings, store
     await store.put(_key("0.1.0"), _bundle(body=BAD_BODY)["SKILL.md"].encode())
     with pytest.raises(library.SkillPublishBlocked) as caught:
         await library.publish(
-            settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store
+            settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
         )
     assert "changed in the object store" in caught.value.reasons[0]
 
@@ -260,48 +272,68 @@ async def test_rollback_returns_only_to_a_version_that_was_live(
     await _draft(settings, store)
     await _draft(settings, store)
     await _draft(settings, store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store)
-    await library.reject(settings, "acme", "invoice-triage", "0.1.2", by="ops", note="worse")
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    await library.reject(settings, "acme", "invoice-triage", "0.1.2", by="ops", note="worse", owner=ORG_OWNER)
 
-    await library.rollback(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    lib = get_skill_library_store(settings)
+    await library.rollback(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert (await lib.get_skill("acme", "invoice-triage") or {})["live_version"] == "0.1.0"
     assert (await lib.get_version("acme", "invoice-triage", "0.1.1") or {})["status"] == "archived"
     # A rejected draft is archived too, and was never live: rollback is not a way around review.
     with pytest.raises(library.SkillVersionConflict):
-        await library.rollback(settings, "acme", "invoice-triage", "0.1.2", by="ops", object_store=store)
+        await library.rollback(
+            settings, "acme", "invoice-triage", "0.1.2", by="ops", object_store=store, owner=ORG_OWNER
+        )
     with pytest.raises(library.SkillNotFound):
-        await library.rollback(settings, "acme", "invoice-triage", "9.9.9", by="ops", object_store=store)
+        await library.rollback(
+            settings, "acme", "invoice-triage", "9.9.9", by="ops", object_store=store, owner=ORG_OWNER
+        )
 
 
 async def test_reject_and_archive(settings: Settings, store: MemoryObjectStore) -> None:
     await _draft(settings, store)
-    rejected = await library.reject(settings, "acme", "invoice-triage", "0.1.0", by="ops", note="too vague")
+    rejected = await library.reject(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", note="too vague", owner=ORG_OWNER
+    )
     assert (rejected["status"], rejected["decision_note"], rejected["decided_by"]) == (
         "archived",
         "too vague",
         "ops",
     )
     with pytest.raises(library.SkillVersionConflict):
-        await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+        await library.publish(
+            settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+        )
 
     await _draft(settings, store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store)
-    skill = await library.archive_skill(settings, "acme", "invoice-triage", by="ops")
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    skill = await library.archive_skill(settings, "acme", "invoice-triage", by="ops", owner=ORG_OWNER)
     assert skill["live_version"] is None
     with pytest.raises(library.SkillNotFound):
-        await library.archive_skill(settings, "acme", "never-saved", by="ops")
+        await library.archive_skill(settings, "acme", "never-saved", by="ops", owner=ORG_OWNER)
 
 
 async def test_the_library_is_per_tenant(settings: Settings, store: MemoryObjectStore) -> None:
     await _draft(settings, store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
 
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert await lib.list_skills("globex") == []
     with pytest.raises(library.SkillNotFound):
-        await library.publish(settings, "globex", "invoice-triage", "0.1.0", by="ops", object_store=store)
+        await library.publish(
+            settings, "globex", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+        )
     # Globex's first save of the same name is its own 0.1.0, under its own keys.
     row = await library.save_draft(
         settings,
@@ -309,6 +341,7 @@ async def test_the_library_is_per_tenant(settings: Settings, store: MemoryObject
         files=_bundle(),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert row["version"] == "0.1.0"
     assert await store.get(_key("0.1.0", tenant="globex")) is not None
@@ -327,13 +360,23 @@ async def test_every_state_change_is_audited(
     await _draft(settings, store)
     await _draft(settings, store, files=_bundle(body=BAD_BODY))
     await _draft(settings, store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
     with pytest.raises(library.SkillPublishBlocked):
-        await library.publish(settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store)
-    await library.reject(settings, "acme", "invoice-triage", "0.1.1", by="ops", note="unsafe")
-    await library.publish(settings, "acme", "invoice-triage", "0.1.2", by="ops", object_store=store)
-    await library.rollback(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    await library.archive_skill(settings, "acme", "invoice-triage", by="ops")
+        await library.publish(
+            settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+        )
+    await library.reject(
+        settings, "acme", "invoice-triage", "0.1.1", by="ops", note="unsafe", owner=ORG_OWNER
+    )
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.2", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    await library.rollback(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    await library.archive_skill(settings, "acme", "invoice-triage", by="ops", owner=ORG_OWNER)
 
     trail = [(e["event_type"], e["status"], e["payload_json"]["version"]) for e in await _events(settings)]
     assert trail == [
@@ -375,7 +418,7 @@ async def test_review_and_scan_run_off_the_event_loop(
 
 
 def _twin_files(settings: Settings) -> dict[Any, list[dict[str, Any]]]:
-    return get_skill_library_store(settings)._files  # type: ignore[attr-defined]
+    return get_skill_library_store(settings, owner=ORG_OWNER)._files  # type: ignore[attr-defined]
 
 
 async def test_library_bytes_live_under_their_own_prefix(
@@ -405,7 +448,7 @@ async def test_concurrent_agent_saves_cannot_pass_the_pending_cap(
     refused = [r for r in results if isinstance(r, library.SkillPendingCapReached)]
     assert len(refused) == 2 and all(isinstance(r, dict | library.SkillPendingCapReached) for r in results)
     # Exact, not conservative: the one that fits lands, rather than every racer backing out.
-    assert await get_skill_library_store(settings).count_pending("acme", "contributor") == 1
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).count_pending("acme", "contributor") == 1
 
 
 async def test_a_failed_write_leaves_no_row_and_no_bytes(settings: Settings) -> None:
@@ -423,7 +466,7 @@ async def test_a_failed_write_leaves_no_row_and_no_bytes(settings: Settings) -> 
     store = SecondPutFails()
     with pytest.raises(OSError):
         await _draft(settings, store, files=_bundle(**{"references/a.md": "a", "references/b.md": "b"}))
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert await lib.get_skill("acme", "invoice-triage") is None
     assert await lib.version_ids("acme", "invoice-triage") == []
     assert await lib.count_pending("acme", "contributor") == 0
@@ -444,7 +487,9 @@ async def test_the_gate_rescans_bytes_whose_digest_was_updated(
             meta["sha256"] = hashlib.sha256(bad).hexdigest()
 
     with pytest.raises(library.SkillPublishBlocked) as caught:
-        await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+        await library.publish(
+            settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+        )
     assert any("security scan failed" in r for r in caught.value.reasons)
 
 
@@ -453,13 +498,19 @@ async def test_a_tampered_rollback_target_is_blocked_and_audited(
 ) -> None:
     await _draft(settings, store)
     await _draft(settings, store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    await library.publish(settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+    )
     await store.put(_key("0.1.0"), b"tampered")
 
     with pytest.raises(library.SkillPublishBlocked):
-        await library.rollback(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+        await library.rollback(
+            settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+        )
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
     assert skill is not None and skill["live_version"] == "0.1.1"
     blocked = [e for e in await _events(settings) if e["event_type"] == "skill_rolled_back"]
     assert [e["status"] for e in blocked] == ["blocked"]
@@ -471,12 +522,16 @@ async def test_a_reject_landing_mid_publish_wins_cleanly(
     await _draft(settings, store)
 
     async def rejected_meanwhile(*_a: Any, **_k: Any) -> None:
-        await library.reject(settings, "acme", "invoice-triage", "0.1.0", by="other-op", note="no")
+        await library.reject(
+            settings, "acme", "invoice-triage", "0.1.0", by="other-op", note="no", owner=ORG_OWNER
+        )
 
     monkeypatch.setattr(library, "_gate", rejected_meanwhile)
     with pytest.raises(library.SkillVersionConflict):
-        await library.publish(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
-    lib = get_skill_library_store(settings)
+        await library.publish(
+            settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+        )
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     row = await lib.get_version("acme", "invoice-triage", "0.1.0")
     assert row is not None and (row["status"], row["decision_note"]) == ("archived", "no")
     assert (await lib.get_skill("acme", "invoice-triage") or {})["live_version"] is None

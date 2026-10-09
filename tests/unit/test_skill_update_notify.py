@@ -19,6 +19,7 @@ from felix.config import Settings
 from felix.durability import webhooks
 from felix.durability.webhooks import parse_tenant_endpoint_bindings
 from felix.skills import importer, library, update_notify, upstream, upstream_store
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.update_notify import deliver_due_notifications, event_id
 from felix.skills.upstream_store import get_upstream_store
 from felix.storage import MemoryObjectStore
@@ -209,7 +210,7 @@ async def test_changed_files_is_left_out_when_the_check_diffed_against_another_v
     the event calls 0.1.1 current, so the count would describe the wrong pair."""
     settings = _settings({"ops": (UNREACHABLE, ["acme"])}, "acme=ops")
     await _import(settings, store, gh)
-    await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+    await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
     _move(gh, b"first move\n")
     await _update(settings, store, gh, at=T0 + 1)
     _move(gh, b"second move\n")

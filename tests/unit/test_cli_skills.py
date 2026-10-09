@@ -14,6 +14,7 @@ import httpx
 import pytest
 import typer
 from felix.config import Settings
+from felix.skills.library_keys import ORG_OWNER
 from felix_cli.main import app as cli
 from typer.testing import CliRunner
 
@@ -199,6 +200,7 @@ def test_a_diff_or_update_of_a_skill_that_was_not_imported_says_so(served: FakeR
             "default",
             files={"SKILL.md": skill_md("house-rules").decode()},
             provenance=library.DraftProvenance(source="operator", author="ops"),
+            owner=ORG_OWNER,
         )
     )
     for command in ("diff", "update"):

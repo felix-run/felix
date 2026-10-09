@@ -30,6 +30,7 @@ from felix.skills.eval_store import get_skill_eval_store
 from felix.skills.feedback_store import PostgresSkillFeedbackStore, get_skill_feedback_store
 from felix.skills.format import serialize_skill_md
 from felix.skills.job_limits import SkillJobsCapReached
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import PostgresSkillLibraryStore, get_skill_library_store
 from felix.storage import MemoryObjectStore
 
@@ -77,7 +78,7 @@ def _capped(settings: Any, **caps: int) -> Any:
 async def _versions(settings: Any, n: int) -> list[str]:
     """``n`` versions of one skill: an evaluation is one in flight per version, so each racer
     needs its own."""
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     versions = [f"0.1.{i}" for i in range(n)]
     for i, v in enumerate(versions):
         row = {
@@ -193,13 +194,14 @@ async def test_an_agents_racing_drafts_fill_its_pending_cap_exactly(store_settin
                 provenance=agent,
                 max_pending=CAP,
                 object_store=objects,
+                owner=ORG_OWNER,
             )
             for i in range(RACERS)
         ),
         return_exceptions=True,
     )
     assert _split(results, library.SkillPendingCapReached) == (CAP, RACERS - CAP)
-    assert await get_skill_library_store(store_settings).count_pending(TENANT, "m") == CAP
+    assert await get_skill_library_store(store_settings, owner=ORG_OWNER).count_pending(TENANT, "m") == CAP
     # A refused save left nothing behind: no row, and no bytes.
     saved = {r["name"] for r in results if isinstance(r, dict)}
     assert {k.split("/")[2] for k in objects._data if k.startswith("skill-library/")} == saved

@@ -52,7 +52,7 @@ async def _import(
     origin = ImportOrigin(
         source=f"github:acme/skills/skills/{NAME}", ref="main", commit="a" * 40, tree_hash=tree
     )
-    newest = await get_skill_library_store(settings).version_ids("acme", NAME)
+    newest = await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME)
     return await library.save_draft(
         settings,
         "acme",
@@ -61,12 +61,13 @@ async def _import(
         name=NAME,
         parent=library.newest_version(newest),
         object_store=store,
+        owner=ORG_OWNER,
     )
 
 
 async def _adopt(settings: Settings, store: MemoryObjectStore, version: str, **kw: Any) -> dict[str, Any]:
     args: dict[str, Any] = {"by": "alice", "reason": "read every line; ours now", **kw}
-    return await library.adopt(settings, "acme", NAME, version, object_store=store, **args)
+    return await library.adopt(settings, "acme", NAME, version, object_store=store, owner=ORG_OWNER, **args)
 
 
 async def _save(
@@ -89,6 +90,7 @@ async def _save(
         name=name,
         parent=parent,
         object_store=store,
+        owner=ORG_OWNER,
     )
 
 
@@ -100,7 +102,7 @@ async def test_adopt_saves_an_operator_draft_of_the_same_bytes_without_the_mark(
 ) -> None:
     await _import(settings, store)
     adopted = await _adopt(settings, store, "0.1.0")
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
 
     assert (adopted["version"], adopted["status"], adopted["source"]) == ("0.1.1", "draft", "operator")
     assert (adopted["parent_version"], adopted["adopted_from"], adopted["lineage_import"]) == (
@@ -131,9 +133,9 @@ async def test_adopt_never_publishes_and_leaves_the_live_version_alone(
     settings: Settings, store: MemoryObjectStore
 ) -> None:
     await _import(settings, store)
-    await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+    await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
     adopted = await _adopt(settings, store, "0.1.0")
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert adopted["status"] == "draft" and adopted.get("published_at") is None
     assert (await lib.get_version("acme", NAME, "0.1.1") or {})["status"] == "draft"
     assert (await lib.get_skill("acme", NAME) or {})["live_version"] == "0.1.0"
@@ -145,11 +147,13 @@ async def test_the_gate_judges_an_adopted_version_as_an_operators(
     await _import(settings, store, _files(BODY + ADVISORY))
     assert settings.skill_publish_block_on_advisory is False
     with pytest.raises(library.SkillPublishBlocked, match="advisory"):
-        await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+        await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
 
     adopted = await _adopt(settings, store, "0.1.0")
     assert adopted["security_status"] == "advisory", "the same bytes, scanned the same"
-    published = await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store)
+    published = await library.publish(
+        settings, "acme", NAME, "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+    )
     assert published["status"] == "published", "the advisory is the tenant policy's call again"
 
 
@@ -172,11 +176,11 @@ async def test_activation_stops_screening_an_adopted_version_once_it_is_live(
         return skill.untrusted
 
     await _import(settings, store)
-    await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+    await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
     assert await untrusted() is True
     await _adopt(settings, store, "0.1.0")
     assert await untrusted() is True, "a draft is not live: the import still answers"
-    await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store)
+    await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store, owner=ORG_OWNER)
     assert await untrusted() is False
 
 
@@ -221,7 +225,7 @@ async def test_an_agent_tool_edit_of_an_adopted_skill_stays_clean(
     )
     result = json.loads(tool_output_content(out))
     assert result["version"] == "0.1.2", result
-    row = await get_skill_library_store(settings).get_version("acme", NAME, "0.1.2")
+    row = await get_skill_library_store(settings, owner=ORG_OWNER).get_version("acme", NAME, "0.1.2")
     assert row is not None and row["source"] == "agent" and row["lineage_import"] is False
     kept = await library.read_version_files(
         settings, "acme", NAME, "0.1.2", object_store=store, owner=ORG_OWNER
@@ -241,7 +245,7 @@ async def test_the_improvers_edit_of_an_adopted_skill_stays_clean(tmp_path: Path
         store = object_store(settings)
         await _import(settings, store)
         await _adopt(settings, store, "0.1.0")
-        await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store)
+        await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store, owner=ORG_OWNER)
         row = await feedback.submit_feedback(
             settings,
             "acme",
@@ -255,7 +259,7 @@ async def test_the_improvers_edit_of_an_adopted_skill_stays_clean(tmp_path: Path
         routes.push(IMPROVER, improved.decode())
         await run_jobs(settings)
 
-    draft = await get_skill_library_store(settings).get_version("acme", NAME, "0.1.2")
+    draft = await get_skill_library_store(settings, owner=ORG_OWNER).get_version("acme", NAME, "0.1.2")
     assert draft is not None and (draft["source"], draft["author"]) == ("agent", improve.IMPROVER)
     assert draft["lineage_import"] is False
     kept = await library.read_version_files(
@@ -281,7 +285,7 @@ async def test_an_agents_copy_of_adopted_text_into_another_skill_is_still_tainte
     version alone -- no import row -- so only the copy rule's `adopted_from` clause can match."""
     from felix.skills.copy_rule import file_digest, normalized_digest
 
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     adopted = {
         "name": NAME,
         "version": "0.1.1",
@@ -321,13 +325,20 @@ async def test_save_draft_holds_an_adopt_to_the_version_it_names(
     import with the same files -- and a version with no imported text are all refused."""
     await _import(settings, store)
     await _import(settings, store, _files(), tree="t2")  # the same files again, as 0.1.1
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert await lib.version_ids("acme", NAME) == ["0.1.0", "0.1.1"]
 
     async def adopt_save(files: dict[str, str], parent: str, adopted_from: str, name: str = NAME) -> Any:
         provenance = library.DraftProvenance(source="operator", author="o", adopted_from=adopted_from)
         return await library.save_draft(
-            settings, "acme", files=files, provenance=provenance, name=name, parent=parent, object_store=store
+            settings,
+            "acme",
+            files=files,
+            provenance=provenance,
+            name=name,
+            parent=parent,
+            object_store=store,
+            owner=ORG_OWNER,
         )
 
     with pytest.raises(library.SkillAdoptMismatch, match="build on it"):
@@ -348,7 +359,7 @@ async def test_adopt_builds_on_the_newest_version_that_was_not_rejected(
 ) -> None:
     await _import(settings, store)
     await _import(settings, store, _files(BODY + "\nUpstream moved.\n"), tree="t2")
-    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="not this one")
+    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="not this one", owner=ORG_OWNER)
     adopted = await _adopt(settings, store, "0.1.0")
     assert (adopted["version"], adopted["parent_version"], adopted["adopted_from"]) == (
         "0.1.2",
@@ -385,7 +396,10 @@ async def test_adopt_builds_on_the_newest_version_or_is_refused(
     await _import(settings, store, _files(BODY + "\nUpstream moved.\n"), tree="t2")
     with pytest.raises(library.SkillParentChanged):
         await _adopt(settings, store, "0.1.0")
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
 
 async def test_an_agents_unreviewed_draft_cannot_be_adopted_and_the_stale_refusal_says_whose_it_is(
@@ -406,9 +420,12 @@ async def test_an_agents_unreviewed_draft_cannot_be_adopted_and_the_stale_refusa
     with pytest.raises(library.SkillAgentDraft) as refused:
         await _adopt(settings, store, "0.1.1")
     assert refused.value.code == "agent_draft"
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
-    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="not ours")
+    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="not ours", owner=ORG_OWNER)
     adopted = await _adopt(settings, store, "0.1.0")
     assert (adopted["version"], adopted["adopted_from"]) == ("0.1.2", "0.1.0")
 
@@ -425,7 +442,7 @@ async def test_the_stale_refusal_names_an_operators_newer_version(
 
 async def test_a_rejected_version_cannot_be_adopted(settings: Settings, store: MemoryObjectStore) -> None:
     await _import(settings, store)
-    await library.reject(settings, "acme", NAME, "0.1.0", by="ops", note="no")
+    await library.reject(settings, "acme", NAME, "0.1.0", by="ops", note="no", owner=ORG_OWNER)
     with pytest.raises(library.SkillParentRejected):
         await _adopt(settings, store, "0.1.0")
 
@@ -435,7 +452,7 @@ async def test_adopt_needs_a_reason(reason: str, settings: Settings, store: Memo
     await _import(settings, store)
     with pytest.raises(library.SkillReasonRequired):
         await _adopt(settings, store, "0.1.0", reason=reason)
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == ["0.1.0"]
 
 
 # -- the audit trail ---------------------------------------------------------------------------
@@ -509,7 +526,7 @@ async def test_adopt_needs_skills_write(app: App, key: str) -> None:
     resp = await app.adopt(key)
     assert resp.status_code == 403, resp.text
     assert "skills:write" in resp.text
-    assert await get_skill_library_store(app.settings).version_ids("acme", NAME) == ["0.1.0"]
+    assert await get_skill_library_store(app.settings, owner=ORG_OWNER).version_ids("acme", NAME) == ["0.1.0"]
 
 
 async def test_the_route_saves_an_adopted_draft_and_names_the_operator(app: App) -> None:
@@ -552,7 +569,7 @@ async def test_the_route_refuses_a_missing_or_blank_reason(
     assert resp.status_code == status, resp.text
     if error:
         assert resp.json()["error"] == error
-    assert await get_skill_library_store(app.settings).version_ids("acme", NAME) == ["0.1.0"]
+    assert await get_skill_library_store(app.settings, owner=ORG_OWNER).version_ids("acme", NAME) == ["0.1.0"]
 
 
 async def test_the_route_maps_each_refusal_to_its_code(app: App) -> None:

@@ -280,6 +280,7 @@ async def test_skill_jobs_runs_a_queued_evaluation_and_records_its_failure_on_th
         files={"SKILL.md": skill_md},
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     await store.delete(library_object_key(TENANT, "cron-skill", row["version"], "SKILL.md", owner=ORG_OWNER))
     queued = await evaluate.queue_eval(settings, TENANT, "cron-skill", row["version"], requested_by="ops")
