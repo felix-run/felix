@@ -100,6 +100,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_policy_deny` | `manifest_id`, `policy`, `tool` | A policy blocked a call. |
 | `felix_policy_unsatisfiable` | `manifest_id` | A policy can never pass — it reads as a control and is one only in the sense that it denies everything. |
 | `felix_rule_targets_nothing` | `manifest_id`, `rule`, `kind` | A rule matches no tool. Looks like a control; is not one. |
+| `felix_hook_failures` | `hook` | A plugin's agent-loop hook raised, or answered in a shape its runner refuses, and was skipped: hooks fail open. `hook` is the kind (`before_tool`, `after_model`, …). Counted on every failure; the log warns once per hook, with the traceback, and drops to debug after. **Watch it**: a broken `before_tool` is a block that blocks nothing. |
 | `felix_shell_denied` | `tool`, `reason` | A shell tool refused an argv outside its prefixes (`argv`) or a `cwd` outside the workspace (`cwd`). A model probing the allowlist shows here, not only in the transcript. |
 | `felix_untrusted_tools_unscreened` | `manifest_id` | Untrusted tool output reached the model without content screening. |
 | `felix_imported_skills_unscreened` | `manifest_id` | A manifest offers a skill built on a GitHub import with content screening off: what the skill tools return of it is checked by the free injection markers only, with no scoring model or decider. |
