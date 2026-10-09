@@ -35,23 +35,24 @@ from felix.tools.types import (
 logger = logging.getLogger("felix.patterns.tool_runner")
 
 
-def _rewritten_failure(replacement: Any, original: str, tool_name: str) -> str:
-    """An after-tool hook's text for a failed call, still spelled as a failure.
+def _applied_hook_content(replacement: Any, original: str, tool_name: str) -> str:
+    """The text an after-tool hook's `content` puts in place of `original`.
 
-    Eval counts a failed call by its text alone (`is_failure_content`), so a redacted message
-    that dropped the `[error/...]` prefix would score the failure as a success; the original
-    prefix goes back in front. A replacement whose `str()` raises keeps the original text.
+    The one place a replacement is applied, on every path. Eval counts a failed or refused call
+    by its text alone (`is_failure_content`), so a rewrite of one that dropped its leading
+    `[error/...]`, `[tool error/...]` or `[policy ...]` would score it as a success; the original
+    tag goes back in front. A replacement whose `str()` raises keeps the original text.
     """
     try:
         text = str(replacement)
     except Exception:
         logger.warning(
-            "after_tool content for failed %s is unprintable; kept the error", tool_name, exc_info=True
+            "after_tool content for %s is unprintable; kept the original", tool_name, exc_info=True
         )
         return original
-    if is_failure_content(text):
+    if not is_failure_content(original) or is_failure_content(text):
         return text
-    return f"{original.split('] ', 1)[0]}] {text}"
+    return f"{original.split(']', 1)[0]}] {text}"
 
 
 def _transport_of(tool: Any | None) -> str:
@@ -181,7 +182,7 @@ class ToolRunner:
                 )
                 terminate = bool(after and after.get("terminate"))
                 if after and after.get("content") is not None:
-                    text = _rewritten_failure(after["content"], text, call.name)
+                    text = _applied_hook_content(after["content"], text, call.name)
                 return (
                     "fatal" if tool.fatal else "ok",
                     ChatMessage(role="tool", tool_call_id=call.id, name=call.name, content=text),
@@ -310,13 +311,14 @@ class ToolRunner:
             )
             after = await run_after_tool(
                 {"id": call.id, "name": call.name, "args": call.args},
-                result,
+                # A failed call's hook gets the text the model would see, as when the tool raised.
+                content if err else result,
                 is_error=bool(err),
                 context={"manifest_id": self.manifest_id, "thread_id": thread_id},
             )
             terminate = bool(after and after.get("terminate"))
             if after and after.get("content") is not None:
-                content = str(after["content"])
+                content = _applied_hook_content(after["content"], content, call.name)
                 rewritten = True
         except Exception:
             logger.warning("post-call handling failed for %s; the tool already ran", call.name, exc_info=True)

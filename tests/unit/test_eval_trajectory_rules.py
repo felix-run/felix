@@ -45,6 +45,9 @@ def _producer_spellings() -> set[str]:
         ):
             found.add(m.group(1))
     assert found, "no denial literals found — has the producer spelling moved?"
+    # The runner's own spellings, named: a renamed variable there would otherwise drop them from
+    # the scan without failing it, since the other files still supply literals.
+    assert {"[error/", "[fatal/"} <= {lit[:7] for lit in found}, found
     return found
 
 

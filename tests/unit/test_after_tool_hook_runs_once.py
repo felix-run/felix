@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.patterns import tool_runner
 from felix.patterns.tool_runner import ToolRunner
 from felix.patterns.types import ToolCall
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput
@@ -42,11 +43,18 @@ class _Succeeds:
         return "the tool succeeded"
 
 
-class _Unprintable:
-    """A hook-supplied replacement content whose `str()` raises."""
+@pytest.fixture
+def _applying_content_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Post-call handling fails after the hook ran.
 
-    def __str__(self) -> str:
-        raise RuntimeError("boom in str()")
+    The trigger used to be a replacement whose `str()` raises; `_applied_hook_content` now
+    absorbs that, so the failure is planted in the step that applies the hook's answer instead.
+    """
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("boom applying content")
+
+    monkeypatch.setattr(tool_runner, "_applied_hook_content", boom)
 
 
 def _runner(executor) -> ToolRunner:
@@ -55,12 +63,13 @@ def _runner(executor) -> ToolRunner:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_applying_content_raises")
 async def test_the_after_tool_hook_runs_once_when_post_call_handling_fails() -> None:
     seen: list[bool] = []
 
     def hook(tool_call, result, is_error, ctx):
         seen.append(is_error)
-        return {"content": _Unprintable()}
+        return {"content": "replaced"}
 
     get_agent_hooks().register_after_tool(hook)
 
@@ -73,11 +82,12 @@ async def test_the_after_tool_hook_runs_once_when_post_call_handling_fails() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("_applying_content_raises")
 async def test_a_successful_call_is_not_reported_to_the_model_as_an_error() -> None:
     """The consequence that reaches the model, and the reason this is not cosmetic."""
 
     def hook(tool_call, result, is_error, ctx):
-        return {"content": _Unprintable()}
+        return {"content": "replaced"}
 
     get_agent_hooks().register_after_tool(hook)
     executor = _Succeeds()
