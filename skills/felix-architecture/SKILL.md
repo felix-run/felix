@@ -17,7 +17,7 @@ scheduler, Postgres + pgvector, Valkey/Redis, pluggable object store.
 
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session, governance,
   auth, memory, eval, durability, storage, plugins.
-- `packages/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest |
+- `apps/cli` (`felix`) — `migrate | eval | mint-jwt | bundle-manifests | validate-manifest |
   doctor | version`.
 - `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`.
 - `apps/worker` — Taskiq broker plus cron tasks. `felix-scheduler` must run alongside

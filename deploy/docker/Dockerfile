@@ -44,7 +44,7 @@ RUN set -eux; \
 # not on every commit. A new workspace member needs its pyproject listed here.
 COPY pyproject.toml uv.lock ./
 COPY packages/ai/pyproject.toml packages/ai/
-COPY packages/cli/pyproject.toml packages/cli/
+COPY apps/cli/pyproject.toml apps/cli/
 COPY packages/client/pyproject.toml packages/client/
 COPY packages/harness/pyproject.toml packages/harness/
 COPY apps/api/pyproject.toml apps/api/

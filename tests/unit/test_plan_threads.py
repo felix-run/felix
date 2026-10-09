@@ -115,7 +115,7 @@ async def test_a_bare_plan_get_answers_for_this_thread_only(settings: Settings) 
 
     async with async_run_with_context(_req(settings, tenant, f"{tenant}:c")):
         empty = await _call("plan_get", {})
-    assert empty == "error: no plans on this thread"
+    assert empty == "[tool error/invalid_arguments] no plans on this thread"
 
 
 @pytest.mark.asyncio

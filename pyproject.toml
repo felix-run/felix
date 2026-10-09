@@ -103,7 +103,7 @@ ignore = [
 source = [
     "packages/ai/src/felix_ai",
     "packages/harness/src/felix",
-    "packages/cli/src/felix_cli",
+    "apps/cli/src/felix_cli",
     "apps/api/src/felix_api",
     "apps/worker/src/felix_worker",
 ]

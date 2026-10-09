@@ -11,7 +11,7 @@ flowchart TB
         direction LR
         api["apps/api<br/>felix-api"]
         worker["apps/worker<br/>felix-worker, felix-scheduler"]
-        cli["packages/cli<br/>felix"]
+        cli["apps/cli<br/>felix"]
     end
 
     api -->|"imports"| harness

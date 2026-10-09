@@ -619,7 +619,7 @@ def test_only_the_operator_route_can_adopt() -> None:
         for child in ast.iter_child_nodes(node):
             visit(child, path, function)
 
-    for tree in ("packages/harness/src", "packages/cli/src", "apps"):
+    for tree in ("packages/harness/src", "apps"):
         for file in (root / tree).rglob("*.py"):
             visit(ast.parse(file.read_text(encoding="utf-8")), file.relative_to(root).as_posix(), "<module>")
     assert found == {

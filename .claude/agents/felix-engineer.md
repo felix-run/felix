@@ -1,6 +1,6 @@
 ---
 name: felix-engineer
-description: Implements features and fixes in the Felix Python harness — manifests, patterns, tools, session, memory, durability, API routes, worker tasks. Delegate for any non-trivial code change inside packages/harness, apps/api, apps/worker, or packages/cli.
+description: Implements features and fixes in the Felix Python harness — manifests, patterns, tools, session, memory, durability, API routes, worker tasks. Delegate for any non-trivial code change inside packages/harness, apps/api, apps/worker, or apps/cli.
 tools: Read, Grep, Glob, Bash, Edit, Write, Agent(felix-test-engineer)
 model: inherit
 color: blue
