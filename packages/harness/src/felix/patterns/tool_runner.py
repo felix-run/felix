@@ -23,9 +23,35 @@ from felix.patterns.types import ChatMessage, ImageAttachment, ToolCall
 from felix.steer import should_cancel_remaining_tools
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
 from felix.tools.tool_images import ImageBudget, store_tool_images
-from felix.tools.types import Tool, ToolInvocationCtx, deny_source, is_wrapper_deny, tool_output_images
+from felix.tools.types import (
+    Tool,
+    ToolInvocationCtx,
+    deny_source,
+    is_failure_content,
+    is_wrapper_deny,
+    tool_output_images,
+)
 
 logger = logging.getLogger("felix.patterns.tool_runner")
+
+
+def _rewritten_failure(replacement: Any, original: str, tool_name: str) -> str:
+    """An after-tool hook's text for a failed call, still spelled as a failure.
+
+    Eval counts a failed call by its text alone (`is_failure_content`), so a redacted message
+    that dropped the `[error/...]` prefix would score the failure as a success; the original
+    prefix goes back in front. A replacement whose `str()` raises keeps the original text.
+    """
+    try:
+        text = str(replacement)
+    except Exception:
+        logger.warning(
+            "after_tool content for failed %s is unprintable; kept the error", tool_name, exc_info=True
+        )
+        return original
+    if is_failure_content(text):
+        return text
+    return f"{original.split('] ', 1)[0]}] {text}"
 
 
 def _transport_of(tool: Any | None) -> str:
@@ -140,33 +166,25 @@ class ToolRunner:
                         "manifest_id": self.manifest_id,
                     },
                 )
+                if tool.fatal:
+                    text = f"[fatal/{code.value}] {exc}"
+                else:
+                    text = f"[error/{code.value}] {exc}"
+                # The hook is handed the text the model would see and may replace it, as on
+                # success: an exception's message is where a secret or an internal path is most
+                # likely to surface, so a redacting hook that skipped failures would miss it.
                 after = await run_after_tool(
                     {"id": call.id, "name": call.name, "args": call.args},
-                    None,
+                    text,
                     is_error=True,
                     context={"manifest_id": self.manifest_id, "thread_id": thread_id},
                 )
                 terminate = bool(after and after.get("terminate"))
-                if tool.fatal:
-                    return (
-                        "fatal",
-                        ChatMessage(
-                            role="tool",
-                            tool_call_id=call.id,
-                            name=call.name,
-                            content=f"[fatal/{code.value}] {exc}",
-                        ),
-                        terminate,
-                        False,
-                    )
+                if after and after.get("content") is not None:
+                    text = _rewritten_failure(after["content"], text, call.name)
                 return (
-                    "ok",
-                    ChatMessage(
-                        role="tool",
-                        tool_call_id=call.id,
-                        name=call.name,
-                        content=f"[error/{code.value}] {exc}",
-                    ),
+                    "fatal" if tool.fatal else "ok",
+                    ChatMessage(role="tool", tool_call_id=call.id, name=call.name, content=text),
                     terminate,
                     False,
                 )
