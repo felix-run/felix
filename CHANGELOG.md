@@ -10,6 +10,32 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-10-08
+
+### Added
+
+- `GET /chat/sessions/{id}` returns `activeRun` (`{resumeToken, status, expiresAt}`, or null): the durable run in flight on the thread, so a client that reloads can find and watch it. (#529) (#533)
+
+### Changed
+
+- The workspace gateway now runs each hosted sandbox on `standard-1` (1/2 vCPU, 4 GiB) instead of `lite` (1/16 vCPU, 256 MiB), set by its new `WORKSPACE_INSTANCE` var (`lite`, `standard-1` through `standard-4`; anything else answers `503 misconfigured`). On `lite`, each workspace operation spent seconds starting a process, and a repository listing took about 15 s. A sandbox now costs about $0.038 per awake hour instead of $0.003. Redeploy the gateway to apply it. (#528)
+
+- A send to a thread whose durable run is still in flight (`POST /chat` or `POST /chat/stream`, durable or not) is refused with `409 run_in_progress:<resume_token>` instead of starting a second run beside it. A resend under the `Idempotency-Key` of the message that started the run is still answered from its key. Migration `0034_fiber_thread` records each run's thread. (#529) (#533)
+
+### Fixed
+
+- A durable run's pending client tool requests and approvals reach a client that reattaches with `GET /chat/stream/{thread_id}`; that stream stays open while a durable run is in flight, and the durable `POST /chat/stream` no longer closes at the run's deadline while a worker still holds the run. A cowork write requested after the first 300s no longer times out with no client asked. Clients must dedupe gates by id, since one can now arrive on more than one stream. (#530) (#534)
+
+- A durable run that is re-run after a worker restart or a lost lease no longer repeats tool calls the interrupted attempt may already have made: a batch's tool calls are logged before they run, so the next run closes an unfinished one as interrupted, and withdraws its pending approval (`denied`, note `interrupted`) and client request. (#531) (#535)
+
+- A fiber's lease heartbeat retries a failed renewal instead of giving up, and stops its step when the claim is lost rather than running beside the worker that took it. (#531) (#535)
+
+- An approval decided while Redis blipped is no longer lost: a waiting run listens on Redis and in-process for the whole wait, and also reads the approval row, so a decision is found even when its signal is not. (#532) (#536)
+
+- Stopping a run ends an approval or client tool wait at once (`denied`, note `aborted`, and `[tool error/user_aborted]`) instead of after its deadline. (#532) (#536)
+
+- A client tool's reported failure reaches the run as a tool error rather than as plain text, and `GET /approvals` no longer lists a pending approval past its deadline. (#532) (#536)
+
 ## [0.11.3] — 2026-10-07
 
 ### Added
@@ -4437,3 +4463,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.11.1]: https://github.com/felix-run/felix/releases/tag/v0.11.1
 [0.11.2]: https://github.com/felix-run/felix/releases/tag/v0.11.2
 [0.11.3]: https://github.com/felix-run/felix/releases/tag/v0.11.3
+[0.12.0]: https://github.com/felix-run/felix/releases/tag/v0.12.0
