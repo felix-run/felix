@@ -101,22 +101,38 @@ async def test_the_publish_gate_judges_a_personal_version_as_it_judges_the_tenan
         )
 
 
-async def test_an_evaluation_of_the_tenants_skill_never_counts_for_a_persons(
-    settings: Settings, store: MemoryObjectStore
+@pytest.mark.parametrize("required_by", ["deployment", "tenant"])
+async def test_a_tenant_that_requires_an_evaluation_refuses_a_personal_publish(
+    settings: Settings, store: MemoryObjectStore, required_by: str
 ) -> None:
-    """Evaluations are kept by skill name for the tenant's library. A person's version is judged
-    without them -- not by one that happens to share its name and version."""
-    needs_eval = settings.model_copy(update={"skill_publish_require_eval": True})
-    org = await _save(needs_eval, store, ORG_OWNER)
+    """Evaluations are kept by skill name for the tenant's library, so a personal version has
+    none -- and a tenant's bar is never lowered: the publish is refused, saying why, whether the
+    rule is the deployment's or the tenant's own. Everything else is still judged, so the reasons
+    are the whole of what stands in the way."""
+    from felix.skills.policy import set_publish_policy
+
+    if required_by == "deployment":
+        settings = settings.model_copy(update={"skill_publish_require_eval": True})
+    else:
+        await set_publish_policy(settings, "acme", {"require_eval": True}, by="ops")
+    mine = await _save(settings, store, ALICE)
+    verdict = await library.evaluate_version(
+        settings, "acme", "notes", mine["version"], object_store=store, owner=ALICE
+    )
+    assert verdict.reasons == [library.PERSONAL_EVAL_REQUIRED]
     with pytest.raises(library.SkillPublishBlocked):
         await library.publish(
-            needs_eval, "acme", "notes", org["version"], by="ops", object_store=store, owner=ORG_OWNER
+            settings, "acme", "notes", mine["version"], by=ALICE, object_store=store, owner=ALICE
         )
-    mine = await _save(needs_eval, store, ALICE)
-    verdict = await library.evaluate_version(
-        needs_eval, "acme", "notes", mine["version"], object_store=store, owner=ALICE
+
+    # Where no evaluation is required, the same version publishes.
+    if required_by == "tenant":
+        await set_publish_policy(settings, "acme", {"require_eval": False}, by="ops")
+    else:
+        settings = settings.model_copy(update={"skill_publish_require_eval": False})
+    await library.publish(
+        settings, "acme", "notes", mine["version"], by=ALICE, object_store=store, owner=ALICE
     )
-    assert verdict.passes, verdict.reasons
 
 
 @pytest.mark.parametrize(
@@ -141,17 +157,28 @@ async def test_imports_and_adopts_are_the_tenants_alone(
     assert await get_skill_library_store(settings, owner=ALICE).get_skill("acme", "notes") is None
 
 
-async def test_a_personal_library_has_a_size_and_editing_a_skill_in_it_does_not_count(
+async def test_a_personal_library_has_a_size_that_archiving_frees(
     settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Live skills and skills with a draft waiting count; editing one does not add one, and an
+    archived skill keeps its history but gives its place back. The tenant's library has no bound."""
     monkeypatch.setattr(library, "MAX_PERSONAL_SKILLS", 2)
-    await _save(settings, store, ALICE, "one", files=_bundle("one"))
+    one = await _save(settings, store, ALICE, "one", files=_bundle("one"))
+    await library.publish(settings, "acme", "one", one["version"], by=ALICE, object_store=store, owner=ALICE)
     await _save(settings, store, ALICE, "two", files=_bundle("two"))
     with pytest.raises(library.SkillPersonalLibraryFull):
         await _save(settings, store, ALICE, "three", files=_bundle("three"))
     await _save(settings, store, ALICE, "two", files=_bundle("two", BODY + "\n3. Again.\n"))
-    for name in ("three", "four"):
-        await _save(settings, store, ORG_OWNER, name, files=_bundle(name))  # the tenant's has no such bound
+
+    await library.archive_skill(settings, "acme", "one", by=ALICE, owner=ALICE)
+    await _save(settings, store, ALICE, "three", files=_bundle("three"))
+    with pytest.raises(library.SkillPersonalLibraryFull):
+        await _save(settings, store, ALICE, "four", files=_bundle("four"))
+    for version in await get_skill_library_store(settings, owner=ALICE).version_ids("acme", "two"):
+        await library.reject(settings, "acme", "two", version, by=ALICE, note="no", owner=ALICE)
+    await _save(settings, store, ALICE, "four", files=_bundle("four"))
+    for name in ("five", "six", "seven"):
+        await _save(settings, store, ORG_OWNER, name, files=_bundle(name))
 
 
 async def test_a_personal_skill_splits_no_operator_uploads_name(
@@ -183,3 +210,13 @@ async def test_the_audit_trail_says_whose_library_changed(
     assert ("skill_draft_saved", personal) in events and ("skill_published", personal) in events
     assert ("skill_draft_saved", "org") in events
     assert all("alice" not in str(label) for _, label in events)
+
+
+async def test_an_adopt_aimed_at_a_personal_library_is_refused(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """A route reused for a personal library must refuse an adopt, not adopt from the tenant's."""
+    with pytest.raises(library.SkillOrgOnly):
+        await library.adopt(
+            settings, "acme", "notes", "0.1.0", by=ALICE, reason="mine", object_store=store, owner=ALICE
+        )

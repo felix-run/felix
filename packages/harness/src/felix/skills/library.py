@@ -65,6 +65,10 @@ logger = logging.getLogger("felix.skills.library")
 # by the saves in flight at once -- two first saves of new names can both pass the count -- since
 # a person's library is not a queue anyone else waits on, unlike the pending cap.
 MAX_PERSONAL_SKILLS = 100
+PERSONAL_EVAL_REQUIRED = (
+    "this tenant requires an evaluation before a skill is published, and a personal skill has "
+    "none: evaluations are kept for the tenant's own library"
+)
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -649,10 +653,25 @@ async def _check_personal(
     copy of a third party's skill would escape all three."""
     if provenance.source == "import" or provenance.adopted_from is not None:
         raise SkillOrgOnly("imports and adopts go to the tenant's library, not a personal one")
-    if await lib.get_skill(tenant_id, name) is None:
-        held = len(await lib.list_skills(tenant_id, limit=MAX_PERSONAL_SKILLS))
-        if held >= MAX_PERSONAL_SKILLS:
-            raise SkillPersonalLibraryFull(f"a personal library holds at most {MAX_PERSONAL_SKILLS} skills")
+    if (
+        await lib.get_skill(tenant_id, name) is None
+        and await _skills_in_use(lib, tenant_id) >= MAX_PERSONAL_SKILLS
+    ):
+        raise SkillPersonalLibraryFull(
+            f"a personal library holds at most {MAX_PERSONAL_SKILLS} skills in use (live, or with a "
+            "draft waiting); archive one, or reject its drafts, to make room"
+        )
+
+
+async def _skills_in_use(lib: SkillLibraryStore, tenant_id: str) -> int:
+    """The skills that count against `MAX_PERSONAL_SKILLS`: live, or holding an undecided draft.
+    An archived skill keeps its row and history but no place, so archiving frees one."""
+    from felix.skills.library_store import MAX_LIBRARY_SKILLS
+
+    rows = await lib.list_skills(tenant_id, limit=MAX_LIBRARY_SKILLS)
+    idle = [str(r["name"]) for r in rows if not r.get("live_version")]
+    drafts = await lib.summarize(tenant_id, idle) if idle else {}
+    return len(rows) - len(idle) + sum(1 for n in idle if (drafts.get(n) or {}).get("pending"))
 
 
 async def _lineage_import(
@@ -857,9 +876,12 @@ async def evaluate_version(
     row = await get_skill_library_store(settings, owner=owner).get_version(tenant_id, name, version)
     source = gate_source(row)
     policy = policy_for_source(policy, source)
+    # Evaluations are kept by skill name, for the tenant's library: one found for a personal
+    # version would be of the tenant's skill of its name. So a personal version cannot meet a
+    # policy that requires one -- and a tenant's bar is never lowered, so it is refused, with
+    # everything else judged as usual so the reasons say all of what stands in the way.
+    eval_unmet = owner != ORG_OWNER and policy.needs_eval
     if owner != ORG_OWNER:
-        # Evaluations are kept by skill name, for the tenant's library: one found here would be
-        # of the tenant's skill of this name. A personal version is judged without them.
         policy = policy.without_eval()
     latest_eval = None
     if policy.needs_eval:
@@ -875,7 +897,10 @@ async def evaluate_version(
         )
     except SkillVersionCorrupt as exc:
         return Verdict(valid=False, reasons=[str(exc)])
-    return await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
+    verdict = await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
+    if eval_unmet:
+        verdict.reasons.append(PERSONAL_EVAL_REQUIRED)
+    return verdict
 
 
 async def _gate(
@@ -1036,6 +1061,7 @@ async def adopt(
     by: str,
     reason: str,
     object_store: Any | None = None,
+    owner: str,
 ) -> dict[str, Any]:
     """An operator vouches for an import-lineage version: its files, byte for byte, saved as a new
     operator draft built on it that does not carry `lineage_import`.
@@ -1054,8 +1080,9 @@ async def adopt(
     reason = (reason or "").strip()
     if not reason:
         raise SkillReasonRequired("say why this imported text is now the operator's own")
-    # Only the tenant's library holds imports, so only it holds anything to adopt.
-    owner = ORG_OWNER
+    if owner != ORG_OWNER:
+        # Only the tenant's library holds imports, so only it holds anything to adopt.
+        raise SkillOrgOnly("adopts are the tenant's library's; a personal one holds no imports")
     lib = get_skill_library_store(settings, owner=owner)
     row = await lib.get_version(tenant_id, name, version)
     if row is None:
@@ -1148,6 +1175,7 @@ __all__ = [
     "MAX_PERSONAL_SKILLS",
     "MUST_NOT_EXIST",
     "ORIGIN_COLUMNS",
+    "PERSONAL_EVAL_REQUIRED",
     "VERSION_RE",
     "DraftProvenance",
     "ImportOrigin",

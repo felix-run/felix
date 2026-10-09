@@ -268,7 +268,7 @@ class InMemorySkillLibraryStore:
     Keys lead with `(tenant, owner)`, as the tables' do; `for_owner` is another namespace's view
     of the same rows."""
 
-    def __init__(self, owner: str = ORG_OWNER, *, rows: _TwinRows | None = None) -> None:
+    def __init__(self, owner: str, *, rows: _TwinRows | None = None) -> None:
         self._owner = require_owner(owner)
         if rows is None:
             # A new twin: this store is its first view. Every other view comes from `for_owner`.
@@ -541,7 +541,7 @@ class InMemorySkillLibraryStore:
 
 
 class PostgresSkillLibraryStore:
-    def __init__(self, settings: Settings, owner: str = ORG_OWNER) -> None:
+    def __init__(self, settings: Settings, owner: str) -> None:
         self._settings = settings
         self._owner = require_owner(owner)
 
@@ -1124,7 +1124,7 @@ class PostgresSkillLibraryStore:
             return previous
 
 
-_memory_store = InMemorySkillLibraryStore()
+_memory_store = InMemorySkillLibraryStore(ORG_OWNER)
 
 
 def get_skill_library_store(settings: Settings | None = None, *, owner: str) -> SkillLibraryStore:

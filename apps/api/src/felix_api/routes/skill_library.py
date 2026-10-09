@@ -36,6 +36,7 @@ from fastapi.responses import JSONResponse
 from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_request
 from felix.skills import library
 from felix.skills.format import bundle_path_issue
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import ANY_LIVE, MAX_VERSIONS_LISTED, DraftCursor, ExpectedLive
 from felix.skills.policy import delete_publish_policy, load_publish_policy, policy_body, set_publish_policy
 from felix.skills.upstream import recorded_state
@@ -236,7 +237,13 @@ async def get_library_skill(name: str, request: Request) -> Any:
         **skill,
         "versions": [ctx.redact(v) for v in versions],
         "shadows_operator_upload": shadows,
-        "upstream": await recorded_state(ctx.settings, ctx.tenant_id, name, now=library.now_ms()),
+        # Upstream checks are the tenant's library's (imports are), kept by skill name: a personal
+        # skill of the name would be shown the tenant's import's state.
+        "upstream": (
+            await recorded_state(ctx.settings, ctx.tenant_id, name, now=library.now_ms())
+            if ctx.owner == ORG_OWNER
+            else None
+        ),
     }
 
 
@@ -283,7 +290,7 @@ async def get_library_file(name: str, version: str, path: str, request: Request)
         return not_found(f"{name}@{version}/{path}")
     try:
         content = await library.read_version_file(
-            ctx.settings, ctx.tenant_id, name, version, path, owner=ctx.lib.owner, object_store=ctx.store
+            ctx.settings, ctx.tenant_id, name, version, path, owner=ctx.owner, object_store=ctx.store
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)
@@ -499,7 +506,14 @@ async def adopt_library_version(name: str, version: str, body: AdoptIn, request:
     by = subject_from_request(request)
     try:
         saved = await library.adopt(
-            ctx.settings, ctx.tenant_id, name, version, by=by, reason=body.reason, object_store=ctx.store
+            ctx.settings,
+            ctx.tenant_id,
+            name,
+            version,
+            by=by,
+            reason=body.reason,
+            object_store=ctx.store,
+            owner=ctx.owner,
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)

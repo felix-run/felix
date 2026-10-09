@@ -116,7 +116,7 @@ async def _improve(
     if existing is not None:
         return existing
     lib = get_skill_library_store(settings, owner=ORG_OWNER)
-    newest = (await library.newest_buildable_versions(settings, tenant_id, [name], owner=ORG_OWNER)).get(name)
+    newest = (await library.newest_buildable_versions(settings, tenant_id, [name], owner=lib.owner)).get(name)
     if newest != target:
         # Checked before the model call so a stale feedback costs nothing; `expect_newest`
         # below checks it again, atomically with the save. The basis is the newest version that
@@ -127,7 +127,7 @@ async def _improve(
         raise _Failed(f"parent_changed: {name} is at {newest or 'no version'}, the feedback is on {target}")
     try:
         files = await library.read_version_files(
-            settings, tenant_id, name, target, object_store=object_store, owner=ORG_OWNER
+            settings, tenant_id, name, target, object_store=object_store, owner=lib.owner
         )
     except library.SkillLibraryError as exc:
         raise _Failed(f"{exc.code}: {exc}") from exc
@@ -151,7 +151,7 @@ async def _improve(
             parent=target,
             expect_newest=target,
             object_store=object_store,
-            owner=ORG_OWNER,
+            owner=lib.owner,
         )
     except library.SkillParentChanged as exc:
         # Possibly a second run of this same feedback, which saved first: that is its draft.

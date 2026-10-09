@@ -53,9 +53,10 @@ STATUS: dict[str, int] = {
     # Versions are never deleted, so waiting does not help: the state is the obstacle.
     "version_cap_reached": 409,
     "publish_blocked": 422,
-    # An import or adopt aimed at a personal library: those are the tenant's alone.
-    "org_only": 409,
-    # Waiting does not help; archiving or not adding is what frees a place.
+    # An import or adopt aimed at a personal library: those are the tenant's alone, whatever the
+    # library holds, so never accepted as sent.
+    "org_only": 422,
+    # Waiting does not help; archiving a skill, or rejecting its drafts, frees a place.
     "personal_library_full": 409,
     # An adopt says why the operator vouches for imported text; a blank reason never will.
     "reason_required": 422,

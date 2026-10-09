@@ -67,7 +67,7 @@ async def _import(
 
 async def _adopt(settings: Settings, store: MemoryObjectStore, version: str, **kw: Any) -> dict[str, Any]:
     args: dict[str, Any] = {"by": "alice", "reason": "read every line; ours now", **kw}
-    return await library.adopt(settings, "acme", NAME, version, object_store=store, **args)
+    return await library.adopt(settings, "acme", NAME, version, object_store=store, owner=ORG_OWNER, **args)
 
 
 async def _save(
