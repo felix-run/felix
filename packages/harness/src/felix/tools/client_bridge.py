@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +11,7 @@ from typing import Any
 from felix.manifests.schema import ClientToolRef
 from felix.side_events import emit as emit_side_event
 from felix.tools import client_requests
+from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.types import (
     Tool,
     ToolInput,
@@ -50,14 +53,43 @@ def _name(thread_id: str, tool_call_id: str) -> str:
     return waiter_name("client", thread_id, tool_call_id)
 
 
+#: How often a client tool's wait asks whether its run was stopped.
+ABORT_CHECK_SECONDS = 2.0
+
+
 async def wait_for_result(
     thread_id: str,
     tool_call_id: str,
     *,
     timeout: float | None = None,
+    tenant_id: str = "",
 ) -> ClientToolResult:
+    """Wait for the client's answer, the deadline, or -- given `tenant_id` -- a Stop.
+
+    A Stop used to leave a client tool waiting out its whole timeout: the abort flag is read
+    only between tool rounds, and this is inside one (felix-run/felix#532).
+    """
     limit = DEFAULT_TIMEOUT_SECONDS if timeout is None else float(timeout)
-    payload = await waiter_wait(_name(thread_id, tool_call_id), timeout=limit)
+    waiter = asyncio.ensure_future(waiter_wait(_name(thread_id, tool_call_id), timeout=limit))
+    try:
+        while tenant_id:
+            done, _ = await asyncio.wait({waiter}, timeout=ABORT_CHECK_SECONDS)
+            if done:
+                break
+            from felix.steer import is_aborted
+
+            try:
+                stopped = await is_aborted(tenant_id, thread_id)
+            except Exception:
+                stopped = False
+            if stopped:
+                return ClientToolResult(content="[tool error/user_aborted] the run was stopped", error=True)
+        payload = await waiter
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await waiter
     if payload is None:
         return ClientToolResult(content="[error/timeout] client tool timed out", error=True)
     return ClientToolResult(
@@ -113,10 +145,23 @@ class _ClientToolExecutor:
         await client_requests.record(thread_id, request, timeout=timeout)
         try:
             await emit_side_event(thread_id, "tool_request", request)
-            result = await wait_for_result(thread_id, tool_call_id, timeout=timeout)
+            result = await wait_for_result(thread_id, tool_call_id, timeout=timeout, tenant_id=_tenant())
         finally:
             await client_requests.clear(thread_id, tool_call_id)
+        if result.error:
+            # Kept as a failure, not flattened into text: `error` was dropped here, so a client
+            # that reported a failed write handed the model a plain string, and the trajectory,
+            # the run's metrics and every client's badge read it as a success unless the text
+            # happened to start with a failure prefix (felix-run/felix#532).
+            return tool_error_output(ToolErrorCode.PROVIDER_ERROR, result.content or "the client tool failed")
         return result.content
+
+
+def _tenant() -> str:
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    return ctx.auth.tenant_id if ctx is not None else ""
 
 
 def tools_from_client_refs(refs: list[ClientToolRef]) -> list[Tool]:

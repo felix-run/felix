@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import Any
@@ -108,25 +109,24 @@ def waiter_name(kind: str, *parts: str) -> str:
 BLOCK_SLICE_SECONDS = 1
 
 
-async def wait(name: str, *, timeout: float) -> dict[str, Any] | None:
-    """Block until ``signal(name, payload)`` or timeout. Returns payload or None."""
-    rkey = _key(name)
-    client = await _conn.get()
-    if client is not None:
-        try:
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout
-            while True:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    return None
-                item = await client.blpop(rkey, timeout=min(BLOCK_SLICE_SECONDS, max(1, int(remaining))))
-                if item:
-                    _, raw = item
-                    return json.loads(raw)
-        except Exception:
-            await _conn.fallback("waiter redis blpop")
+#: How long a wait with no Redis to ask listens to this process alone before asking again.
+REDIS_RETRY_SECONDS = 1.0
 
+
+async def wait(name: str, *, timeout: float) -> dict[str, Any] | None:
+    """Block until ``signal(name, payload)`` or timeout. Returns payload or None.
+
+    **Listens on both arms for the whole wait.** A signal goes to Redis when it can and to
+    this process when it cannot, so a wait has to hear either. It used to pick one: on the
+    first failed BLPOP it moved to an in-process future for the rest of the wait and never
+    asked Redis again -- while the API, in another process, went on signalling through Redis.
+    A person clicked Approve, was told it worked, and the run was told `denied / timeout`
+    (felix-run/felix#532). Now the in-process future is registered up front and checked
+    between BLPOP slices, and a Redis that drops is asked again once it is back: whatever a
+    signal pushed meanwhile is still on the list. A deployment with no Redis at all, or a
+    single process whose Redis is down, is answered by the future exactly as before.
+    """
+    rkey = _key(name)
     async with _lock:
         fut = _local.get(name)
         if fut is None:
@@ -136,11 +136,29 @@ async def wait(name: str, *, timeout: float) -> dict[str, Any] | None:
             raw = fut.result()
             _local.pop(name, None)
             return json.loads(raw)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
     try:
-        raw = await asyncio.wait_for(fut, timeout=timeout)
-        return json.loads(raw)
-    except TimeoutError:
-        return None
+        while True:
+            if fut.done():
+                return json.loads(fut.result())
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            client = await _conn.get()
+            if client is not None:
+                try:
+                    item = await client.blpop(rkey, timeout=min(BLOCK_SLICE_SECONDS, max(1, int(remaining))))
+                except Exception:
+                    await _conn.fallback("waiter redis blpop")
+                else:
+                    if item:
+                        _, raw = item
+                        return json.loads(raw)
+                    continue
+            # No Redis to ask right now: listen to this process for a while, then ask again.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(fut), timeout=min(REDIS_RETRY_SECONDS, remaining))
     finally:
         async with _lock:
             if _local.get(name) is fut:

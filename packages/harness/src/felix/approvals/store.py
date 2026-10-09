@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Any, Literal
 
-from sqlalchemy import collate, select, update
+from sqlalchemy import and_, collate, or_, select, update
 
 from felix.approvals.interrupt import DEFAULT_TIMEOUT_SECONDS
 from felix.config import Settings
@@ -110,7 +110,13 @@ async def list_approvals(
     The Postgres arm filters in SQL rather than after `LIMIT`: filtering afterwards would
     let 50 other threads' rows hide this thread's, which is the same shape of bug
     `find_approved` already carries a comment about.
+
+    **`pending` means still waiting.** A row past its deadline is left out: its wait has
+    ended, whatever the row says. A wait that ends writes its row closed (`close_timed_out`),
+    but one whose process died never does, and that row listed as `pending` forever -- every
+    client offering a decision nobody was waiting for (felix-run/felix#532).
     """
+    ts = now_ms()
     if _use_memory(settings):
         items = [
             _approval_dict(row)
@@ -118,6 +124,7 @@ async def list_approvals(
             if t == tenant_id
             and (status is None or row["status"] == status)
             and (thread_id is None or row.get("thread_id", "") == thread_id)
+            and not (status == "pending" and _lapsed(row.get("expires_at"), row["created_at"], ts))
         ]
         # Ending on the id, as `find_approved` does: a tie on `created_at` is broken the same way
         # on both arms, so a page cut through the tie holds the same rows.
@@ -134,6 +141,15 @@ async def list_approvals(
         )
         if status is not None:
             stmt = stmt.where(Approval.status == status)
+        if status == "pending":
+            # `_lapsed`, in SQL: a null `expires_at` waits the default from `created_at`.
+            default_ms = int(DEFAULT_TIMEOUT_SECONDS * 1000)
+            stmt = stmt.where(
+                or_(
+                    Approval.expires_at > ts,
+                    and_(Approval.expires_at.is_(None), Approval.created_at + default_ms > ts),
+                )
+            )
         if thread_id is not None:
             stmt = stmt.where(Approval.thread_id == thread_id)
         rows = (await db.scalars(stmt)).all()
@@ -412,14 +428,14 @@ async def decide(
         return _approval_dict(row)
 
 
-def _close_memory_row(row: dict[str, Any], ts: int) -> None:
+def _close_memory_row(row: dict[str, Any], ts: int, note: str = TIMEOUT_NOTE) -> None:
     row["status"] = "denied"
     row["decided_at"] = ts
     row["decided_by"] = TIMEOUT_DECIDER
-    row["decision_note"] = TIMEOUT_NOTE
+    row["decision_note"] = note
 
 
-def _close_statement(tenant_id: str, approval_ids: list[str], ts: int) -> Any:
+def _close_statement(tenant_id: str, approval_ids: list[str], ts: int, note: str = TIMEOUT_NOTE) -> Any:
     # Conditional on `pending`, so a decision that landed first is never overwritten.
     return (
         update(Approval)
@@ -428,11 +444,13 @@ def _close_statement(tenant_id: str, approval_ids: list[str], ts: int) -> Any:
             Approval.id.in_(approval_ids),
             Approval.status == "pending",
         )
-        .values(status="denied", decided_at=ts, decided_by=TIMEOUT_DECIDER, decision_note=TIMEOUT_NOTE)
+        .values(status="denied", decided_at=ts, decided_by=TIMEOUT_DECIDER, decision_note=note)
     )
 
 
-async def close_timed_out(settings: Settings, tenant_id: str, approval_id: str) -> bool:
+async def close_timed_out(
+    settings: Settings, tenant_id: str, approval_id: str, *, note: str = TIMEOUT_NOTE
+) -> bool:
     """Record that nobody answered: `pending` becomes `denied` with the note `timeout`.
 
     `wait_for_decision` has always returned that denial to the caller and written nothing,
@@ -440,18 +458,21 @@ async def close_timed_out(settings: Settings, tenant_id: str, approval_id: str) 
     `/approvals` then offered a decision the harness had already made -- chat.felix.run
     showed one twenty-nine hours past its deadline. Returns False when the row was not
     pending any more, which is a decision that arrived first and is left alone.
+
+    `note` says why nobody's answer is coming: `timeout`, or `aborted` when the run was
+    stopped while it waited (felix-run/felix#532).
     """
     ts = now_ms()
     if _use_memory(settings):
         row = _memory_approvals.get((tenant_id, approval_id))
         if row is None or row["status"] != "pending":
             return False
-        _close_memory_row(row, ts)
+        _close_memory_row(row, ts, note)
         return True
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        result = await db.execute(_close_statement(tenant_id, [approval_id], ts))
+        result = await db.execute(_close_statement(tenant_id, [approval_id], ts, note))
         await db.commit()
         return bool(getattr(result, "rowcount", 0))
 
