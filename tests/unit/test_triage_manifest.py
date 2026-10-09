@@ -8,6 +8,8 @@ quieter agent with the same tools.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from felix.manifests.loader import load_bundled
 from felix.manifests.schema import Manifest, McpServerRef
@@ -52,7 +54,7 @@ NEVER_BOUND = frozenset(
 
 @pytest.fixture
 def manifest() -> Manifest:
-    return load_bundled("triage")
+    return load_bundled("triage", bundled_dir=Path(__file__).resolve().parents[2] / "manifests" / "self")
 
 
 def _github(manifest: Manifest) -> McpServerRef:

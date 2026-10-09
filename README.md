@@ -636,6 +636,11 @@ offered tool is still governance-wrapped.
 | `store` (default) | tenant Postgres version → bundled YAML | `PUT /manifests`, canary, rollback |
 | `bundled` | bundled YAML only | routes not mounted |
 
+"Bundled YAML" is `manifests/*.yaml` plus, when it is set, the directory `FELIX_MANIFESTS_DIR`
+names, searched after it. `contributor` and `triage`, the agents that build Felix itself, live in
+`manifests/self/` and are not bundled: they need the builder stack's workspace and shell runner,
+and `deploy/docker/compose.self.yml` is what points `FELIX_MANIFESTS_DIR` at them.
+
 An activation, a rollback or a canary change takes effect at once on the process that made it.
 Each API replica and worker caches a manifest's active version for 30 seconds, so the others
 follow within that window — a rollback is not instant fleet-wide, and a canary split briefly

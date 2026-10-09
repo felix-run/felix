@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from felix.manifests.compat import drop_retired, log_dropped
 from felix.manifests.schema import Manifest, assert_valid_manifest_name
 
 _yaml = YAML(typ="safe")
+logger = logging.getLogger("felix.manifests.loader")
 _bundled_cache: dict[str, Manifest] = {}
 
 
@@ -117,40 +119,88 @@ def load_manifest_file(path: str | Path) -> Manifest:
     return load_manifest_data(p.read_text(encoding="utf-8"), source=str(p))
 
 
+def _configured_manifests_dir() -> Path | None:
+    """`FELIX_MANIFESTS_DIR`, if set. Not cached — settings can be reloaded.
+
+    A set directory that is missing is refused at boot (`Settings.validate_runtime`), not here.
+    """
+    from felix.config import get_settings
+
+    try:
+        raw = (get_settings().manifests_dir or "").strip()
+    except Exception:
+        logger.warning(
+            "could not read FELIX_MANIFESTS_DIR; serving the bundled manifests only", exc_info=True
+        )
+        return None
+    return Path(raw).expanduser() if raw else None
+
+
+def _names_in(root: Path) -> set[str]:
+    if not root.is_dir():
+        return set()
+    return {p.stem for p in root.iterdir() if p.suffix in {".yaml", ".yml", ".json"} and p.is_file()}
+
+
+def shadowed_names(bundled_dir: str | Path | None = None) -> list[str]:
+    """Names both the bundled `manifests/` and `FELIX_MANIFESTS_DIR` hold.
+
+    Refused rather than resolved by order. `contributor` lives in the extra directory and is
+    protected there; were a same-named file under `manifests/` to win, a change adding one would
+    replace the manifest that governs the agent without touching the protected file.
+    """
+    roots = _roots(bundled_dir)
+    if len(roots) < 2:
+        return []
+    return sorted(_names_in(roots[0]) & _names_in(roots[1]))
+
+
+def _roots(bundled_dir: str | Path | None) -> list[Path]:
+    """Where a bundled manifest may come from, in order. An explicit `bundled_dir` is the whole set;
+    otherwise the bundled `manifests/`, then `FELIX_MANIFESTS_DIR`."""
+    if bundled_dir:
+        return [Path(bundled_dir)]
+    roots = [_default_bundled_dir()]
+    extra = _configured_manifests_dir()
+    if extra is not None:
+        roots.append(extra)
+    return roots
+
+
 def load_bundled(
     name: str,
     *,
     bundled_dir: str | Path | None = None,
 ) -> Manifest:
-    """Load a bundled manifest by name from the manifests/ directory."""
+    """Load a bundled manifest by name: `manifests/`, then `FELIX_MANIFESTS_DIR`."""
     assert_valid_manifest_name(name)
     if name in _bundled_cache:
         return _bundled_cache[name]
-    root = Path(bundled_dir) if bundled_dir else _default_bundled_dir()
-    root_resolved = root.expanduser().resolve()
-    for ext in (".yaml", ".yml", ".json"):
-        # `name` reaches here from a URL path segment. assert_valid_manifest_name
-        # already bars separators, so this cannot currently escape — but the
-        # containment check is what makes that a property of this function rather
-        # than of a regex two modules away, and it is what a scanner can see.
-        candidate = (root_resolved / f"{name}{ext}").resolve()
-        if not candidate.is_relative_to(root_resolved):
-            raise ValueError(f"Manifest name escapes the bundled directory: {name}")
-        if candidate.is_file():
-            m = load_manifest_file(candidate)
-            _bundled_cache[name] = m
-            return m
+    if name in shadowed_names(bundled_dir):
+        raise ValueError(
+            f"Manifest {name!r} is in both manifests/ and FELIX_MANIFESTS_DIR; refusing to pick one"
+        )
+    for root in _roots(bundled_dir):
+        root_resolved = root.expanduser().resolve()
+        for ext in (".yaml", ".yml", ".json"):
+            # `name` reaches here from a URL path segment. assert_valid_manifest_name
+            # already bars separators, so this cannot currently escape — but the
+            # containment check is what makes that a property of this function rather
+            # than of a regex two modules away, and it is what a scanner can see.
+            candidate = (root_resolved / f"{name}{ext}").resolve()
+            if not candidate.is_relative_to(root_resolved):
+                raise ValueError(f"Manifest name escapes the bundled directory: {name}")
+            if candidate.is_file():
+                m = load_manifest_file(candidate)
+                _bundled_cache[name] = m
+                return m
     raise FileNotFoundError(f"Unknown bundled manifest: {name}")
 
 
 def list_bundled(*, bundled_dir: str | Path | None = None) -> list[str]:
-    root = Path(bundled_dir) if bundled_dir else _default_bundled_dir()
-    if not root.is_dir():
-        return []
     names: set[str] = set()
-    for p in root.iterdir():
-        if p.suffix in {".yaml", ".yml", ".json"} and p.is_file():
-            names.add(p.stem)
+    for root in _roots(bundled_dir):
+        names |= _names_in(root)
     return sorted(names)
 
 
