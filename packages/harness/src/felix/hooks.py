@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from felix_ai.types import ChatMessage
+from felix_ai.types import ChatMessage, ModelChatOptions, ModelChatResult, ModelClient
 
 logger = logging.getLogger("felix.hooks")
 
@@ -261,9 +261,52 @@ async def run_after_model(
     return current
 
 
+def model_hook_context(
+    model: Any, *, manifest_id: str | None, thread_id: str | None, purpose: str
+) -> dict[str, Any]:
+    """The `ctx` both model hooks receive.
+
+    `purpose` says what the call is for, so a hook can act on one kind and leave the rest:
+    `turn` (a react step), `router` (choosing a sub-agent), `reflect` (scoring a draft),
+    `plan` (planning or replanning), `synthesis` (composing a composite pattern's answer).
+    """
+    return {
+        "manifest_id": manifest_id,
+        "thread_id": thread_id,
+        "model_id": getattr(model, "model_id", None),
+        "purpose": purpose,
+    }
+
+
+async def chat_with_model_hooks(
+    model: ModelClient,
+    messages: list[ChatMessage],
+    tools: list[Any],
+    opts: ModelChatOptions | None = None,
+    *,
+    context: dict[str, Any],
+) -> ModelChatResult:
+    """One `model.chat` with `before_model` ahead of it and `after_model` on its reply.
+
+    For a call site that makes a single, unstreamed request. The react loop's main turn does
+    not come through here: it streams, retries on overflow, and fixes up the stop reason, so it
+    runs the two halves itself. Usage stays the model's — metering the result is the caller's.
+    """
+    outgoing = await run_before_model(
+        messages, tools=[str(getattr(t, "name", t)) for t in tools], context=context
+    )
+    result = await model.chat(outgoing, tools, opts)
+    message = await run_after_model(
+        result.message, stop_reason=getattr(result, "stop_reason", None), context=context
+    )
+    return result if message is result.message else replace(result, message=message)
+
+
 __all__ = [
     "AgentHookRegistry",
+    "chat_with_model_hooks",
     "get_agent_hooks",
+    "model_hook_context",
     "reset_agent_hooks",
     "run_after_model",
     "run_after_tool",

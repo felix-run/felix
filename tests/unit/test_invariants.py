@@ -992,10 +992,14 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
+            # `chat_with_model_hooks` is `model.chat` with the model hooks around it, and does
+            # not meter — so a call through it counts as reaching the model, here as anywhere.
             reaches_model = any(
                 isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Attribute)
-                and call.func.attr in {"chat", "stream_turn"}
+                and (
+                    (isinstance(call.func, ast.Attribute) and call.func.attr in {"chat", "stream_turn"})
+                    or (isinstance(call.func, ast.Name) and call.func.id == "chat_with_model_hooks")
+                )
                 for call in ast.walk(node)
             )
             if not reaches_model:

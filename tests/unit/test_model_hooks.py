@@ -180,6 +180,7 @@ async def test_before_model_hooks_chain_and_see_the_call_context() -> None:
     assert tools == ["echo"]
     assert ctx["manifest_id"] == "hooked"
     assert ctx["model_id"] == "fake-model"
+    assert ctx["purpose"] == "turn"
 
 
 @pytest.mark.asyncio

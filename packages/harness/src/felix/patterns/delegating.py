@@ -21,6 +21,7 @@ from felix_ai.decide import Choice
 # `felix.manifests.schema` is a leaf — it imports only `felix.security.ssrf` — so this is
 # safe at module scope even though `manifests/builder.py` imports `felix.patterns`.
 from felix.decisions import latest_request
+from felix.hooks import chat_with_model_hooks, model_hook_context, run_after_model, run_before_model
 from felix.logging_setup import loggable
 from felix.manifests.schema import PlanExecuteSpec, ReflectSpec
 from felix.observability.metrics import record_counter
@@ -191,6 +192,7 @@ async def _yield_model_stream(
     collected: list[str],
     *,
     manifest_id: str,
+    hook_context: dict[str, Any],
     options: ModelChatOptions | None = None,
 ) -> AsyncIterator[Event]:
     """Stream a text-only model call as display events, and meter it.
@@ -211,12 +213,21 @@ async def _yield_model_stream(
     streamed request at all, so we call `chat()` instead and emit its text as a single
     delta: one request, correctly metered, at the cost of token-by-token display for that
     provider. Streaming for show is not worth an uncapped spend.
+
+    Both model hooks run, as on react's turn: `before_model` on what is sent, `after_model` on
+    the reply. A streamed reply's replacement cannot recall the deltas already shown, but it
+    replaces `collected`, which is what becomes the answer.
     """
     if supports_stream_turn(model):
+        outgoing = await run_before_model(messages, tools=[], context=hook_context)
         stream_turn = model.stream_turn
-        async for item in stream_turn(messages, [], opts=options):
+        async for item in stream_turn(outgoing, [], opts=options):
             if isinstance(item, ModelChatResult):
                 record_model_usage(item, model, manifest_id=manifest_id)
+                streamed = ChatMessage(role="assistant", content="".join(collected))
+                kept = await run_after_model(streamed, stop_reason=item.stop_reason, context=hook_context)
+                if kept is not streamed:
+                    collected[:] = [kept.content or ""]
                 continue
             if not item.text:
                 continue
@@ -237,7 +248,7 @@ async def _yield_model_stream(
             yield Event(event="on_chat_model_stream", data={"chunk": {"content": item.text}})
         return
 
-    result = await model.chat(messages, [], opts=options)
+    result = await chat_with_model_hooks(model, messages, [], options, context=hook_context)
     record_model_usage(result, model, manifest_id=manifest_id)
     text = result.message.content or ""
     if text:
@@ -396,6 +407,7 @@ class _DelegatingAgent:
         messages: list[ChatMessage],
         *,
         emit_events: bool,
+        thread_id: str | None,
         options: ModelChatOptions | None = None,
     ) -> AsyncIterator[Event | ChatMessage]:
         """Produce an assistant message from `model`, ending with the complete one.
@@ -411,14 +423,22 @@ class _DelegatingAgent:
         the answer. Streaming still rebuilds, because `stream()` yields text and the wire
         gives it nothing else to carry.
         """
+        hook_context = model_hook_context(
+            model, manifest_id=self.manifest_id, thread_id=thread_id, purpose="synthesis"
+        )
         if not emit_events:
-            result = await model.chat(messages, [], opts=options)
+            result = await chat_with_model_hooks(model, messages, [], options, context=hook_context)
             record_model_usage(result, model, manifest_id=self.manifest_id)
             yield result.message
             return
         collected: list[str] = []
         async for ev in _yield_model_stream(
-            model, messages, collected, manifest_id=self.manifest_id, options=options
+            model,
+            messages,
+            collected,
+            manifest_id=self.manifest_id,
+            hook_context=hook_context,
+            options=options,
         ):
             yield ev
         yield ChatMessage(role="assistant", content="".join(collected))
@@ -515,7 +535,14 @@ class _DelegatingAgent:
                 ),
             ),
         ]
-        result = await model.chat(classify, [])
+        result = await chat_with_model_hooks(
+            model,
+            classify,
+            [],
+            context=model_hook_context(
+                model, manifest_id=self.manifest_id, thread_id=input.thread_id, purpose="router"
+            ),
+        )
         record_model_usage(result, model, manifest_id=self.manifest_id)
         choice = result.message.content.strip().split()[0] if result.message.content else ""
         if choice in self.sub_agents:
@@ -617,6 +644,7 @@ class _DelegatingAgent:
                 ),
             ],
             emit_events=emit_events,
+            thread_id=input.thread_id,
             # The answering turn. The specialists above deliberately get none: their
             # answers are raw material for this prompt, not the reply.
             options=self._answer_options(input),
@@ -700,7 +728,11 @@ class _DelegatingAgent:
             if iteration == max_iter - 1:
                 break
             score = await self._score(
-                draft.final.content, criteria, verifier_id, request=latest_request(messages) or ""
+                draft.final.content,
+                criteria,
+                verifier_id,
+                request=latest_request(messages) or "",
+                thread_id=input.thread_id,
             )
             if score >= threshold:
                 break
@@ -725,7 +757,9 @@ class _DelegatingAgent:
         async for item in self._finish(draft, emit_events=emit_events):
             yield item
 
-    async def _score(self, answer: str, criteria: str, verifier_id: str, *, request: str = "") -> float:
+    async def _score(
+        self, answer: str, criteria: str, verifier_id: str, *, request: str = "", thread_id: str | None = None
+    ) -> float:
         """Score an answer 0..1 against the reflect criteria.
 
         `criteria` is passed through raw. The model prompt substitutes
@@ -768,7 +802,8 @@ class _DelegatingAgent:
             if self.model_spec is not None and not verifier_id:
                 spec = self.model_spec
             model = build_model(self.settings, spec)
-            result = await model.chat(
+            result = await chat_with_model_hooks(
+                model,
                 [
                     ChatMessage(
                         role="system",
@@ -782,6 +817,9 @@ class _DelegatingAgent:
                     ),
                 ],
                 [],
+                context=model_hook_context(
+                    model, manifest_id=self.manifest_id, thread_id=thread_id, purpose="reflect"
+                ),
             )
         except Exception:
             logger.warning("reflect verifier call failed; falling back to the heuristic score", exc_info=True)
@@ -826,7 +864,11 @@ class _DelegatingAgent:
         # truncates a revised plan mid-plan. Everything the partial does hold genuinely does
         # not vary across a run.
         plan_subtasks = partial(
-            _plan_subtasks, planner, system_prompt=self.system_prompt, manifest_id=self.manifest_id
+            _plan_subtasks,
+            planner,
+            system_prompt=self.system_prompt,
+            manifest_id=self.manifest_id,
+            thread_id=input.thread_id,
         )
 
         lines = await plan_subtasks(list(input.messages), max_subtasks=max_subtasks)
@@ -902,6 +944,7 @@ class _DelegatingAgent:
                 ChatMessage(role="user", content="Notes:\n" + "\n".join(notes)),
             ],
             emit_events=emit_events,
+            thread_id=input.thread_id,
             # The answering turn. The planning call above and each executor step below
             # stay free-form — a plan shaped like the answer schema is not a plan.
             options=self._answer_options(input),
