@@ -23,6 +23,7 @@ from sqlalchemy import delete, distinct, func, select
 from felix.config import Settings
 from felix.db.models import DocumentChunk
 from felix.db.session import _use_memory, get_session_factory
+from felix.db.vector import enable_iterative_hnsw_scan
 from felix.documents.chunking import DEFAULT_MAX_CHARS, DEFAULT_OVERLAP_CHARS, Chunk, chunk_text
 from felix.memory.recall import rrf_fuse
 
@@ -536,6 +537,19 @@ def _tsquery_or(query: str) -> str | None:
     return " | ".join(sorted(terms)) if terms else None
 
 
+_LEXICAL_SQL = (
+    f"SELECT {_HIT_COLUMNS} FROM document_chunks "
+    "WHERE tenant_id = :t AND content_tsv @@ to_tsquery('english', :q) "
+    "ORDER BY ts_rank(content_tsv, to_tsquery('english', :q)) DESC, id "
+    "LIMIT :n"
+)
+_VECTOR_SQL = (
+    f"SELECT {_HIT_COLUMNS} FROM document_chunks "
+    "WHERE tenant_id = :t AND embedding IS NOT NULL "
+    "ORDER BY embedding <=> CAST(:v AS vector), id LIMIT :n"
+)
+
+
 async def _channels_in_postgres(
     settings: Settings, tenant_id: str, query: str, vector: list[float] | None
 ) -> tuple[dict[str, list[str]], dict[str, dict[str, Any]]]:
@@ -548,40 +562,34 @@ async def _channels_in_postgres(
         tsquery = _tsquery_or(query)
         if tsquery:
             try:
-                result = await db.execute(
-                    sql_text(
-                        f"SELECT {_HIT_COLUMNS} FROM document_chunks "
-                        "WHERE tenant_id = :t AND content_tsv @@ to_tsquery('english', :q) "
-                        "ORDER BY ts_rank(content_tsv, to_tsquery('english', :q)) DESC, id "
-                        "LIMIT :n"
-                    ),
-                    {"t": tenant_id, "q": tsquery, "n": CHANNEL_DEPTH},
-                )
+                # A savepoint per channel, as `memory/recall.py` has: the generated column only
+                # exists after `0010`, so a pod running ahead of the migration -- or a statement
+                # timeout -- should lose a channel, not the request. Caught without one, the
+                # failure left the transaction aborted and the vector channel died on it too.
+                async with db.begin_nested():
+                    result = await db.execute(
+                        sql_text(_LEXICAL_SQL), {"t": tenant_id, "q": tsquery, "n": CHANNEL_DEPTH}
+                    )
+                    found = result.mappings().all()
                 ids = []
-                for r in result.mappings().all():
+                for r in found:
                     rows[r["id"]] = dict(r)
                     ids.append(r["id"])
                 ranked["lexical"] = ids
             except Exception:
-                # Guarded like the vector channel below, for the reason `memory/recall.py`
-                # gives: the generated column only exists after `0010`, so a pod running ahead
-                # of the migration — or a statement timeout — should lose a channel, not the
-                # request. Unguarded, this took the vector channel down with it as well.
                 logger.warning("lexical channel failed; vector only", exc_info=True)
 
         if vector is not None:
+            await enable_iterative_hnsw_scan(db)
             literal = "[" + ",".join(f"{float(x):.7g}" for x in vector) + "]"
             try:
-                result = await db.execute(
-                    sql_text(
-                        f"SELECT {_HIT_COLUMNS} FROM document_chunks "
-                        "WHERE tenant_id = :t AND embedding IS NOT NULL "
-                        "ORDER BY embedding <=> CAST(:v AS vector), id LIMIT :n"
-                    ),
-                    {"t": tenant_id, "v": literal, "n": CHANNEL_DEPTH},
-                )
+                async with db.begin_nested():
+                    result = await db.execute(
+                        sql_text(_VECTOR_SQL), {"t": tenant_id, "v": literal, "n": CHANNEL_DEPTH}
+                    )
+                    found = result.mappings().all()
                 ids = []
-                for r in result.mappings().all():
+                for r in found:
                     rows[r["id"]] = dict(r)
                     ids.append(r["id"])
                 if ids:
