@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 
 import pytest
+from felix import waiters
 from felix.waiters import MAX_LOCAL_SIGNAL_FIRST, _local, signal, wait
 
 
@@ -142,3 +143,61 @@ async def test_wait_then_signal_is_unaffected() -> None:
 
     # The entry should be cleaned up
     assert "normal_flow" not in _local
+
+
+class _FlakyRedis:
+    """Enough of a Redis list for `wait`/`signal`, whose first BLPOP fails."""
+
+    def __init__(self) -> None:
+        self.lists: dict[str, list[str]] = {}
+        self.failed = False
+
+    async def blpop(self, key: str, timeout: int = 0):
+        import asyncio
+
+        if not self.failed:
+            self.failed = True
+            raise ConnectionError("blip")
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while loop.time() < end:
+            if self.lists.get(key):
+                return key, self.lists[key].pop(0)
+            await asyncio.sleep(0.01)
+        return None
+
+    async def rpush(self, key: str, raw: str) -> None:
+        self.lists.setdefault(key, []).append(raw)
+
+    async def expire(self, key: str, seconds: int) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_a_redis_blip_mid_wait_does_not_lose_a_signal_sent_through_redis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """felix-run/felix#532. One failed BLPOP moved the rest of the wait onto an in-process future,
+    while the signal -- from the API, in another process -- still went to Redis. The person who
+    clicked Approve was told it worked; the run was told `denied / timeout`."""
+    import asyncio
+
+    redis = _FlakyRedis()
+
+    class _Conn:
+        async def get(self) -> _FlakyRedis:
+            return redis
+
+        async def fallback(self, _what: str) -> None:
+            return None
+
+    monkeypatch.setattr(waiters, "_conn", _Conn())
+    monkeypatch.setattr(waiters, "REDIS_RETRY_SECONDS", 0.05)
+
+    waiting = asyncio.create_task(waiters.wait("approval:blip", timeout=5))
+    await asyncio.sleep(0.1)
+    assert redis.failed, "the wait never asked Redis"
+    # The decision arrives the way the API sends it: through Redis.
+    await redis.rpush(waiters._key("approval:blip"), '{"decision": "approved"}')
+
+    assert await asyncio.wait_for(waiting, timeout=5) == {"decision": "approved"}

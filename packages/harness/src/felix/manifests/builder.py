@@ -654,14 +654,47 @@ async def _close_if_timed_out(req: Any, approval_id: str, note: str) -> None:
     Best effort: the denial has already been returned to the caller, and a store error
     here must not turn a refused tool call into a failed run.
     """
-    if note != "timeout" or not approval_id:
+    # `aborted` too: a Stop ends the wait as surely as the deadline, and the row would
+    # otherwise go on being offered for a call nobody is waiting on.
+    if note not in ("timeout", "aborted") or not approval_id:
         return
     try:
         from felix.approvals import store as approvals_store
 
-        await approvals_store.close_timed_out(req.settings, req.auth.tenant_id, approval_id)
+        await approvals_store.close_timed_out(req.settings, req.auth.tenant_id, approval_id, note=note)
     except Exception:
         logger.debug("approvals store close_timed_out failed", exc_info=True)
+
+
+def _decision_check(req: Any, approval_id: str, thread_id: str) -> Any:
+    """What an approval wait asks while no signal has arrived (felix-run/felix#532).
+
+    The row first: `/approvals/{id}/decide` writes it before it signals, so a decision whose
+    signal went astray between the API and the worker is still found. Then the thread's abort
+    flag: a Stop used to leave a gated call waiting out its whole deadline.
+    """
+    from felix.approvals.interrupt import ApprovalDecision
+
+    async def check() -> ApprovalDecision | None:
+        from felix.approvals import store as approvals_store
+
+        row = await approvals_store.get_approval(req.settings, req.auth.tenant_id, approval_id)
+        status = (row or {}).get("status")
+        if status in ("approved", "denied"):
+            edited = (row or {}).get("edited_args")
+            return ApprovalDecision(
+                decision=status,
+                edited_args=dict(edited) if isinstance(edited, dict) else None,
+                note=str((row or {}).get("decision_note") or ""),
+            )
+        if thread_id:
+            from felix.steer import is_aborted
+
+            if await is_aborted(req.auth.tenant_id, thread_id):
+                return ApprovalDecision(decision="denied", note="aborted")
+        return None
+
+    return check
 
 
 async def _await_approval(
@@ -740,6 +773,7 @@ async def _await_approval(
     decision = await wait_for_decision(
         approval_id,
         timeout=float(ttl_seconds) if ttl_seconds else None,
+        check=_decision_check(req, approval_id, (ctx.thread_id if ctx else None) or ""),
     )
     if decision.decision != "approved":
         await _close_if_timed_out(req, approval_id, decision.note)

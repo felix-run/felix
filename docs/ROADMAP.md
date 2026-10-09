@@ -575,6 +575,18 @@ First, because everything else governs it.
       The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
       column**, anywhere in the models or migrations. Sleeping is already distinguishable from
       crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
+- [x] **A gated wait hears more than its signal** (felix-run/felix#532). Four gaps on the
+      durable path, one root each. `waiters.wait` moved the rest of a wait onto an in-process
+      future after one failed BLPOP and never asked Redis again, while the API went on
+      signalling through Redis -- an Approve that the run saw as a timeout; it now listens on
+      both arms for the whole wait. An approval wait also reads its row every few seconds
+      (`check`), so a decision whose signal is lost anyway is found from the record, and ends
+      on the thread's abort flag (`denied`, note `aborted`, row closed); a client tool's wait
+      ends on a Stop too (`[tool error/user_aborted]`). `client_bridge` kept a reported
+      failure's text and dropped its `error` flag; it now returns a tool error. And a pending
+      row whose wait died with its process is no longer listed as `pending`. The fifth gap --
+      a reloaded tab left watching while its old hold lapses -- is the web client's: the hold
+      is renewable only by its token, deliberately, so the fix is a quick retry after load.
 - [x] **A re-run does not repeat what the run it replaces already did** (felix-run/felix#531).
       The assistant message holding a batch's tool calls was appended only once the whole batch
       returned, so a run that died mid-batch -- a worker restart, a lost fiber lease -- left no

@@ -606,3 +606,29 @@ async def test_interrupted_calls_close_their_own_pending_rows_and_nothing_else(s
     for untouched, status in ((sibling, "pending"), (elsewhere, "pending"), (decided, "approved")):
         again = await approvals.get_approval(store_settings, TENANT, untouched["id"])
         assert again is not None and again["status"] == status, again
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_pending_row_past_its_deadline_is_not_listed_as_pending(store_settings: Any) -> None:
+    """felix-run/felix#532. A wait whose process died never writes its row closed, and the row
+    listed as `pending` forever; every client offered a decision nobody was waiting for."""
+    live = await _pending(store_settings, call_signature="sig-live", ttl_seconds=600)
+    dead = await _pending(store_settings, call_signature="sig-dead", ttl_seconds=1)
+    # The deadline passes with nobody to close the row.
+    from felix.approvals import store as store_mod
+
+    real_now = store_mod.now_ms
+    try:
+        store_mod.now_ms = lambda: real_now() + 5_000  # type: ignore[assignment]
+        listed = {
+            row["id"] for row in await approvals.list_approvals(store_settings, TENANT, status="pending")
+        }
+        everything = {
+            row["id"] for row in await approvals.list_approvals(store_settings, TENANT, status=None)
+        }
+    finally:
+        store_mod.now_ms = real_now  # type: ignore[assignment]
+
+    assert live["id"] in listed and dead["id"] not in listed
+    assert dead["id"] in everything, "only the pending view leaves it out"
