@@ -66,8 +66,11 @@ async def _published(
         files=_bundle(name, **extra),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.publish(settings, "acme", name, row["version"], by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", name, row["version"], by="ops", object_store=store, owner=ORG_OWNER
+    )
     return str(row["version"])
 
 
@@ -131,6 +134,7 @@ async def test_a_draft_never_joins_the_catalog(settings: Settings, store: Memory
         files=_bundle(),
         provenance=library.DraftProvenance(source="agent", author="m"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert (await _catalog(settings, store)).get("invoice-triage") is None
     # Not even when a manifest declares it and pins the draft's version: the raw object-store
@@ -142,7 +146,7 @@ async def test_a_draft_never_joins_the_catalog(settings: Settings, store: Memory
 
 async def test_the_host_wins_on_a_name(settings: Settings, store: MemoryObjectStore) -> None:
     # The library refuses to save a host name; planted directly, the catalog still serves the host's.
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     row = {
         "name": "calculator-help",
         "version": "0.1.0",
@@ -165,7 +169,7 @@ async def test_the_host_wins_on_a_name(settings: Settings, store: MemoryObjectSt
 
 async def test_an_archived_skill_leaves_the_catalog(settings: Settings, store: MemoryObjectStore) -> None:
     await _published(settings, store)
-    await library.archive_skill(settings, "acme", "invoice-triage", by="ops")
+    await library.archive_skill(settings, "acme", "invoice-triage", by="ops", owner=ORG_OWNER)
     assert (await _catalog(settings, store)).get("invoice-triage") is None
 
 
@@ -218,7 +222,9 @@ async def test_create_skill_saves_a_draft_the_catalog_does_not_list(
     # No license, compatibility, scripts or references: the hint says to add them.
     assert result["review_hint"].startswith("To raise the quality score: ")
     assert "Add a license or metadata for discoverability" in result["review_hint"]
-    row = await get_skill_library_store(settings).get_version("acme", "invoice-triage", "0.1.0")
+    row = await get_skill_library_store(settings, owner=ORG_OWNER).get_version(
+        "acme", "invoice-triage", "0.1.0"
+    )
     assert row is not None
     assert (row["source"], row["author"], row["origin_manifest_id"], row["session_id"]) == (
         "agent",
@@ -258,7 +264,7 @@ async def test_a_blocked_publish_leaves_the_draft_and_says_why(
     assert result["status"] == "draft" and result["security_status"] == "fail"
     assert any("security scan failed" in r for r in result["publish_blocked"])
     assert result["issues"] and result["issues"][0]["severity"] in {"high", "critical"}
-    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
     assert skill is not None and skill["live_version"] is None
 
 
@@ -278,7 +284,9 @@ async def test_update_skill_keeps_the_bundle_and_records_the_parent(
     )
 
     assert (result["status"], result["version"]) == ("draft", "0.1.1")
-    row = await get_skill_library_store(settings).get_version("acme", "invoice-triage", "0.1.1")
+    row = await get_skill_library_store(settings, owner=ORG_OWNER).get_version(
+        "acme", "invoice-triage", "0.1.1"
+    )
     assert row is not None and row["parent_version"] == "0.1.0" and row["description"] == "Route invoices."
     assert (
         await store.get(
@@ -342,9 +350,9 @@ async def test_the_approval_preview_is_the_skill_md_that_would_be_saved(
         }
     )
     assert "description: New." in rendered and rendered.rstrip().endswith("New body.")
-    assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0"], (
-        "a preview saves nothing"
-    )
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", "invoice-triage") == [
+        "0.1.0"
+    ], "a preview saves nothing"
 
 
 # -- read_skill_file and activate_skill -------------------------------------------------------
@@ -568,8 +576,9 @@ async def test_an_unreachable_library_serves_nothing_from_it(
         files=_bundle("draft-only"),
         provenance=library.DraftProvenance(source="agent", author="m"),
         object_store=store,
+        owner=ORG_OWNER,
     )
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
 
     async def down(*_a: Any, **_k: Any) -> Any:
         raise ConnectionError("database unreachable")
@@ -675,6 +684,7 @@ async def test_a_shared_store_skill_cannot_reach_a_tenants_library_bytes(
         files=_bundle("references", **{"references/x.md": "tenant secret"}),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     catalog = await load_manifest_skills(
         [{"name": "acme"}], tenant_id="globex", object_store=store, bundled_dir=REPO_SKILLS, owner=None
@@ -693,10 +703,15 @@ async def test_the_catalog_follows_a_rollback(settings: Settings, store: MemoryO
         files=_bundle(body="Second version."),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.publish(settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
+    )
     assert (await _catalog(settings, store)).get("invoice-triage").body == "Second version."
-    await library.rollback(settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store)
+    await library.rollback(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
     skill = (await _catalog(settings, store)).get("invoice-triage")
     assert skill.version == "0.1.0" and "Route amounts over the limit" in skill.body
 
@@ -704,7 +719,7 @@ async def test_the_catalog_follows_a_rollback(settings: Settings, store: MemoryO
 async def test_host_names_win_under_declared_only_and_shared_uploads_are_refused(
     settings: Settings, store: MemoryObjectStore
 ) -> None:
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     row = {
         "name": "calculator-help",
         "version": "0.1.0",
@@ -726,6 +741,7 @@ async def test_host_names_win_under_declared_only_and_shared_uploads_are_refused
             files=_bundle("shared-one"),
             provenance=library.DraftProvenance(source="operator", author="ops"),
             object_store=store,
+            owner=ORG_OWNER,
         )
 
 
@@ -739,7 +755,7 @@ async def test_publish_mode_never_auto_publishes_an_edit_of_an_operators_skill(
         {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
     )
     assert result["status"] == "draft" and "review_required" in result
-    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
     assert skill is not None and skill["live_version"] == "0.1.0"
 
 
@@ -756,15 +772,18 @@ async def test_publish_mode_never_auto_publishes_an_edit_of_an_imported_skill(
         files=_bundle(),
         provenance=library.DraftProvenance(source="import", author="ops", origin=origin),
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.publish(settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", row["version"], by="ops", object_store=store, owner=ORG_OWNER
+    )
     tools = _authoring(settings, store, mode="publish")
     result = await _call(
         tools["update_skill"],
         {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
     )
     assert result["status"] == "draft" and "imported" in result["review_required"]
-    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
     assert skill is not None and skill["live_version"] == "0.1.0"
 
 
@@ -813,7 +832,7 @@ async def test_an_approval_rule_holds_the_built_create_skill(settings: Settings)
         ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1"),
     )
     assert "[approval required]" in tool_output_content(out)
-    assert await get_skill_library_store(settings).list_skills("acme") == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).list_skills("acme") == []
 
 
 # -- an explicit pin, inherited files, and the principal --------------------------------------
@@ -830,7 +849,7 @@ async def test_an_explicit_pin_to_an_operator_upload_beats_a_live_library_skill(
         tools["create_skill"], {"name": "runbook", "description": "d", "body": "Agent text.", "reason": "r"}
     )
     assert saved["version"] == "0.1.0"
-    await library.publish(settings, "acme", "runbook", "0.1.0", by="ops", object_store=store)
+    await library.publish(settings, "acme", "runbook", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
 
     for declared_only in (False, True):
         pinned = (
@@ -858,6 +877,7 @@ async def test_saving_over_an_operators_pinned_upload_is_flagged(
         files=_bundle("runbook"),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert row["shadows_operator_upload"] is True
     clean = await library.save_draft(
@@ -866,6 +886,7 @@ async def test_saving_over_an_operators_pinned_upload_is_flagged(
         files=_bundle("other-skill"),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert clean["shadows_operator_upload"] is False
 
@@ -879,6 +900,7 @@ async def test_publish_mode_holds_an_edit_of_an_operator_draft_that_never_went_l
         files=_bundle(),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     tools = _authoring(settings, store, mode="publish")
     result = await _call(
@@ -886,7 +908,7 @@ async def test_publish_mode_holds_an_edit_of_an_operator_draft_that_never_went_l
         {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
     )
     assert result["status"] == "draft" and "review_required" in result
-    skill = await get_skill_library_store(settings).get_skill("acme", "invoice-triage")
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
     assert skill is not None and skill["live_version"] is None
 
 
@@ -916,8 +938,11 @@ async def _move_parent(settings: Settings, store: MemoryObjectStore) -> None:
         provenance=library.DraftProvenance(source="operator", author="ops"),
         parent="0.1.0",
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.publish(settings, "acme", "invoice-triage", moved["version"], by="ops", object_store=store)
+    await library.publish(
+        settings, "acme", "invoice-triage", moved["version"], by="ops", object_store=store, owner=ORG_OWNER
+    )
 
 
 async def test_an_update_whose_parent_moved_after_its_preview_is_refused(
@@ -935,7 +960,10 @@ async def test_an_update_whose_parent_moved_after_its_preview_is_refused(
     result = await _call(_authoring(settings, store)["update_skill"], args)
     assert result.get("error") == "parent_changed", result
     assert (result["expected"], result["current"]) == ("0.1.0", "0.1.1")
-    assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", "invoice-triage") == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
 
 async def test_an_approved_update_cannot_run_on_a_parent_that_moved(settings: Settings) -> None:
@@ -980,7 +1008,10 @@ async def test_an_approved_update_cannot_run_on_a_parent_that_moved(settings: Se
         out = await update.executor.execute(args, ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1"))
     result = json.loads(tool_output_content(out))
     assert result.get("error") == "parent_changed", result
-    assert await get_skill_library_store(settings).version_ids("acme", "invoice-triage") == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", "invoice-triage") == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
 
 async def test_an_update_naming_a_stale_parent_version_is_refused(
@@ -1043,8 +1074,11 @@ async def test_an_agent_edit_never_inherits_a_rejected_drafts_files(
         provenance=library.DraftProvenance(source="operator", author="ops"),
         parent=live,
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.reject(settings, "acme", "invoice-triage", rejected["version"], by="ops", note="bad script")
+    await library.reject(
+        settings, "acme", "invoice-triage", rejected["version"], by="ops", note="bad script", owner=ORG_OWNER
+    )
 
     catalog = await _catalog(settings, store)
     tools = _skill_tools(catalog, settings, store)
@@ -1065,7 +1099,9 @@ async def test_an_agent_edit_never_inherits_a_rejected_drafts_files(
         {"name": "invoice-triage", "body": BODY + "\n3. File it.\n", "reason": "r", "parent_version": live},
     )
     assert saved["status"] == "draft", saved
-    files = await get_skill_library_store(settings).list_files("acme", "invoice-triage", saved["version"])
+    files = await get_skill_library_store(settings, owner=ORG_OWNER).list_files(
+        "acme", "invoice-triage", saved["version"]
+    )
     assert [f["path"] for f in files] == ["SKILL.md"], "the rejected draft's script rode into the edit"
 
 
@@ -1080,8 +1116,11 @@ async def test_an_operator_edit_still_builds_on_the_absolute_newest(
         provenance=library.DraftProvenance(source="operator", author="ops"),
         parent=live,
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.reject(settings, "acme", "invoice-triage", rejected["version"], by="ops", note="no")
+    await library.reject(
+        settings, "acme", "invoice-triage", rejected["version"], by="ops", note="no", owner=ORG_OWNER
+    )
     operator = library.DraftProvenance(source="operator", author="ops")
 
     with pytest.raises(library.SkillParentChanged):
@@ -1093,6 +1132,7 @@ async def test_an_operator_edit_still_builds_on_the_absolute_newest(
             parent=live,
             expect_newest=live,
             object_store=store,
+            owner=ORG_OWNER,
         )
     kept = await library.save_draft(
         settings,
@@ -1102,5 +1142,6 @@ async def test_an_operator_edit_still_builds_on_the_absolute_newest(
         parent=rejected["version"],
         expect_newest=rejected["version"],
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert kept["parent_version"] == rejected["version"]

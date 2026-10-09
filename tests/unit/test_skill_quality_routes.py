@@ -285,6 +285,7 @@ async def test_an_evaluation_says_whether_it_counts_for_the_gate(app: App) -> No
         provenance=library.DraftProvenance(source="agent", author="contributor"),
         parent=operator,
         object_store=object_store(app.settings),
+        owner=ORG_OWNER,
     )
     store = get_skill_eval_store(app.settings)
     shown: dict[str, Any] = {}
@@ -372,6 +373,7 @@ async def test_publish_and_rollback_can_require_the_live_version_the_page_showed
             files=bundle(body="# Triage\n\nA second version.\n"),
             provenance=library.DraftProvenance(source="operator", author="ops"),
             object_store=object_store(app.settings),
+            owner=ORG_OWNER,
         )
     )["version"]
     url = f"/skill-library/{NAME}/versions/{second}"

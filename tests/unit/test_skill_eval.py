@@ -18,6 +18,7 @@ from felix.config import Settings
 from felix.security.fencing import BREAK
 from felix.skills import evaluate
 from felix.skills.eval_store import get_skill_eval_store
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.quality_store import CLAIM_LEASE_MS
 
 from tests.skill_quality import (
@@ -587,7 +588,9 @@ async def test_one_sweep_lands_each_tenants_jobs_in_that_tenant(
         fb = await get_skill_feedback_store(settings).get(tenant, feedback_id)
         assert fb is not None and fb["status"] == "applied" and fb["tenant_id"] == tenant
         assert (
-            await get_skill_library_store(settings).get_version(tenant, NAME, fb["result_version"])
+            await get_skill_library_store(settings, owner=ORG_OWNER).get_version(
+                tenant, NAME, fb["result_version"]
+            )
             is not None
         )
         ev = await get_skill_eval_store(settings).get(tenant, eval_id)

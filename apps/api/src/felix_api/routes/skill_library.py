@@ -317,6 +317,7 @@ async def preview_library_version(name: str, version: str, request: Request) -> 
         version,
         policy=(await load_publish_policy(ctx.settings, ctx.tenant_id)).policy,
         object_store=ctx.store,
+        owner=ctx.owner,
     )
     assessment = verdict.assessment
     return ctx.redact(
@@ -353,6 +354,7 @@ async def _saved(
                 source="operator", author=by, reason=body.reason, principal=by
             ),
             object_store=ctx.store,
+            owner=ctx.owner,
             **save,
         )
     except library.SkillLibraryError as exc:
@@ -435,6 +437,7 @@ async def publish_library_version(
             by=by,
             object_store=ctx.store,
             expected_live=_expected(body),
+            owner=ctx.owner,
         )
 
     return await _transition(request, name, version, move)
@@ -456,6 +459,7 @@ async def rollback_library_version(
             by=by,
             object_store=ctx.store,
             expected_live=_expected(body),
+            owner=ctx.owner,
         )
 
     return await _transition(request, name, version, move)
@@ -466,7 +470,9 @@ async def reject_library_version(name: str, version: str, body: RejectIn, reques
     """Archive a draft without publishing it, recording the note."""
 
     async def move(ctx: LibraryRequest, by: str) -> dict[str, Any]:
-        return await library.reject(ctx.settings, ctx.tenant_id, name, version, by=by, note=body.note)
+        return await library.reject(
+            ctx.settings, ctx.tenant_id, name, version, by=by, note=body.note, owner=ctx.owner
+        )
 
     return await _transition(request, name, version, move)
 
@@ -509,7 +515,7 @@ async def archive_library_skill(name: str, request: Request) -> Any:
         return not_found(name)
     try:
         return await library.archive_skill(
-            ctx.settings, ctx.tenant_id, name, by=subject_from_request(request)
+            ctx.settings, ctx.tenant_id, name, by=subject_from_request(request), owner=ctx.owner
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)

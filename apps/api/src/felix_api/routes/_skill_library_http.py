@@ -22,6 +22,7 @@ from felix.auth.mgmt import require_mgmt_scopes, tenant_id_from_request
 from felix.skills import library
 from felix.skills.format import is_valid_skill_name
 from felix.skills.github import SkillImportError
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import SkillLibraryStore, get_skill_library_store
 from felix.skills.quality_store import Cursor
 
@@ -52,6 +53,10 @@ STATUS: dict[str, int] = {
     # Versions are never deleted, so waiting does not help: the state is the obstacle.
     "version_cap_reached": 409,
     "publish_blocked": 422,
+    # An import or adopt aimed at a personal library: those are the tenant's alone.
+    "org_only": 409,
+    # Waiting does not help; archiving or not adding is what frees a place.
+    "personal_library_full": 409,
     # An adopt says why the operator vouches for imported text; a blank reason never will.
     "reason_required": 422,
     # An adopt of an agent's draft nobody decided: a person rejects or publishes it first.
@@ -217,6 +222,11 @@ class LibraryRequest:
     store: Any
     secrets: list[str]
 
+    @property
+    def owner(self) -> str:
+        """Whose library this request reads and writes: `lib`'s, so the two cannot disagree."""
+        return self.lib.owner
+
     def redact(self, row: dict[str, Any]) -> dict[str, Any]:
         """``row`` with every field outside `STRUCTURAL_FIELDS` secret-redacted."""
         from felix.secrets import redact_json, redact_text
@@ -233,7 +243,7 @@ class LibraryRequest:
 
     async def shadows(self, name: str, versions: list[str | None]) -> bool:
         return await library.shadows_operator_upload(
-            self.settings, self.tenant_id, name, versions, object_store=self.store
+            self.settings, self.tenant_id, name, versions, object_store=self.store, owner=self.owner
         )
 
 
@@ -247,7 +257,9 @@ async def written_version(
     published, blocked = False, None
     if publish:
         try:
-            await library.publish(ctx.settings, ctx.tenant_id, name, version, by=by, object_store=ctx.store)
+            await library.publish(
+                ctx.settings, ctx.tenant_id, name, version, by=by, object_store=ctx.store, owner=ctx.owner
+            )
             published = True
         except library.SkillLibraryError as exc:
             blocked = refusal_body(exc)
@@ -274,7 +286,7 @@ def library_request(request: Request, scope: str) -> LibraryRequest:
     return LibraryRequest(
         settings=settings,
         tenant_id=tenant_id_from_request(request),
-        lib=get_skill_library_store(settings),
+        lib=get_skill_library_store(settings, owner=ORG_OWNER),
         store=get_object_store(settings),
         secrets=collected_secret_values(settings),
     )

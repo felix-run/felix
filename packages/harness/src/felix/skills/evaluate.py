@@ -356,7 +356,7 @@ async def queue_eval(
     `SkillJobsCapReached` past the tenant's job caps."""
     from felix.skills.job_limits import job_caps, refused_at_cap
 
-    if await get_skill_library_store(settings).get_version(tenant_id, name, version) is None:
+    if await get_skill_library_store(settings, owner=ORG_OWNER).get_version(tenant_id, name, version) is None:
         raise SkillNotFound(f"{name}@{version} does not exist")
     try:
         with refused_at_cap():

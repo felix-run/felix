@@ -81,6 +81,7 @@ from felix.skills.github import (
     valid_source_path,
     validate_ref,
 )
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.sighting_store import get_sighting_store
 
@@ -450,7 +451,7 @@ async def _prior(
     import replaces. Refuses a name whose newest such version came from anywhere but ``origin``:
     an import never takes over a skill an agent or an operator wrote, or one imported from
     somewhere else."""
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     buildable = (await lib.buildable_versions(tenant_id, [name])).get(name, [])
     newest = library.newest_version(buildable)
     if newest is None:
@@ -598,6 +599,7 @@ async def import_skill(
         # to the same skill, one saves and the other is refused rather than stacked on it.
         expect_newest=fetched.parent if fetched.parent is not None else library.MUST_NOT_EXIST,
         object_store=deps.object_store,
+        owner=ORG_OWNER,
     )
     logger.info(
         "skill %s skill=%s version=%s source=%s commit=%s dropped=%d",

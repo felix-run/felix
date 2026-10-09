@@ -98,7 +98,7 @@ async def _update(settings: Settings, store: Any, gh: FakeRepos, name: str = NAM
 
 
 async def _publish(settings: Settings, store: Any, version: str, name: str = NAME) -> None:
-    await library.publish(settings, "acme", name, version, by="ops", object_store=store)
+    await library.publish(settings, "acme", name, version, by="ops", object_store=store, owner=ORG_OWNER)
 
 
 def _blob_reads(gh: FakeRepos, since: int = 0) -> list[str]:
@@ -329,6 +329,7 @@ async def test_only_an_imported_skill_has_an_upstream(
         files={"SKILL.md": skill_md("house-rules").decode()},
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     with pytest.raises(github.SkillNotImported) as caught:
         await _check(settings, store, gh, "house-rules")
@@ -450,7 +451,7 @@ async def test_an_update_saves_a_draft_and_diffs_it_against_the_live_version(
         "draft",
     )
     assert result.version["origin_commit"] == commit
-    skill = await get_skill_library_store(settings).get_skill("acme", NAME)
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", NAME)
     assert skill is not None and skill["live_version"] == "0.1.0", "never published by an update"
     assert diff["compared_with"] == "0.1.0"
     assert [f["path"] for f in diff["files"]] == ["references/queues.md"]
@@ -491,6 +492,7 @@ async def test_an_update_keeps_the_imports_origin_rules(
         name=NAME,
         parent="0.1.0",
         object_store=store,
+        owner=ORG_OWNER,
     )
     with pytest.raises(github.SkillNotImported):
         await _update(settings, store, gh)
@@ -557,6 +559,7 @@ async def test_a_cached_listing_asks_github_nothing(
         files={"SKILL.md": skill_md("house-rules").decode()},
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     before = len(gh.requests)
     listing = await _outdated(settings, gh, refresh=False)
@@ -853,6 +856,7 @@ async def test_a_skill_that_stops_being_an_import_keeps_its_row_and_comes_back(
         name=NAME,
         parent="0.1.0",
         object_store=store,
+        owner=ORG_OWNER,
     )
     before = len(gh.requests)
     counts = await _sweep(_swept(1), gh, at=T0 + 3_600_000)
@@ -860,7 +864,7 @@ async def test_a_skill_that_stops_being_an_import_keeps_its_row_and_comes_back(
     assert (await _row(settings, "acme", NAME))["error"] == "not_imported"
 
     # The operator's draft is rejected: the import is the head again, and the sweep checks it.
-    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="no")
+    await library.reject(settings, "acme", NAME, "0.1.1", by="ops", note="no", owner=ORG_OWNER)
     counts = await _sweep(_swept(1), gh, at=T0 + 2 * 3_600_000)
     assert counts["checked"] == 1
     row = await _row(settings, "acme", NAME)

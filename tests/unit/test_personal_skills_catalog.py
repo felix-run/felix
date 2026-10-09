@@ -352,6 +352,6 @@ async def test_authoring_and_feedback_refuse_a_callers_own_skill(
 
     assert updated["error"] == created["error"] == filed["error"] == "personal_skill"
     assert shared["status"] == "pending", "a tenant skill in the same catalog still takes feedback"
-    assert await get_skill_library_store(settings).version_ids("acme", "notes") == ["0.1.0"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", "notes") == ["0.1.0"]
     pending = await get_skill_feedback_store(settings).list_by_status("acme", "pending")
     assert [r["name"] for r in pending] == ["shared"]

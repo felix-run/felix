@@ -172,7 +172,7 @@ class _SkillAuthor:
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.auto_eval = auto_eval
         self.personal = personal
-        self.lib = get_skill_library_store(settings)
+        self.lib = get_skill_library_store(settings, owner=ORG_OWNER)
 
     async def queue_eval(self, row: dict[str, Any]) -> str | None:
         """`skill_authoring.auto_eval`: queue an evaluation of the draft just saved. A failure to
@@ -211,7 +211,7 @@ class _SkillAuthor:
     async def _edit(self, name: str, args: ToolInput, body: str) -> _Composed:
         """An edit of ``parent_version``, which must be the newest version that was not
         rejected: a rejected draft's files must not ride into the next one. Checked here for the
-        preview and again, atomically with the save, by `save_draft(expect_newest=...)`."""
+        preview and again, atomically with the save, by `save_draft(expect_newest=..., owner=ORG_OWNER)`."""
         from felix.skills import library
         from felix.skills.format import parse_skill_md, serialize_skill_md
         from felix.skills.library_store import is_rejected
@@ -266,6 +266,7 @@ class _SkillAuthor:
                 row["version"],
                 by=self.manifest_id,
                 object_store=self.object_store,
+                owner=ORG_OWNER,
             )
         except library.SkillPublishBlocked as exc:
             return {**_draft_result(row, "draft"), "publish_blocked": exc.reasons}
@@ -300,6 +301,7 @@ class _SkillAuthor:
                 expect_newest=composed.parent if update else library.MUST_NOT_EXIST,
                 max_pending=self.max_pending,
                 object_store=self.object_store,
+                owner=ORG_OWNER,
             )
         except _ComposeError as exc:
             return json.dumps(exc.result)

@@ -24,6 +24,7 @@ from typing import Any
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.format import serialize_skill_md
+from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 
 TENANT = "acme"
@@ -165,9 +166,10 @@ async def published(settings: Settings, files: dict[str, str] | None = None, ten
         files=files or bundle(),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     await library.publish(
-        settings, tenant, str(row["name"]), str(row["version"]), by="ops", object_store=store
+        settings, tenant, str(row["name"]), str(row["version"]), by="ops", object_store=store, owner=ORG_OWNER
     )
     return str(row["version"])
 

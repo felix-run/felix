@@ -17,6 +17,7 @@ import pytest
 from felix.config import Settings
 from felix.skills import library
 from felix.skills.copy_rule import COPY_FLOOR_CHARS, normalized_text
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 
@@ -54,6 +55,7 @@ async def _import(
         files={"SKILL.md": skill_md("refunds", "Issue refunds.", body).decode(), **extra},
         provenance=library.DraftProvenance(source="import", author="ops", origin=origin),
         object_store=store,
+        owner=ORG_OWNER,
     )
 
 
@@ -70,6 +72,7 @@ async def _agent_saves(
         },
         provenance=library.DraftProvenance(source="agent", author="c", origin_manifest_id="contributor"),
         object_store=store,
+        owner=ORG_OWNER,
     )
 
 
@@ -171,7 +174,7 @@ async def test_a_binary_asset_is_matched_by_its_bytes_only(
     asset: str, settings: Settings, store: MemoryObjectStore
 ) -> None:
     await _import(settings, store, {"assets/logo.png": asset})
-    rows = await get_skill_library_store(settings).list_files("acme", "refunds", "0.1.0")
+    rows = await get_skill_library_store(settings, owner=ORG_OWNER).list_files("acme", "refunds", "0.1.0")
     by_path = {r["path"]: r for r in rows}
     assert by_path["assets/logo.png"]["normalized_sha256"] is None
     assert by_path["SKILL.md"]["normalized_sha256"] is not None
@@ -183,7 +186,7 @@ async def test_a_file_saved_before_the_normalized_digest_is_matched_by_its_bytes
 ) -> None:
     """A row from before migration 0032 has no normalized digest, and keeps none: versions are
     immutable. Its bytes still match; a re-cased copy of it is not caught."""
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     data = PLAYBOOK.encode()
     row = {
         "name": "refunds",

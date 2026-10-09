@@ -553,7 +553,22 @@ First, because everything else governs it.
          store looks at the org's alone); scope idempotency keys by owner rather than
          `principal_sub` (a reply now depends on the caller's library); `read_version_files`,
          `read_version_file` and `newest_buildable_versions` already take a required `owner`.
-      3. [ ] `~me` routes, owner-scoped authoring tools, per-owner cap, `make contract`.
+      3. Split in three, landed in order. Decided 2026-10-09: an owner publishes their own drafts
+         through the full publish gate (no org review queue, no `skills:write`); `admin` / `*` may
+         list, read and archive any personal skill, every read of another's audited.
+         - [x] 3a. The library layer takes a required `owner` everywhere -- `get_skill_library_store`,
+           `save_draft`, `publish`, `rollback`, `reject`, `archive_skill`, `evaluate_version`,
+           `shadows_operator_upload` -- and the route handlers take it from their request context
+           (`LibraryRequest.owner`, the org's until 3b). A personal library refuses imports and
+           adopts (`org_only`) and holds `MAX_PERSONAL_SKILLS` (100, soft by the saves in flight;
+           `personal_library_full`); a personal version is gated without evaluations, which are
+           kept by skill name for the tenant's library; a personal skill splits no operator
+           upload's name; every library audit event carries `library`.
+         - [ ] 3b. `/skill-library/~me/…` (list, get, files, create, versions, publish, rollback,
+           reject, archive) for the caller; admin access to another's library by its digest
+           (`library_label`), reads audited; `make contract`.
+         - [ ] 3c. `personal_skills: write`: the authoring tools save into the caller's library,
+           lifting the `personal_skill` refusal; idempotency keys scoped by owner.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).
 
 ### B. Close the durable loop

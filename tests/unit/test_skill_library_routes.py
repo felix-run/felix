@@ -103,6 +103,7 @@ async def _agent_draft(app: App, name: str = NAME, body: str = BODY) -> dict[str
             source="agent", author="contributor", origin_manifest_id="contributor"
         ),
         object_store=app.store,
+        owner=ORG_OWNER,
     )
 
 
@@ -129,7 +130,7 @@ async def test_every_write_refuses_a_read_only_key(app: App, method: str, path: 
     resp = await app.client.request(method.upper(), path, **kwargs)
     assert resp.status_code == 403, resp.text
     assert "skills:write" in resp.text
-    row = await get_skill_library_store(app.settings).get_version("acme", NAME, "0.1.0")
+    row = await get_skill_library_store(app.settings, owner=ORG_OWNER).get_version("acme", NAME, "0.1.0")
     assert row is not None and row["status"] == "draft", "a refused write changed the library"
 
 
@@ -179,7 +180,7 @@ async def test_another_tenant_can_neither_see_nor_change_the_library(app: App) -
         assert resp.status_code == 404, (path, resp.text)
     assert (await app.client.get("/skill-library/-/review", headers=_h(GLOBEX))).json()["items"] == []
 
-    row = await get_skill_library_store(app.settings).get_version("acme", NAME, "0.1.0")
+    row = await get_skill_library_store(app.settings, owner=ORG_OWNER).get_version("acme", NAME, "0.1.0")
     assert row is not None and row["status"] == "draft"
 
 
@@ -225,7 +226,7 @@ async def test_create_can_publish_in_the_same_request(app: App) -> None:
     resp = await app.create(publish=True)
     assert resp.status_code == 201, resp.text
     assert (resp.json()["published"], resp.json()["status"]) == (True, "published")
-    skill = await get_skill_library_store(app.settings).get_skill("acme", NAME)
+    skill = await get_skill_library_store(app.settings, owner=ORG_OWNER).get_skill("acme", NAME)
     assert skill is not None and skill["live_version"] == "0.1.0"
 
 
@@ -255,7 +256,10 @@ async def test_a_new_version_needs_the_newest_version_as_its_parent(app: App) ->
     stale = await app.client.put(put, json=edited, headers=_h(WRITE))
     assert stale.status_code == 409, stale.text
     assert stale.json()["error"] == "parent_changed"
-    assert await get_skill_library_store(app.settings).version_ids("acme", NAME) == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(app.settings, owner=ORG_OWNER).version_ids("acme", NAME) == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
     minor = await app.client.put(
         put, json={**edited, "parent_version": "0.1.1", "bump": "minor"}, headers=_h(WRITE)
@@ -328,7 +332,7 @@ async def test_a_refused_create_names_its_reason(app: App, files: Any, status: i
     assert resp.json()["error"] == error
     if error == "invalid_bundle":
         assert resp.json()["issues"][0]["path"] == "SKILL.md"
-    assert await get_skill_library_store(app.settings).list_skills("acme") == []
+    assert await get_skill_library_store(app.settings, owner=ORG_OWNER).list_skills("acme") == []
 
 
 async def test_create_refuses_a_name_already_in_the_library(app: App) -> None:
@@ -400,7 +404,7 @@ async def test_preview_reruns_the_gate_and_changes_nothing(app: App) -> None:
     from felix.audit import store as audit_store
 
     await app.create(files=_files(**{"scripts/clean.sh": "rm -rf /tmp/work\n"}))
-    lib = get_skill_library_store(app.settings)
+    lib = get_skill_library_store(app.settings, owner=ORG_OWNER)
     before = await lib.get_version("acme", NAME, "0.1.0")
     await audit_store.flush_pending(app.settings)
     events_before, _ = await audit_store.list_events(app.settings, "acme", limit=50)
@@ -594,6 +598,7 @@ async def test_an_operator_save_is_not_held_to_an_agents_pending_cap(app: App) -
             ),
             max_pending=2,
             object_store=app.store,
+            owner=ORG_OWNER,
         )
     with pytest.raises(library.SkillPendingCapReached):
         await library.save_draft(
@@ -605,6 +610,7 @@ async def test_an_operator_save_is_not_held_to_an_agents_pending_cap(app: App) -
             ),
             max_pending=2,
             object_store=app.store,
+            owner=ORG_OWNER,
         )
     resp = await app.create(files=_files("operator-one"))
     assert resp.status_code == 201, resp.text

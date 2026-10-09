@@ -95,7 +95,9 @@ def extract_skill_md(text: str) -> str:
 
 async def _already_saved(settings: Settings, tenant_id: str, row: dict[str, Any]) -> str | None:
     """The version a previous run saved for this feedback before it could record it."""
-    versions = await get_skill_library_store(settings).list_versions(tenant_id, str(row["name"]))
+    versions = await get_skill_library_store(settings, owner=ORG_OWNER).list_versions(
+        tenant_id, str(row["name"])
+    )
     reason = _reason(str(row["id"]))
     found = next((v for v in versions if v["author"] == IMPROVER and v["reason"] == reason), None)
     return str(found["version"]) if found else None
@@ -113,7 +115,7 @@ async def _improve(
     existing = await _already_saved(settings, tenant_id, row)
     if existing is not None:
         return existing
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     newest = (await library.newest_buildable_versions(settings, tenant_id, [name], owner=ORG_OWNER)).get(name)
     if newest != target:
         # Checked before the model call so a stale feedback costs nothing; `expect_newest`
@@ -149,6 +151,7 @@ async def _improve(
             parent=target,
             expect_newest=target,
             object_store=object_store,
+            owner=ORG_OWNER,
         )
     except library.SkillParentChanged as exc:
         # Possibly a second run of this same feedback, which saved first: that is its draft.

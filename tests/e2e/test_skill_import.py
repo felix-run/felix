@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from felix.manifests.loader import parse_manifest
+from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
@@ -158,6 +159,7 @@ async def test_refusals_carry_stable_codes(boot: Any, gh: FakeRepos) -> None:
             "default",
             files={"SKILL.md": skill_md("refunds", "Issue refunds.").decode()},
             provenance=library.DraftProvenance(source="operator", author="ops"),
+            owner=ORG_OWNER,
         )
         assert await code_of("github:acme/skills/plugins/billing/skills/refunds") == (409, "origin_mismatch")
 
@@ -258,8 +260,9 @@ async def test_an_imported_skill_is_screened_on_activation_and_an_operators_is_n
             "default",
             files={"SKILL.md": skill_md("house-rules", "The house rules.", hostile).decode()},
             provenance=library.DraftProvenance(source="operator", author="ops"),
+            owner=ORG_OWNER,
         )
-        lib = get_skill_library_store(app.settings)
+        lib = get_skill_library_store(app.settings, owner=ORG_OWNER)
         for name in (NAME, "house-rules"):
             await lib.publish("default", name, "0.1.0", from_statuses={"draft"}, by="ops", at=1)
 

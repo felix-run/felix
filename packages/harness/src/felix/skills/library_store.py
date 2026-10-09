@@ -1127,10 +1127,11 @@ class PostgresSkillLibraryStore:
 _memory_store = InMemorySkillLibraryStore()
 
 
-def get_skill_library_store(settings: Settings | None = None, *, owner: str = ORG_OWNER) -> SkillLibraryStore:
+def get_skill_library_store(settings: Settings | None = None, *, owner: str) -> SkillLibraryStore:
     """The library store for these settings and ``owner``: the process twin under `memory://`,
-    else Postgres. Without an owner it is the tenant's own library, as it always was; a personal
-    one is asked for by name (`library_keys.personal_owner`), so nothing reaches one by omission.
+    else Postgres. ``owner`` is `ORG_OWNER` for the tenant's own library or a personal owner
+    (`library_keys.personal_owner`), and has no default: a flow that forgot it would read and
+    write the tenant's library for a person, so every caller says which it means.
 
     Selected exactly as `skills/store.py:get_skill_activation_store` selects, so a deployment
     that keeps activations in memory keeps the library there too.
