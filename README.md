@@ -639,7 +639,9 @@ offered tool is still governance-wrapped.
 An activation, a rollback or a canary change takes effect at once on the process that made it.
 Each API replica and worker caches a manifest's active version for 30 seconds, so the others
 follow within that window — a rollback is not instant fleet-wide, and a canary split briefly
-differs between replicas.
+differs between replicas. The same window covers a name that has no stored version: a bundled
+manifest's "not in the store" is cached too, so a first publish over a bundled name reaches the
+other replicas within 30 seconds.
 
 `bundled` is for a single-tenant or self-hosted deployment with no use for runtime
 authoring. The write routes are never registered, so the verbs are absent from the app and

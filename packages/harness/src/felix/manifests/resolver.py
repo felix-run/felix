@@ -127,6 +127,8 @@ async def _read_tenant_postgres(
     else:
         cached = _active_pointer_cache.get(_pointer_key(tenant_id, name))
         now = time.time() * 1000
+        if cached and cached["expires_at"] > now and cached.get("absent"):
+            return None
         if cached and cached["expires_at"] > now:
             pointer = ActivePointer(
                 version=cached["version"],
@@ -136,6 +138,14 @@ async def _read_tenant_postgres(
         else:
             active = await store.get_active(tenant_id, name)
             if active is None:
+                # Remembered too, for the same TTL. Every bundled manifest is "not in the
+                # store", so not caching the miss cost a session, a pre-ping and a query per
+                # request — and per sub-agent, and per entry of `/v1/models` — for an answer
+                # that changes only when someone activates a version, which invalidates it.
+                _active_pointer_cache[_pointer_key(tenant_id, name)] = {
+                    "absent": True,
+                    "expires_at": now + ACTIVE_TTL_MS,
+                }
                 return None
             pointer = active
             _active_pointer_cache[_pointer_key(tenant_id, name)] = {
