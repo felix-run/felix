@@ -96,6 +96,21 @@ def _looks_negated(criteria: str) -> bool:
     return any(m in criteria for m in _NEGATION_MARKERS)
 
 
+def judge_calls_out(judge: JudgeRule, decider: MeteredDecider | None, settings: Any | None) -> bool:
+    """Whether `judge_score` starts with a decider or a model call for `judge`, rather than the
+    free heuristic. `judge_score` branches on this, and `apply_judges` orders by it -- one rule,
+    so a new backend lands in the right bucket in both."""
+    return _asks_decider(judge, decider) or _asks_model(judge, settings)
+
+
+def _asks_decider(judge: JudgeRule, decider: MeteredDecider | None) -> bool:
+    return bool(judge.decider) and decider is not None
+
+
+def _asks_model(judge: JudgeRule, settings: Any | None) -> bool:
+    return bool(judge.model.strip()) and settings is not None
+
+
 async def judge_score(
     content: str,
     judge: JudgeRule,
@@ -106,7 +121,8 @@ async def judge_score(
     """The decider's score when `judge.decider`, else the LLM's when `judge.model`, else the
     heuristic — each one the fallback for the one before it."""
     criteria = judge.criteria
-    if judge.decider and decider is not None:
+    # `decider is not None` again only to narrow the type; `_asks_decider` already said so.
+    if _asks_decider(judge, decider) and decider is not None:
         from felix.decisions import meets_criterion
 
         try:
@@ -114,7 +130,7 @@ async def judge_score(
         except Exception as exc:
             logger.warning("judge %s: decider failed (%s); falling back", judge.name, type(exc).__name__)
     model_id = judge.model.strip()
-    if not model_id or settings is None:
+    if not _asks_model(judge, settings):
         return heuristic_judge_score(content, criteria)
     try:
         from felix.eval.compare import llm_judge_score
@@ -134,4 +150,4 @@ async def judge_score(
         return heuristic_judge_score(content, criteria)
 
 
-__all__ = ["heuristic_judge_score", "judge_score"]
+__all__ = ["heuristic_judge_score", "judge_calls_out", "judge_score"]

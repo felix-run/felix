@@ -2,7 +2,7 @@
 
 from felix.governance.content_screening import ScreeningVerdict, screen_content
 from felix.governance.inbound import InboundScreeningError, apply_inbound_screening
-from felix.governance.pii import PiiResult, redact_pii
+from felix.governance.pii import PiiResult, redact_pii, redact_pii_async
 
 __all__ = [
     "InboundScreeningError",
@@ -10,5 +10,6 @@ __all__ = [
     "ScreeningVerdict",
     "apply_inbound_screening",
     "redact_pii",
+    "redact_pii_async",
     "screen_content",
 ]

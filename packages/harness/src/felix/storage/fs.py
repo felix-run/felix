@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,21 +46,37 @@ class FilesystemObjectStore:
             raise ValueError(f"invalid object key: {key!r}") from exc
         return path
 
-    async def get(self, key: str) -> bytes | None:
+    # The four operations are file I/O, and `_path` resolves symlinks, which is file I/O too. All
+    # of it ran on the event loop -- on the default backend for small VMs, where every skill,
+    # context file and attachment is read through here -- so a slow disk stalled every request
+    # on the worker. Each runs in a thread; `_path`'s `ValueError` still reaches the caller.
+
+    def _get(self, key: str) -> bytes | None:
         path = self._path(key)
         if not path.is_file():
             return None
         return path.read_bytes()
 
-    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
-        _ = content_type
+    def _put(self, key: str, data: bytes) -> None:
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
+    def _delete(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
+    def _exists(self, key: str) -> bool:
+        return self._path(key).is_file()
+
+    async def get(self, key: str) -> bytes | None:
+        return await asyncio.to_thread(self._get, key)
+
+    async def put(self, key: str, data: bytes, *, content_type: str = "application/octet-stream") -> None:
+        _ = content_type
+        await asyncio.to_thread(self._put, key, data)
+
     async def delete(self, key: str) -> None:
-        path = self._path(key)
-        path.unlink(missing_ok=True)
+        await asyncio.to_thread(self._delete, key)
 
     async def exists(self, key: str) -> bool:
-        return self._path(key).is_file()
+        return await asyncio.to_thread(self._exists, key)

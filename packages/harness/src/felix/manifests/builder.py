@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
@@ -14,7 +15,7 @@ from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
 from felix.governance.image_screening import ImageScreener, screen_session_strategy
 from felix.governance.inbound import replay_screener, tool_image_screener
-from felix.governance.judges import judge_score
+from felix.governance.judges import judge_calls_out, judge_score
 from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
@@ -852,9 +853,9 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
             if is_wrapper_deny(out):
                 return out
             content = tool_output_content(out)
-            from felix.governance.pii import redact_pii
+            from felix.governance.pii import redact_pii_async
 
-            result = redact_pii(content)
+            result = await redact_pii_async(content)
             if result.matched and block:
                 return deny_output("[guardrails] PII blocked", "guardrails")
             return replace_tool_output(out, content=result.text)
@@ -862,6 +863,13 @@ def apply_guardrails(tools: list[Tool], guardrails: Guardrails | None, manifest_
         return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
+
+
+def _judge_denial(judge: Any, score: float) -> ToolOutput | None:
+    threshold = float(getattr(judge, "threshold", 0.7) or 0.7)
+    if score < threshold:
+        return deny_output(f"[judge denied] {judge.name}: score={score:.2f} < {threshold}", "guardrails")
+    return None
 
 
 def apply_judges(
@@ -891,14 +899,24 @@ def apply_judges(
             from felix.config import get_settings
 
             settings = get_settings()
-            for j in applicable:
-                score = await judge_score(content, j, settings=settings, decider=decider)
-                threshold = float(getattr(j, "threshold", 0.7) or 0.7)
-                if score < threshold:
-                    return deny_output(
-                        f"[judge denied] {j.name}: score={score:.2f} < {threshold}",
-                        "guardrails",
-                    )
+            # Heuristic judges first, one by one: they are free, and one that denies spares every
+            # model call. The rest -- each a model or decider call -- run together rather than in
+            # series. Allow and deny are as the sequential loop had them, since every judge must
+            # pass either way; the denial *named* is the first free one, else the first paid one
+            # in the manifest's order.
+            free = [j for j in applicable if not judge_calls_out(j, decider, settings)]
+            paid = [j for j in applicable if judge_calls_out(j, decider, settings)]
+            for j in free:
+                denied = _judge_denial(j, await judge_score(content, j, settings=settings, decider=decider))
+                if denied is not None:
+                    return denied
+            scores = await asyncio.gather(
+                *(judge_score(content, j, settings=settings, decider=decider) for j in paid)
+            )
+            for j, score in zip(paid, scores, strict=True):
+                denied = _judge_denial(j, score)
+                if denied is not None:
+                    return denied
             return out
 
         return _clone_tool(tool, wrap_executor(inner, execute))

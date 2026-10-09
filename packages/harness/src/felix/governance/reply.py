@@ -143,17 +143,30 @@ class ReplyScreen:
         emit_agent_audit(event_type, status=status, payload=payload, manifest_id=self.manifest_id)
 
     def redact(self, text: str) -> str:
-        """The text with PII redacted, or the block notice when the manifest blocks."""
+        """The text with PII redacted, or the block notice when the manifest blocks.
+
+        For the synchronous callers (`redact_all`, the session-store wrapper); async code awaits
+        `redact_async`, which shares the memo, so a reply is analysed once whichever asks first.
+        """
         if not self.pii or not text:
             return text
         if text not in self._redacted:
-            self._redacted[text] = self._redact(text)
+            from felix.governance.pii import redact_pii
+
+            self._redacted[text] = self._settle_pii(text, redact_pii(text))
         return self._redacted[text]
 
-    def _redact(self, text: str) -> str:
-        from felix.governance.pii import redact_pii
+    async def redact_async(self, text: str) -> str:
+        """`redact`, with the analysis off the event loop (`redact_pii_async`)."""
+        if not self.pii or not text:
+            return text
+        if text not in self._redacted:
+            from felix.governance.pii import redact_pii_async
 
-        result = redact_pii(text)
+            self._redacted[text] = self._settle_pii(text, await redact_pii_async(text))
+        return self._redacted[text]
+
+    def _settle_pii(self, text: str, result: Any) -> str:
         if not result.matched:
             return text
         status = "blocked" if self.block_pii else "redacted"
@@ -193,7 +206,7 @@ class ReplyScreen:
     async def settle(self, text: str) -> str | None:
         """A reply as this screen and every enclosing one would ship it, or `None` when a
         judge denied it — a denial is not the reply, so nothing downstream should keep it."""
-        text = self.redact(text)
+        text = await self.redact_async(text)
         if await self.judge(text) is not None:
             return None
         return await self.parent.settle(text) if self.parent is not None else text
@@ -209,7 +222,7 @@ class ReplyScreen:
         """
         if event.role != "assistant" or not event.content:
             return event
-        content = self.redact(event.content)
+        content = await self.redact_async(event.content)
         if not event.tool_calls:
             denial = await self.judge(content)
             if denial is not None:

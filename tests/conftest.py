@@ -231,6 +231,11 @@ def _isolate_process_global_stores():
         from felix.governance.image_screening import clear_image_screening_caches
 
         clear_image_screening_caches()
+        # Text verdicts, by window and screener: a scripted screener in one test would
+        # otherwise have answered the next test's identical text.
+        from felix.governance.screening import clear_screening_verdicts
+
+        clear_screening_verdicts()
 
     _clear()
     yield

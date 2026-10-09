@@ -326,6 +326,42 @@ def test_a_notified_stream_decays_past_the_un_notified_ceiling() -> None:
     assert p.timeout == NOTIFIED_POLL_CEILING_SECONDS
 
 
+def test_a_notified_stream_skips_the_grace_window() -> None:
+    """The grace window protects first-event latency, which a notified stream gets from the wake,
+    not the poll. So it decays from its first quiet round, and an idle cycle costs a third of the
+    queries -- the grace held an idle, notified tab at one query a second for half a minute."""
+    from felix.session.notify import Wake
+
+    def polls_in_idle_cycle(notified: bool) -> int:
+        p = _pacing()
+        polls = 0
+        while not p.exhausted:
+            p.waited(Wake(woken=False, by_notification=notified))
+            p.went_quiet()
+            polls += 1
+        return polls
+
+    p = _pacing()
+    p.waited(Wake(woken=False, by_notification=True))
+    p.went_quiet()
+    assert p.timeout > 1.0, "a notified stream held the floor through the grace window"
+    assert polls_in_idle_cycle(notified=True) * 3 <= polls_in_idle_cycle(notified=False)
+
+
+def test_a_stream_polling_an_unnotified_resource_keeps_the_grace_window() -> None:
+    """A durable run's status and its approval gates publish nothing, so a stream watching them
+    pins `notified_ceiling` to its ceiling -- and a waiting approval in the first half-minute
+    must still be found within the floor, not after a decayed ten-second wait."""
+    from felix.session.notify import Wake
+    from felix_api.routes._streaming import ResumePacing
+
+    p = ResumePacing(floor=1.0, ceiling=10.0, idle_limit=300.0, notified_ceiling=10.0)
+    for _ in range(int(POLL_BACKOFF_GRACE_SECONDS) - 1):
+        p.waited(Wake(woken=False, by_notification=True))
+        p.went_quiet()
+        assert p.timeout == 1.0, "decayed inside the grace window while a gate could be waiting"
+
+
 def test_losing_notifications_tightens_the_interval_again() -> None:
     """Redis dropping must not leave a stream on the minute-long ceiling: the poll is
     the safety net, and it stops being one if it stays that slow."""

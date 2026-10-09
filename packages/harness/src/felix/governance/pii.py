@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from felix.observability.metrics import record_counter
@@ -23,6 +25,8 @@ _REGEX_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _analyzer = None
+# Held around Presidio's load and analysis; see `redact_pii`.
+_PRESIDIO_LOCK = threading.Lock()
 _anonymizer = None
 _presidio_checked = False
 
@@ -116,17 +120,27 @@ def _regex_redact(text: str) -> PiiResult:
 
 
 def redact_pii(text: str) -> PiiResult:
-    """Redact PII from text. Prefer Presidio when available; always regex residual."""
+    """Redact PII from text. Prefer Presidio when available; always regex residual.
+
+    Synchronous, and Presidio's analysis is CPU work: from async code, await `redact_pii_async`
+    instead, or the event loop waits out the analysis.
+    """
     if not text:
         return PiiResult(matched=False, text=text, engine="regex")
     engine = "regex"
     out = text
     matched = False
-    if _try_load_presidio() and _analyzer is not None and _anonymizer is not None:
+    # The lock, not only the dedicated executor, keeps Presidio single-threaded: a synchronous
+    # caller on the event loop (the reply screen's `redact`) and the executor's thread can both
+    # get here, and its first load and its spaCy pipeline are not ones to run twice at once.
+    with _PRESIDIO_LOCK:
+        loaded = _try_load_presidio() and _analyzer is not None and _anonymizer is not None
+    if loaded:
         try:
             from presidio_anonymizer.entities import OperatorConfig
 
-            results = _analyzer.analyze(text=text, language="en")
+            with _PRESIDIO_LOCK:
+                results = _analyzer.analyze(text=text, language="en")
             if results:
                 anonymized = _anonymizer.anonymize(
                     text=text,
@@ -142,7 +156,9 @@ def redact_pii(text: str) -> PiiResult:
                 matched = True
                 engine = "presidio"
         except Exception:
-            logger.debug("presidio redact failed; falling back to regex", exc_info=True)
+            # Not debug: for this text, PII only Presidio would have found goes through unredacted.
+            logger.warning("presidio redact failed; this text had regex coverage only", exc_info=True)
+            record_counter("felix_control_degraded", {"control": "pii", "reason": "analyze_failed"})
     residual = _regex_redact(out)
     if residual.matched:
         matched = True
@@ -150,6 +166,29 @@ def redact_pii(text: str) -> PiiResult:
         if engine == "presidio":
             engine = "presidio+regex"
     return PiiResult(matched=matched, text=out, engine=engine)
+
+
+# Presidio's analysis -- spaCy NER over the whole text -- and its first load are CPU work that
+# ran on the event loop, stalling every request on the worker for as long as a large tool
+# output took to analyse. One dedicated thread: off the loop, and serialized, so the engines
+# are loaded once and never analysed from two threads at a time.
+_PII_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+async def redact_pii_async(text: str) -> PiiResult:
+    """`redact_pii`, off the event loop whenever it may reach Presidio.
+
+    Inline only once the process knows it is regex-only -- Presidio absent or without a model --
+    because three regexes cost less than the hop to a thread.
+    """
+    if not text or (_presidio_checked and _analyzer is None):
+        return redact_pii(text)
+    import asyncio
+
+    global _PII_EXECUTOR
+    if _PII_EXECUTOR is None:
+        _PII_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="felix-pii")
+    return await asyncio.get_running_loop().run_in_executor(_PII_EXECUTOR, redact_pii, text)
 
 
 def reset_pii_engines_for_tests() -> None:

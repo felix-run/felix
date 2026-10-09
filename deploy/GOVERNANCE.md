@@ -177,7 +177,11 @@ summaries are model output over the whole thread, user turns and tool results in
 and are stored as written. A judge scores by, in order of preference: `spec.decider`
 when the rule sets `decider: true` (the probability the text meets `criteria`, as written), the
 chat model in `model`, and the heuristic — each failure falls through to the next, so a decider
-outage degrades a judge rather than opening it. A decider-scored judge sends the judged text to the
+outage degrades a judge rather than opening it. On tool output, the judges that will score with
+the heuristic run first, one at a time — they are free, and one that denies spares every model
+call — and the decider and model judges then run together; a tool result passes only if every
+judge passes it, as before, and the denial named is the first heuristic one, else the first of the
+rest in the manifest's order. A decider-scored judge sends the judged text to the
 decider's provider, and only judges text up to 8,000 characters — anything longer is scored by the
 model judge or the heuristic, which read all of it, rather than by a prefix. Treat a decider judge
 as a quality control, not a security boundary: the text it judges can argue for its own verdict
@@ -1474,6 +1478,12 @@ Screened tool output is read window by window across its whole length, like a us
 longer than eight windows (32,000 characters) is reported unavailable, so `on_flag` quarantines or
 blocks it rather than screening its first window and admitting the rest. This applies whenever
 `model` or `decider` is set.
+
+Windows are scored four at a time, and the first flagged or unavailable window *in order* decides,
+as it did when they were scored one after another. Verdicts are cached for ten minutes, per tenant
+and by what a verdict depends on (the window's text, `model`, and the decider), so a conversation a
+client re-sends every turn is not model-screened again on every request; a screener that could not
+run is never cached. The cache is per process, like the image verdicts'.
 
 Two things to re-measure if you set `model` and previously narrowed `tools`:
 

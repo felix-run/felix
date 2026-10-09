@@ -480,7 +480,11 @@ def _carries_reference(message: ChatMessage) -> bool:
 
 
 async def resolve_file_refs(
-    messages: Sequence[ChatMessage], *, tenant_id: str, object_store: Any | None
+    messages: Sequence[ChatMessage],
+    *,
+    tenant_id: str,
+    object_store: Any | None,
+    memo: dict[str, tuple[str, str] | None] | None = None,
 ) -> list[ChatMessage]:
     """`felix-file://` references expanded to `data:` URLs, immediately before the wire.
 
@@ -504,11 +508,17 @@ async def resolve_file_refs(
 
     Returns the input list unchanged when nothing carries a reference, and never mutates a
     message in place -- these belong to the session, and the next turn rebuilds from them.
+
+    ``memo`` carries what was read across calls. Each step of a tool loop is a provider call,
+    and every one of them re-read and re-encoded every image in the thread; a caller holding
+    one memo for a request reads each once per request. Per request rather than per process,
+    so a deleted attachment stops at the next request, and nothing holds image bytes longer
+    than the request that needed them.
     """
     if not any(_carries_reference(m) for m in messages):
         return list(messages)
 
-    resolved: dict[str, tuple[str, str] | None] = {}
+    resolved: dict[str, tuple[str, str] | None] = {} if memo is None else memo
 
     async def _expand(file_id: str) -> tuple[str, str] | None:
         """The `data:` URL and media type for one id, read at most once per call.
