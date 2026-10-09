@@ -439,3 +439,67 @@ async def test_an_empty_append_allocates_nothing(store: Any) -> None:
     session = store.open("seq-empty")
     assert await session.append_batch([]) == []
     assert await session.get_events() == []
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_skeletons_are_the_events_shape_and_nothing_else(store: Any) -> None:
+    """`get_event_skeletons` is `event_skeleton` of every event, on every backend.
+
+    Postgres builds it in SQL (`jsonb_build_object` + `jsonb_strip_nulls`) and the twin in Python,
+    so this is where a key spelled differently, a null kept as a key, or a heavy field leaking
+    through would show. The compaction render trusts the two to agree.
+    """
+    from felix.session.types import event_skeleton
+
+    session = store.open("t-skeleton")
+    await session.append_batch(
+        [
+            AppendableEvent(kind="message", role="user", content="no metadata"),
+            AppendableEvent(
+                kind="tool_result",
+                role="tool",
+                content="a tool's output",
+                name="search",
+                tool_call_id="c1",
+                metadata={"usage": {"input": 3}, "pinned": True},
+            ),
+            AppendableEvent(
+                kind="message",
+                role="assistant",
+                content="linked",
+                tool_calls=[{"id": "c1", "name": "search", "args": {"q": "x"}}],
+                metadata={"event_id": "e1", "parent_id": "e0", "usage": {"input": 9}, "pinned": True},
+            ),
+            AppendableEvent(
+                kind="compaction",
+                content="SUMMARY",
+                metadata={
+                    "event_id": "e2",
+                    "covers_to_seq": 0,
+                    "first_kept_seq": 1,
+                    "first_kept_entry_id": "e1",
+                    "last_kept_entry_id": None,
+                    "retainedTail": [{"role": "assistant", "content": "linked"}],
+                },
+            ),
+            AppendableEvent(kind="audit", metadata={"type": "session_summary", "covers_to_seq": 1}),
+        ]
+    )
+    skeletons = await session.get_event_skeletons()
+    expected = [event_skeleton(e) for e in await session.get_events()]
+
+    def fields(e: Any) -> tuple[Any, ...]:
+        return (e.seq, e.kind, e.role, e.content, e.tool_calls, e.name, e.tool_call_id, e.metadata)
+
+    assert [fields(s) for s in skeletons] == [fields(e) for e in expected]
+    # Nothing heavy came along, and metadata with no shape keys is None, not `{}`.
+    assert all(s.content is None and s.name is None and s.tool_call_id is None for s in skeletons)
+    assert skeletons[1].metadata is None
+    assert skeletons[3].metadata == {
+        "event_id": "e2",
+        "covers_to_seq": 0,
+        "first_kept_seq": 1,
+        "first_kept_entry_id": "e1",
+    }
+    assert skeletons[0].metadata is None

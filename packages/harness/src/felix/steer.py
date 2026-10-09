@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
@@ -132,6 +133,39 @@ async def is_aborted(tenant_id: str, thread_id: str) -> bool:
             await _conn.fallback("abort redis read")
     q = await ensure_run_queue(tenant_id, thread_id)
     return q.aborted
+
+
+# How often a streaming turn asks the shared store whether it was aborted. The local flag is
+# read on every delta; this bounds only the Redis round trip.
+ABORT_POLL_SECONDS = 0.25
+
+
+class AbortPoll:
+    """`is_aborted` for a loop that asks once per streamed delta.
+
+    Asking Redis on every delta made each token of a reply wait on a network round trip,
+    and Redis load scale with tokens times concurrent streams. An abort raised on this
+    process sets the in-process flag, read on every call for free; one raised on another
+    replica reaches Redis, read at most every ``interval_s``. So a Stop is honoured at once
+    here, and within a quarter of a second from anywhere else.
+    """
+
+    __slots__ = ("_interval_s", "_next_s", "_tenant_id", "_thread_id")
+
+    def __init__(self, tenant_id: str, thread_id: str, *, interval_s: float = ABORT_POLL_SECONDS) -> None:
+        self._tenant_id = tenant_id
+        self._thread_id = thread_id
+        self._interval_s = interval_s
+        self._next_s = 0.0
+
+    async def aborted(self) -> bool:
+        if (await ensure_run_queue(self._tenant_id, self._thread_id)).aborted:
+            return True
+        now = time.monotonic()
+        if now < self._next_s:
+            return False
+        self._next_s = now + self._interval_s
+        return await is_aborted(self._tenant_id, self._thread_id)
 
 
 async def clear_abort(tenant_id: str, thread_id: str) -> None:

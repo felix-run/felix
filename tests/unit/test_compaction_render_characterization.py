@@ -62,6 +62,17 @@ def _metered(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True, params=["skeletons", "whole-log"])
+def _read_path(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every pinned output must hold whether `_load_branch` reads the log's shape first and full
+    rows only past the summary, or reads the whole log -- the path a store without
+    `get_event_skeletons` takes."""
+    if request.param == "whole-log":
+        from felix.session import store
+
+        monkeypatch.delattr(store._MemorySession, "get_event_skeletons")
+
+
 @pytest.fixture(autouse=True)
 def _hooks():
     reset_agent_hooks()

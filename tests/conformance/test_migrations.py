@@ -94,6 +94,10 @@ async def test_every_index_the_models_declare_exists_after_upgrade() -> None:
         assert declared <= present, (
             f"declared in the models, created by no revision: {sorted(declared - present)}"
         )
+        # The other direction, for the one index a revision exists to remove: 0036 dropped the
+        # btree that duplicated `session_events`' primary key, and a 0036 that dropped nothing
+        # would pass the check above.
+        assert ("session_events", "idx_session_events_tenant_thread") not in present
     finally:
         await drop_everything(url)
 
@@ -226,8 +230,8 @@ async def _as_migrator(url: str) -> str:
     """A URL for a role that owns the skill tables and `alembic_version` and is bound by RLS.
 
     Plus every table a migration *after* `0033` alters, because reaching `0033` from head
-    downgrades through each of them first: `fibers` (`0034_fiber_thread`) and `usage_events`
-    (`0035_usage_thread`)."""
+    downgrades through each of them first: `fibers` (`0034_fiber_thread`), `usage_events`
+    (`0035_usage_thread`) and `session_events` (`0036_session_events_one_index`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -235,9 +239,11 @@ async def _as_migrator(url: str) -> str:
         url,
         f"CREATE ROLE {_MIGRATOR} LOGIN PASSWORD '{_MIGRATOR_PASSWORD}' NOSUPERUSER NOBYPASSRLS",
         f"GRANT USAGE, CREATE ON SCHEMA public TO {_MIGRATOR}",
+        # Every table a downgrade from head to 0032 alters: the skill tables, `fibers` (0034),
+        # `usage_events` (0035) and `session_events` (0036). A later migration extends this list.
         *(
             f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}'
-            for t in (*_SKILL_TABLES, "fibers", "usage_events", "alembic_version")
+            for t in (*_SKILL_TABLES, "fibers", "usage_events", "session_events", "alembic_version")
         ),
     )
     return (
@@ -303,12 +309,13 @@ async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgra
         assert await _scalar(migrator, "SELECT count(*) FROM skill") == 0, (
             "the migrator role sees rows without the bypass, so this test cannot catch a guard missing it"
         )
-        # Head, read rather than spelled: the refused downgrade rolls back whole, so the schema stays
-        # wherever it started, and that is `0033` only until a later migration lands.
-        head = await _scalar(url, "SELECT version_num FROM alembic_version")
         with pytest.raises(RuntimeError, match="personal libraries"):
             await _downgrade_past_0033(migrator)
-        assert await _scalar(url, "SELECT version_num FROM alembic_version") == head
+        # The refusal keeps what it guards: the skill tables still key on `owner`. Not "the version
+        # is still head" -- a revision whose step runs in an `autocommit_block` (0035, 0036) commits
+        # the steps before it, so a refused downgrade rolls back to the last of those, not to head.
+        assert await _primary_key(url, "skill") == "tenant_id,owner,name"
+        assert await _scalar(url, "SELECT version_num FROM alembic_version") != "0032_skill_file_normalized"
 
         # Versions removed and the skill row left behind still refuses: that row would re-key into
         # an org skill whose live version no longer exists.

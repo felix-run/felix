@@ -509,8 +509,8 @@ class SessionEventRow(Base):
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_calls: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
     event_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
-
-    __table_args__ = (Index("idx_session_events_tenant_thread", "tenant_id", "thread_id", "seq"),)
+    # No secondary index: the primary key is `(tenant_id, thread_id, seq)`, which is every read
+    # this table serves. The baseline built a second btree on the same columns; 0036 dropped it.
 
 
 class ThreadState(Base):

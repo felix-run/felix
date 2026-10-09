@@ -53,6 +53,30 @@ class SessionEvent:
     metadata: dict[str, Any] | None = None
 
 
+# The metadata an event's *shape* needs -- where it sits in the thread tree and, for a summary,
+# what it covers -- without its content. `compaction._load_branch` walks the whole log to find
+# the active branch and its newest summary, and it read every row's content, tool calls and
+# metadata to do it, including each old checkpoint's `retainedTail` copy of the turns it kept.
+# Every store that offers `get_event_skeletons` projects through this one list, the in-memory
+# twin included, so a key the walk needs and this list lacks fails the suite, not a deployment.
+SKELETON_METADATA_KEYS: tuple[str, ...] = (
+    "event_id",
+    "parent_id",
+    "type",
+    "covers_to_seq",
+    "first_kept_seq",
+    "first_kept_entry_id",
+    "last_kept_entry_id",
+)
+
+
+def event_skeleton(event: SessionEvent) -> SessionEvent:
+    """`event` with no content, tool calls or name, and only `SKELETON_METADATA_KEYS` kept."""
+    md = event.metadata or {}
+    kept = {k: md[k] for k in SKELETON_METADATA_KEYS if md.get(k) is not None}
+    return SessionEvent(seq=event.seq, ts=event.ts, kind=event.kind, role=event.role, metadata=kept or None)
+
+
 @dataclass(slots=True)
 class AppendableEvent:
     kind: SessionEventKind | EventKind

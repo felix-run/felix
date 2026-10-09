@@ -11,6 +11,7 @@ from typing import Any
 
 from felix.config import Settings
 from felix.session.types import (
+    SKELETON_METADATA_KEYS,
     AppendableEvent,
     GetEventsOpts,
     Session,
@@ -19,6 +20,7 @@ from felix.session.types import (
     SessionStore,
     WakeState,
     analyze_wake,
+    event_skeleton,
 )
 
 logger = logging.getLogger("felix.session.store")
@@ -109,6 +111,10 @@ class _MemorySession:
         if opts.limit is not None:
             items = items[: opts.limit]
         return items
+
+    async def get_event_skeletons(self) -> list[SessionEvent]:
+        """Every event, projected as Postgres projects it -- see `event_skeleton`."""
+        return [event_skeleton(e) for e in self._events]
 
     async def head(self) -> dict[str, int]:
         return {"seq": len(self._events)}
@@ -521,6 +527,36 @@ class _PostgresSession:
                 )
                 for r in rows
             ]
+
+    async def get_event_skeletons(self) -> list[SessionEvent]:
+        """Every event's shape: seq, kind, role and `SKELETON_METADATA_KEYS`, built in SQL.
+
+        `jsonb_strip_nulls` drops a key the row lacks, which is what `event_skeleton` does in
+        Python, so the two stores answer alike.
+        """
+        if not self.id:
+            return []
+        from sqlalchemy import func, literal, select
+
+        from felix.db.models import SessionEventRow
+
+        pairs: list[Any] = []
+        for key in SKELETON_METADATA_KEYS:
+            pairs += [literal(key), SessionEventRow.event_metadata[key]]
+        shape = func.jsonb_strip_nulls(func.jsonb_build_object(*pairs))
+        async with self.session_factory() as db:
+            stmt = (
+                select(
+                    SessionEventRow.seq, SessionEventRow.ts, SessionEventRow.kind, SessionEventRow.role, shape
+                )
+                .where(SessionEventRow.tenant_id == self.tenant_id, SessionEventRow.thread_id == self.id)
+                .order_by(SessionEventRow.seq)
+            )
+            rows = (await db.execute(stmt)).all()
+        return [
+            SessionEvent(seq=seq, ts=float(ts), kind=kind, role=role, metadata=md or None)
+            for seq, ts, kind, role, md in rows
+        ]
 
     async def head(self) -> dict[str, int]:
         """The next sequence number this thread would allocate.
