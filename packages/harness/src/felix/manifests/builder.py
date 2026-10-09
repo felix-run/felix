@@ -1494,9 +1494,9 @@ def _warn_untrusted_tools_are_unscreened(m: Manifest, untrusted: list[str]) -> N
     which is not a thing to do silently in a patch; refusing would break them outright. What
     was missing is anything saying it at the moment the manifest is compiled.
 
-    Silent across every bundled manifest, which is the bar for shipping it — a warning that
-    fires on what we ship is noise on arrival. `contributor.yaml` and `cowork.yaml` are the
-    two that bind untrusted tools, and both enable screening.
+    Silent across every bundled manifest and `manifests/self/`, which is the bar for shipping
+    it — a warning that fires on what we ship is noise on arrival. `self/contributor.yaml` and
+    `cowork.yaml` are the two that bind untrusted tools, and both enable screening.
     """
     if not untrusted:
         return

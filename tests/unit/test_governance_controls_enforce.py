@@ -760,7 +760,8 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
     import yaml
 
     offenders = []
-    for path in sorted((ROOT / "manifests").glob("*.yaml")):
+    # The self-build manifests too: `self/contributor.yaml` binds MCP, the case this rule is for.
+    for path in sorted([*(ROOT / "manifests").glob("*.yaml"), *(ROOT / "manifests" / "self").glob("*.yaml")]):
         spec = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spec") or {}
         binds_untrusted = any(
             spec.get(key)

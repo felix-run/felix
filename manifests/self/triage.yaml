@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../schemas/manifest.schema.json
+# yaml-language-server: $schema=../../schemas/manifest.schema.json
 # Felix proposing work on Felix — rungs 0 and 1 of docs/SELF.md: read real-run signals and the
 # roadmap, draft tickets that meet the Definition of Ready, and score open tickets against it.
 # Nothing here can edit a file or publish code; the only writes are issues and comments, and
@@ -13,7 +13,7 @@
 # development. GitHub-side signals — smoke runs, issues people filed — and the roadmap are
 # what rung 0 works from; the audit feed is a rung-4 item in docs/SELF.md.
 #
-# Validate: felix validate-manifest manifests/triage.yaml -e production
+# Validate: felix validate-manifest manifests/self/triage.yaml -e production
 apiVersion: felix/v1
 kind: Agent
 metadata:

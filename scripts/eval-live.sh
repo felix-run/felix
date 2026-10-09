@@ -34,6 +34,8 @@ export FELIX_ALLOW_INSECURE=true
 export FELIX_REDIS_URL="${FELIX_REDIS_URL:-redis://127.0.0.1:9/0}"
 export FELIX_MEMORY_EMBEDDER="${FELIX_MEMORY_EMBEDDER:-none}"
 export FELIX_WORKSPACE_ROOT="${FELIX_WORKSPACE_ROOT:-$PWD}"
+# `contributor` and `triage` are not bundled; they live in manifests/self (README).
+export FELIX_MANIFESTS_DIR="${FELIX_MANIFESTS_DIR:-$PWD/manifests/self}"
 
 uv run --no-sync felix eval --dataset "$DATASET" --manifest "$MANIFEST" --fixture "$FIXTURE" "$@" >"$OUT"
 code=$?
