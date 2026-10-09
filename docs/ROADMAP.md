@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [make.felix.run](https://make.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-10-07 (after 0.9.0 rolled to production; the full open-item check was
+**Last reviewed:** 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
 2026-09-29, after 0.5.0)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
@@ -575,6 +575,13 @@ First, because everything else governs it.
       The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
       column**, anywhere in the models or migrations. Sleeping is already distinguishable from
       crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
+- [ ] **Record each tool call's result as it lands.** #531 logs a batch's calls before they
+      run, so a re-run sees them, but their results are still written once the whole batch
+      returns. A call that finished inside a batch that did not is therefore closed as
+      interrupted ("may have already taken effect"), and the model is asked to check work it
+      could have been told was done. Correct, but it costs a turn and an approval each time a
+      worker dies mid-batch. Append each result as its call returns, and have
+      `_interrupted_tool_results` close only the calls with none.
 - [x] **A gated wait hears more than its signal** (felix-run/felix#532). Four gaps on the
       durable path, one root each. `waiters.wait` moved the rest of a wait onto an in-process
       future after one failed BLPOP and never asked Redis again, while the API went on
@@ -624,8 +631,8 @@ First, because everything else governs it.
       resend still reattaches; and the snapshot names the run as `activeRun`, the handle a
       reloaded client had no way to get. "In flight" is not "not terminal": a run past its
       expiry that no worker holds does not count, or a deployment with no worker would lock the
-      thread for good. Still open on the same path: #530 (client tools after the stream's
-      deadline) and #531 (a re-run repeats tool calls).
+      thread for good. The two gaps left open on the same path, #530 (client tools after the
+      stream's deadline) and #531 (a re-run repeats tool calls), closed in the same release.
 - [x] **A durable run streams its transcript** (felix-run/felix#238). `POST /chat/stream` on a
       durable manifest sent `run_accepted` → `run_status` → `final` and nothing between, so the
       answer arrived and the tool calls behind it did not. Correction to the premise this started
@@ -1813,7 +1820,9 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       production accepts. `eval-live.yml` runs with an empty `FELIX_ANTHROPIC_API_KEY`. Neither
       blocks PR CI, which is why both stayed red through three releases. 0.9.0 was verified by
       hand instead: `felix doctor` and a compile of all twelve bundled manifests in the container.
-      Re-mint the smoke key, set the eval key, and confirm one green run of each.
+      Re-mint the smoke key, set the eval key, and confirm one green run of each. Still red
+      after 0.12.0 rolled (2026-10-08): that release was checked by `/health` alone, and the
+      durable-path fixes in it await a hand-run `cowork` check on make.felix.run.
 - [ ] **GKE dogfood** — Helm + ESO → one known-good install note under `deploy/gcp/`.
 - [ ] **AWS smoke checklist** — mirror the GCP path (Secrets Manager / S3) in `deploy/aws/`.
 - [ ] **Postgres RLS dogfood** — migration `0006` + `FELIX_DATABASE_RLS=true` on a non-prod
