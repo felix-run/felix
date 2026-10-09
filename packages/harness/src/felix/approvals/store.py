@@ -365,7 +365,22 @@ async def create_pending(
         )
     # Once, after both arms: this is the only place that knows the row is new.
     _announce_pending_approval(settings, created)
+    await _wake_thread(created)
     return created
+
+
+async def _wake_thread(row: dict[str, Any] | None) -> None:
+    """Wake the streams watching the approval's thread: a gate opened or was answered.
+
+    The session log carries no approval, so a stream announcing a run's gates found a new one
+    only on its next poll -- which is why those streams were held to the short poll ceiling.
+    Best effort, like every notification; a row with no thread wakes nobody.
+    """
+    if not row or not row.get("thread_id"):
+        return
+    from felix.session.notify import notify_appended
+
+    await notify_appended(str(row.get("tenant_id") or ""), str(row["thread_id"]))
 
 
 async def _insert_pending(settings: Settings, row: Approval) -> dict[str, Any]:
@@ -411,7 +426,9 @@ async def decide(
         row["decision_note"] = note
         if edited_args is not None:
             row["edited_args_json"] = edited_args
-        return _approval_dict(row)
+        decided = _approval_dict(row)
+        await _wake_thread(decided)
+        return decided
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
@@ -425,7 +442,9 @@ async def decide(
         if edited_args is not None:
             row.edited_args_json = edited_args
         await db.commit()
-        return _approval_dict(row)
+        decided = _approval_dict(row)
+    await _wake_thread(decided)
+    return decided
 
 
 def _close_memory_row(row: dict[str, Any], ts: int, note: str = TIMEOUT_NOTE) -> None:

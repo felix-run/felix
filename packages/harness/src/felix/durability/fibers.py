@@ -311,6 +311,7 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
             return
         row["version"] = int(row.get("version") or 0) + 1
         _memory_fibers[(row["tenant_id"], row["id"])] = row
+        await _announce_fiber(row)
         return
 
     from sqlalchemy import update
@@ -350,6 +351,24 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
                 )
                 return
     row["version"] = expected + 1
+    await _announce_fiber(row)
+
+
+async def _announce_fiber(row: dict[str, Any]) -> None:
+    """Wake whatever is watching this fiber's thread: its status, and so its run's, just moved.
+
+    Called after every write of a fiber's status: `_save_fiber`, `_record_attempt` (its fallback
+    when the save itself failed) and the claim that sets `running` -- so a stream tailing a
+    durable run hears it start, finish, fail or expire the moment it does, rather than on its
+    next poll. The thread is the
+    one the run writes to: its own, or the `fiber_thread_id` it minted. Best effort, like every
+    notification: the poll underneath stays the safety net.
+    """
+    from felix.session.notify import notify_appended
+
+    tenant_id = str(row.get("tenant_id") or "")
+    thread = str(row.get("thread_id") or "") or fiber_thread_id(tenant_id, str(row.get("id") or ""))
+    await notify_appended(tenant_id, thread)
 
 
 async def _checkpoint_state(settings: Settings, row: dict[str, Any]) -> bool:
@@ -819,8 +838,14 @@ async def _claim_due(settings: Settings, limit: int = FIBER_BATCH) -> list[dict[
     """Claim up to `limit` due fibers from whichever store this process uses."""
     ts = now_ms()
     if _use_memory(settings):
-        return await _claim_due_memory(settings, ts, limit)
-    return await _claim_due_postgres(settings, ts, limit)
+        claimed = await _claim_due_memory(settings, ts, limit)
+    else:
+        claimed = await _claim_due_postgres(settings, ts, limit)
+    # After the claim commits: a stream reports `running` when the run starts, not when it next
+    # polls, which on a backed-up queue could be most of a minute later.
+    for row in claimed:
+        await _announce_fiber(row)
+    return claimed
 
 
 async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
@@ -1026,6 +1051,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
         if stored is not None and stored.get("lease_owner") in (owner, ""):
             stored.update(fields)
+            await _announce_fiber(row)
         return
     from sqlalchemy import update
 
@@ -1034,7 +1060,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     with rls_bypass():
         factory = get_session_factory(settings=settings)
         async with factory() as db:
-            await db.execute(
+            result = await db.execute(
                 update(Fiber)
                 .where(
                     Fiber.tenant_id == row["tenant_id"],
@@ -1044,6 +1070,10 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
                 .values(**fields)
             )
             await db.commit()
+    # The fallback when `_save_fiber` itself failed, and it writes `status` -- `dead` among
+    # them -- so it announces like the save it stands in for.
+    if getattr(result, "rowcount", 0):
+        await _announce_fiber(row)
 
 
 async def _renew_lease(settings: Settings, row: dict[str, Any]) -> bool:

@@ -486,7 +486,7 @@ class _ReactAgent:
             from felix.tools import client_requests
 
             for call_id in ids:
-                await client_requests.clear(thread_id, call_id)
+                await client_requests.clear(thread_id, call_id, tenant_id=tenant_id)
         except Exception:
             logger.debug("clearing interrupted client requests failed", exc_info=True)
         if self.settings is None:

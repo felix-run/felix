@@ -229,13 +229,14 @@ async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
 
 
 @pytest.mark.asyncio
-async def test_a_notified_stream_stays_on_the_short_ceiling_while_a_durable_run_is_in_flight(
+async def test_a_notified_stream_relaxes_with_a_durable_run_in_flight_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """felix-run/felix#530: with a durable run in flight the reattach stream also announces
-    what the run is blocked on, and an approval or a client request landing publishes no thread
-    notification -- so the long ceiling would ask a person about a waiting write up to a minute
-    late. Only then; the test above pins the long ceiling for every other reattach."""
+    """felix-run/felix#530 pinned this stream to the short ceiling while a durable run was in
+    flight, because the run's gates -- an approval, a client request -- published no thread
+    notification. They do now (`approvals.store._wake_thread`, `client_requests._wake`), so a
+    delivered wake covers them as it covers the log, and the poll relaxes as it does for every
+    other reattach. `test_gates_wake_the_thread.py` pins that each gate writer announces."""
     import felix.durability.runs as runs_mod
 
     calls = 0
@@ -243,16 +244,31 @@ async def test_a_notified_stream_stays_on_the_short_ceiling_while_a_durable_run_
     async def _active(*_a: Any, **_k: Any) -> dict[str, Any] | None:
         nonlocal calls
         calls += 1
-        # In flight when the stream opens -- read twice there, by the cold snapshot's `activeRun`
-        # and by the stream's own ceiling choice -- and over by the time it reaches its idle
-        # limit, so the stream still ends and the test does not hang.
+        # In flight for the cold snapshot's `activeRun` and at the first idle exhaustion -- so the
+        # stream renews instead of closing -- and over at the second, so the test ends.
         return {"resume_token": "fib", "status": "running", "expires_at": None} if calls <= 2 else None
 
     monkeypatch.setattr(runs_mod, "active_durable_run", _active)
-    slept, _ = await _record_waits(monkeypatch, delivering=True, idle_limit=600.0)
+    idle_limit = 600.0
+    slept, _ = await _record_waits(monkeypatch, delivering=True, idle_limit=idle_limit)
 
-    assert max(slept) <= 10.0, (
-        f"a notified stream relaxed past the ceiling with a run in flight: {max(slept)}"
+    from felix_api.routes._streaming import NOTIFIED_POLL_CEILING_SECONDS
+
+    assert calls == 3, f"expected snapshot, renew and end; the run was read {calls} times"
+    # The waits after the renew, on their own: the first window has relaxed before any renew,
+    # so a renew that re-pinned the short ceiling would hide behind its maximum.
+    total, renewed_at = 0.0, len(slept)
+    for i, wait in enumerate(slept):
+        total += wait
+        if total >= idle_limit:
+            renewed_at = i + 1
+            break
+    # From the second wait on: `renew()` keeps the interval it decayed to, so the first wait after
+    # it is the old one whatever the ceiling has since become.
+    after_renew = slept[renewed_at + 1 :]
+    assert after_renew, "the stream never renewed"
+    assert 10.0 < max(after_renew) <= NOTIFIED_POLL_CEILING_SECONDS, (
+        f"held to the short ceiling after renewing with a run in flight: {max(after_renew)}"
     )
 
 
