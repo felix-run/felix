@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from felix_ai.types import ChatMessage, ModelClient
 
+from felix.hooks import chat_with_model_hooks, model_hook_context
 from felix.patterns.model import record_model_usage
 
 #: Stop reasons that mean a subtask did not finish the work it was given.
@@ -39,6 +40,7 @@ async def _plan_subtasks(
     *,
     system_prompt: str,
     manifest_id: str,
+    thread_id: str | None,
     max_subtasks: int,
 ) -> list[str]:
     """One planning turn: ask for a numbered list, return it as bare subtasks.
@@ -47,7 +49,8 @@ async def _plan_subtasks(
     so the instruction, the numbering strip, and the `max_subtasks` truncation cannot come
     to differ between the plan a run starts with and the plan it recovers to.
     """
-    result = await planner.chat(
+    result = await chat_with_model_hooks(
+        planner,
         [
             ChatMessage(
                 role="system",
@@ -59,6 +62,7 @@ async def _plan_subtasks(
             ),
         ],
         [],
+        context=model_hook_context(planner, manifest_id=manifest_id, thread_id=thread_id, purpose="plan"),
     )
     record_model_usage(result, planner, manifest_id=manifest_id)
     return [

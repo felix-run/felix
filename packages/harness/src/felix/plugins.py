@@ -16,6 +16,16 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from felix.config import Settings
+    from felix.hooks import (
+        AfterModelHook,
+        AfterToolHook,
+        BeforeCompactHook,
+        BeforeModelHook,
+        BeforeToolHook,
+        BeforeTurnHook,
+        CompactFailedHook,
+        FilterHistoryHook,
+    )
     from felix.tools.types import Tool
 
 logger = logging.getLogger("felix.plugins")
@@ -133,35 +143,45 @@ class PluginRegistry:
     def startup_hooks(self) -> list[Callable[..., Awaitable[Any]]]:
         return list(self._startup_hooks)
 
-    def register_before_turn(self, hook: Callable[..., Any]) -> None:
+    def register_before_turn(self, hook: BeforeTurnHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_before_turn(hook)
 
-    def register_filter_history(self, hook: Callable[..., Any]) -> None:
+    def register_filter_history(self, hook: FilterHistoryHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_filter_history(hook)
 
-    def register_before_compact(self, hook: Callable[..., Any]) -> None:
+    def register_before_compact(self, hook: BeforeCompactHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_before_compact(hook)
 
-    def register_before_tool(self, hook: Callable[..., Any]) -> None:
+    def register_before_tool(self, hook: BeforeToolHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_before_tool(hook)
 
-    def register_after_tool(self, hook: Callable[..., Any]) -> None:
+    def register_after_tool(self, hook: AfterToolHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_after_tool(hook)
 
-    def register_compact_failed(self, hook: Callable[..., Any]) -> None:
+    def register_compact_failed(self, hook: CompactFailedHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_compact_failed(hook)
+
+    def register_before_model(self, hook: BeforeModelHook) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_before_model(hook)
+
+    def register_after_model(self, hook: AfterModelHook) -> None:
+        from felix.hooks import get_agent_hooks
+
+        get_agent_hooks().register_after_model(hook)
 
 
 _registry = PluginRegistry()

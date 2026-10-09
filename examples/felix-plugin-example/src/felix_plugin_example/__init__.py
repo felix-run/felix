@@ -81,14 +81,23 @@ def _build_pairs_session_strategy(arg: str, **budget: Any) -> Any:
 
 
 # --------------------------------------------------------------------------- hooks
-async def _before_tool(**kwargs: Any) -> dict[str, Any] | None:
-    """Return ``{"deny": True, "reason": ...}`` to block a call; None to allow.
+# Tool names this plugin refuses to let any agent call.
+BLOCKED_TOOLS = frozenset({f"{PLUGIN_NAMESPACE}__forbidden"})
+
+
+async def _before_tool(tool_call: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any] | None:
+    """Return ``{"block": True, "reason": ...}`` to block a call; None to allow.
+
+    Called positionally with the call (``{id, name, args}``) and its context
+    (``{manifest_id, thread_id}``). The model sees ``[error/blocked] <reason>`` in
+    place of a result; add ``"terminate": True`` to end the run as well.
 
     Runs at the tool-runner boundary, outside the governance wrapper stack — it is
-    a global interceptor, not a governance slot. Order-sensitive controls belong in
-    the wrapper stack in core.
+    a global interceptor, not a governance slot, and a hook that raises is skipped,
+    so it fails open. Order-sensitive controls belong in the wrapper stack in core.
     """
-    _ = kwargs
+    if tool_call.get("name") in BLOCKED_TOOLS:
+        return {"block": True, "reason": f"{tool_call['name']} is blocked by the example plugin"}
     return None
 
 
