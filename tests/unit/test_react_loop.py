@@ -288,8 +288,8 @@ async def test_retrieved_tools_hold_still_for_the_whole_run() -> None:
             return "ok"
 
     tools = [
-        Tool(name="alpha", description="weather forecast", args_schema=None, executor=_Ok()),
         Tool(name="gamma", description="file search", args_schema=None, executor=_Ok()),
+        Tool(name="alpha", description="weather forecast", args_schema=None, executor=_Ok()),
         Tool(name="beta", description="stock prices", args_schema=None, executor=_Ok()),
         Tool(name="delta", description="send email", args_schema=None, executor=_Ok()),
     ]
@@ -333,4 +333,5 @@ async def test_retrieved_tools_hold_still_for_the_whole_run() -> None:
         InvokeInput(messages=[ChatMessage(role="user", content="weather forecast")], tenant_id="default")
     )
 
-    assert model.offered == [["alpha", "gamma"], ["alpha", "gamma"]]
+    # Ranked, it is `alpha` then `gamma`; sent, it is the manifest's order.
+    assert model.offered == [["gamma", "alpha"], ["gamma", "alpha"]]

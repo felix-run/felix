@@ -24,8 +24,8 @@ from felix_ai.types import TokenUsage
 from felix_ai.wire.transport import (
     DEFAULT_CONNECT_TIMEOUT_S,
     ModelGatewayError,
+    model_http_client,
     post_with_retry,
-    shared_transport,
 )
 
 TYPESAFE_BASE_URL = "https://api.typesafe.ai/v1"
@@ -133,7 +133,7 @@ class JevDecider:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
-        async with httpx.AsyncClient(timeout=timeout, transport=shared_transport()) as client:
+        async with model_http_client(timeout) as client:
             resp = await post_with_retry(
                 client,
                 self._url,

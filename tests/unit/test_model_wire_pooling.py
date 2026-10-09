@@ -17,6 +17,16 @@ from felix.config import Settings
 from felix_ai import AnthropicMessagesClient, ChatMessage, ModelChatResult, ModelRoute
 from felix_ai.wire.transport import aclose_shared_transports
 
+_PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+
+
+@pytest.fixture(autouse=True)
+def _no_environment_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under a proxy the pool is bypassed on purpose; these tests are about the pool."""
+    for name in _PROXY_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 _REPLY = json.dumps(
     {
         "content": [{"type": "text", "text": "ok"}],
@@ -179,3 +189,107 @@ async def test_streamed_turn_does_not_retry_a_client_error(monkeypatch: pytest.M
         await _stream(_anthropic("https://example.invalid"))
     assert err.value.status == 400
     assert http.log == ["open 400", "close 400"]
+
+
+async def test_cancelled_retry_still_closes_the_rejected_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancellation while reading a rejected body must not strand its pooled connection."""
+    import httpx
+
+    class _CancelledRead(_Response):
+        async def aread(self) -> bytes:
+            raise asyncio.CancelledError
+
+    http = _ScriptedHttp([_CancelledRead(529, []), _Response(200, _OK_LINES)])
+    monkeypatch.setattr(httpx, "AsyncClient", http)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _stream(_anthropic("https://example.invalid"))
+    assert http.log == ["open 529", "close 529"]
+
+
+def test_model_call_sites_build_their_client_through_the_pool() -> None:
+    """A bare `httpx.AsyncClient(` here is a handshake per call that nothing else would catch."""
+    from pathlib import Path
+
+    import felix_ai
+
+    root = Path(felix_ai.__file__).parent
+    offenders = [
+        str(path.relative_to(root))
+        for sub in ("wire", "decide")
+        for path in sorted((root / sub).rglob("*.py"))
+        if path.name != "transport.py" and "httpx.AsyncClient(" in path.read_text()
+    ]
+    assert offenders == []
+
+
+def test_an_environment_proxy_keeps_its_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    """httpx ignores HTTPS_PROXY when handed a transport; the pool must not bypass the proxy."""
+    import httpx
+    from felix_ai.wire.transport import model_http_client
+
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: seen.append(kw))
+
+    async def build() -> None:
+        model_http_client(httpx.Timeout(1.0))
+
+    asyncio.run(build())
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:3128")
+    asyncio.run(build())
+
+    assert "transport" in seen[0]
+    assert "transport" not in seen[1]
+
+
+async def test_streamed_spent_quota_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The quota check needs the body; on a real streamed response it is unread until `aread`."""
+    import httpx
+    from felix_ai.wire import transport
+    from felix_ai.wire.transport import ModelGatewayError
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, stream=httpx.ByteStream(b'{"error":{"message":"insufficient_quota"}}'))
+
+    monkeypatch.setattr(transport, "shared_transport", lambda: httpx.MockTransport(handler))
+    monkeypatch.setattr(transport, "_backoff_delay", lambda attempt, retry_after: 0.0)
+
+    with pytest.raises(ModelGatewayError) as err:
+        await _stream(_anthropic("https://example.invalid"))
+    assert err.value.status == 429
+    assert len(requests) == 1
+
+
+async def test_streamed_retries_run_out_and_close_every_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+    from felix_ai.wire import transport
+    from felix_ai.wire.transport import MODEL_MAX_RETRIES, ModelGatewayError
+
+    monkeypatch.setattr(transport, "_backoff_delay", lambda attempt, retry_after: 0.0)
+    attempts = MODEL_MAX_RETRIES + 1
+    http = _ScriptedHttp([_Response(529, []) for _ in range(attempts)])
+    monkeypatch.setattr(httpx, "AsyncClient", http)
+
+    with pytest.raises(ModelGatewayError) as err:
+        await _stream(_anthropic("https://example.invalid"))
+    assert err.value.status == 529
+    assert http.log == ["open 529", "close 529"] * attempts
+
+
+def test_each_event_loop_gets_its_own_pool() -> None:
+    """httpcore connections belong to the loop that opened them; sharing one across loops breaks."""
+    from felix_ai.wire.transport import shared_transport
+
+    async def grab() -> tuple[Any, Any, Any]:
+        first, again = shared_transport(), shared_transport()
+        await aclose_shared_transports()
+        return first, again, shared_transport()
+
+    first, again, after_close = asyncio.run(grab())
+    other_loop, _, _ = asyncio.run(grab())
+    assert first is again
+    assert after_close is not first
+    assert other_loop is not first

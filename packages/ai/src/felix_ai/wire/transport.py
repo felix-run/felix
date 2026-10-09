@@ -14,7 +14,7 @@ import random
 import time
 import weakref
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager, suppress
 from typing import Any
 
 import httpx
@@ -303,36 +303,56 @@ async def stream_with_retry(
     the turn that the non-streaming path would have recovered.
     """
     for attempt in range(max_retries + 1):
-        opener = client.stream("POST", url, json=json, headers=headers)
-        try:
-            resp = await opener.__aenter__()
-        except httpx.ReadTimeout, httpx.WriteTimeout:
-            _record_mid_request_timeout(label)
-            raise
-        except httpx.HTTPError:
-            if attempt >= max_retries:
+        # One exit stack per attempt: whatever ends an attempt — a retry, a cancellation
+        # while reading a rejected body, an error in the policy — closes its stream. The
+        # pool outlives the client now, so an unexited stream would hold its connection.
+        async with AsyncExitStack() as stack:
+            try:
+                resp = await stack.enter_async_context(client.stream("POST", url, json=json, headers=headers))
+            except httpx.ReadTimeout, httpx.WriteTimeout:
+                _record_mid_request_timeout(label)
                 raise
-            await asyncio.sleep(_backoff_delay(attempt, None))
-            continue
-        if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
-            # The quota check reads the body, which a streamed response has not loaded yet.
-            with suppress(httpx.HTTPError):
-                await resp.aread()
-            delay = _retry_delay(resp, attempt, max_retries, label)
-            if delay is not None:
-                await opener.__aexit__(None, None, None)
-                await asyncio.sleep(delay)
+            except httpx.HTTPError:
+                if attempt >= max_retries:
+                    raise
+                await asyncio.sleep(_backoff_delay(attempt, None))
                 continue
-        break
-    else:  # pragma: no cover - every iteration either continues with a retry left or breaks
-        raise RuntimeError("unreachable")
-    try:
-        yield resp
-    except BaseException as exc:
-        if not await opener.__aexit__(type(exc), exc, exc.__traceback__):
-            raise
-    else:
-        await opener.__aexit__(None, None, None)
+            if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
+                # The quota check reads the body, which a streamed response has not loaded yet.
+                with suppress(httpx.HTTPError):
+                    await resp.aread()
+                delay = _retry_delay(resp, attempt, max_retries, label)
+                if delay is not None:
+                    await stack.aclose()
+                    await asyncio.sleep(delay)
+                    continue
+            yield resp
+            return
+
+
+def model_http_client(timeout: httpx.Timeout) -> httpx.AsyncClient:
+    """The client a model, decision or embedding call makes its request with.
+
+    Per call, so the timeout stays per call, over `shared_transport`, so the connection
+    does not. Every call site goes through here rather than spelling both: one that built a
+    bare `httpx.AsyncClient` would quietly go back to a handshake per call, and nothing
+    would fail. `httpx.AsyncClient` is looked up at call time, which keeps it swappable.
+
+    Not under an environment proxy. httpx reads `HTTP(S)_PROXY` / `NO_PROXY` only when no
+    `transport=` is passed, so pooling there would send model traffic — prompts, tenant
+    data, the provider key — around the operator's egress proxy, past whatever it logs or
+    filters. Those deployments keep a client per call and the proxy route they configured.
+    """
+    if _environment_proxies():
+        return httpx.AsyncClient(timeout=timeout)
+    return httpx.AsyncClient(timeout=timeout, transport=shared_transport())
+
+
+def _environment_proxies() -> bool:
+    """Whether the environment names a proxy httpx would route through (`trust_env`)."""
+    from urllib.request import getproxies
+
+    return any(scheme in getproxies() for scheme in ("http", "https", "all"))
 
 
 __all__ = [
@@ -341,6 +361,7 @@ __all__ = [
     "ModelGatewayError",
     "ModelUnreachableError",
     "aclose_shared_transports",
+    "model_http_client",
     "post_with_retry",
     "shared_transport",
     "stream_with_retry",
