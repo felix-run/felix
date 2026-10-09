@@ -387,12 +387,12 @@ class FelixClient:
             return resp.json()
 
     async def list_sessions(self, *, limit: int | None = None, cursor: str | None = None) -> dict[str, Any]:
-        """One page of sessions, newest first: `{sessions, items, next_cursor}`. Pass `next_cursor`
-        back as ``cursor`` for the next page; it is `None` on the last."""
+        """One page of sessions, newest first: ``{sessions, items, next_cursor}``. Pass
+        ``next_cursor`` back as ``cursor`` for the next page; it is ``None`` on the last."""
         params: dict[str, Any] = {}
         if limit is not None:
             params["limit"] = limit
-        if cursor:
+        if cursor is not None:
             params["cursor"] = cursor
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(

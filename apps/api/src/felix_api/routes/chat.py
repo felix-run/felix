@@ -1565,7 +1565,8 @@ async def list_sessions(
     thread that has none, or that was written before the harness recorded it.
 
     Ordered by last update, to the second, then by id. `next_cursor` is `null` on the last page;
-    otherwise pass it back as `cursor` for the next.
+    otherwise pass it back as `cursor` for the next. A thread updated during a walk moves ahead of
+    the cursor, so that walk does not see it again; the next one lists it first.
     """
     from felix.cursors import InvalidCursor
     from felix.session.thread_state import list_thread_metadata
@@ -1576,7 +1577,7 @@ async def list_sessions(
             settings=request.app.state.settings, tenant_id=auth.tenant_id, limit=limit, cursor=cursor
         )
     except InvalidCursor as exc:
-        # A query parameter, so anything; a malformed one is the client's error, not a 500.
+        # Same as `/audit` (routes/audit.py): a malformed cursor is the client's error, not a 500.
         raise HTTPException(
             status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
         ) from exc

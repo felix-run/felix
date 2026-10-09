@@ -142,9 +142,11 @@ async def test_reading_an_unknown_thread_does_not_add_it_to_the_session_list(boo
 async def test_the_session_list_pages_newest_first(boot: Any) -> None:
     """`limit` and `cursor` reach the store, and `next_cursor` walks to the end and stops there.
 
-    Three turns on three threads, so the newest is the last one written: a listing that ignored
-    `limit` returns all three on page one, and one that dropped `cursor` returns the first page
-    again until the walk gives up.
+    A listing that ignored `limit` returns all three threads on page one, and one that dropped
+    `cursor` returns the first page again until the walk gives up. The three turns usually share
+    a second, so the order this pins is the id tie-break -- named so that it agrees with write
+    order, and holds either way; the timestamp order is pinned by
+    `tests/conformance/test_session_listing.py`.
     """
     async with boot([_answer(), _answer(), _answer()]) as app:
         written = [(await _seed(app, f"e2e-page-{n}"))["thread_id"] for n in range(3)]
@@ -162,8 +164,7 @@ async def test_the_session_list_pages_newest_first(boot: Any) -> None:
             if cursor is None:
                 break
 
-        assert sorted(seen) == sorted(written), seen
-        assert seen[0] == written[-1], "the newest thread is not first"
+        assert seen == written[::-1], seen
         assert cursor is None, "the walk did not end"
 
         bad = await app.client.get("/chat/sessions", params={"cursor": "not-a-cursor"})
