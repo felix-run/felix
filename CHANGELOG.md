@@ -10,6 +10,36 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-10-08
+
+### Added
+
+- `usage_events.thread_id` (migration `0035_usage_thread`): every metered model call records the `{tenant}:{suffix}` thread it ran on, `''` outside one. `GET /usage` rows carry it and take `?thread_id=<suffix>`. (#542)
+
+- `GET /usage/threads`: spend grouped by thread over a window, most recently active first, with totals over every thread and `truncated` when more exist than `limit`. (#542)
+
+### Changed
+
+- Model calls share one pooled HTTP connection per event loop instead of opening a client per call, which removes a TCP and TLS handshake from every turn, judge, screen and decision. (#538)
+
+- With `tools_retrieval` enabled, the tool list is chosen once per run and sent in manifest order, so it no longer changes between steps and invalidates the prompt cache. (#538)
+
+- A request for a bundled manifest no longer queries Postgres each time; the "not in the store" answer is cached for the same 30 s as an active version, so a first publish over a bundled name reaches other replicas within that window. (#541)
+
+- Library skills, MCP tool discovery and AWS/GCP secret values are cached between compiles (5 min, 60 s and 5 min). MCP servers are discovered concurrently, and cloud secret lookups no longer block the event loop. A rotated or deleted cloud secret can be served for up to 5 minutes per process; see `deploy/GOVERNANCE.md`. (#541)
+
+- A plugin usage sink whose `record` accepts `thread_id` (or `**kwargs`) is passed the call's thread; other sinks are called as before. (#542)
+
+### Fixed
+
+- A streamed model call now retries a 429, 529 or transient 5xx received before the first byte, as the non-streaming path already did. (#538)
+
+- Streamed thinking and tool-argument deltas are assembled in linear time; large tool arguments were quadratic. (#538)
+
+- Model, decision-model and embedding calls honour `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` again; since the shared connection pool they had bypassed an environment proxy. (#539)
+
+- A streamed model call cancelled while a rejected response was being read for a retry no longer leaves its pooled connection open. (#539)
+
 ## [0.12.0] — 2026-10-08
 
 ### Added
@@ -4464,3 +4494,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.11.2]: https://github.com/felix-run/felix/releases/tag/v0.11.2
 [0.11.3]: https://github.com/felix-run/felix/releases/tag/v0.11.3
 [0.12.0]: https://github.com/felix-run/felix/releases/tag/v0.12.0
+[0.12.1]: https://github.com/felix-run/felix/releases/tag/v0.12.1
