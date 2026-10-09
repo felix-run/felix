@@ -570,6 +570,9 @@ async def _channels_in_postgres(
                 logger.warning("lexical channel failed; vector only", exc_info=True)
 
         if vector is not None:
+            from felix.db.vector import scan_until_limit
+
+            await scan_until_limit(db)
             literal = "[" + ",".join(f"{float(x):.7g}" for x in vector) + "]"
             try:
                 result = await db.execute(

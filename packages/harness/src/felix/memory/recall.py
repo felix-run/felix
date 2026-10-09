@@ -398,6 +398,10 @@ async def _channels_in_postgres(
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
+        if qvec is not None:
+            from felix.db.vector import scan_until_limit
+
+            await scan_until_limit(db)
         for name, sql, bound in statements:
             # A savepoint per channel. The `except` below promises a deployment mid-upgrade
             # "loses a channel, not the turn", and in one shared transaction that was not
