@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from felix.tools.types import Tool, define_tool
+from felix.tools.errors import ToolErrorCode, tool_error_output
+from felix.tools.types import Tool, ToolOutput, define_tool
 
 # A conflict means someone else wrote the plan between our read and write; a few
 # re-reads settle any realistic contention without looping on a hot row forever.
@@ -33,7 +34,7 @@ def _step_title(step: dict[str, Any]) -> str:
 
 
 def _plan_tools() -> list[Tool]:
-    async def plan_create(args: dict[str, Any], _ctx: Any = None) -> str:
+    async def plan_create(args: dict[str, Any], _ctx: Any = None) -> ToolOutput:
         import json
         import uuid
 
@@ -42,7 +43,7 @@ def _plan_tools() -> list[Tool]:
 
         req = try_get_context()
         if req is None:
-            return "error: no request context for plan_create"
+            return tool_error_output(ToolErrorCode.INTERNAL, "no request context for plan_create")
         plan_id = str(args.get("plan_id") or uuid.uuid4().hex[:12])
         title = str(args.get("title") or "")
         goal = str(args.get("goal") or "")
@@ -83,7 +84,7 @@ def _plan_tools() -> list[Tool]:
         )
         return json.dumps({"id": row["id"], "plan": row["plan"]}, separators=(",", ":"))
 
-    async def plan_update_step(args: dict[str, Any], _ctx: Any = None) -> str:
+    async def plan_update_step(args: dict[str, Any], _ctx: Any = None) -> ToolOutput:
         import json
 
         from felix.context import try_get_context
@@ -91,23 +92,23 @@ def _plan_tools() -> list[Tool]:
 
         req = try_get_context()
         if req is None:
-            return "error: no request context for plan_update_step"
+            return tool_error_output(ToolErrorCode.INTERNAL, "no request context for plan_update_step")
         plan_id = str(args.get("plan_id") or "")
         step_id = str(args.get("step_id") or "")
         if not plan_id or not step_id:
-            return "error: plan_id and step_id required"
+            return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, "plan_id and step_id required")
         # Conditional, and retried against what is actually stored: an operator may
         # have replaced the plan through `PUT /plans/{id}` since it was read, and an
         # unconditional write here would erase their edit to record a step status.
         row = await plans_store.get_plan(req.settings, req.auth.tenant_id, plan_id)
         for _ in range(_UPDATE_ATTEMPTS):
             if row is None:
-                return f"error: plan not found: {plan_id}"
+                return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, f"plan not found: {plan_id}")
             plan = dict(row["plan"] or {})
             steps = [dict(step) for step in plan.get("steps") or []]
             step = next((s for s in steps if str(s.get("id")) == step_id), None)
             if step is None:
-                return f"error: step not found: {step_id}"
+                return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, f"step not found: {step_id}")
             step["status"] = str(args.get("status") or "done")
             if args.get("note"):
                 step["note"] = str(args["note"])
@@ -128,9 +129,11 @@ def _plan_tools() -> list[Tool]:
                 row = conflict.current
                 continue
             return json.dumps({"id": updated["id"], "plan": updated["plan"]}, separators=(",", ":"))
-        return f"error: plan {plan_id} kept changing while updating step {step_id}; try again"
+        return tool_error_output(
+            ToolErrorCode.INTERNAL, f"plan {plan_id} kept changing while updating step {step_id}; try again"
+        )
 
-    async def plan_get(args: dict[str, Any], _ctx: Any = None) -> str:
+    async def plan_get(args: dict[str, Any], _ctx: Any = None) -> ToolOutput:
         import json
 
         from felix.context import try_get_context
@@ -138,12 +141,12 @@ def _plan_tools() -> list[Tool]:
 
         req = try_get_context()
         if req is None:
-            return "error: no request context for plan_get"
+            return tool_error_output(ToolErrorCode.INTERNAL, "no request context for plan_get")
         plan_id = str(args.get("plan_id") or "")
         if plan_id:
             row = await plans_store.get_plan(req.settings, req.auth.tenant_id, plan_id)
             if row is None:
-                return f"error: plan not found: {plan_id}"
+                return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, f"plan not found: {plan_id}")
             return json.dumps({"id": row["id"], "plan": row["plan"]}, separators=(",", ":"))
         # The newest plan on *this* conversation. It was the tenant's newest, so an agent
         # in one thread could read, and go on to update, a plan another thread was
@@ -152,7 +155,11 @@ def _plan_tools() -> list[Tool]:
             req.settings, req.auth.tenant_id, limit=1, thread_id=req.thread_id or None
         )
         if not items:
-            return "error: no plans on this thread" if req.thread_id else "error: no plans for tenant"
+            return (
+                tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, "no plans on this thread")
+                if req.thread_id
+                else tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, "no plans for tenant")
+            )
         row = items[0]
         return json.dumps({"id": row["id"], "plan": row["plan"]}, separators=(",", ":"))
 

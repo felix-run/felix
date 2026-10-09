@@ -526,6 +526,16 @@ class ThreadState(Base):
     )
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
+    # `GET /chat/sessions` pages a tenant's threads newest first (migration 0037).
+    __table_args__ = (
+        Index(
+            "idx_thread_state_tenant_updated_thread",
+            "tenant_id",
+            text("updated_at DESC"),
+            text('thread_id COLLATE "C" DESC'),
+        ),
+    )
+
 
 class Fiber(Base):
     __tablename__ = "fibers"

@@ -8,8 +8,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.security.expr import evaluate_expression
+from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider, ToolProvider
-from felix.tools.types import define_tool
+from felix.tools.types import ToolOutput, define_tool
 
 logger = logging.getLogger("felix.tools.builtins")
 
@@ -17,14 +18,19 @@ logger = logging.getLogger("felix.tools.builtins")
 class CalculatorArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    expression: str = Field(min_length=1)
+    # Bounded so an oversized expression is refused as bad arguments; a few thousand nested
+    # unary operators overflow the parser with a `MemoryError` the handler does not catch.
+    expression: str = Field(min_length=1, max_length=1000)
 
 
-async def _calculator_handler(args: CalculatorArgs) -> str:
+async def _calculator_handler(args: CalculatorArgs) -> ToolOutput:
+    # A bad expression is a failed call, marked as one. It was a plain `error: ...` string, so
+    # the runner reported `is_error=False` to `after_tool`, eval counted it as a success, and
+    # the audit row read `ok`. Anything outside these is a bug and goes to the runner.
     try:
         return str(evaluate_expression(args.expression))
-    except Exception as err:
-        return f"error: {err}"
+    except (ValueError, SyntaxError, ArithmeticError, RecursionError) as err:
+        return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, str(err))
 
 
 async def _list_skills_stub(_args: dict[str, Any] | None = None) -> str:

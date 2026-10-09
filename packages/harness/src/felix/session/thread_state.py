@@ -191,6 +191,16 @@ def _bump(meta: dict[str, Any]) -> None:
     meta["revision"] = int(meta.get("revision") or 0) + 1
 
 
+def _column_seconds(meta: dict[str, Any]) -> int:
+    """The `thread_state.updated_at` column for a row whose metadata is ``meta``.
+
+    The metadata's own millisecond stamp, cut to the second -- not a second clock read, which
+    could land in the next second and list the row out of the order the twin lists it in
+    (`list_thread_metadata` pages on the column).
+    """
+    return int(meta["updated_at"]) // 1000
+
+
 def _row_meta(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Defaults under a row's own keys, so a key added to `_default_meta` later still answers."""
     meta = _default_meta()
@@ -223,14 +233,15 @@ async def _locked_row(
 
     from felix.db.models import ThreadState
 
+    meta = _default_meta()
     await db.execute(
         insert(ThreadState)
         .values(
             tenant_id=tenant_id,
             thread_id=thread_id,
             leaf_event_id=leaf_event_id,
-            labels_json=_default_meta(),
-            updated_at=int(time.time()),
+            labels_json=meta,
+            updated_at=_column_seconds(meta),
         )
         .on_conflict_do_nothing(index_elements=["tenant_id", "thread_id"])
     )
@@ -284,7 +295,7 @@ async def persist_leaf(
         stored[LEAF_EPOCH_KEY] = epoch
         row.leaf_event_id = leaf_event_id
         row.labels_json = stored
-        row.updated_at = int(time.time())
+        row.updated_at = _column_seconds(stored)
         await db.commit()
     _set_leaf_epoch(thread_id, epoch)
 
@@ -331,7 +342,7 @@ async def update_thread_meta(
         _merge_fields(stored, fields)
         _bump(stored)
         row.labels_json = stored
-        row.updated_at = int(time.time())
+        row.updated_at = _column_seconds(stored)
         await db.commit()
     return _row_meta(stored)
 
@@ -408,7 +419,7 @@ async def claim_thread(
                 thread_id=thread_id,
                 leaf_event_id=None,
                 labels_json=meta,
-                updated_at=int(time.time()),
+                updated_at=_column_seconds(meta),
             )
             .on_conflict_do_nothing(index_elements=["tenant_id", "thread_id"])
             .returning(ThreadState.thread_id)
@@ -444,26 +455,50 @@ async def list_thread_metadata(
     *,
     settings: Settings | None,
     tenant_id: str,
-) -> list[dict[str, Any]]:
-    """List durable session metadata for a tenant -- `GET /chat/sessions`, one query."""
-    items: list[dict[str, Any]] = []
+    limit: int,
+    cursor: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """One page of a tenant's session metadata, newest first -- `GET /chat/sessions`, one query.
+
+    Ordered by the row's `updated_at` (epoch seconds), then by thread id compared byte for byte,
+    and paged on that pair (`felix.cursors`). Seconds, not the metadata's own millisecond
+    `updatedAt`, because the column is what the index (`0037`) orders by; every write sets the
+    column from the metadata's stamp (`_column_seconds`), so the two orders differ only inside a
+    second, where the tie falls to the id. The twin cuts its millisecond stamp to the same
+    second, so both arms put the same rows on the same page.
+    """
+    from felix.cursors import keyset_before, keyset_order, order_and_seek, take_page
+
     if _use_memory(settings):
-        for tid, meta in _meta_by_thread.items():
-            if tid.startswith(f"{tenant_id}:") or tenant_id == "default":
-                items.append(_session_index_dict(tid, meta))
-        return items
+        rows: list[dict[str, Any]] = [
+            {"ts": int(meta.get("updated_at") or 0) // 1000, "id": tid, "meta": meta}
+            for tid, meta in _meta_by_thread.items()
+            if tid.startswith(f"{tenant_id}:") or tenant_id == "default"
+        ]
+        page, next_cursor = take_page(order_and_seek(rows, cursor), limit=limit)
+        return [_session_index_dict(row["id"], row["meta"]) for row in page], next_cursor
 
     from sqlalchemy import select
 
     from felix.db.models import ThreadState
     from felix.db.session import get_session_factory
 
+    stmt = (
+        select(ThreadState)
+        .where(ThreadState.tenant_id == tenant_id)
+        .order_by(*keyset_order(ThreadState.updated_at, ThreadState.thread_id))
+        .limit(limit + 1)
+    )
+    if cursor is not None:
+        stmt = stmt.where(keyset_before(ThreadState.updated_at, ThreadState.thread_id, cursor))
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        rows = (await db.scalars(select(ThreadState).where(ThreadState.tenant_id == tenant_id))).all()
-        for row in rows:
-            items.append(_session_index_dict(row.thread_id, row.labels_json or {}, row.updated_at * 1000))
-    return items
+        found = (await db.scalars(stmt)).all()
+    page, next_cursor = take_page(
+        found, limit=limit, position=lambda row: (int(row.updated_at), str(row.thread_id))
+    )
+    items = [_session_index_dict(row.thread_id, row.labels_json or {}, row.updated_at * 1000) for row in page]
+    return items, next_cursor
 
 
 async def note_first_message(
@@ -514,7 +549,7 @@ async def note_first_message(
         stored[PREVIEW_KEY] = preview
         _bump(stored)
         row.labels_json = stored
-        row.updated_at = int(time.time())
+        row.updated_at = _column_seconds(stored)
         await db.commit()
     return True
 

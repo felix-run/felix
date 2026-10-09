@@ -231,7 +231,8 @@ async def _as_migrator(url: str) -> str:
 
     Plus every table a migration *after* `0033` alters, because reaching `0033` from head
     downgrades through each of them first: `fibers` (`0034_fiber_thread`), `usage_events`
-    (`0035_usage_thread`) and `session_events` (`0036_session_events_one_index`)."""
+    (`0035_usage_thread`), `session_events` (`0036_session_events_one_index`) and `thread_state`
+    (`0037_thread_state_listing_index`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -240,10 +241,18 @@ async def _as_migrator(url: str) -> str:
         f"CREATE ROLE {_MIGRATOR} LOGIN PASSWORD '{_MIGRATOR_PASSWORD}' NOSUPERUSER NOBYPASSRLS",
         f"GRANT USAGE, CREATE ON SCHEMA public TO {_MIGRATOR}",
         # Every table a downgrade from head to 0032 alters: the skill tables, `fibers` (0034),
-        # `usage_events` (0035) and `session_events` (0036). A later migration extends this list.
+        # `usage_events` (0035), `session_events` (0036) and `thread_state` (0037). A later
+        # migration extends this list.
         *(
             f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}'
-            for t in (*_SKILL_TABLES, "fibers", "usage_events", "session_events", "alembic_version")
+            for t in (
+                *_SKILL_TABLES,
+                "fibers",
+                "usage_events",
+                "session_events",
+                "thread_state",
+                "alembic_version",
+            )
         ),
     )
     return (
@@ -312,7 +321,7 @@ async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgra
         with pytest.raises(RuntimeError, match="personal libraries"):
             await _downgrade_past_0033(migrator)
         # The refusal keeps what it guards: the skill tables still key on `owner`. Not "the version
-        # is still head" -- a revision whose step runs in an `autocommit_block` (0035, 0036) commits
+        # is still head" -- a revision whose step runs in an `autocommit_block` (0035, 0036, 0037) commits
         # the steps before it, so a refused downgrade rolls back to the last of those, not to head.
         assert await _primary_key(url, "skill") == "tenant_id,owner,name"
         assert await _scalar(url, "SELECT version_num FROM alembic_version") != "0032_skill_file_normalized"
