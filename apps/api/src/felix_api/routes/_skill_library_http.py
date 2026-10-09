@@ -14,15 +14,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from felix.auth.mgmt import require_mgmt_scopes, tenant_id_from_request
+from felix.auth.mgmt import (
+    SCOPE_SKILLS_PERSONAL,
+    SCOPE_SKILLS_READ,
+    SCOPE_SKILLS_WRITE,
+    require_mgmt_scopes,
+    subject_from_request,
+    tenant_id_from_request,
+)
 from felix.skills import library
 from felix.skills.format import is_valid_skill_name
 from felix.skills.github import SkillImportError
-from felix.skills.library_keys import ORG_OWNER
+from felix.skills.library_keys import ORG_OWNER, library_label
 from felix.skills.library_store import SkillLibraryStore, get_skill_library_store
 from felix.skills.quality_store import Cursor
 
@@ -277,20 +284,95 @@ async def written_version(
     }
 
 
-def library_request(request: Request, scope: str) -> LibraryRequest:
-    """Check ``scope`` and resolve the caller's view of the library."""
+# What a handler does with the library it is handed. `archive` is a write an administrator may
+# also make to someone else's library; every other write is its owner's alone.
+Access = Literal["read", "write", "archive"]
+
+# The `library` path parameter of `/skill-library/~{library}/...`: the caller's own, or one
+# person's by its digest (`library_keys.library_label`).
+MY_LIBRARY = "me"
+_LABEL_RE = re.compile(r"^~[0-9a-f]{32}\Z")
+
+
+async def library_request(request: Request, access: Access) -> LibraryRequest:
+    """Check the caller may have ``access`` to the library the path names, and resolve it.
+
+    Without a `library` path parameter it is the tenant's own, under `skills:read` /
+    `skills:write`. `~me` is the caller's personal library: theirs to read and write with no
+    management scope, refused (403) to a caller who has none -- anonymous, `auth_mode=none`, an
+    API key without its own `sub`. `~<digest>` is one person's library, for `admin` / `*` alone,
+    read or archived (never otherwise written), and every such access is audited.
+    """
     from felix.secrets import collected_secret_values
     from felix.storage import get_object_store
 
-    require_mgmt_scopes(request, scope)
     settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+    named = request.path_params.get("library")
+    if named is None:
+        require_mgmt_scopes(request, SCOPE_SKILLS_READ if access == "read" else SCOPE_SKILLS_WRITE)
+        owner = ORG_OWNER
+    elif named == MY_LIBRARY:
+        owner = _callers_library(request, access)
+    else:
+        owner = await _someones_library(request, settings, tenant_id, f"~{named}", access)
     return LibraryRequest(
         settings=settings,
-        tenant_id=tenant_id_from_request(request),
-        lib=get_skill_library_store(settings, owner=ORG_OWNER),
+        tenant_id=tenant_id,
+        lib=get_skill_library_store(settings, owner=owner),
         store=get_object_store(settings),
         secrets=collected_secret_values(settings),
     )
+
+
+def _callers_library(request: Request, access: Access) -> str:
+    """The caller's own library. Reading it is theirs by right; writing it takes `skills:personal`,
+    because a principal may be a credential many hold."""
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    owner = ctx.auth.skill_owner if ctx is not None else None
+    if owner is None:
+        raise HTTPException(status_code=403, detail="no_personal_library")
+    if access != "read":
+        require_mgmt_scopes(request, SCOPE_SKILLS_PERSONAL)
+    return owner
+
+
+def require_personal_admin(request: Request) -> None:
+    """An administrator's look into someone's library: `admin` / `*`, under real authentication.
+    `auth_mode=none` checks no scope anywhere, and there is no administrator to audit there."""
+    if getattr(request.app.state.settings, "auth_mode", "none") == "none":
+        raise HTTPException(status_code=403, detail="personal_libraries_need_auth")
+    require_mgmt_scopes(request, "admin")
+
+
+async def _someones_library(
+    request: Request, settings: Any, tenant_id: str, label: str, access: Access
+) -> str:
+    """The owner of the personal library ``label`` names, for an administrator. A label is a
+    one-way digest, so it is matched against the tenant's owners; one that names none is a 404,
+    whether it is malformed or no one's."""
+    from felix.audit.emit import record_offline_event
+    from felix.logging_setup import loggable
+
+    require_personal_admin(request)
+    if access == "write":
+        raise HTTPException(status_code=403, detail="personal_library_read_only")
+    if not _LABEL_RE.match(label):
+        raise HTTPException(status_code=404, detail="not_found")
+    owners = await get_skill_library_store(settings, owner=ORG_OWNER).list_owners(tenant_id)
+    owner = next((r["owner"] for r in owners if library_label(r["owner"]) == label), None)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    record_offline_event(
+        settings,
+        tenant_id,
+        "personal_library_accessed",
+        principal=subject_from_request(request),
+        payload={"library": label, "method": request.method, "path": loggable(request.url.path, limit=300)},
+    )
+    return owner
 
 
 def encode_row_cursor(row: dict[str, Any]) -> str:

@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
-from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_request
+from felix.auth.mgmt import subject_from_request
 from felix.skills import evaluate, feedback, library
 from felix.skills.eval_store import get_skill_eval_store
 from felix.skills.feedback_store import get_skill_feedback_store
@@ -71,7 +71,7 @@ async def feedback_inbox(
 ) -> Any:
     """Feedback across every skill in one status (`pending` by default), oldest first: the one
     that has waited longest is the one to read next."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     after = decode_row_cursor(cursor) if cursor else None
     if cursor and after is None:
         return bad_cursor()
@@ -85,7 +85,7 @@ Decide = Callable[[LibraryRequest, str], Awaitable[dict[str, Any]]]
 
 
 async def _decision(request: Request, feedback_id: str, decide: Decide) -> Any:
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not ROW_ID_RE.match(feedback_id):
         return not_found(f"feedback {feedback_id}")
     try:
@@ -124,7 +124,7 @@ async def reject_feedback(feedback_id: str, body: RejectIn, request: Request) ->
 async def submit_feedback(name: str, body: FeedbackIn, request: Request) -> Any:
     """File feedback on a skill as the caller (`source: human`), on `target_version` or the live
     version. It waits as `pending` until someone accepts or rejects it."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not addressable(name):
         return not_found(name)
     by = subject_from_request(request)
@@ -152,7 +152,7 @@ async def list_skill_feedback(
     cursor: str | None = Query(default=None, max_length=96),
 ) -> Any:
     """One skill's feedback, newest first, optionally in one status."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name) or await ctx.lib.get_skill(ctx.tenant_id, name) is None:
         return not_found(name)
     before = decode_row_cursor(cursor) if cursor else None
@@ -190,7 +190,7 @@ async def queue_skill_eval(name: str, version: str, request: Request) -> Any:
     """Queue an evaluation of a version; the worker runs it within a minute. Poll
     `GET /{name}/evals/{id}`. 409 `eval_in_progress` while one is queued or running; 429
     `skill_jobs_cap_reached` past the tenant's job caps."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not addressable(name, version):
         return not_found(f"{name}@{version}")
     try:
@@ -212,7 +212,7 @@ async def list_skill_evals(
     cursor: str | None = Query(default=None, max_length=96),
 ) -> Any:
     """One skill's evaluations, newest first, optionally of one version."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name, version) or await ctx.lib.get_skill(ctx.tenant_id, name) is None:
         return not_found(name)
     before = decode_row_cursor(cursor) if cursor else None
@@ -227,7 +227,7 @@ async def list_skill_evals(
 @router.get("/{name}/evals/{eval_id}", response_model=SkillEvalOut, responses=ERRORS)
 async def get_skill_eval(name: str, eval_id: str, request: Request) -> Any:
     """One evaluation, with each scenario's prompt, both scores and the judge's reasons."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name) or not ROW_ID_RE.match(eval_id):
         return not_found(f"evaluation {eval_id}")
     row = await get_skill_eval_store(ctx.settings).get(ctx.tenant_id, eval_id)

@@ -426,6 +426,10 @@ class Settings(BaseSettings):
     # unset = no floor). A tenant's policy can tighten all four of these and loosen none.
     skill_publish_require_eval: bool = False
     skill_publish_min_eval_uplift: int | None = Field(default=None, ge=-100, le=100)
+    # Bytes one person's skill library may hold across every version it keeps, archived and
+    # rejected ones included (versions are never deleted). Writing one needs only
+    # `skills:personal`, so this is what bounds a principal saving in a loop.
+    skill_personal_max_bytes: int = Field(default=50 * 1024 * 1024, ge=0)
     # The `FELIX_MODEL_ROUTES` id that rewrites a skill from accepted feedback
     # (`felix/skills/improve.py`); empty is `FELIX_DEFAULT_MODEL_ID`. The rewrite is saved as a
     # draft for review, never published.

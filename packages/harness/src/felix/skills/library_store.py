@@ -44,6 +44,8 @@ MAX_VERSIONS_LISTED = 500
 # Versions one skill may hold. Each is rows plus objects that nothing collects, so a loop
 # saving the same skill is bounded per name as well as per manifest (the pending cap).
 MAX_VERSIONS_PER_SKILL = 200
+# Personal libraries one administrator listing reads, at most.
+MAX_OWNERS_LISTED = 1000
 
 SkillStatus = Literal["draft", "published", "archived"]
 
@@ -100,6 +102,21 @@ class SkillLibraryStore(Protocol):
         ...
 
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None: ...
+
+    async def list_owners(
+        self, tenant_id: str, *, limit: int | None = MAX_OWNERS_LISTED
+    ) -> list[dict[str, Any]]:
+        """Every personal owner holding a skill in the tenant, with how many skills (archived ones
+        included), in codepoint order of owner; ``limit=None`` for all of them. The one read that
+        crosses owners, whichever store asks: it is how an administrator turns a library's digest
+        (`library_keys.library_label`, one-way) back into the library it names."""
+        ...
+
+    async def usage(self, tenant_id: str) -> dict[str, int]:
+        """This library's footprint: its skills (archived ones included) and the bytes every
+        version's files take, as recorded on their `skill_file` rows. What a personal library's
+        quota is held to."""
+        ...
 
     async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]: ...
 
@@ -302,6 +319,21 @@ class InMemorySkillLibraryStore:
 
     def _mine(self, tenant_id: str, key: _SkillKey | _VersionKey) -> bool:
         return key.tenant == tenant_id and key.owner == self._owner
+
+    async def list_owners(
+        self, tenant_id: str, *, limit: int | None = MAX_OWNERS_LISTED
+    ) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for k in self._skills:
+            if k.tenant == tenant_id and k.owner != ORG_OWNER:
+                counts[k.owner] = counts.get(k.owner, 0) + 1
+        rows = [{"owner": o, "skills": counts[o]} for o in sorted(counts)]
+        return rows if limit is None else rows[:limit]
+
+    async def usage(self, tenant_id: str) -> dict[str, int]:
+        skills = sum(1 for k in self._skills if self._mine(tenant_id, k))
+        size = sum(f["size"] for k, files in self._files.items() if self._mine(tenant_id, k) for f in files)
+        return {"skills": skills, "bytes": int(size)}
 
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None:
         row = self._skills.get(_SkillKey(tenant_id, self._owner, name))
@@ -560,6 +592,44 @@ class PostgresSkillLibraryStore:
     @staticmethod
     def _row(row: Any) -> dict[str, Any]:
         return {c.key: getattr(row, c.key) for c in row.__table__.columns}
+
+    async def list_owners(
+        self, tenant_id: str, *, limit: int | None = MAX_OWNERS_LISTED
+    ) -> list[dict[str, Any]]:
+        from sqlalchemy import collate, func, select
+
+        from felix.db.models import SkillRow
+
+        stmt = (
+            select(SkillRow.owner, func.count())
+            .where(SkillRow.tenant_id == tenant_id, SkillRow.owner != ORG_OWNER)
+            .group_by(SkillRow.owner)
+            # "C" so the order is the twin's codepoint order, whatever the database's collation.
+            .order_by(collate(SkillRow.owner, "C"))
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        async with self._session(tenant_id) as db:
+            rows = (await db.execute(stmt)).all()
+            return [{"owner": r[0], "skills": int(r[1])} for r in rows]
+
+    async def usage(self, tenant_id: str) -> dict[str, int]:
+        from sqlalchemy import func, select
+
+        from felix.db.models import SkillFileRow, SkillRow
+
+        async with self._session(tenant_id) as db:
+            skills = await db.scalar(
+                select(func.count())
+                .select_from(SkillRow)
+                .where(SkillRow.tenant_id == tenant_id, SkillRow.owner == self._owner)
+            )
+            size = await db.scalar(
+                select(func.coalesce(func.sum(SkillFileRow.size), 0)).where(
+                    SkillFileRow.tenant_id == tenant_id, SkillFileRow.owner == self._owner
+                )
+            )
+            return {"skills": int(skills or 0), "bytes": int(size or 0)}
 
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None:
         from felix.db.models import SkillRow
@@ -1154,6 +1224,7 @@ __all__ = [
     "ANY_LIVE",
     "LIBRARY_PREFIX",
     "MAX_LIBRARY_SKILLS",
+    "MAX_OWNERS_LISTED",
     "MAX_OWNER_LENGTH",
     "MAX_VERSIONS_LISTED",
     "MAX_VERSIONS_PER_SKILL",

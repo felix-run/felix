@@ -1125,6 +1125,7 @@ _STRANGER_EMPTY = {
     "version_ids": (("acme", "invoice-triage"), []),
     "list_files": (("acme", "invoice-triage", "0.1.0"), []),
     "count_pending": (("acme", "contributor"), 0),
+    "usage": (("acme",), {"skills": 0, "bytes": 0}),
     "buildable_versions": (("acme", ["invoice-triage"]), {}),
 }
 _STRANGER_REFUSED = {
@@ -1133,6 +1134,9 @@ _STRANGER_REFUSED = {
     "archive_skill": ("acme", "invoice-triage"),
 }
 _STRANGER_OTHER = {
+    # Crosses owners by design: an administrator's way from a digest to a library
+    # (`test_owners_are_listed_across_namespaces_and_tenant_scoped`).
+    "list_owners",
     # Searches the org's rows by design (`test_the_copy_rule_searches_...`); only org text found.
     "holds_imported_file",
     # A no-op on a version that is not there, checked below by the rows it leaves.
@@ -1175,3 +1179,38 @@ async def test_a_stranger_reaches_nothing_through_any_method(store_settings: Any
     assert await alice.version_ids("acme", "invoice-triage") == ["0.1.0", "0.2.0"]
     assert (await alice.get_skill("acme", "invoice-triage") or {})["live_version"] == "0.1.0"
     assert (await org.get_skill("acme", "invoice-triage") or {})["live_version"] == "0.1.0"
+
+
+@parametrized
+async def test_owners_are_listed_across_namespaces_and_tenant_scoped(store_settings: Any) -> None:
+    """Whichever store asks: the tenant's personal owners, once each, in codepoint order; never
+    the tenant's own library, never another tenant's people."""
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
+    await _save(org, "0.1.0", at=1)
+    for owner, at in ((BOB, 2), (ALICE, 3), (ALICE, 4)):
+        await _save(get_skill_library_store(store_settings, owner=owner), f"0.1.{at}", at=at)
+    await _save(get_skill_library_store(store_settings, owner=BOB), "0.1.0", at=5, tenant="globex")
+
+    both = sorted([{"owner": ALICE, "skills": 1}, {"owner": BOB, "skills": 1}], key=lambda r: r["owner"])
+    assert await org.list_owners("acme") == both, "one skill each: Alice saved two versions of one"
+    assert await get_skill_library_store(store_settings, owner=BOB).list_owners("acme") == both
+    assert await org.list_owners("acme", limit=1) == both[:1]
+    assert await org.list_owners("acme", limit=None) == both
+    assert await org.list_owners("globex") == [{"owner": BOB, "skills": 1}]
+    assert await org.list_owners("initech") == []
+
+
+@parametrized
+async def test_usage_is_one_librarys_skills_and_bytes(store_settings: Any) -> None:
+    """What a personal library's quota is held to: every skill row and every version's file
+    bytes, archived included, of this owner only."""
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
+    alice = get_skill_library_store(store_settings, owner=ALICE)
+    await _save(org, "0.1.0", at=1)
+    await _save(alice, "0.1.0", at=2)
+    await _save(alice, "0.1.1", at=3)
+    await alice.archive_skill("acme", "invoice-triage", by=ALICE, at=4)
+    per_version = sum(f["size"] for f in FILES)
+    assert await alice.usage("acme") == {"skills": 1, "bytes": 2 * per_version}
+    assert await org.usage("acme") == {"skills": 1, "bytes": per_version}
+    assert await alice.usage("globex") == {"skills": 0, "bytes": 0}
