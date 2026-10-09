@@ -154,6 +154,9 @@ FAILURE_CONTENT_PREFIXES: tuple[str, ...] = (
     "[error/",
     "[fatal/",
     "[tool error/",
+    # `define_tool`'s refusal of arguments that fail the tool's schema. It starts with `[`, so
+    # `tool_error_output` adds no `[tool error/` in front of it, and eval read it as a success.
+    "[invalid args ",
     "[policy ",
     "[command ",
     "[screening ",

@@ -18,7 +18,9 @@ logger = logging.getLogger("felix.tools.builtins")
 class CalculatorArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    expression: str = Field(min_length=1)
+    # Bounded so an oversized expression is refused as bad arguments; a few thousand nested
+    # unary operators overflow the parser with a `MemoryError` the handler does not catch.
+    expression: str = Field(min_length=1, max_length=1000)
 
 
 async def _calculator_handler(args: CalculatorArgs) -> ToolOutput:

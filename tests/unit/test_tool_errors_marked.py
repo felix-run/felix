@@ -8,7 +8,6 @@ text. The plan tools did the same nine times. `tool_error_output` is the marker 
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -101,14 +100,82 @@ async def test_a_plan_tool_outside_a_request_is_a_marked_internal_error(tool: st
     assert read_tool_error_code(out) is ToolErrorCode.INTERNAL, out
 
 
+def _plain_error_returns(source: str) -> list[int]:
+    """Lines of `return` statements whose value, or either branch of a conditional, is a string
+    starting `error: `: an AST walk, so `ruff format` wrapping a long one in parentheses or a
+    ternary choosing between two cannot hide it the way a line regex let them."""
+    import ast
+
+    def plain_error(node: ast.expr | None) -> bool:
+        if isinstance(node, ast.IfExp):
+            return plain_error(node.body) or plain_error(node.orelse)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value.lower().startswith("error: ")
+        if isinstance(node, ast.JoinedStr) and node.values:
+            return plain_error(node.values[0])
+        return False
+
+    return [
+        n.lineno for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Return) and plain_error(n.value)
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'def f():\n    return "error: x"',
+        'def f(a):\n    return (\n        f"error: a long message about {a} that ruff wrapped"\n    )',
+        'def f(ok):\n    return "fine" if ok else "error: no"',
+        "def f():\n    return 'Error: shouted'",
+    ],
+    ids=["plain", "parenthesized-f-string", "ternary", "capitalised"],
+)
+def test_the_scan_finds_every_shape_of_a_plain_error_return(source: str) -> None:
+    assert _plain_error_returns(source) == [2]
+
+
 def test_no_tool_in_core_answers_a_failure_as_plain_error_text() -> None:
     """The shape this file fixes, held for every module, so a new tool cannot reintroduce it."""
     root = Path(__file__).resolve().parents[2] / "packages/harness/src/felix"
-    pattern = re.compile(r'return\s+\(?\s*f?"error: ')
     offenders = [
-        f"{path.relative_to(root)}:{n}"
+        f"{path.relative_to(root)}:{line}"
         for path in sorted(root.rglob("*.py"))
-        for n, line in enumerate(path.read_text().splitlines(), 1)
-        if pattern.search(line)
+        for line in _plain_error_returns(path.read_text())
     ]
     assert offenders == [], f"return tool_error_output(...) instead: {offenders}"
+
+
+async def test_arguments_the_schema_refuses_are_spelled_as_a_failure() -> None:
+    """`define_tool`'s own refusal starts `[invalid args for ...]`, which no failure prefix named."""
+    out = await _calculator().executor.execute({"expression": ""})
+
+    assert read_tool_error_code(out) is ToolErrorCode.INVALID_ARGUMENTS, out
+    assert is_failure_content(tool_output_content(out)), tool_output_content(out)
+
+
+async def test_an_oversized_expression_is_refused_as_invalid_arguments() -> None:
+    """Thousands of nested unary operators overflowed the parser with an uncaught MemoryError."""
+    out = await _calculator().executor.execute({"expression": "-" * 6000 + "1"})
+
+    assert read_tool_error_code(out) is ToolErrorCode.INVALID_ARGUMENTS, out
+
+
+async def test_mcp_reports_a_failed_calculation_as_an_error() -> None:
+    """`isError` was set only for a governance deny, so an MCP client read a tool's own failure
+    as a success: the same misreading as the runner's, on the other surface."""
+    from felix.mcp.server import handle_rpc
+    from felix_api.composition import compose
+
+    settings = Settings(
+        auth_mode="none", allow_insecure=True, object_store="memory", database_url="memory://t"
+    )
+    called = await handle_rpc(
+        settings=settings,
+        tools=compose(settings),
+        method="tools/call",
+        params={"name": "calculator", "arguments": {"expression": "import os"}},
+        rpc_id=1,
+    )
+
+    assert called["result"]["isError"] is True, called
+    assert called["result"]["content"][0]["text"].startswith("[tool error/invalid_arguments] ")
