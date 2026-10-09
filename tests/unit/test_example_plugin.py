@@ -188,4 +188,4 @@ async def test_a_stock_install_has_the_tool_its_hook_blocks_and_the_runner_block
 
     assert messages[0].content.startswith("[error/blocked] "), messages[0].content
     assert "unreachable" not in messages[0].content
-    assert denied is True
+    assert denied == 1

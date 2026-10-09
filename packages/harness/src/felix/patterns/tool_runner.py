@@ -357,8 +357,12 @@ class ToolRunner:
         *,
         thread_id: str | None,
         tenant_id: str,
-    ) -> tuple[list[ChatMessage], bool, bool, bool]:
-        """Execute tool calls. Returns (tool_msgs, had_fatal, all_terminate, had_denied)."""
+    ) -> tuple[list[ChatMessage], bool, bool, int]:
+        """Execute tool calls. Returns (tool_msgs, had_fatal, all_terminate, denied_calls).
+
+        `denied_calls` counts the calls a governance wrapper or a `before_tool` hook refused; it
+        is truthy exactly when the batch had a refusal.
+        """
         for call in calls:
             if not call.id:
                 call.id = f"call_{uuid.uuid4().hex[:12]}"
@@ -367,7 +371,7 @@ class ToolRunner:
         tool_msgs: list[ChatMessage] = []
         terminates: list[bool] = []
         had_fatal = False
-        had_denied = False
+        denied_calls = 0
 
         if mode == "parallel" and len(calls) > 1:
             results = await asyncio.gather(
@@ -392,7 +396,7 @@ class ToolRunner:
                 if kind == "fatal":
                     had_fatal = True
                 if denied:
-                    had_denied = True
+                    denied_calls += 1
         else:
             for i, call in enumerate(calls):
                 if thread_id and i > 0 and await should_cancel_remaining_tools(tenant_id, thread_id):
@@ -412,7 +416,7 @@ class ToolRunner:
                     had_fatal = True
                     break
                 if denied:
-                    had_denied = True
+                    denied_calls += 1
 
         all_terminate = bool(terminates) and all(terminates)
-        return tool_msgs, had_fatal, all_terminate, had_denied
+        return tool_msgs, had_fatal, all_terminate, denied_calls
