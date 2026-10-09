@@ -12,6 +12,43 @@ not fail. Keep that habit: a wave entry that lists only wins is not worth writin
 
 ## Waves
 
+### v0.12.0: durable runs on a production `cowork` thread (Oct 2026, #533–#536)
+
+This started from one production `cowork` thread: write approvals stacked three deep, the
+stream ended with `run_expired`, and after a reload the run looked dead. It was still working.
+One audit found four harness gaps (#529–#532), and a client gap behind each, and all four
+shipped together.
+
+- **The symptoms were all one bug, seen from different sides.** The stacked approvals, the
+  files written twice, and the user turns that landed between another run's tool calls all came
+  from the second send starting a second run. Nothing refused it, because the fiber did not
+  record its thread. `fibers.thread_id` and a per-thread advisory lock fixed it, and the
+  `409 run_in_progress:<token>` reply also gave the client the handle it had been missing
+  after a reload (#533).
+- **"Expired" did not mean "stopped".** Expiry is checked only between steps, and a durable chat
+  is one step. So the stream closed at 300s while the run went on, and `cowork`'s 600s
+  approvals were then announced to no one. The client's poll also treated `expired` as not
+  terminal, so it never ended. Two definitions of "over" had drifted apart. They now share one
+  predicate, `run_in_flight` (#534).
+- **A log written after the fact cannot explain a crash.** The tool-call message was written
+  only after its batch returned. A run that died mid-batch therefore left no record of calls
+  that may have happened, and the re-run asked the model again. Writing the message before the
+  batch was enough for the next run to see those calls. It closes them as interrupted. It does
+  not yet know which of them finished, because results are still written per batch (#535).
+- **Fallbacks became one-way doors.** After one failed Redis read, a gated wait moved to an
+  in-process future and never went back to Redis, while the API kept signalling through Redis.
+  The lease heartbeat gave up after one failed renewal. Each fallback was reasonable alone, but
+  together they turned a short Redis outage into an approval that timed out, or a step that
+  kept running on a claim it no longer held. Waits now listen on both channels and also read
+  the approval row (#535, #536).
+- **The CI Redis is a dead port, and that helped.** The first version of the waiter fix stayed
+  on Redis and hung the suite, which runs with `redis_url` pointed at port 9. A test setup
+  that is always broken is cheap coverage for an outage, and here it caught a regression.
+- **Shipped, and checked only by `/health`.** The scheduled smoke has failed since 2026-10-04,
+  as the v0.9.0 entry records. So none of the new behaviour has been seen on production yet.
+  It needs a person in `cowork` to reload mid-run, approve after 300s, and press Stop during a
+  wait.
+
 ### v0.9.0: Workers AI replaces Ollama (Oct 2026, #497)
 
 The `ollama` provider and `FELIX_OLLAMA_BASE_URL` were removed. Open-weight models now run

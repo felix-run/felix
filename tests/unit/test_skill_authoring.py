@@ -591,6 +591,56 @@ async def test_a_live_skill_whose_bytes_changed_is_not_served(
     assert (await _catalog(settings, store)).get("invoice-triage") is None
 
 
+async def test_a_second_compile_reads_no_skill_bytes(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A published version's SKILL.md is parsed once; later compiles skip the GET."""
+    await _published(settings, store)
+    reads: list[str] = []
+    real_get = store.get
+
+    async def counting_get(key: str) -> bytes | None:
+        reads.append(key)
+        return await real_get(key)
+
+    monkeypatch.setattr(store, "get", counting_get)
+    first = await _catalog(settings, store)
+    second = await _catalog(settings, store)
+
+    assert len([k for k in reads if k.endswith("SKILL.md")]) == 1
+    assert first.get("invoice-triage") is not None
+    assert second.get("invoice-triage") is not None
+    # Each compile gets its own instance: the cached parse is never handed out to be edited.
+    assert first.get("invoice-triage") is not second.get("invoice-triage")
+
+
+async def test_swapped_bytes_are_caught_once_the_cached_parse_lapses(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Within the TTL the verified copy is served, never the swapped bytes; after it, the
+    digest check reads the store again and drops the skill."""
+    import time
+    from types import SimpleNamespace
+
+    from felix import bounded_cache
+    from felix.skills import loader
+
+    version = await _published(settings, store)
+    assert (await _catalog(settings, store)).get("invoice-triage") is not None
+    await store.put(
+        library_object_key("acme", "invoice-triage", version, "SKILL.md", owner=ORG_OWNER),
+        _bundle(body="Swapped.")["SKILL.md"].encode(),
+    )
+    within = (await _catalog(settings, store)).get("invoice-triage")
+    assert within is not None
+    assert "Route amounts over the limit" in within.body and "Swapped." not in within.body
+
+    later = time.monotonic() + loader.LIBRARY_SKILL_TTL_S + 1
+    # The cache module's clock only: patching `time.monotonic` itself would freeze asyncio's too.
+    monkeypatch.setattr(bounded_cache, "time", SimpleNamespace(monotonic=lambda: later))
+    assert (await _catalog(settings, store)).get("invoice-triage") is None
+
+
 async def test_read_skill_file_serves_only_the_versions_own_files(
     settings: Settings, store: MemoryObjectStore
 ) -> None:
