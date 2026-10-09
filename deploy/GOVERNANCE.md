@@ -71,6 +71,16 @@ FELIX_GCP_PROJECT=your-project
 
 See [gcp/README.md](gcp/README.md). Prefer Workload Identity.
 
+**Rotation under `aws` and `gcp`.** Manifest `secret:NAME` refs are resolved on every compile, and a
+compile happens per request, so each process remembers a resolved value for five minutes
+(`felix.secrets.CLOUD_SECRET_TTL_S`) rather than calling the secret manager per ref per request. A
+rotated value reaches new requests within that window; revoke the old credential after it, not
+before. A name that does not exist is never remembered, so a newly created secret is seen at once.
+Deleting or disabling a secret is not a kill switch for the same reason: a process that resolved
+it keeps the value for up to that window. To cut one off at once, revoke the credential at its
+issuer, or restart the API and worker. Platform keys hydrated at startup are unaffected: they
+change only on restart, as before.
+
 ### Helm
 
 Prefer `secrets.existingSecret` or **External Secrets Operator**

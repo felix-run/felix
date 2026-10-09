@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from felix.bounded_cache import BoundedCache
 from felix.skills.format import MAX_FRONTMATTER_CHARS, is_valid_skill_name
 from felix.skills.format import parse_skill_md as parse_skill_md_format
 from felix.skills.types import Skill, SkillCatalog
@@ -311,16 +312,35 @@ async def _pinned_upload(store: Any, *, tenant_id: str, name: str, version: str)
 # a few hundred GETs; unbounded, they would open that many connections to S3 for one request.
 _LIBRARY_FETCH_CONCURRENCY = 16
 
+# Parsed library SKILL.md files, keyed by object key and the digest the row saved for them.
+# A published version's bytes never change — the row's digest is what admits them — so a hit
+# skips the object-store GET, the hash and the parse that every compile otherwise repeated for
+# every live skill (twice with `personal_skills`). Liveness still comes from `list_live` on
+# each compile; only the bytes behind an unchanged digest are remembered.
+#
+# Bounded in time as well as size. A hit serves the bytes that matched the digest, so bytes
+# swapped in the store afterwards are still never served -- but the skill is not dropped,
+# and the mismatch is not logged, until the entry lapses and the next compile reads them.
+LIBRARY_SKILL_TTL_S = 300.0
+_LIBRARY_SKILLS = BoundedCache(512, ttl_s=LIBRARY_SKILL_TTL_S)
+
+
+def clear_library_skill_cache() -> None:
+    _LIBRARY_SKILLS.clear()
+
 
 async def _library_skill(store: Any, lib: Any, *, tenant_id: str, row: dict[str, Any]) -> Skill | None:
     """The live version of one library skill, or None when its SKILL.md is missing, does not
     match the digest saved with it, or cannot be read."""
 
     from felix.skills.copy_rule import digest
-    from felix.skills.publish_gate import carries_imported_text
 
     name, version = str(row["name"]), str(row["version"])
     key = lib.object_key(tenant_id, name, version, "SKILL.md")
+    saved = str(row.get("sha256") or "")
+    cached = _LIBRARY_SKILLS.get(f"{key}\0{saved}") if saved else None
+    if cached is not None:
+        return _as_library_skill(cached, version=version, row=row, owner=lib.owner)
     try:
         data = await store.get(key)
     except Exception:
@@ -329,7 +349,7 @@ async def _library_skill(store: Any, lib: Any, *, tenant_id: str, row: dict[str,
     if not data:
         logger.warning("library skill %s is live but has no SKILL.md; skipped", key)
         return None
-    if not row.get("sha256") or digest(data) != row["sha256"]:
+    if not saved or digest(data) != saved:
         # The bytes are not the ones that were reviewed and published.
         logger.warning("library skill %s does not match its saved digest; skipped", key)
         return None
@@ -340,11 +360,25 @@ async def _library_skill(store: Any, lib: Any, *, tenant_id: str, row: dict[str,
         return None
     if skill is None or skill.name != name:
         return None
-    skill.source = "library"
-    skill.version = version
-    skill.untrusted = carries_imported_text(row)
-    skill.library_owner = lib.owner
-    return skill
+    _LIBRARY_SKILLS[f"{key}\0{saved}"] = skill
+    return _as_library_skill(skill, version=version, row=row, owner=lib.owner)
+
+
+def _as_library_skill(parsed: Skill, *, version: str, row: dict[str, Any], owner: str) -> Skill:
+    """A copy of a cached parse, marked from this compile's row — never the cached instance,
+    which every later compile reads."""
+    from dataclasses import replace
+
+    from felix.skills.publish_gate import carries_imported_text
+
+    return replace(
+        parsed,
+        metadata=dict(parsed.metadata),
+        source="library",
+        version=version,
+        untrusted=carries_imported_text(row),
+        library_owner=owner,
+    )
 
 
 async def _library_catalog(

@@ -245,12 +245,22 @@ def _import_local_key_set(jwks_public: str) -> Any:
     if not jwks_public.strip():
         return None
     try:
-        if jwks_public.strip().startswith("{"):
-            return jwk.KeySet.import_key_set(json.loads(jwks_public))
-        return jwk.import_key(jwks_public.strip(), "RSA")
+        return _parsed_local_key_set(jwks_public)
     except Exception:
+        # Logged on every call, as before: a key that will not import rejects every token,
+        # and whoever debugs a burst of 401s needs the reason near the requests.
         logger.error("FELIX_JWKS_PUBLIC could not be imported", exc_info=True)
         return None
+
+
+@lru_cache(maxsize=4)
+def _parsed_local_key_set(jwks_public: str) -> Any:
+    """The import itself, cached on the raw string like `parse_verifiers`. The usability check
+    and the key lookup each called it, so every authenticated request imported the same RSA
+    key twice. A failure raises, and `lru_cache` keeps nothing for it."""
+    if jwks_public.strip().startswith("{"):
+        return jwk.KeySet.import_key_set(json.loads(jwks_public))
+    return jwk.import_key(jwks_public.strip(), "RSA")
 
 
 async def refresh_jwks(url: str, *, timeout_s: float = JWKS_FETCH_TIMEOUT_S) -> Any:
