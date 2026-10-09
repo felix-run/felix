@@ -14,7 +14,13 @@ from felix_ai.types import split_file_ref
 
 from felix.audit.emit import emit_agent_audit
 from felix.config import get_settings
-from felix.hooks import run_after_model, run_before_model, run_before_turn, run_filter_history
+from felix.hooks import (
+    model_hook_context,
+    run_after_model,
+    run_before_model,
+    run_before_turn,
+    run_filter_history,
+)
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.patterns.model import (
@@ -599,13 +605,6 @@ class _ReactAgent:
                 data={"progress": {"type": "assistant_delta", "kind": "text", "delta": delta}},
             )
 
-    def _model_hook_context(self, model: ModelClient, thread_id: str | None) -> dict[str, Any]:
-        return {
-            "manifest_id": self.manifest_id,
-            "thread_id": thread_id,
-            "model_id": getattr(model, "model_id", None),
-        }
-
     async def _before_model(
         self,
         messages: list[ChatMessage],
@@ -617,7 +616,9 @@ class _ReactAgent:
         return await run_before_model(
             messages,
             tools=[t.name for t in tools],
-            context=self._model_hook_context(model, thread_id),
+            context=model_hook_context(
+                model, manifest_id=self.manifest_id, thread_id=thread_id, purpose="turn"
+            ),
         )
 
     async def _after_model(
@@ -631,7 +632,9 @@ class _ReactAgent:
         return await run_after_model(
             assistant,
             stop_reason=getattr(result, "stop_reason", None),
-            context=self._model_hook_context(model, thread_id),
+            context=model_hook_context(
+                model, manifest_id=self.manifest_id, thread_id=thread_id, purpose="turn"
+            ),
         )
 
     async def _recover_from_overflow(
