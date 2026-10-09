@@ -103,3 +103,47 @@ async def test_one_bad_tenant_does_not_stop_the_others(
 async def test_no_jobs_means_no_tenants(settings: Settings) -> None:
     assert await jobs_store.list_tenants_with_jobs(settings) == []
     assert await run_due_jobs_all_tenants(settings) == 0
+
+
+@pytest.mark.asyncio
+async def test_overlapping_tick_from_a_stale_read_does_not_refire(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second worker -- or this worker's next tick, overlapping a slow one -- that read the job
+    before the first claim landed. Its claim must lose; with an unconditional write both fired."""
+    await _job(settings, "default", "a")
+    stale = await jobs_store.list_jobs(settings, "default")
+    assert await run_due_jobs(settings) == 1
+
+    async def _stale(*_a: object, **_k: object) -> list[dict]:
+        return [dict(j) for j in stale]
+
+    monkeypatch.setattr(jobs_store, "list_jobs", _stale)
+    assert await run_due_jobs(settings) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_run_outlasting_its_interval_does_not_rewind_the_schedule(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run one claims slot T and is still running when the next tick claims T+5. Run one's
+    completion used to write T+5 back as due, and the tick after fired the T+5 slot again."""
+    from felix.jobs import scheduler
+
+    await _job(settings, "default", "a")
+    t0 = 1_800_000_000_000
+    monkeypatch.setattr(scheduler, "now_ms", lambda: t0)
+    (job,) = await jobs_store.list_jobs(settings, "default")
+    first_slot = scheduler.next_run_at_ms("*/5 * * * *", t0)
+    assert await jobs_store.claim_run(
+        settings, "default", "a", seen_next_run_at=job["next_run_at"], last_run_at=t0, next_run_at=first_slot
+    )
+    # The next tick claims the following slot while run one is still going...
+    second_slot = scheduler.next_run_at_ms("*/5 * * * *", first_slot)
+    assert await jobs_store.claim_run(
+        settings, "default", "a", seen_next_run_at=first_slot, last_run_at=first_slot, next_run_at=second_slot
+    )
+    # ...and run one finishes.
+    await scheduler.fire_job(settings, "default", job, started_at=t0)
+    (after,) = await jobs_store.list_jobs(settings, "default")
+    assert after["next_run_at"] == second_slot

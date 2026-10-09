@@ -68,6 +68,31 @@ async def test_cost_and_wire_id_survive_the_round_trip(usage_settings: Any) -> N
     )
 
 
+# Postgres only: the twin has no bind-parameter limit, so its arm could not fail.
+# `tests/unit/test_flush_bind_parameters.py` guards the same rule without a database.
+@pytest.mark.parametrize("usage_settings", ["postgres"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_buffer_past_the_bind_parameter_limit_flushes_whole(
+    usage_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Usage has fourteen columns, so one INSERT for a tenant's batch passed Postgres's 65,535
+    bind parameters at ~4,700 rows. Written in chunks, a near-full buffer flushes in one pass."""
+    writes: list[int] = []
+    real = usage_store._write_batch
+
+    async def counting(settings: Any, batch: list[dict[str, Any]]) -> None:
+        writes.append(len(batch))
+        await real(settings, batch)
+
+    monkeypatch.setattr(usage_store, "_write_batch", counting)
+    for _ in range(6_000):
+        _record(usage_settings, manifest="support", model="fast", tokens=1)
+    assert await usage_store.flush_pending(usage_settings) == 6_000
+    # One write: the per-row fallback would also land all 6,000, a transaction each.
+    assert writes == [6_000], f"fell back to per-row writes: {len(writes)} calls"
+    assert (await usage_store.summary(usage_settings, TENANT))["totals"]["calls"] == 6_000
+
+
 @parametrized
 @pytest.mark.asyncio
 async def test_summary_sums_within_the_tenant_and_groups_by_day(usage_settings: Any) -> None:

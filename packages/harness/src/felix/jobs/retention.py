@@ -52,7 +52,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select, tuple_
+from sqlalchemy import and_, delete, func, literal_column, or_, select, tuple_
 
 from felix.config import Settings
 from felix.db.models import (
@@ -451,19 +451,17 @@ async def _sweep_postgres(
                 db,
                 counts,
                 "plans",
-                lambda: _rowcount(
-                    db, delete(Plan).where(Plan.expires_at.is_not(None), Plan.expires_at < cutoffs.now)
-                ),
+                lambda: _batched(db, Plan, Plan.expires_at.is_not(None), Plan.expires_at < cutoffs.now),
             )
             await _table(
                 db,
                 counts,
                 "memory_vectors",
-                lambda: _rowcount(
+                lambda: _batched(
                     db,
-                    delete(MemoryVector).where(
-                        MemoryVector.superseded_seq.is_not(None), MemoryVector.created_at < cutoffs.memory
-                    ),
+                    MemoryVector,
+                    MemoryVector.superseded_seq.is_not(None),
+                    MemoryVector.created_at < cutoffs.memory,
                 ),
             )
             if (fiber_cutoff := cutoffs.fiber) is not None:
@@ -471,11 +469,11 @@ async def _sweep_postgres(
                     db,
                     counts,
                     "fibers",
-                    lambda: _rowcount(
+                    lambda: _batched(
                         db,
-                        delete(Fiber).where(
-                            Fiber.status.in_(sorted(TERMINAL_FIBER_STATUSES)), Fiber.updated_at < fiber_cutoff
-                        ),
+                        Fiber,
+                        Fiber.status.in_(sorted(TERMINAL_FIBER_STATUSES)),
+                        Fiber.updated_at < fiber_cutoff,
                     ),
                 )
                 state = func.coalesce(A2ATask.status_json["state"].astext, "")
@@ -483,11 +481,8 @@ async def _sweep_postgres(
                     db,
                     counts,
                     "a2a_tasks",
-                    lambda: _rowcount(
-                        db,
-                        delete(A2ATask).where(
-                            state.not_in(sorted(LIVE_A2A_STATES)), A2ATask.updated_at < fiber_cutoff
-                        ),
+                    lambda: _batched(
+                        db, A2ATask, state.not_in(sorted(LIVE_A2A_STATES)), A2ATask.updated_at < fiber_cutoff
                     ),
                 )
             if (usage_cutoff := cutoffs.usage) is not None:
@@ -495,7 +490,7 @@ async def _sweep_postgres(
                     db,
                     counts,
                     "usage_events",
-                    lambda: _rowcount(db, delete(UsageEvent).where(UsageEvent.ts < usage_cutoff)),
+                    lambda: _batched(db, UsageEvent, UsageEvent.ts < usage_cutoff),
                 )
             if (session_cutoff := cutoffs.session) is not None:
                 await _table(db, counts, "session_events", lambda: _delete_idle_threads(db, session_cutoff))
@@ -512,17 +507,17 @@ async def _sweep_postgres(
                     db,
                     counts,
                     "approvals",
-                    lambda: _rowcount(
-                        db, delete(Approval).where(Approval.created_at < approval_cutoff, settled)
-                    ),
+                    lambda: _batched(db, Approval, Approval.created_at < approval_cutoff, settled),
                 )
     return counts
 
 
 async def _table(db: Any, counts: dict[str, int], table: str, run: Callable[[], Awaitable[int]]) -> None:
-    """One table, one transaction. A failure (a lock, a statement timeout) is logged and
-    rolled back, and the sweep moves on: retention must not stop everywhere because one
-    table's delete could not complete, and the counts line must still say what happened."""
+    """One table at a time. A failure (a lock, a statement timeout) is logged and rolled back,
+    and the sweep moves on: retention must not stop everywhere because one table's delete could
+    not complete, and the counts line must still say what happened. A batched delete
+    (`_batched`) has committed its earlier batches by then; only the failing one rolls back, and
+    its count is the batches that landed only if the run returned -- a failure reports 0."""
     try:
         counts[table] = await run()
         await db.commit()
@@ -535,15 +530,44 @@ async def _rowcount(db: Any, stmt: Any) -> int:
     return int((await db.execute(stmt)).rowcount or 0)
 
 
+# Rows per delete statement, each its own transaction. One statement per table meant a first
+# sweep over years of audit or usage rows was one transaction: a lock held, and the WAL for every
+# deleted row, for as long as it took. Batched, a sweep commits as it goes and a failure part way
+# keeps what it already removed.
+DELETE_BATCH = 5000
+
+
+async def _batched(db: Any, model: Any, *conditions: Any) -> int:
+    """`DELETE FROM model WHERE conditions`, `DELETE_BATCH` rows at a time, committing each.
+
+    By `ctid`, Postgres's physical row address, so a batch needs no key of the table's own and
+    the inner select is the only scan. Stops on the first empty batch.
+    """
+    ctid = literal_column("ctid")
+    deleted = 0
+    while True:
+        batch = select(ctid).select_from(model).where(*conditions).limit(DELETE_BATCH)
+        removed = await _rowcount(db, delete(model).where(ctid.in_(batch)))
+        await db.commit()
+        deleted += removed
+        # Not `< DELETE_BATCH`: a row updated between the select and the delete moves to a new
+        # ctid and is skipped, so a short batch does not mean the table is done.
+        if removed == 0:
+            return deleted
+
+
 async def _delete_audit(db: Any, cutoffs: Cutoffs, per_manifest: ManifestCutoffs) -> int:
     deleted = 0
     if cutoffs.audit is not None:
-        deleted += await _rowcount(db, delete(AuditEvent).where(AuditEvent.ts < cutoffs.audit))
+        deleted += await _batched(db, AuditEvent, AuditEvent.ts < cutoffs.audit)
     for (tenant_id, manifest_id), cutoff in per_manifest.items():
-        stmt = delete(AuditEvent).where(
-            AuditEvent.tenant_id == tenant_id, AuditEvent.manifest_id == manifest_id, AuditEvent.ts < cutoff
+        deleted += await _batched(
+            db,
+            AuditEvent,
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.manifest_id == manifest_id,
+            AuditEvent.ts < cutoff,
         )
-        deleted += await _rowcount(db, stmt)
     return deleted
 
 

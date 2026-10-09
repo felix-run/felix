@@ -36,6 +36,18 @@ logger = logging.getLogger("felix.buffers")
 # that a permanently-broken database cannot exhaust the process.
 DEFAULT_MAX_PENDING = 10_000
 
+# Rows per INSERT when a flush writes a batch. Postgres takes at most 65,535 bind parameters in
+# one statement, and a multi-row VALUES spends one per column per row: a buffer at its ceiling
+# was one statement of 80,000 (audit) or 140,000 (usage) parameters, refused outright -- and a
+# refusal that is not bad data sends the batch to the one-row-per-transaction retry. A thousand
+# rows keeps every writer here an order of magnitude under the limit.
+FLUSH_CHUNK_ROWS = 1000
+
+
+def chunked[T](rows: list[T], size: int = FLUSH_CHUNK_ROWS) -> list[list[T]]:
+    """`rows` in consecutive slices of at most `size`."""
+    return [rows[i : i + size] for i in range(0, len(rows), size)]
+
 
 class DurableBuffer:
     """A size-capped FIFO of pending events with fail-safe drain semantics."""

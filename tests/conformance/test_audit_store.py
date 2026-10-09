@@ -107,6 +107,28 @@ async def test_flush_reports_what_it_wrote_and_leaves_nothing_behind(store_setti
     assert len(events) == 2
 
 
+# Postgres only: the twin has no bind-parameter limit, so its arm could not fail.
+# `tests/unit/test_flush_bind_parameters.py` guards the same rule without a database.
+@pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
+@pytest.mark.asyncio
+async def test_a_buffer_past_the_bind_parameter_limit_flushes_whole(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One tenant's batch was one INSERT, a bind parameter per column per row: past ~8,190 audit
+    rows that is over Postgres's 65,535 and refused. Nothing was lost -- the buffer fell back to
+    one row per transaction -- so the count alone cannot tell; one write for the batch can."""
+    writes: list[int] = []
+    real = audit._write_batch
+
+    async def counting(settings: Any, batch: list[dict[str, Any]]) -> None:
+        writes.append(len(batch))
+        await real(settings, batch)
+
+    monkeypatch.setattr(audit, "_write_batch", counting)
+    await _record_many(store_settings, [{"ts": i, "status": "allowed"} for i in range(9_000)])
+    assert writes == [9_000], f"fell back to per-row writes: {len(writes)} calls"
+
+
 @parametrized
 @pytest.mark.asyncio
 async def test_one_tenants_events_are_invisible_to_another(store_settings: Any) -> None:
