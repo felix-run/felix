@@ -839,6 +839,11 @@ async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
         landed, failure = 0, exc
     if failure is None:
         return
+    if isinstance(failure, FiberLeaseLost):
+        # Someone else's fiber now: charging, parking or releasing it would write over the
+        # claim of the worker that holds it.
+        logger.warning("%s; leaving it to its new owner", failure)
+        return
     # `attempts` counts *consecutive* failures, and a claim now runs several steps. If any of
     # them landed before this one failed, the streak was broken inside this claim and the
     # charge is 1 — the same arithmetic as before, when a landed step and a failed step could
@@ -1041,8 +1046,13 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
             await db.commit()
 
 
-async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
-    """Push this worker's claim out by another lease window."""
+async def _renew_lease(settings: Settings, row: dict[str, Any]) -> bool:
+    """Push this worker's claim out by another lease window. False when it no longer holds it.
+
+    The answer used to be thrown away: an update matching no row -- the claim lapsed and another
+    worker took it -- looked exactly like a renewal, and the step went on running beside the
+    new owner's (felix-run/felix#531).
+    """
     until = now_ms() + FIBER_LEASE_MS
     owner = _claim_owner(settings)
     if _use_memory(settings):
@@ -1050,7 +1060,8 @@ async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
         # Only if we still hold it: a lease we already lost must not be stolen back mid-step.
         if stored is not None and stored.get("lease_owner") == owner:
             stored["lease_until"] = until
-        return
+            return True
+        return False
     from sqlalchemy import update
 
     from felix.db.session import rls_bypass
@@ -1058,7 +1069,7 @@ async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
     with rls_bypass():
         factory = get_session_factory(settings=settings)
         async with factory() as db:
-            await db.execute(
+            result = await db.execute(
                 update(Fiber)
                 .where(
                     Fiber.tenant_id == row["tenant_id"],
@@ -1068,6 +1079,16 @@ async def _renew_lease(settings: Settings, row: dict[str, Any]) -> None:
                 .values(lease_until=until)
             )
             await db.commit()
+            return int(getattr(result, "rowcount", 0) or 0) > 0
+
+
+class FiberLeaseLost(Exception):
+    """This worker's claim on a fiber lapsed or was taken while a step was running.
+
+    Not a step failure: the fiber belongs to whoever holds it now, so nothing here may charge an
+    attempt, park it or release it. The step is cancelled, because running on beside the new
+    owner's is the duplicate side effect the lease exists to prevent.
+    """
 
 
 def _pending_op(row: dict[str, Any]) -> str:
@@ -1112,14 +1133,38 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
     next `invoke` concurrently, which is a duplicated side effect rather than a lost write.
     """
 
+    lost = asyncio.Event()
+
     async def _heartbeat() -> None:
+        """Keep the claim, and say when it is gone.
+
+        One failed renewal used to end this for good: the lease then lapsed under a step still
+        running, another worker claimed the fiber and ran the same `invoke`, and both sets of
+        side effects happened (felix-run/felix#531). A renewal that raises is retried while the
+        lease last written still stands, giving up one interval *before* it lapses so that no
+        other worker can have claimed it yet; one that finds the claim gone ends it at once.
+        Either way the step is told (`lost`), and stops.
+        """
+        # The claim that put this fiber in our hands set `lease_until` a moment ago.
+        held_until = now_ms() + FIBER_LEASE_MS
         while True:
             await asyncio.sleep(FIBER_LEASE_RENEW_MS / 1000)
             try:
-                await _renew_lease(settings, row)
-            except Exception:  # pragma: no cover - a failed renewal just lets the lease lapse
-                logger.warning("fiber lease renewal failed id=%s", row.get("id"), exc_info=True)
-                return
+                if await _renew_lease(settings, row):
+                    held_until = now_ms() + FIBER_LEASE_MS
+                    continue
+                logger.warning("fiber lease was taken mid-step id=%s; stopping the step", row.get("id"))
+            except Exception:
+                if now_ms() + FIBER_LEASE_RENEW_MS < held_until:
+                    logger.warning("fiber lease renewal failed id=%s; retrying", row.get("id"), exc_info=True)
+                    continue
+                logger.warning(
+                    "fiber lease could not be renewed before it lapses id=%s; stopping the step",
+                    row.get("id"),
+                    exc_info=True,
+                )
+            lost.set()
+            return
 
     beat = asyncio.create_task(_heartbeat())
     landed = 0
@@ -1135,8 +1180,20 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
             # point: it is the step that used to cost a minute of pure latency.
             before = int((row.get("state_json") or {}).get("cursor") or 0)
             before_version = int(row.get("version") or 0)
+            step = asyncio.create_task(_run_fiber_step(settings, row, hold_claim=True))
+            gone = asyncio.create_task(lost.wait())
             try:
-                await _run_fiber_step(settings, row, hold_claim=True)
+                await asyncio.wait({step, gone}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                gone.cancel()
+            if not step.done():
+                step.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await step
+                failure = FiberLeaseLost(f"lease lost mid-step on fiber {row.get('id')}")
+                break
+            try:
+                await step
             except Exception as exc:
                 failure = exc
                 break

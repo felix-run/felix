@@ -460,6 +460,37 @@ class _ReactAgent:
             # A missing preview lists the thread by its id, as before; not worth a turn.
             logger.warning("session preview write failed for thread=%s", input.thread_id, exc_info=True)
 
+    async def _close_interrupted_gates(
+        self, thread_id: str | None, tenant_id: str, interrupted: list[ChatMessage]
+    ) -> None:
+        """Withdraw what interrupted calls were waiting on. Never raises.
+
+        A call that died waiting on an approval or a client left its gate open: the approval
+        row `pending` to its deadline, the client request announced to every stream that
+        attaches. Both asked about a call the model has now been told did not finish, and an
+        approval given then installed a grant for nobody (felix-run/felix#531).
+        """
+        ids = [m.tool_call_id for m in interrupted if m.tool_call_id]
+        if not thread_id or not ids:
+            return
+        try:
+            from felix.tools import client_requests
+
+            for call_id in ids:
+                await client_requests.clear(thread_id, call_id)
+        except Exception:
+            logger.debug("clearing interrupted client requests failed", exc_info=True)
+        if self.settings is None:
+            return
+        try:
+            from felix.approvals.store import close_interrupted
+
+            closed = await close_interrupted(self.settings, tenant_id, thread_id, ids)
+            if closed:
+                logger.info("closed %d approval(s) left by interrupted calls (thread=%s)", closed, thread_id)
+        except Exception:
+            logger.warning("closing interrupted approvals failed", exc_info=True)
+
     async def _append_produced(
         self,
         thread_id: str | None,
@@ -918,6 +949,7 @@ class _ReactAgent:
             )
             messages.extend(interrupted)
             await self._append_produced(input.thread_id, interrupted)
+            await self._close_interrupted_gates(input.thread_id, tenant_id, interrupted)
 
         produced: list[ChatMessage] = list(input.messages)
         await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
@@ -1109,6 +1141,16 @@ class _ReactAgent:
                             data={"name": call.name, "id": call.id, "status": "running"},
                         )
 
+                # Written ahead of the batch, not with its results. A run that dies mid-batch
+                # -- a worker restart, a lost fiber lease, a cancel -- left no trace of calls
+                # that may already have taken effect: the message was appended only once the
+                # whole batch returned. A re-run then re-asked the model from the user's turn,
+                # and it issued the same writes again (felix-run/felix#531). Logged first, an
+                # unfinished call is in the history, and `_interrupted_tool_results` closes it
+                # on the next run as "may have already taken effect" rather than letting it be
+                # issued blind. The results follow below.
+                await self._append_produced(input.thread_id, [assistant], usage=usage_block)
+
                 # Side events are drained *while* the batch runs, not after it. A gated
                 # tool blocks inside `run_batch` in `wait_for_decision` for up to its
                 # rule's TTL, and the `approval_required` frame that asks for the
@@ -1153,7 +1195,7 @@ class _ReactAgent:
                     messages.append(tool_msg)
                     produced.append(tool_msg)
 
-                await self._append_produced(input.thread_id, [assistant, *tool_msgs], usage=usage_block)
+                await self._append_produced(input.thread_id, tool_msgs)
                 any_denied = had_denied
                 if had_fatal:
                     # A fatal tool error ends the run. Follow-ups are not drained: the

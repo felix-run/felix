@@ -117,6 +117,25 @@ async def test_the_claim_records_who_holds_it(fiber_settings: Any) -> None:
     assert claimed[0]["lease_owner"], claimed
 
 
+@parametrized
+@pytest.mark.asyncio
+async def test_a_renewal_says_whether_the_claim_is_still_held(fiber_settings: Any) -> None:
+    """felix-run/felix#531. The heartbeat stops its step on `False`; on Postgres that answer is
+    the update's rowcount, which the memory twin cannot stand in for. A renewal that matched
+    no row used to look exactly like one that did."""
+    await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    (mine,) = await _claim(fiber_settings)
+    assert await fibers._renew_lease(fiber_settings, mine) is True
+
+    # Lapsed and taken by another worker.
+    other = fiber_settings.model_copy(update={"replica_id": "worker-b"})
+    (theirs,) = await _claim(other, ts=fibers.now_ms() + fibers.FIBER_LEASE_MS + 1)
+    assert theirs["id"] == mine["id"]
+
+    assert await fibers._renew_lease(fiber_settings, mine) is False
+    assert await fibers._renew_lease(other, theirs) is True
+
+
 # --- fibers an earlier version handed to Temporal -----------------------------------------
 
 

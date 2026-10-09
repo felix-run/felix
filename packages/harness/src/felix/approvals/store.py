@@ -35,6 +35,8 @@ _memory_approvals: dict[tuple[str, str], dict[str, Any]] = {}
 # Who a row names as its decider when nobody answered: the harness stopped waiting.
 TIMEOUT_DECIDER = "felix"
 TIMEOUT_NOTE = "timeout"
+# The note on a row whose call was interrupted: the run that asked died before it was answered.
+INTERRUPTED_NOTE = "interrupted"
 
 
 def _lapsed(expires_at: int | None, created_at: int, now: int) -> bool:
@@ -454,6 +456,63 @@ async def close_timed_out(settings: Settings, tenant_id: str, approval_id: str) 
         return bool(getattr(result, "rowcount", 0))
 
 
+async def close_interrupted(
+    settings: Settings, tenant_id: str, thread_id: str, tool_call_ids: list[str]
+) -> int:
+    """Close the pending rows that interrupted calls on `thread_id` opened. Returns how many.
+
+    A run that died waiting on an approval -- a worker restart, a lost fiber lease -- left its
+    row `pending` until its deadline, and every surface kept offering it: the attention line,
+    `/approvals`, the reattach stream. Approving it answered nobody, and installed a grant for a
+    call the model had since been told did not finish (felix-run/felix#531). The resumed run
+    closes those calls as interrupted, and closes their rows with them: `denied`, decided by
+    the harness, note `interrupted`. Conditional on `pending`, so a decision that landed first
+    is left alone.
+
+    Matched on the call id *and* the thread, because a pending row names the call that opened
+    it. One caveat to know: a pending row is reused for every byte-identical call while it is
+    open, so a call elsewhere waiting on the same row is refused too -- the same outcome as
+    the row timing out, and rare enough to prefer over a grant nobody is waiting for.
+    """
+    ids = [i for i in tool_call_ids if i]
+    if not thread_id or not ids:
+        return 0
+    ts = now_ms()
+    values = {
+        "status": "denied",
+        "decided_at": ts,
+        "decided_by": TIMEOUT_DECIDER,
+        "decision_note": INTERRUPTED_NOTE,
+    }
+    if _use_memory(settings):
+        closed = 0
+        for (tenant, _), row in _memory_approvals.items():
+            if (
+                tenant == tenant_id
+                and row.get("status") == "pending"
+                and row.get("thread_id", "") == thread_id
+                and row.get("tool_call_id", "") in ids
+            ):
+                row.update(values)
+                closed += 1
+        return closed
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Approval)
+            .where(
+                Approval.tenant_id == tenant_id,
+                Approval.thread_id == thread_id,
+                Approval.tool_call_id.in_(ids),
+                Approval.status == "pending",
+            )
+            .values(**values)
+        )
+        await db.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+
+
 async def consume_approval(settings: Settings, tenant_id: str, approval_id: str) -> bool:
     """Mark a one_shot grant spent. Returns False when it was already consumed.
 
@@ -486,6 +545,8 @@ async def consume_approval(settings: Settings, tenant_id: str, approval_id: str)
 
 
 __all__ = [
+    "INTERRUPTED_NOTE",
+    "close_interrupted",
     "close_timed_out",
     "consume_approval",
     "create_pending",

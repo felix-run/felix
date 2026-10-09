@@ -585,3 +585,24 @@ async def test_approvals_created_in_one_millisecond_page_the_same_on_both_arms(
     assert full == sorted((a["id"] for a in created), reverse=True), "newest first, then by id"
     page = [a["id"] for a in await approvals.list_approvals(store_settings, TENANT, limit=2)]
     assert page == full[:2]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_interrupted_calls_close_their_own_pending_rows_and_nothing_else(store_settings: Any) -> None:
+    """felix-run/felix#531: a resumed run closes the gates its interrupted calls left open."""
+    mine = await _pending(store_settings, call_signature="sig-a", thread_id="t:1", tool_call_id="call_a")
+    sibling = await _pending(store_settings, call_signature="sig-b", thread_id="t:1", tool_call_id="call_b")
+    elsewhere = await _pending(store_settings, call_signature="sig-c", thread_id="t:2", tool_call_id="call_a")
+    decided = await _pending(store_settings, call_signature="sig-d", thread_id="t:1", tool_call_id="call_d")
+    await _approve(store_settings, decided["id"])
+
+    closed = await approvals.close_interrupted(store_settings, TENANT, "t:1", ["call_a", "call_d"])
+
+    assert closed == 1
+    row = await approvals.get_approval(store_settings, TENANT, mine["id"])
+    assert row is not None
+    assert (row["status"], row["decision_note"]) == ("denied", approvals.INTERRUPTED_NOTE)
+    for untouched, status in ((sibling, "pending"), (elsewhere, "pending"), (decided, "approved")):
+        again = await approvals.get_approval(store_settings, TENANT, untouched["id"])
+        assert again is not None and again["status"] == status, again

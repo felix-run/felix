@@ -575,6 +575,21 @@ First, because everything else governs it.
       The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
       column**, anywhere in the models or migrations. Sleeping is already distinguishable from
       crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
+- [x] **A re-run does not repeat what the run it replaces already did** (felix-run/felix#531).
+      The assistant message holding a batch's tool calls was appended only once the whole batch
+      returned, so a run that died mid-batch -- a worker restart, a lost fiber lease -- left no
+      trace of calls that may already have taken effect, and the re-run asked the model again
+      from the user's turn: on a production `cowork` thread the same files were written twice.
+      The message is now written ahead of the batch (results after it), so the next run finds
+      the call and `_interrupted_tool_results` closes it as "may have already taken effect" --
+      and withdraws its gates with it: the pending approval (`close_interrupted`: `denied`, note
+      `interrupted`) and the client request. The heartbeat no longer gives up after one failed
+      renewal: it retries while the lease it last wrote still stands, stops the step one
+      interval before it would lapse, and stops it at once when `_renew_lease` (which now says
+      whether it still holds the claim) finds it taken. A lost claim is `FiberLeaseLost`, left
+      to its new owner -- nothing charged, parked or released. What this does not do is record
+      each call's result as it lands: a call that finished inside a batch that did not is still
+      closed as interrupted, which errs towards telling the model to check rather than repeat.
 - [x] **What a durable run is blocked on outlives its stream** (felix-run/felix#530). The durable
       `POST /chat/stream` closed at the run's `expires_at` -- 300s by default -- whether or not
       the run had stopped, and expiry is checked only between steps, so a durable chat (one
