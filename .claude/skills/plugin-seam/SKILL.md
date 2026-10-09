@@ -31,7 +31,7 @@ On the registry / plugin object:
 | Self-authenticating mounts | `plugin.self_authenticating_mounts` |
 | Audit / usage sinks | `registry.register_audit_sink(factory)` / `register_usage_sink(factory)` |
 | Startup hooks | `registry.register_startup_hook(hook)` (awaited in the API lifespan) |
-| Agent-loop hooks | `registry.register_before_turn` / `filter_history` / `before_compact` / `before_tool` / `after_tool` / `compact_failed` |
+| Agent-loop hooks | `registry.register_before_turn` / `filter_history` / `before_compact` / `before_model` / `after_model` / `before_tool` / `after_tool` / `compact_failed` |
 
 Open registries in core, called at import time (not on the registry object):
 

@@ -1,4 +1,4 @@
-"""Agent-loop plugin hooks — before_turn, filter_history, before_compact, tool hooks."""
+"""Agent-loop plugin hooks — before_turn, filter_history, before_compact, model and tool hooks."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from felix_ai.types import ChatMessage
 
 logger = logging.getLogger("felix.hooks")
 
@@ -15,6 +17,14 @@ BeforeCompactHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, A
 BeforeToolHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 AfterToolHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 CompactFailedHook = Callable[..., Awaitable[None] | None]
+# Spelled out, unlike the six above: every hook is called positionally as `hook(envelope, ctx)`,
+# and a plugin written against `**kwargs` raised on each call and was skipped without a word.
+BeforeModelHook = Callable[
+    [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any] | None] | dict[str, Any] | None
+]
+AfterModelHook = Callable[
+    [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any] | None] | dict[str, Any] | None
+]
 
 
 @dataclass
@@ -25,6 +35,8 @@ class AgentHookRegistry:
     before_tool: list[BeforeToolHook] = field(default_factory=list)
     after_tool: list[AfterToolHook] = field(default_factory=list)
     compact_failed: list[CompactFailedHook] = field(default_factory=list)
+    before_model: list[BeforeModelHook] = field(default_factory=list)
+    after_model: list[AfterModelHook] = field(default_factory=list)
 
     def register_before_turn(self, hook: BeforeTurnHook) -> None:
         self.before_turn.append(hook)
@@ -43,6 +55,12 @@ class AgentHookRegistry:
 
     def register_compact_failed(self, hook: CompactFailedHook) -> None:
         self.compact_failed.append(hook)
+
+    def register_before_model(self, hook: BeforeModelHook) -> None:
+        self.before_model.append(hook)
+
+    def register_after_model(self, hook: AfterModelHook) -> None:
+        self.after_model.append(hook)
 
 
 _hooks = AgentHookRegistry()
@@ -177,12 +195,80 @@ async def run_compact_failed(
             logger.debug("compact_failed hook failed", exc_info=True)
 
 
+async def run_before_model(
+    messages: list[ChatMessage],
+    *,
+    tools: list[str],
+    context: dict[str, Any] | None = None,
+) -> list[ChatMessage]:
+    """Return the messages one model call sends; a hook returns ``{messages: [...]}`` to replace them.
+
+    The replacement goes to this call only. The run's history is untouched, so whatever a hook
+    leaves out is still there for the next call and for the session log; `filter_history` is the
+    hook that changes the history itself. Hooks run in order, each seeing the list the one before
+    it returned. Build a new list and new messages rather than editing these in place: they are
+    the run's own objects.
+    """
+    current = list(messages)
+    ctx = context or {}
+    for hook in list(_hooks.before_model):
+        try:
+            result = hook({"messages": list(current), "tools": list(tools)}, ctx)
+            if hasattr(result, "__await__"):
+                result = await result  # type: ignore[misc]
+            if not isinstance(result, dict) or "messages" not in result:
+                continue
+            replaced = result["messages"]
+            # Checked here rather than left to the wire encoder, where a stray dict fails the
+            # whole run instead of this one hook.
+            if not isinstance(replaced, list) or not all(isinstance(m, ChatMessage) for m in replaced):
+                logger.warning("before_model hook returned something other than a list of messages; ignored")
+                continue
+            current = list(replaced)
+        except Exception:
+            logger.debug("before_model hook failed", exc_info=True)
+    return current
+
+
+async def run_after_model(
+    message: ChatMessage,
+    *,
+    stop_reason: str | None,
+    context: dict[str, Any] | None = None,
+) -> ChatMessage:
+    """Return the assistant message a model call produced; a hook returns ``{message: ...}`` to replace it.
+
+    The replacement is what the run records, persists and acts on — tool calls included — but
+    not what has already streamed: text deltas reach the client as the model writes them, before
+    any hook sees the turn. Hooks run in order, each seeing the message the one before it returned.
+    """
+    current = message
+    ctx = context or {}
+    for hook in list(_hooks.after_model):
+        try:
+            result = hook({"message": current, "stop_reason": stop_reason}, ctx)
+            if hasattr(result, "__await__"):
+                result = await result  # type: ignore[misc]
+            if not isinstance(result, dict) or "message" not in result:
+                continue
+            replaced = result["message"]
+            if not isinstance(replaced, ChatMessage) or replaced.role != "assistant":
+                logger.warning("after_model hook returned a non-assistant message; ignored")
+                continue
+            current = replaced
+        except Exception:
+            logger.debug("after_model hook failed", exc_info=True)
+    return current
+
+
 __all__ = [
     "AgentHookRegistry",
     "get_agent_hooks",
     "reset_agent_hooks",
+    "run_after_model",
     "run_after_tool",
     "run_before_compact",
+    "run_before_model",
     "run_before_tool",
     "run_before_turn",
     "run_compact_failed",

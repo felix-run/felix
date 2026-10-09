@@ -39,6 +39,7 @@ def example_register() -> Any:
 def _restore_registries() -> Any:
     """The example registers into process-wide registries; put them all back."""
     from felix import storage as storage_mod
+    from felix.hooks import reset_agent_hooks
     from felix.patterns import registry as pattern_reg
     from felix.session import strategies as strategies_mod
 
@@ -55,6 +56,7 @@ def _restore_registries() -> Any:
     ):
         live.clear()
         live.update(snapshot)
+    reset_agent_hooks()
 
 
 def test_the_entry_point_declaration_is_valid() -> None:
@@ -127,3 +129,18 @@ def test_the_example_backends_build(example_register: Any) -> None:
     # `example-pairs:3` means three pairs, i.e. a six-turn window.
     strategy = get_session_strategy("example-pairs:3")
     assert getattr(strategy, "max_turns", None) == 6
+
+
+@pytest.mark.asyncio
+async def test_the_example_before_tool_hook_blocks_through_the_runner(example_register: Any) -> None:
+    """Called the way `ToolRunner` calls it. It took `**kwargs` and answered `deny`, so every
+    positional call raised a swallowed `TypeError` and nothing it was meant to block was blocked."""
+    from felix.hooks import run_before_tool
+    from felix.plugins import PluginRegistry
+
+    example_register(PluginRegistry())
+    ctx = {"manifest_id": "m", "thread_id": "t"}
+
+    blocked = await run_before_tool({"id": "1", "name": "example__forbidden", "args": {}}, context=ctx)
+    assert blocked and blocked.get("block") is True, blocked
+    assert await run_before_tool({"id": "2", "name": "example__greet", "args": {}}, context=ctx) is None

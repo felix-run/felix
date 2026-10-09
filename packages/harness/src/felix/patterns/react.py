@@ -14,7 +14,7 @@ from felix_ai.types import split_file_ref
 
 from felix.audit.emit import emit_agent_audit
 from felix.config import get_settings
-from felix.hooks import run_before_turn, run_filter_history
+from felix.hooks import run_after_model, run_before_model, run_before_turn, run_filter_history
 from felix.manifests.schema import ABSOLUTE_LIMITS, ModelSpec
 from felix.observability.metrics import record_counter
 from felix.patterns.model import (
@@ -599,6 +599,41 @@ class _ReactAgent:
                 data={"progress": {"type": "assistant_delta", "kind": "text", "delta": delta}},
             )
 
+    def _model_hook_context(self, model: ModelClient, thread_id: str | None) -> dict[str, Any]:
+        return {
+            "manifest_id": self.manifest_id,
+            "thread_id": thread_id,
+            "model_id": getattr(model, "model_id", None),
+        }
+
+    async def _before_model(
+        self,
+        messages: list[ChatMessage],
+        tools: list[Tool],
+        model: ModelClient,
+        thread_id: str | None,
+    ) -> list[ChatMessage]:
+        """What one model call sends, after the `before_model` hooks; the run's history is unchanged."""
+        return await run_before_model(
+            messages,
+            tools=[t.name for t in tools],
+            context=self._model_hook_context(model, thread_id),
+        )
+
+    async def _after_model(
+        self,
+        assistant: ChatMessage,
+        result: ModelChatResult,
+        model: ModelClient,
+        thread_id: str | None,
+    ) -> ChatMessage:
+        """The assistant message after the `after_model` hooks, which the run records and acts on."""
+        return await run_after_model(
+            assistant,
+            stop_reason=getattr(result, "stop_reason", None),
+            context=self._model_hook_context(model, thread_id),
+        )
+
     async def _recover_from_overflow(
         self,
         thread_id: str | None,
@@ -1062,10 +1097,13 @@ class _ReactAgent:
                 for attempt in (0, 1):
                     chunks = []
                     emitted = False
+                    outgoing = await self._before_model(
+                        [*messages, *transient], active_tools, model, input.thread_id
+                    )
                     try:
                         if emit_events:
                             async for item in self._stream_one_turn(
-                                model, [*messages, *transient], active_tools, input.thread_id, tenant_id, opts
+                                model, outgoing, active_tools, input.thread_id, tenant_id, opts
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
@@ -1077,7 +1115,7 @@ class _ReactAgent:
                         else:
                             # No display to feed, so ask for the turn directly rather
                             # than streaming deltas nobody will read.
-                            result = await model.chat([*messages, *transient], active_tools, opts)
+                            result = await model.chat(outgoing, active_tools, opts)
                     except ModelGatewayError as exc:
                         if attempt or emitted or not is_context_overflow(exc):
                             raise
@@ -1104,7 +1142,7 @@ class _ReactAgent:
                     break
 
                 if result is None:
-                    result = await model.chat([*messages, *transient], active_tools, opts)
+                    result = await model.chat(outgoing, active_tools, opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                 last_usage = usage_block or last_usage
@@ -1120,6 +1158,7 @@ class _ReactAgent:
                         content="".join(chunks),
                         tool_calls=assistant.tool_calls,
                     )
+                assistant = await self._after_model(assistant, result, model, input.thread_id)
                 messages.append(assistant)
                 produced.append(assistant)
                 final = assistant
@@ -1128,6 +1167,10 @@ class _ReactAgent:
                 # not a completed turn, and recording either as one hides a partial or
                 # absent answer behind a successful-looking run.
                 stop_reason = getattr(result, "stop_reason", "end_turn")
+                if stop_reason == "tool_use" and not assistant.tool_calls:
+                    # An after_model hook took the calls out, so this is the final answer; left
+                    # as `tool_use`, the OpenAI wire reports `finish_reason: tool_calls` with none.
+                    stop_reason = "end_turn"
                 last_stop = stop_reason or "end_turn"
 
                 if assistant.tool_calls and stop_reason == "max_tokens":
@@ -1273,10 +1316,14 @@ class _ReactAgent:
                         yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat([*messages, *transient], await _tools_for_run(), opts)
+                    follow_tools = await _tools_for_run()
+                    outgoing = await self._before_model(
+                        [*messages, *transient], follow_tools, model, input.thread_id
+                    )
+                    result = await model.chat(outgoing, follow_tools, opts)
                     follow_usage = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                     last_usage = follow_usage or last_usage
-                    assistant = result.message
+                    assistant = await self._after_model(result.message, result, model, input.thread_id)
                     messages.append(assistant)
                     produced.append(assistant)
                     final = assistant
