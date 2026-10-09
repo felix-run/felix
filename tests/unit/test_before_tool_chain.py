@@ -135,7 +135,7 @@ async def test_a_block_is_audited_counted_and_marks_the_batch_denied(monkeypatch
     assert counts == [
         ("felix_tool_calls", {"transport": "probe-transport", "status": "denied", "manifest_id": "m"})
     ]
-    assert had_denied is True, "a hook block must mark the run's final audit row as an error, as a deny does"
+    assert had_denied == 1, "a hook block must mark the run's final audit row as an error, as a deny does"
 
 
 @pytest.mark.parametrize("answer", [True, "block"], ids=["true", "string"])
@@ -155,3 +155,19 @@ async def test_an_answer_that_is_not_a_dict_is_warned_about_and_blocks_nothing(
     ]
     assert len(warned) == 1 and "not_a_dict" in warned[0] and "other than a dict" in warned[0], warned
     assert executor.calls == 1
+
+
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_a_batch_counts_each_refused_call(mode: str) -> None:
+    """`run_batch` returns how many calls were refused, which `final_response` sums per run."""
+    get_agent_hooks().register_before_tool(blocks)
+    tool = Tool(name="t", description="d", args_schema=None, executor=_Counts())
+    runner = ToolRunner(tool_map={"t": tool}, manifest_id="m", tool_execution=mode)
+
+    _, _, _, denied_calls = await runner.run_batch(
+        [ToolCall(id="1", name="t", args={}), ToolCall(id="2", name="t", args={})],
+        thread_id=None,
+        tenant_id="t",
+    )
+
+    assert denied_calls == 2

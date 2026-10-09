@@ -258,5 +258,10 @@ Real, documented rather than hidden:
   `status=error`, distinguishing it from a successful completion. This applies when the last tool
   batch had a denial — a denial followed by a closing message is an error row; a denial followed
   by more tool calls is not.
+- **`final_response` rows carry `payload.denied_calls`.** How many calls a governance wrapper or a
+  `before_tool` hook refused across the whole run, every round included. `status` answers whether
+  the run *ended* on a refusal; the count answers whether it met one at all, so a run that
+  recovered after a refusal (`ok`, `denied_calls > 0`) is told apart from one that was never
+  refused (`ok`, `0`). Each refusal also has its own `policy_deny` row.
 - **No sampling below the trace root.** `FELIX_OTEL_SAMPLE_RATIO` is head-based and
   parent-respecting: a sampled request keeps all of its child spans.

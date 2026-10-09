@@ -1065,6 +1065,10 @@ class _ReactAgent:
         final = ChatMessage(role="assistant", content="")
         fatal = False
         any_denied = False
+        # Every refusal in the run, across rounds. `any_denied` is the *last* batch's: #311 made
+        # `final_response.status` say whether the run ended on a refusal, so a run that recovered
+        # after one still reads `ok`. The count is what tells that run apart from one with none.
+        denied_calls = 0
         last_stop: StopReason = "end_turn"
         # The newest model call's usage block, for `done`. The last call's prompt is the
         # whole branch as the model saw it, so this is also how full the context is.
@@ -1300,7 +1304,7 @@ class _ReactAgent:
                             if batch.done():
                                 break
                             await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
-                    tool_msgs, had_fatal, all_terminate, had_denied = await batch
+                    tool_msgs, had_fatal, all_terminate, batch_denied = await batch
                 except BaseException:
                     # The batch no longer inherits cancellation from this frame, so a
                     # client that hangs up mid-tool would otherwise leave it running.
@@ -1321,7 +1325,8 @@ class _ReactAgent:
                     produced.append(tool_msg)
 
                 await self._append_produced(input.thread_id, tool_msgs)
-                any_denied = had_denied
+                any_denied = bool(batch_denied)
+                denied_calls += batch_denied
                 if had_fatal:
                     # A fatal tool error ends the run. Follow-ups are not drained: the
                     # run did not reach a state a follow-up could sensibly continue from.
@@ -1385,6 +1390,7 @@ class _ReactAgent:
             payload={
                 "thread_id": input.thread_id,
                 "chars": len(final.content or ""),
+                "denied_calls": denied_calls,
             },
         )
         await self._maybe_capture_memory(input, final, model)
