@@ -304,14 +304,14 @@ First, because everything else governs it.
       `jev` to Workers AI through the `felix-prod` AI Gateway. Partner models bill against prepaid,
       account-level AI Gateway credits (a 402, code 2021, when empty), not Workers AI usage.
 
-- [ ] **Clef as the default decider.** Cloudflare's Clef and Clef-flash (2026-10-01) are
+- [x] **Clef as the default decider.** Cloudflare's Clef and Clef-flash (2026-10-01) are
       Jev-API compatible, open-weight, 64K context, and billed as Workers AI usage on the credential
       the chat routes already hold. `clef` and `clef-flash` are now default decision routes and
       `decider-support` uses `clef`; the `jev` routes stay. A `@cf/` model is run by path
       (`/ai/run/@cf/cloudflare/clef`) with flat fields, unlike Jev's nested partner run. Verified
       live on 2026-10-06 from the production container through the `felix-prod` AI Gateway: both
       models answered every question type in a single `{result: {model, answers, usage}}`
-      envelope, about 0.6–0.75 s per call including connect. Open: Clef reads images (`images`,
+      envelope, about 0.6–0.75 s per call including connect. Follow-up, not wired: Clef reads images (`images`,
       up to 4), which `image_screening` could use instead of transcribing first.
 
 - [x] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
