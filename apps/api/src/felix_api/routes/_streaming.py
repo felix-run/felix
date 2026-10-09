@@ -70,9 +70,11 @@ NOTIFIED_POLL_CEILING_SECONDS = 60.0
 APPROVAL_ANNOUNCE_LIMIT = 50
 
 
-def next_poll_delay(idle: float, delay: float, *, floor: float, ceiling: float) -> float:
+def next_poll_delay(
+    idle: float, delay: float, *, floor: float, ceiling: float, grace: float = POLL_BACKOFF_GRACE_SECONDS
+) -> float:
     """The wait before the next poll of a quiet stream."""
-    if idle < POLL_BACKOFF_GRACE_SECONDS:
+    if idle < grace:
         return floor
     return min(delay * POLL_BACKOFF_FACTOR, ceiling)
 
@@ -220,7 +222,18 @@ class ResumePacing:
         # interval. When Redis drops, `by_notification` goes False on the next wait and
         # this tightens back on its own, without anything having to notice.
         ceiling = self.notified_ceiling if self._notified else self.ceiling
-        self.timeout = next_poll_delay(self._idle, self.timeout, floor=self.floor, ceiling=ceiling)
+        # The grace window protects first-event latency, and a stream whose every source is
+        # notified does not get that from the poll: an append wakes it at once. So it decays
+        # from the first quiet round -- about a dozen polls per idle cycle rather than the
+        # thirty the grace held at the floor, which was most of an idle tab's queries. Not a
+        # stream that also polls what no notification covers -- a durable run's status, its
+        # approval and client-request gates -- which says so by pinning `notified_ceiling` to
+        # its own ceiling: there, the poll is still how a waiting approval is found.
+        skip_grace = self._notified and self.notified_ceiling > self.ceiling
+        grace = 0.0 if skip_grace else POLL_BACKOFF_GRACE_SECONDS
+        self.timeout = next_poll_delay(
+            self._idle, self.timeout, floor=self.floor, ceiling=ceiling, grace=grace
+        )
 
     def observed(self, progressed: bool) -> None:
         """Fold one iteration's outcome in.

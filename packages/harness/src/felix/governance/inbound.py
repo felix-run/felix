@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from felix.config import Settings
 from felix.governance.content_screening import screen_content
 from felix.governance.image_screening import INGEST, REPLAY, TOOL, ImageScreener, ImageSurface, has_images
-from felix.governance.pii import redact_pii
+from felix.governance.pii import redact_pii_async
 from felix.governance.screening import (
     INJECTION_THRESHOLD,
     MAX_SCREEN_CHUNKS,
@@ -274,7 +274,7 @@ async def _screen_turn_text(
                 text = "[quarantined] user input flagged by model screener"
 
     if input_pii_enabled(guardrails):
-        result = redact_pii(text)
+        result = await redact_pii_async(text)
         if result.matched:
             note_screening(manifest, "turn", "denied" if guardrails.block_on_match else "redacted")
             if guardrails.block_on_match:

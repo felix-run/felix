@@ -41,9 +41,9 @@ async def screen_content(
                 return ScreeningVerdict(denied=True, reason="prompt_injection_marker")
 
     if redact_pii:
-        from felix.governance.pii import redact_pii as _redact
+        from felix.governance.pii import redact_pii_async
 
-        result = _redact(text)
+        result = await redact_pii_async(text)
         if result.matched and result.text != text:
             return ScreeningVerdict(denied=False, reason="pii_redacted", redacted=result.text)
 

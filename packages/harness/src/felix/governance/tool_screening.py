@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
 from felix.governance.content_screening import screen_content
-from felix.governance.pii import redact_pii
+from felix.governance.pii import redact_pii_async
 from felix.governance.screening import (
     MAX_SCREEN_CHUNKS,
     SCREEN_CHARS,
@@ -92,6 +92,14 @@ def _map_values(value: Any, fn: Any) -> Any:
 MAX_ARGUMENT_STRINGS = 256
 
 
+async def _any_pii(texts: Any) -> bool:
+    """Whether any of `texts` holds PII, stopping at the first that does."""
+    for text in texts:
+        if (await redact_pii_async(text)).matched:
+            return True
+    return False
+
+
 async def screen_tool_arguments(
     manifest: Manifest, args: dict[str, Any], settings: Settings
 ) -> dict[str, Any]:
@@ -138,18 +146,16 @@ async def screen_tool_arguments(
                 note_screening(manifest, "tool_arguments", "denied")
                 raise InboundScreeningError("content_screening_denied", status_code=422)
     if pii_on_input:
-        if any(redact_pii(k).matched for k in _keys_in(args)):
+        if await _any_pii(_keys_in(args)):
             note_screening(manifest, "tool_arguments", "denied")
             raise InboundScreeningError("pii_blocked", status_code=422)
-        matched = False
-
-        def _redact(text: str) -> str:
-            nonlocal matched
-            result = redact_pii(text)
-            matched = matched or result.matched
-            return result.text
-
-        redacted = _map_values(args, _redact)
+        # Redacted up front, off the loop, then mapped: `_map_values` takes a plain function.
+        # The first pass only collects the values it would rewrite (keys were checked above).
+        values: list[str] = []
+        _map_values(args, lambda text: values.append(text) or text)
+        results = {text: await redact_pii_async(text) for text in dict.fromkeys(values)}
+        matched = any(r.matched for r in results.values())
+        redacted = _map_values(args, lambda text: results[text].text)
         if matched:
             note_screening(manifest, "tool_arguments", "denied" if guardrails.block_on_match else "redacted")
             if guardrails.block_on_match:
@@ -213,7 +219,7 @@ async def screen_output_schema(manifest: Manifest, schema: dict[str, Any], setti
                 logger.info("inbound screening flagged an output schema score=%.2f", result.score)
                 note_screening(manifest, "output_schema", "denied")
                 raise InboundScreeningError("content_screening_denied", status_code=422)
-    if pii_on_input and any(redact_pii(t).matched for t in texts):
+    if pii_on_input and await _any_pii(texts):
         # Always a refusal, `block_on_match` or not: the redacted alternative is a schema whose
         # descriptions no longer say what the caller wrote.
         note_screening(manifest, "output_schema", "denied")

@@ -345,9 +345,17 @@ async def resolve_for_current_request(messages: list[ChatMessage]) -> list[ChatM
     from felix.storage import get_object_store
 
     settings = getattr(ctx, "settings", None) or get_settings()
+    # One memo for the request: a tool loop's every step re-sends the thread's images.
+    # Keyed by tenant as well: the memo is keyed by file id, and only the tenant it was filled
+    # for may read it, should a context ever carry its extras across a change of tenant.
+    memo = ctx.extras.setdefault(f"{_ATTACHMENT_MEMO}:{tenant_id}", {}) if ctx is not None else None
     return await resolve_file_refs(
-        messages, tenant_id=str(tenant_id), object_store=get_object_store(settings)
+        messages, tenant_id=str(tenant_id), object_store=get_object_store(settings), memo=memo
     )
+
+
+# The key `resolve_for_current_request` keeps its attachment memo under in `RequestContext.extras`.
+_ATTACHMENT_MEMO = "felix.attachments.resolved"
 
 
 @dataclass

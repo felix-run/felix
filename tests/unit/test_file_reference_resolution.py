@@ -237,3 +237,37 @@ async def test_the_session_serialisers_carry_a_reference_through_unchanged() -> 
         metadata = event.metadata
 
     assert event_to_chat_message(_Restored()).attachments[0].url == file_ref_url(file_id)
+
+
+@pytest.mark.asyncio
+async def test_a_request_reads_each_attachment_once_however_many_model_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every step of a tool loop is a provider call, and every one re-sends the thread's images.
+    One read per request; a new request reads again, so a deletion takes effect there."""
+    from felix import attachments
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.patterns.model import resolve_for_current_request
+
+    settings = _settings()
+    file_id = await _stored(settings, "acme", PNG, "image/png")
+    reads: list[str] = []
+    real = attachments.read_attachment
+
+    async def counting(store, *, tenant_id: str, file_id: str):
+        reads.append(file_id)
+        return await real(store, tenant_id=tenant_id, file_id=file_id)
+
+    monkeypatch.setattr(attachments, "read_attachment", counting)
+
+    async def one_request() -> None:
+        ctx = RequestContext(settings=settings, auth=AuthContext(tenant_id="acme", scopes=frozenset()))
+        async with async_run_with_context(ctx):
+            for _ in range(4):  # four steps of one tool loop
+                [resolved] = await resolve_for_current_request([_turn(file_id)])
+                assert resolved.attachments[0].url.startswith("data:image/png;base64,")
+
+    await one_request()
+    assert reads == [file_id]
+    await one_request()
+    assert reads == [file_id, file_id]

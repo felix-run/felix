@@ -968,10 +968,19 @@ comment explaining exactly that. It is conditional, not inert.
             events, and the saving is a few LAN round trips. Still whole-log: `full_replay`,
             `windowed:N`, `semantic:N` and `summarizing` (they have no checkpoint to start from),
             the thread snapshot, and `/chat/sessions/feedback`; the skeleton pass itself is O(n).
-      - [ ] *Streams and governance fan-out.* Skip the resume grace window once pub/sub delivers;
-            notify on fiber status and approval insert so the durable stream can stop polling at
-            10 s; cache screening verdicts by content hash and gather windows and model judges;
-            Presidio and the fs object store off the event loop; attachments cached per file id.
+      - [x] *Streams and governance fan-out.* A notified stream skips the poll's grace window
+            (~13 queries per idle cycle, not ~42); screening verdicts are kept 10 min by window
+            text and screener, and a long text's windows are screened 4 at a time; free judges
+            run first, model judges together; Presidio runs on one dedicated thread and the fs
+            object store's I/O in threads; attachments are read once per request, not once per
+            model call. Declined: `max_tokens` on the screener (a reasoning model would answer
+            nothing and every screen fail closed), and a process-wide attachment cache (a deleted
+            image would outlive its deletion, and base64 images weigh on a 2 GiB VM).
+      - [ ] *Durable streams stop polling at 10 s.* Still open from the item above: approvals,
+            client tool requests and fiber status changes publish no thread notification, so a
+            stream with a durable run in flight keeps `notified_ceiling=poll_max`. Fiber status is
+            written in about ten places, and a missed one delays an approval prompt a minute, so it
+            wants its own change with a test per writer.
       - [ ] *Worker and data hygiene.* Two-stage pgvector queries so HNSW is used; chunk audit and
             usage flushes under the bind-parameter limit; batched retention deletes; single-flight
             cron ticks and a conditional `touch_run`; idle backoff in the fiber loop.

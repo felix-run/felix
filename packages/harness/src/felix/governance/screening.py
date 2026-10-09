@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from felix.bounded_cache import BoundedCache
 from felix.observability.metrics import record_counter
 
 if TYPE_CHECKING:
@@ -102,6 +103,10 @@ MAX_SCREEN_CHUNKS = 8
 
 # Windows overlap by this much so a payload straddling a boundary is inside one of them.
 SCREEN_OVERLAP = 200
+
+# Windows of one text screened at once. Bounded because each is a model call and provider rate
+# limits count requests.
+SCREEN_CONCURRENCY = 4
 
 
 # --- the scorers --------------------------------------------------------------------------
@@ -196,7 +201,48 @@ async def _decider_screen(decider: MeteredDecider, text: str) -> ScreenResult:
         return ScreenResult(available=False, reason="decider_unavailable")
 
 
+# Verdicts by window text and screener. A client of `/v1/chat/completions` or `/chat` sends the
+# whole conversation every turn, and every user message in it was model-screened again on
+# every request: a thread's screening cost grew with its length, in model calls, before the
+# turn began. Only available verdicts are kept -- an outage must not stand in for a score --
+# and only briefly, the same text being judged by the same screener inside the window.
+VERDICT_TTL_S = 600.0
+_VERDICTS = BoundedCache(2048, ttl_s=VERDICT_TTL_S)
+
+
+def clear_screening_verdicts() -> None:
+    _VERDICTS.clear()
+
+
+def _verdict_key(text: str, model_id: str, decider: MeteredDecider | None) -> str:
+    """Per tenant, as the image verdicts are: identical text would earn the same score anywhere,
+    but one tenant's screening history is not another's to read through a cache hit."""
+    import hashlib
+
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    tenant = str(getattr(getattr(ctx, "auth", None), "tenant_id", "") or "") if ctx is not None else ""
+    digest = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"{tenant}|{model_id}|{decider.model_id if decider is not None else ''}|{digest}"
+
+
 async def screen_for_injection(
+    settings: Settings, text: str, model_id: str, decider: MeteredDecider | None = None
+) -> ScreenResult:
+    """Score 0..1 injection risk, reporting unavailability distinctly from 'clean'; see
+    `_VERDICTS` for what is remembered."""
+    key = _verdict_key(text, model_id, decider)
+    cached = _VERDICTS.get(key)
+    if cached is not None:
+        return cached
+    result = await _screen_uncached(settings, text, model_id, decider)
+    if result.available:
+        _VERDICTS[key] = result
+    return result
+
+
+async def _screen_uncached(
     settings: Settings, text: str, model_id: str, decider: MeteredDecider | None = None
 ) -> ScreenResult:
     """Score 0..1 injection risk, reporting unavailability distinctly from 'clean'.
@@ -235,14 +281,29 @@ async def screen_chunks(
 ) -> ScreenResult:
     """Run the model screener over the whole text, a screener-window at a time, so a
     long benign prefix cannot push a payload past the window. The first flagged or
-    unavailable chunk decides."""
+    unavailable window, in order, decides.
+
+    The windows are screened concurrently, a few at a time: one after another, a tool result
+    eight windows long waited out eight model calls in series. Only a flagged early window
+    costs more this way -- the later ones are asked anyway -- and flagged is the rare case.
+    """
+    import asyncio
+
     step = SCREEN_CHARS - SCREEN_OVERLAP
+    windows: list[str] = []
     for start in range(0, max(len(text), 1), step):
-        result = await screen_for_injection(settings, text[start : start + SCREEN_CHARS], model_id, decider)
-        if result.unavailable or result.flagged:
-            return result
+        windows.append(text[start : start + SCREEN_CHARS])
         if start + SCREEN_CHARS >= len(text):
             break
+    gate = asyncio.Semaphore(SCREEN_CONCURRENCY)
+
+    async def screen(window: str) -> ScreenResult:
+        async with gate:
+            return await screen_for_injection(settings, window, model_id, decider)
+
+    for result in await asyncio.gather(*(screen(w) for w in windows)):
+        if result.unavailable or result.flagged:
+            return result
     return ScreenResult(score=0.0)
 
 
