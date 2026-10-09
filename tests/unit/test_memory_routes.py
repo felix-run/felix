@@ -154,3 +154,104 @@ async def test_oversized_content_is_rejected() -> None:
     async with _client() as client:
         resp = await client.post("/memory", json={"content": "x" * 5000}, headers=_auth("sk-write"))
         assert resp.status_code == 422
+
+
+async def _two_threads_at_turn_four() -> None:
+    settings = _settings()
+    for content, thread in (("Ships on Fridays.", "acme:t-one"), ("Ships on Mondays.", "acme:t-two")):
+        await memory_store.put_memory(
+            settings, "acme", content=content, manifest_id="m", origin_seq=4, thread_id=thread
+        )
+
+
+@pytest.mark.asyncio
+async def test_as_of_narrows_to_one_thread() -> None:
+    """A turn number is an ordinal into one thread's log; "turn 4" across threads is two
+    unrelated conversations' fourth turns."""
+    await _two_threads_at_turn_four()
+    async with _client() as client:
+        both = await client.get("/memory/as-of/4?manifest_id=m", headers=_auth("sk-read"))
+        assert len(both.json()["items"]) == 2
+
+        one = await client.get("/memory/as-of/4?manifest_id=m&thread_id=t-one", headers=_auth("sk-read"))
+        assert [i["content"] for i in one.json()["items"]] == ["Ships on Fridays."]
+
+        # The suffix only: a caller can never name another tenant's thread.
+        bad = await client.get("/memory/as-of/4?thread_id=acme:t-one", headers=_auth("sk-read"))
+        assert bad.status_code == 400
+        assert bad.json()["detail"] == "invalid_thread_id"
+
+
+@pytest.mark.asyncio
+async def test_list_narrows_to_one_thread_and_empty_means_no_thread() -> None:
+    await _two_threads_at_turn_four()
+    async with _client() as client:
+        await client.post(
+            "/memory", json={"content": "Operator note.", "manifest_id": "m"}, headers=_auth("sk-write")
+        )
+        two = await client.get("/memory?thread_id=t-two", headers=_auth("sk-read"))
+        assert [i["content"] for i in two.json()["items"]] == ["Ships on Mondays."]
+
+        outside = await client.get("/memory?thread_id=", headers=_auth("sk-read"))
+        assert [i["content"] for i in outside.json()["items"]] == ["Operator note."]
+
+
+@pytest.mark.asyncio
+async def test_search_hits_carry_where_they_came_from() -> None:
+    await _two_threads_at_turn_four()
+    async with _client() as client:
+        found = await client.get("/memory/search?q=ships fridays&manifest_id=m", headers=_auth("sk-read"))
+        hit = next(i for i in found.json()["items"] if i["content"] == "Ships on Fridays.")
+        assert hit["thread_id"] == "acme:t-one"
+        assert hit["origin_seq"] == 4
+        assert hit["manifest_id"] == "m"
+        assert hit["status"] == "active"
+        assert isinstance(hit["created_at"], int)
+        assert "last_used_at" in hit
+
+
+@pytest.mark.asyncio
+async def test_forget_can_be_seen_and_undone() -> None:
+    async with _client() as client:
+        mem_id = (
+            await client.post(
+                "/memory", json={"content": "Keep this.", "manifest_id": "m"}, headers=_auth("sk-write")
+            )
+        ).json()["id"]
+
+        # Restoring an active memory is not a restore.
+        assert (await client.post(f"/memory/{mem_id}/restore", headers=_auth("sk-write"))).status_code == 409
+
+        await client.delete(f"/memory/{mem_id}", headers=_auth("sk-write"))
+        forgotten = await client.get("/memory?status=forgotten", headers=_auth("sk-read"))
+        assert [i["id"] for i in forgotten.json()["items"]] == [mem_id]
+
+        # A reader may not undo a forget.
+        assert (await client.post(f"/memory/{mem_id}/restore", headers=_auth("sk-read"))).status_code == 403
+
+        back = await client.post(f"/memory/{mem_id}/restore", headers=_auth("sk-write"))
+        assert back.status_code == 200
+        assert back.json() == {"id": mem_id, "status": "active"}
+        assert [
+            i["id"]
+            for i in (await client.get("/memory?manifest_id=m", headers=_auth("sk-read"))).json()["items"]
+        ] == [mem_id]
+        assert (await client.get("/memory?status=forgotten", headers=_auth("sk-read"))).json()["items"] == []
+
+        assert (await client.post("/memory/nope/restore", headers=_auth("sk-write"))).status_code == 404
+        # Another tenant cannot restore it either: their store has no such row.
+        await client.delete(f"/memory/{mem_id}", headers=_auth("sk-write"))
+        assert (await client.post(f"/memory/{mem_id}/restore", headers=_auth("sk-other"))).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_an_agent_cannot_restore_what_an_operator_forgot() -> None:
+    """Restore is gated on whoever forgot the row, like a re-store is."""
+    settings = _settings()
+    row = await memory_store.put_memory(settings, "acme", content="Agent-written.", manifest_id="m")
+    assert await memory_store.forget(settings, "acme", row["id"], source="management_api")
+    assert await memory_store.restore(settings, "acme", row["id"], source="") == "refused"
+    assert await memory_store.restore(settings, "acme", row["id"], source="management_api") == "restored"
+    restored = (await memory_store.get_many(settings, "acme", [row["id"]]))[row["id"]]
+    assert restored["status"] == "active"
+    assert "retired_by" not in (restored.get("metadata") or {})

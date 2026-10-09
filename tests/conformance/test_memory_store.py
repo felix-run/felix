@@ -743,3 +743,61 @@ async def test_consolidation_keeps_the_same_duplicate_on_both_arms(memory_settin
     assert await memory_store.consolidate_pools(memory_settings) == 2
     active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
     assert [r["id"] for r in active] == [min(r["id"] for r in rows)]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_as_of_and_list_narrow_to_one_thread(memory_settings: Any) -> None:
+    """A turn number orders one thread's log; the filter keeps two threads' turn 4 apart."""
+    await _put(memory_settings, "Ships on Fridays.", origin_seq=4, thread_id=f"{TENANT}:a")
+    await _put(memory_settings, "Ships on Mondays.", origin_seq=4, thread_id=f"{TENANT}:b")
+    await _put(memory_settings, "Written outside a thread.", metadata=OPERATOR)
+
+    both = await memory_store.as_of(memory_settings, TENANT, 4, manifest_id=MANIFEST)
+    assert len(both) == 3
+    one = await memory_store.as_of(memory_settings, TENANT, 4, manifest_id=MANIFEST, thread_id=f"{TENANT}:a")
+    assert [r["content"] for r in one] == ["Ships on Fridays."]
+
+    b = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, thread_id=f"{TENANT}:b")
+    assert [r["content"] for r in b] == ["Ships on Mondays."]
+    # Empty is a real value: the rows no thread wrote.
+    none = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, thread_id="")
+    assert [r["content"] for r in none] == ["Written outside a thread."]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_restore_undoes_a_forget_on_both_arms(memory_settings: Any) -> None:
+    row = await _put(memory_settings, "Restore me.")
+    assert (
+        await memory_store.restore(memory_settings, TENANT, row["id"], source="management_api")
+        == "not_forgotten"
+    )
+    assert await memory_store.restore(memory_settings, TENANT, "nope", source="management_api") == "missing"
+
+    assert await memory_store.forget(memory_settings, TENANT, row["id"], source="management_api")
+    forgotten = await memory_store.list_forgotten(memory_settings, TENANT, manifest_id=MANIFEST)
+    assert [r["id"] for r in forgotten] == [row["id"]]
+
+    # Gated on whoever forgot it: the agent cannot undo the operator.
+    assert await memory_store.restore(memory_settings, TENANT, row["id"], source="") == "refused"
+    assert (
+        await memory_store.restore(memory_settings, TENANT, row["id"], source="management_api") == "restored"
+    )
+
+    restored = (await memory_store.get_many(memory_settings, TENANT, [row["id"]]))[row["id"]]
+    assert restored["status"] == ACTIVE
+    assert memory_store.RETIRED_BY_KEY not in (restored.get("metadata") or {})
+    assert await memory_store.list_forgotten(memory_settings, TENANT, manifest_id=MANIFEST) == []
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_superseded_row_is_not_restorable(memory_settings: Any) -> None:
+    """Superseded has a place in turn time; reactivating it would give it two intervals."""
+    old = await _put(memory_settings, "Timezone is UTC.", topic_key="tz", origin_seq=1)
+    await _put(memory_settings, "Timezone is CET.", topic_key="tz", origin_seq=2, metadata=OPERATOR)
+    assert (
+        await memory_store.restore(memory_settings, TENANT, old["id"], source="management_api")
+        == "not_forgotten"
+    )

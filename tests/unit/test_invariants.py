@@ -521,6 +521,13 @@ def test_every_memory_store_function_is_classified() -> None:
         ),
         "forget": "guarded: _rank(source) vs _trust(row), _retirer_rank stamp only rises",
         "supersede": "guarded: _rank(source) vs max(_trust, _retirer_rank), stamps retirer",
+        # The reverse direction -- it brings a row *back* into recall -- but it writes
+        # `status`, and an unguarded reactivation is how an injected turn would undo an
+        # operator's forget, so it carries a predicate like the rest.
+        "restore": (
+            "guarded: forgotten rows only (never superseded), _rank(source) vs _retirer_rank(row), "
+            "the predicate _may_reactivate applies to a re-store; clears the retirer stamp"
+        ),
         "put_memory": (
             "delegates to _put_in_memory / _put_in_postgres, which apply _may_displace "
             "and _refused_in_sql; names its writer when it calls supersede"
@@ -563,6 +570,7 @@ def test_every_memory_store_function_is_classified() -> None:
         "get_many",
         "list_active",
         "as_of",
+        "list_forgotten",
         # Consolidation's reads and its pure planner; `merge_duplicates` is the write.
         "list_memory_pools",
         "_may_merge",
