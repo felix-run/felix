@@ -806,6 +806,11 @@ and fixed; the comment at `fibers.py:36-46` is the record.
       stays the logical route name, which is what an operator recognises.
 - [x] **`GET /usage/summary`** — by manifest / model / UTC day, with totals; both backends
       under conformance.
+- [x] **Usage by thread.** Migration `0035_usage_thread`: `thread_id` on every usage row, the
+      `{tenant}:{suffix}` the audit payload carries (`''` outside a thread, and on every row
+      written before it). `GET /usage?thread_id=<suffix>` filters; `GET /usage/threads` groups a
+      window by thread, newest activity first, with totals over every thread and `truncated`
+      when the page holds fewer than exist. Both backends under conformance.
 - [x] **Fill the missing bundled rates** — ~~`gpt-4.1` has no entry and bills at the default~~ (priced in #301, with `-mini` and `-nano`).
       Correction to this entry as written: an unpriced model contributes `$0`, so
       `limits.max_cost_usd` fails **open** for it, not closed — `felix_model_unpriced` now says

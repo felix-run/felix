@@ -93,6 +93,10 @@ class PluginRegistry:
         return self._audit_sink
 
     def register_usage_sink(self, factory: Callable[[Settings], Any]) -> None:
+        """`factory(settings)` returns an object whose `record(*, tenant_id, manifest_id,
+        model_id, usage)` is called once per metered model call. A `record` that also names
+        `thread_id` (or takes `**kwargs`) is passed the call's `{tenant}:{suffix}` thread, `''`
+        outside one; a sink that does not is called exactly as before."""
         self._usage_sink_factory = factory
 
     def usage_sink_factory(self) -> Callable[[Settings], Any] | None:

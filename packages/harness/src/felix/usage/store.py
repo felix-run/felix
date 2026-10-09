@@ -40,6 +40,7 @@ def _event_dict(row: UsageEvent | dict[str, Any]) -> dict[str, Any]:
         "wire_model_id": row.wire_model_id,
         "cost_usd": row.cost_usd,
         "meta_json": row.meta_json,
+        "thread_id": row.thread_id,
     }
 
 
@@ -56,6 +57,7 @@ def record_tokens(
     wire_model_id: str = "",
     cost_usd: float = 0.0,
     meta: dict[str, Any] | None = None,
+    thread_id: str = "",
 ) -> None:
     """Buffer a token-usage event for later flush.
 
@@ -64,6 +66,9 @@ def record_tokens(
     the one pricer, at the one moment the wire id, the rates and any manifest override are
     all in hand — and is fixed on the row: nothing recomputes it later, because later the
     override and the route are gone.
+
+    `thread_id` is the `{tenant}:{suffix}` thread the call ran on, spelled as the audit
+    payload spells it so the two join; `''` for a call outside any thread.
     """
     _ = settings
     event = {
@@ -80,6 +85,7 @@ def record_tokens(
         "wire_model_id": wire_model_id or "",
         "cost_usd": float(cost_usd or 0.0),
         "meta_json": meta or {},
+        "thread_id": thread_id or "",
     }
     _pending.append(event)
 
@@ -91,11 +97,16 @@ async def query(
     limit: int = 50,
     cursor: str | None = None,
     manifest_id: str | None = None,
+    thread_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    """Usage rows, newest first. `thread_id` is the stored `{tenant}:{suffix}` form, and `''`
+    is a real value — the calls made outside any thread — distinct from `None`, no filter."""
     if _use_memory(settings):
         items = [e for e in _memory_events if e["tenant_id"] == tenant_id]
         if manifest_id is not None:
             items = [e for e in items if e["manifest_id"] == manifest_id]
+        if thread_id is not None:
+            items = [e for e in items if e.get("thread_id", "") == thread_id]
         # `felix.cursors` owns the rule, not just the string: the twin and the store paged in
         # parallel here and their `next_cursor` predicates had already drifted apart.
         rows, next_cursor = take_page(order_and_seek(items, cursor), limit=limit)
@@ -114,6 +125,8 @@ async def query(
         )
         if manifest_id is not None:
             stmt = stmt.where(UsageEvent.manifest_id == manifest_id)
+        if thread_id is not None:
+            stmt = stmt.where(UsageEvent.thread_id == thread_id)
         if cursor is not None:
             stmt = stmt.where(keyset_before(UsageEvent.ts, UsageEvent.id, cursor))
         found = (await db.scalars(stmt)).all()
@@ -132,7 +145,12 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
     if _use_memory(settings):
         # Idempotent, like the insert below: a flush retried after a partial commit.
         stored = {(e["tenant_id"], e["id"]) for e in _memory_events}
-        _memory_events.extend(e for e in batch if (e["tenant_id"], e["id"]) not in stored)
+        # `thread_id` defaulted as the column defaults it, for an event buffered without one.
+        _memory_events.extend(
+            {**e, "thread_id": e.get("thread_id") or ""}
+            for e in batch
+            if (e["tenant_id"], e["id"]) not in stored
+        )
         return
 
     from collections import defaultdict
@@ -175,6 +193,9 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
                                 "wire_model_id": event.get("wire_model_id", ""),
                                 "cost_usd": float(event.get("cost_usd") or 0.0),
                                 "meta_json": event.get("meta_json") or {},
+                                # `.get`: an event buffered by a process that predates the
+                                # column has no key, and is a call with no thread on record.
+                                "thread_id": event.get("thread_id") or "",
                             }
                             for event in events
                         ]
@@ -323,6 +344,116 @@ async def summary(
     }
 
 
+THREADS_DEFAULT_LIMIT = 50
+
+
+def _thread_item_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """One thread's spend over a window, on the wire.
+
+    A named literal for the reason `_summary_item_dict` is one: it is the shape a client
+    guards its type against, and the one definition both arms share. `thread_id` is the
+    stored `{tenant}:{suffix}` form; `''` is the calls made outside any thread, one item
+    like any other.
+    """
+    return {
+        "thread_id": str(row.get("thread_id") or ""),
+        "calls": int(row.get("calls") or 0),
+        "tokens_input": int(row.get("tokens_input") or 0),
+        "tokens_output": int(row.get("tokens_output") or 0),
+        "cache_creation": int(row.get("cache_creation") or 0),
+        "cache_read": int(row.get("cache_read") or 0),
+        "cost_usd": round(float(row.get("cost_usd") or 0.0), 8),
+        "first_ts": int(row.get("first_ts") or 0),
+        "last_ts": int(row.get("last_ts") or 0),
+    }
+
+
+def _threads_memory(tenant_id: str, since_ms: int, until_ms: int) -> list[dict[str, Any]]:
+    buckets: dict[str, dict[str, Any]] = {}
+    for e in _memory_events:
+        if e["tenant_id"] != tenant_id or not (since_ms <= e["ts"] < until_ms):
+            continue
+        key = str(e.get("thread_id") or "")
+        bucket = buckets.setdefault(
+            key,
+            {
+                "thread_id": key,
+                "calls": 0,
+                **dict.fromkeys(_SUMMED_COLUMNS, 0),
+                "first_ts": e["ts"],
+                "last_ts": e["ts"],
+            },
+        )
+        bucket["calls"] += 1
+        for k in _SUMMED_COLUMNS:
+            bucket[k] += e.get(k) or 0
+        bucket["first_ts"] = min(bucket["first_ts"], e["ts"])
+        bucket["last_ts"] = max(bucket["last_ts"], e["ts"])
+    # `last_ts` descending, then `thread_id` ascending by code point — the SQL arm's
+    # `last_ts DESC, thread_id COLLATE "C"`. Two stable sorts, because a string key cannot be
+    # negated; `thread_id` is the group key, so the order is total.
+    rows = sorted(buckets.values(), key=lambda b: b["thread_id"])
+    rows.sort(key=lambda b: b["last_ts"], reverse=True)
+    return [_thread_item_dict(r) for r in rows]
+
+
+async def _threads_sql(
+    settings: Settings, tenant_id: str, since_ms: int, until_ms: int
+) -> list[dict[str, Any]]:
+    from sqlalchemy import collate, func
+
+    last_ts = func.max(UsageEvent.ts).label("last_ts")
+    stmt = (
+        select(
+            UsageEvent.thread_id,
+            func.count().label("calls"),
+            *[func.coalesce(func.sum(getattr(UsageEvent, k)), 0).label(k) for k in _SUMMED_COLUMNS],
+            func.min(UsageEvent.ts).label("first_ts"),
+            last_ts,
+        )
+        .where(UsageEvent.tenant_id == tenant_id, UsageEvent.ts >= since_ms, UsageEvent.ts < until_ms)
+        .group_by(UsageEvent.thread_id)
+        # `COLLATE "C"`: the twin sorts by code point, and a thread suffix is client-supplied.
+        .order_by(last_ts.desc(), collate(UsageEvent.thread_id, "C"))
+    )
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        rows = (await db.execute(stmt)).mappings().all()
+    return [_thread_item_dict(dict(r)) for r in rows]
+
+
+async def threads(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    since_ms: int | None = None,
+    until_ms: int | None = None,
+    limit: int = THREADS_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    """Spend grouped by thread over a window, most recently active first, with totals.
+
+    The window is `summary`'s: half-open, thirty days by default. `totals` covers every thread
+    in the window, not only the page returned, and `truncated` says whether more threads
+    exist than `limit` — so a client can say "and N more" rather than present a page as the
+    whole. Every group is read and the page is cut here, rather than with `LIMIT`, because the
+    totals need all of them anyway: a tenant's threads in a window are thousands at most,
+    while the rows they group are what the index serves.
+    """
+    until_ms = int(until_ms if until_ms is not None else now_ms() + 1)
+    since_ms = int(since_ms if since_ms is not None else until_ms - SUMMARY_DEFAULT_WINDOW_MS)
+    if _use_memory(settings):
+        every = _threads_memory(tenant_id, since_ms, until_ms)
+    else:
+        every = await _threads_sql(settings, tenant_id, since_ms, until_ms)
+    return {
+        "since_ms": since_ms,
+        "until_ms": until_ms,
+        "items": every[:limit],
+        "totals": _summary_totals_dict(every),
+        "truncated": len(every) > limit,
+    }
+
+
 def pending_count() -> int:
     return len(_pending)
 
@@ -346,4 +477,5 @@ __all__ = [
     "query",
     "record_tokens",
     "summary",
+    "threads",
 ]

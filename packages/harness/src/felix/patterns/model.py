@@ -217,7 +217,12 @@ def record_usage(
         logger.debug("usage pricing unavailable", exc_info=True)
     ctx = try_get_context()
     tenant_id = "default"
+    # The run's thread, as `ctx.thread_id` holds it — the `{tenant}:{suffix}` the audit payload's
+    # `thread_id` carries (`input.thread_id` is the same value), so a usage row joins its audit
+    # trail. `''` outside a thread.
+    thread_id = ""
     if ctx is not None:
+        thread_id = ctx.thread_id or ""
         u = usage
         ctx.limit_state.tokens_input += u.input + u.cache_creation + u.cache_read
         ctx.limit_state.tokens_cached += u.cache_read
@@ -245,6 +250,7 @@ def record_usage(
             wire_model_id=wire_model_id or "",
             cost_usd=cost_usd or 0.0,
             meta=meta,
+            thread_id=thread_id,
         )
     except Exception:
         logger.debug("usage_record_failed", exc_info=True)
@@ -256,15 +262,35 @@ def record_usage(
             sink = factory(settings)
             record = getattr(sink, "record", None)
             if callable(record):
-                record(
-                    tenant_id=tenant_id,
-                    manifest_id=manifest_id,
-                    model_id=model_id or "",
-                    usage=usage,
-                )
+                sink_kwargs: dict[str, Any] = {
+                    "tenant_id": tenant_id,
+                    "manifest_id": manifest_id,
+                    "model_id": model_id or "",
+                    "usage": usage,
+                }
+                if _sink_takes_thread_id(record):
+                    sink_kwargs["thread_id"] = thread_id
+                record(**sink_kwargs)
     except Exception:
         logger.debug("usage_sink_failed", exc_info=True)
     return priced
+
+
+def _sink_takes_thread_id(record: Callable[..., Any]) -> bool:
+    """Whether a plugin usage sink's `record` accepts `thread_id`.
+
+    The sink contract predates the column, so an existing sink names exactly the four keywords
+    it was written against and a fifth would raise inside it — and be swallowed above, losing
+    the call from the sink altogether. Offered only to a sink that names `thread_id` or takes
+    `**kwargs`.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(record).parameters.values()
+    except TypeError, ValueError:
+        return False
+    return any(p.name == "thread_id" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 def record_model_usage(
