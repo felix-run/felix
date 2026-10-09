@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from felix.config import Settings
 
+from felix.bounded_cache import BoundedCache
 from felix.logging_setup import loggable
 
 logger = logging.getLogger("felix.secrets")
@@ -134,16 +137,62 @@ class FileSecrets:
         return None
 
 
+# Resolved cloud secret values, briefly. The agent is compiled per request and every MCP, peer
+# and container `secret:` ref is resolved on each compile; against a cloud backend that was a
+# blocking network call per ref per request, on the event loop. The values already sit in this
+# process's memory for masking (`register_resolved_secret`). A rotated secret reaches new
+# compiles within the TTL; a name that does not exist is never remembered, so creating it
+# takes effect at once.
+CLOUD_SECRET_TTL_S = 300.0
+_CLOUD_VALUES = BoundedCache(512, ttl_s=CLOUD_SECRET_TTL_S)
+
+
+def clear_cloud_secret_cache() -> None:
+    _CLOUD_VALUES.clear()
+
+
+async def _cached_lookup(key: str, fetch: Callable[[], str | None]) -> str | None:
+    hit = _CLOUD_VALUES.get(key)
+    if hit is not None:
+        return hit
+    # The SDKs are synchronous -- building the client too -- so all of it runs off the loop,
+    # and one slow lookup stalls this request only.
+    value = await asyncio.to_thread(fetch)
+    if value is not None:
+        _CLOUD_VALUES[key] = value
+    return value
+
+
+@lru_cache(maxsize=8)
+def _aws_client(region: str) -> Any:
+    """One client per region for the process: boto3 clients are thread-safe and expensive to
+    build (credential chain, endpoint resolution), and one was built per lookup."""
+    try:
+        import boto3
+    except ImportError as e:
+        raise RuntimeError("AWS secrets require: uv sync --extra aws") from e
+    return boto3.client("secretsmanager", region_name=region)
+
+
+@lru_cache(maxsize=1)
+def _gcp_client() -> Any:
+    try:
+        from google.cloud import secretmanager
+    except ImportError as e:
+        raise RuntimeError("GCP secrets require: uv sync --extra gcp") from e
+    return secretmanager.SecretManagerServiceClient()
+
+
 class AwsSecretsManager:
     def __init__(self, region: str = "us-east-1") -> None:
         self._region = region
 
     async def get(self, name: str) -> str | None:
-        try:
-            import boto3
-        except ImportError as e:
-            raise RuntimeError("AWS secrets require: uv sync --extra aws") from e
-        client = boto3.client("secretsmanager", region_name=self._region)
+        return await _cached_lookup(f"aws|{self._region}|{name}", lambda: self._fetch(self._region, name))
+
+    @staticmethod
+    def _fetch(region: str, name: str) -> str | None:
+        client = _aws_client(region)
         try:
             resp = client.get_secret_value(SecretId=name)
         except client.exceptions.ResourceNotFoundException:
@@ -165,12 +214,12 @@ class GcpSecretManager:
         self._project = project_id
 
     async def get(self, name: str) -> str | None:
-        try:
-            from google.cloud import secretmanager
-        except ImportError as e:
-            raise RuntimeError("GCP secrets require: uv sync --extra gcp") from e
-        client = secretmanager.SecretManagerServiceClient()
         path = f"projects/{self._project}/secrets/{name}/versions/latest"
+        return await _cached_lookup(f"gcp|{path}", lambda: self._fetch(path))
+
+    @staticmethod
+    def _fetch(path: str) -> str | None:
+        client = _gcp_client()
         try:
             resp = client.access_secret_version(request={"name": path})
         except Exception:

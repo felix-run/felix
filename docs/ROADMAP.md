@@ -947,10 +947,12 @@ comment explaining exactly that. It is conditional, not inert.
             join in linear time, and retrieved tools are chosen once per run in manifest order
             (re-ranking per step changed the cache prefix's front). Left as is on purpose: the
             memory prelude after the system prompt — see `_with_prelude` for the trade.
-      - [ ] *Compile-path caching.* Cache the resolver's "not in the store" answer (every bundled
-            manifest request is a DB round trip today, ×N on `/v1/models`); parsed library skills
-            by content hash; MCP `tools/list` per server with discovery gathered; secrets
-            providers and their SDK clients, off the loop.
+      - [x] *Compile-path caching.* The resolver remembers "not in the store" for the pointer
+            TTL (every bundled-manifest request was a DB round trip, ×N on `/v1/models`); parsed
+            library SKILL.md by key and digest, 5 min, so a compile skips the GETs; MCP discovery
+            per server ref for 60 s, gathered across servers; AWS/GCP secret lookups off the loop
+            with one SDK client per process and values for 5 min; the local JWT key parsed once.
+            Still per compile, on purpose: memory facts (volatile) and the compiled agent itself.
       - [ ] *Session log reads.* Every strategy loads the whole log, all branches and every old
             compaction checkpoint, per turn; read from the newest checkpoint's `from_seq`. Fold
             the leaf UPDATE into the append transaction, drop the index that duplicates the

@@ -166,6 +166,23 @@ def _isolate_process_global_stores():
         # The skill library is the same shape: a draft one test saved would be another test's
         # pending count, and a skill it published would sit in every later catalog.
         skill_library_store.clear_memory()
+        # Parsed SKILL.md files, by key and digest: a test that tampers with a published
+        # version's bytes would otherwise be served the copy an earlier test parsed.
+        from felix.skills.loader import clear_library_skill_cache
+
+        clear_library_skill_cache()
+        # MCP discovery, keyed by the server ref: a test's fake server would otherwise answer
+        # the next test that reuses its URL.
+        from felix.mcp.client import clear_discovery_cache
+
+        clear_discovery_cache()
+        from felix.secrets import _aws_client, _gcp_client, clear_cloud_secret_cache
+
+        clear_cloud_secret_cache()
+        # A fake SDK injected through `sys.modules` would otherwise stay the client for every
+        # later test on this worker.
+        _aws_client.cache_clear()
+        _gcp_client.cache_clear()
         # Feedback, evaluations and the tenant policy: a policy one test set would gate every
         # later test's publish.
         skill_quality_store.clear_memory()

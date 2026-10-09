@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import hashlib
 import logging
 from dataclasses import replace
 from typing import Any
@@ -10,6 +13,7 @@ import httpx
 from felix_ai.types import ImageAttachment
 from felix_ai.wire.base import data_url
 
+from felix.bounded_cache import BoundedCache
 from felix.manifests.schema import McpServerRef
 from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
@@ -254,21 +258,70 @@ def _allowlist_patterns(ref: McpServerRef) -> list[str]:
     return [p[len(prefix) :] if p.startswith(prefix) else p for p in ref.tools]
 
 
+# A server's `initialize` result and `tools/list`, remembered briefly. The agent is compiled per
+# request, and discovery was two round trips per server on every one of them -- a process spawn
+# per RPC for stdio -- before the first token. Keyed by a digest of the whole ref (URL or
+# command, its resolved auth, timeouts) and `allow_http`, never the raw credential; two refs
+# that hash alike reach the same server as the same caller. Failures are not remembered.
+DISCOVERY_TTL_S = 60.0
+_DISCOVERY_CONCURRENCY = 8
+_DISCOVERY = BoundedCache(256, ttl_s=DISCOVERY_TTL_S)
+
+
+def clear_discovery_cache() -> None:
+    _DISCOVERY.clear()
+
+
+def _discovery_key(ref: McpServerRef, allow_http: bool) -> str:
+    raw = f"{ref.model_dump_json()}|{allow_http}".encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+async def _discover(ref: McpServerRef, *, allow_http: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """`list_remote_tools` for one server, through the discovery cache. Copies out, so a
+    caller's edits never reach the next compile."""
+    key = _discovery_key(ref, allow_http)
+    hit = _DISCOVERY.get(key)
+    if hit is not None:
+        return copy.deepcopy(hit)
+    handshake: dict[str, Any] = {}
+    remotes = await list_remote_tools(ref, allow_http=allow_http, handshake=handshake)
+    # Only a whole answer is remembered. Discovery degrades instead of raising -- stdio returns
+    # no tools when the spawn fails, HTTP carries on past a failed `initialize` -- and caching
+    # that would leave the server toolless, or without its instructions, for the whole TTL.
+    if remotes and handshake:
+        _DISCOVERY[key] = copy.deepcopy((remotes, handshake))
+    return remotes, handshake
+
+
 async def tools_from_mcp_servers(
     refs: list[McpServerRef],
     *,
     allow_http: bool = False,
     manifest_id: str = "",
 ) -> list[Tool]:
-    """Discover and bind tools from each MCP server ref."""
+    """Discover and bind tools from each MCP server ref.
+
+    Servers are asked concurrently: one slow server used to delay every server after it, and
+    the compile waits for all of them either way. Binding keeps the manifest's server order.
+    """
+    # Bounded: a manifest may name up to `MAX_REFS` servers, and each discovery is a connection
+    # or a process spawn.
+    gate = asyncio.Semaphore(_DISCOVERY_CONCURRENCY)
+
+    async def discover(ref: McpServerRef) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        async with gate:
+            return await _discover(ref, allow_http=allow_http)
+
+    found = await asyncio.gather(*(discover(ref) for ref in refs), return_exceptions=True)
     out: list[Tool] = []
-    for ref in refs:
-        handshake: dict[str, Any] = {}
-        try:
-            remotes = await list_remote_tools(ref, allow_http=allow_http, handshake=handshake)
-        except Exception:
-            logger.warning("failed to list MCP tools from %s", ref.name, exc_info=True)
+    for ref, result in zip(refs, found, strict=True):
+        if isinstance(result, BaseException):
+            if not isinstance(result, Exception):
+                raise result
+            logger.warning("failed to list MCP tools from %s", ref.name, exc_info=result)
             continue
+        remotes, handshake = result
         if ref.tools:
             patterns = _allowlist_patterns(ref)
             names = [str(r["name"]) for r in remotes]
