@@ -988,7 +988,9 @@ async def test_an_approved_update_cannot_run_on_a_parent_that_moved(settings: Se
     )
     update = next(t for t in agent.tools if t.name == "update_skill")
     args = {"name": "invoice-triage", "body": "New body.", "reason": "r", "parent_version": "0.1.0"}
-    sig = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[:32]
+    # What `apply_approvals` signs: the arguments and the library the tool says it saves into.
+    signed = {"args": args, "binding": "tenant"}
+    sig = hashlib.sha256(json.dumps(signed, sort_keys=True, default=str).encode()).hexdigest()[:32]
     pending = await approvals_store.create_pending(
         settings,
         "acme",

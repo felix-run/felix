@@ -94,8 +94,12 @@ def request_fingerprint(path: str, payload: Any) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def principal_scope(tenant_id: str, principal_sub: str) -> str:
-    return f"{tenant_id}/{principal_sub}"
+def principal_scope(tenant_id: str, principal_sub: str, *, skill_owner: str | None) -> str:
+    """Whose keys these are. The caller's skill library (`AuthContext.skill_owner`) joins the
+    subject when they have one: it is issuer and subject, so two issuers' `alice` are two
+    scopes, and a turn's answer depends on whose personal skills compiled it."""
+    base = f"{tenant_id}/{principal_sub}"
+    return base if skill_owner is None else f"{base}#owner#{skill_owner}"
 
 
 def _digest(value: str) -> str:

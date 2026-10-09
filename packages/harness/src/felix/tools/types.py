@@ -127,6 +127,12 @@ class Tool:
     # reference (a commit sha) rather than the content itself, this is what makes the approval
     # row show what is about to happen. A preview that raises never blocks the approval.
     approval_preview: Callable[[ToolInput], Awaitable[str]] | None = None
+    # What else an approval of a call binds, beyond its arguments: state the tool resolves when it
+    # runs and its arguments do not name. `apply_approvals` hashes it into the call signature, so
+    # a grant given for one answer authorizes no call that gets another. `create_skill` and
+    # `update_skill` answer with the library they would save into, which under
+    # `personal_skills: write` depends on the caller rather than on the arguments.
+    approval_binding: Callable[[ToolInput], Awaitable[str]] | None = None
     # A trusted tool that may return text an untrusted author wrote, marking each such result
     # (`untrusted_output`): content screening wraps it so those results are screened, and only
     # those (`builder.apply_content_screening`). `activate_skill` relaying an imported skill.
