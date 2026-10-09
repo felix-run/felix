@@ -7,7 +7,7 @@ package by name.
 
 What this demonstrates, one seam per section below:
 
-* a tool the model can call
+* a tool the model can call, and one a hook blocks
 * an HTTP route
 * a periodic worker task
 * an agent-loop hook
@@ -28,19 +28,48 @@ PLUGIN_NAMESPACE = "example"
 # --------------------------------------------------------------------------- tools
 def _build_greet_tool() -> Any:
     from felix.tools.types import define_tool
+    from pydantic import BaseModel, ConfigDict, Field
 
-    async def handler(args: dict[str, Any], ctx: Any = None) -> str:
+    # The schema is what the model is shown, so it is the only way the model learns this
+    # tool takes a name. Without one the model sees `{"properties": {}}`, sends `{}`, and
+    # every call answers "hello, world" whatever the user asked for.
+    class GreetArgs(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        name: str = Field(default="world", description="Who to greet.")
+
+    async def handler(args: GreetArgs, ctx: Any = None) -> str:
         _ = ctx
-        return f"hello, {args.get('name', 'world')}"
+        return f"hello, {args.name}"
 
     return define_tool(
         name="example__greet",
         description="Greet someone by name.",
         handler=handler,
+        args=GreetArgs,
         replay_safe=True,
         # Leave `transport` at its default ("local") only for in-process work.
         # Anything that returns remote content should name its own transport, which
         # content screening then treats as untrusted by default.
+    )
+
+
+def _build_forbidden_tool() -> Any:
+    """A tool any manifest can list, which `_before_tool` below refuses on every call.
+
+    It exists so the hook has something to block: without it the block names a tool no
+    install has, and the demonstration never fires.
+    """
+    from felix.tools.types import define_tool
+
+    async def handler(args: dict[str, Any], ctx: Any = None) -> str:
+        _ = args, ctx
+        return "unreachable: the example plugin's before_tool hook blocks this tool"
+
+    return define_tool(
+        name=f"{PLUGIN_NAMESPACE}__forbidden",
+        description="A tool the example plugin's before_tool hook always blocks.",
+        handler=handler,
     )
 
 
@@ -109,6 +138,7 @@ class ExamplePlugin:
 
     def register_tools(self, register: Any) -> None:
         register("example__greet", _build_greet_tool)
+        register(f"{PLUGIN_NAMESPACE}__forbidden", _build_forbidden_tool)
 
     def routes(self, app: Any, *, tools: Any) -> None:
         from fastapi import APIRouter
