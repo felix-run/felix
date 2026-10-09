@@ -361,8 +361,11 @@ class ShellToolRef(_Strict):
     must cover each prefix here (a manifest narrows; it cannot widen), and which is empty by
     default — a shell tool on a deployment that has not opted in is refused at manifest write.
 
-    What it cannot bound: the listed command runs repo code — as the API's user, unless
-    `FELIX_SHELL_RUNNER_URL` sends it to a separate runner. Wherever it execs is the boundary —
+    What it cannot bound: the listed command runs repo code. Off a development box it therefore
+    execs in a separate runner (`FELIX_SHELL_RUNNER_URL`) or the hosted backend's sandbox, never
+    in the API — a deployment with neither refuses to boot and refuses this at write. Only on a
+    development box (`FELIX_ENVIRONMENT=development` with `FELIX_AUTH_MODE=none`) does it run as
+    the API's user. Wherever it execs is the boundary —
     `deploy/GOVERNANCE.md` says what that place must not hold.
     """
 

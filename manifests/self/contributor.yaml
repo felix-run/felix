@@ -16,8 +16,9 @@
 # secrets; without FELIX_SHELL_RUNNER_URL it is the API's own container. Either way, do not
 # point this at a checkout a person works in.
 #
-# Validate (the write check needs the operator allowlist, as a deployment would):
-#   FELIX_SHELL_ALLOWED_COMMANDS="uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch" \
+# Validate (the write check needs the operator allowlist and, off a development box, a shell runner,
+# as a deployment would):
+#   FELIX_SHELL_RUNNER_URL=http://shell:8080 FELIX_SHELL_ALLOWED_COMMANDS="uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch" \
 #     felix validate-manifest manifests/self/contributor.yaml -e production
 apiVersion: felix/v1
 kind: Agent
