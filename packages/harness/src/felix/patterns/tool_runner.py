@@ -99,6 +99,29 @@ class ToolRunner:
         if preflight and preflight.get("block"):
             reason = str(preflight.get("reason") or "blocked by before_tool hook")
             terminate = bool(preflight.get("terminate"))
+            # Counted and audited as a refusal, like a governance deny: a hook block used to
+            # leave no row, so a call an operator's plugin refused was invisible in the ledger.
+            # The reason is the hook's own text and stays out of the row, as a deny's does.
+            record_counter(
+                "felix_tool_calls",
+                {
+                    "transport": _transport_of(self.tool_map.get(call.name)),
+                    "status": "denied",
+                    "manifest_id": self.manifest_id,
+                },
+            )
+            emit_agent_audit(
+                "policy_deny",
+                status="denied",
+                manifest_id=self.manifest_id,
+                payload={
+                    "tool": call.name,
+                    "tool_call_id": call.id,
+                    "thread_id": thread_id,
+                    "control": "hook",
+                    "hook": str(preflight.get("hook") or "?"),
+                },
+            )
             return (
                 "ok",
                 ChatMessage(
@@ -108,7 +131,7 @@ class ToolRunner:
                     content=f"[error/blocked] {reason}",
                 ),
                 terminate,
-                False,
+                True,
             )
 
         async def _run(span: Any) -> tuple[str, ChatMessage, bool, bool]:
