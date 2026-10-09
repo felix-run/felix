@@ -247,19 +247,27 @@ class _ReactAgent:
         )
 
     async def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
-        """The tools this step exposes, narrowed by `spec.tools_retrieval`.
+        """The tools a run exposes, narrowed by `spec.tools_retrieval`, in manifest order.
 
         Async because selection encodes the query and every candidate description
         once a retrieval model is configured, and that must not run on the event
         loop. With retrieval off — the default — it stays inline.
+
+        Manifest order rather than rank order: tool definitions are the front of the
+        provider's cache prefix, so two runs that pick the same tools must send them
+        byte-identically. The loop calls this once per run — see `_tools_for_run`.
         """
-        return await select_tools_from_ctx_async(
+        chosen = await select_tools_from_ctx_async(
             self.tools,
             messages,
             self.tools_retrieval,
             decider=self.decider,
             cache=self._tool_rankings,
         )
+        if chosen is self.tools:
+            return chosen
+        names = {t.name for t in chosen}
+        return [t for t in self.tools if t.name in names]
 
     def _chat_options(self, input: InvokeInput) -> ModelChatOptions | None:
         """The caller's per-request sampling, bounded by the manifest.
@@ -826,10 +834,13 @@ class _ReactAgent:
         beforehand was discarded on every threaded turn — which is every turn that has
         a thread — and reached the model only on threadless invokes.
 
-        Position within ``messages`` is cache-neutral: the ephemeral breakpoints sit on
-        the tool list and the system block, never on a message. So the prelude sits next
-        to the system prompt, where it reads as framing, rather than at the tail, where
-        it would read as the user's latest turn.
+        It sits next to the system prompt, where it reads as framing, rather than at the
+        tail, where it would read as the user's latest turn. That position is not free:
+        the Anthropic wire also puts a breakpoint on the newest message, so a prelude that
+        changed since the previous run — memory captured a fact — re-bills the whole
+        conversation once, on that run's first call. Moving it later trades that for
+        either dropping it after the first step or breaking the reasoning chain after
+        tool results, which is why it stays here until a measurement says otherwise.
         """
         prelude = self._prelude_messages()
         if not prelude:
@@ -979,6 +990,19 @@ class _ReactAgent:
         # whole branch as the model saw it, so this is also how full the context is.
         last_usage: dict[str, Any] | None = None
         opts = self._chat_options(input)
+        # The tool list is chosen once, on the run's first model call, and held. Re-ranking it
+        # per step changed the set as the conversation grew, and any change to the tool list
+        # — the front of the provider's cache prefix — re-billed the whole conversation at
+        # full input price on that step. A tool used in an earlier run of the thread stays
+        # in the selection (`used_tool_names`), so freezing costs only a tool that becomes
+        # relevant mid-run, which the next run picks up.
+        run_tools: list[Tool] | None = None
+
+        async def _tools_for_run() -> list[Tool]:
+            nonlocal run_tools
+            if run_tools is None:
+                run_tools = await self._active_tools(messages)
+            return run_tools
 
         user_preview = next(
             (m.content for m in input.messages if m.role == "user" and m.content),
@@ -1026,7 +1050,7 @@ class _ReactAgent:
                 if injected:
                     messages.extend(injected)
 
-                active_tools = await self._active_tools(messages)
+                active_tools = await _tools_for_run()
                 chunks: list[str] = []
                 result: ModelChatResult | None = None
 
@@ -1059,7 +1083,7 @@ class _ReactAgent:
                         if rebuilt is None:
                             raise
                         messages = rebuilt
-                        active_tools = await self._active_tools(messages)
+                        active_tools = await _tools_for_run()
                         continue
                     if (
                         attempt == 0
@@ -1072,7 +1096,7 @@ class _ReactAgent:
                         )
                         if rebuilt is not None:
                             messages = rebuilt
-                            active_tools = await self._active_tools(messages)
+                            active_tools = await _tools_for_run()
                             result = None
                             continue
                     break
@@ -1247,9 +1271,7 @@ class _ReactAgent:
                         yield Event(event="follow_up", data={"content": follow.text})
                     await self._append_produced(input.thread_id, [follow_chat])
                     messages.append(follow_chat)
-                    result = await model.chat(
-                        [*messages, *transient], await self._active_tools(messages), opts
-                    )
+                    result = await model.chat([*messages, *transient], await _tools_for_run(), opts)
                     follow_usage = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                     last_usage = follow_usage or last_usage
                     assistant = result.message

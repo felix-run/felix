@@ -39,7 +39,12 @@ from felix_ai.wire.base import (
     tool_json_schema,
     tool_label,
 )
-from felix_ai.wire.transport import ModelGatewayError, post_with_retry
+from felix_ai.wire.transport import (
+    ModelGatewayError,
+    post_with_retry,
+    shared_transport,
+    stream_with_retry,
+)
 
 logger = logging.getLogger("felix_ai.wire.openai_completions")
 
@@ -375,7 +380,7 @@ class OpenAICompletionsClient(HttpModelClient):
             output_schema=output_schema,
         )
         headers = self._headers(self._auth_headers())
-        async with httpx.AsyncClient(timeout=self._timeout()) as client:
+        async with httpx.AsyncClient(timeout=self._timeout(), transport=shared_transport()) as client:
             resp = await post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/chat/completions",
@@ -427,14 +432,17 @@ class OpenAICompletionsClient(HttpModelClient):
 
         text_parts: list[str] = []
         tools_by_index: dict[int, dict[str, Any]] = {}
+        # Argument fragments join once at the end; see the same note in anthropic_messages.
+        args_parts: dict[int, list[str]] = {}
         usage = TokenUsage()
         raw_stop: str | None = None
 
         async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
+            httpx.AsyncClient(timeout=self._timeout(), transport=shared_transport()) as client,
+            stream_with_retry(
+                client,
                 f"{self.base_url.rstrip('/')}/chat/completions",
+                label=self.route.provider,
                 json=body,
                 headers=headers,
             ) as resp,
@@ -463,8 +471,10 @@ class OpenAICompletionsClient(HttpModelClient):
                         if fn.get("name"):
                             entry["name"] = str(fn["name"])
                         if fn.get("arguments"):
-                            entry["json"] = str(entry["json"]) + str(fn["arguments"])
+                            args_parts.setdefault(index, []).append(str(fn["arguments"]))
 
+        for index, pieces in args_parts.items():
+            tools_by_index[index]["json"] = "".join(pieces)
         tool_calls = [
             ToolCall(
                 id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",

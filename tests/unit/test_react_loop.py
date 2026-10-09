@@ -265,3 +265,72 @@ async def test_denial_followed_by_permitted_tool_records_ok() -> None:
     assert final_responses[0]["status"] == "ok", (
         f"Expected final_response status=ok when last batch succeeded, got status={final_responses[0]['status']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_retrieved_tools_hold_still_for_the_whole_run() -> None:
+    """Every model call in a run sees the same tools, in manifest order.
+
+    Tool definitions are the front of the provider's cache prefix. Re-ranking them each step
+    swapped `gamma` for `beta` here once the first call's arguments mentioned stock prices,
+    and that one change re-billed the whole conversation at full input price.
+    """
+    from felix.manifests.schema import ModelSpec, ToolsRetrievalSpec
+    from felix.patterns.react import _ReactAgent
+    from felix.patterns.types import ChatMessage, InvokeInput, ToolCall
+    from felix.tools.types import Tool, ToolInput, ToolOutput
+    from felix_ai.types import ModelChatResult, TokenUsage
+
+    class _Ok:
+        transport = "local"
+
+        async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+            return "ok"
+
+    tools = [
+        Tool(name="alpha", description="weather forecast", args_schema=None, executor=_Ok()),
+        Tool(name="gamma", description="file search", args_schema=None, executor=_Ok()),
+        Tool(name="beta", description="stock prices", args_schema=None, executor=_Ok()),
+        Tool(name="delta", description="send email", args_schema=None, executor=_Ok()),
+    ]
+
+    class _TwoSteps:
+        model_id = "test-model"
+
+        def __init__(self) -> None:
+            self.offered: list[list[str]] = []
+
+        async def chat(self, messages: list[ChatMessage], tools: list, opts=None) -> ModelChatResult:
+            self.offered.append([t.name for t in tools])
+            if len(self.offered) == 1:
+                call = ToolCall(id="c1", name="alpha", args={"note": "stock prices"})
+                return ModelChatResult(
+                    message=ChatMessage(role="assistant", content="", tool_calls=[call]),
+                    stop_reason="tool_use",
+                    usage=TokenUsage(),
+                )
+            return ModelChatResult(
+                message=ChatMessage(role="assistant", content="done"),
+                stop_reason="end_turn",
+                usage=TokenUsage(),
+            )
+
+    model = _TwoSteps()
+    agent = _ReactAgent(
+        tools=tools,
+        pattern="react",
+        manifest_id="m",
+        manifest_version="1",
+        system_prompt="s",
+        model_spec=ModelSpec(id="test-model"),
+        settings=Settings(database_url="memory://frozen-tools", object_store="memory"),
+        recursion_limit=5,
+        tools_retrieval=ToolsRetrievalSpec(enabled=True, top_k=2, model=""),
+    )
+    agent._resolve_model = lambda _input: model  # type: ignore[method-assign]
+
+    await agent.invoke(
+        InvokeInput(messages=[ChatMessage(role="user", content="weather forecast")], tenant_id="default")
+    )
+
+    assert model.offered == [["alpha", "gamma"], ["alpha", "gamma"]]

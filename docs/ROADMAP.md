@@ -931,6 +931,31 @@ comment explaining exactly that. It is conditional, not inert.
 
 ### Harness
 
+- [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
+      Read, not measured — each step below carries its own before/after. In landing order:
+      - [x] *Model wire.* Every model call opened its own `httpx.AsyncClient`, so each turn,
+            judge, screen and decision paid a TCP connect and TLS handshake; they now share a
+            per-loop pool (`felix_ai.wire.transport.shared_transport`). The streamed open
+            retries 429/529 like the plain POST did, streamed thinking and tool-argument deltas
+            join in linear time, and retrieved tools are chosen once per run in manifest order
+            (re-ranking per step changed the cache prefix's front). Left as is on purpose: the
+            memory prelude after the system prompt — see `_with_prelude` for the trade.
+      - [ ] *Compile-path caching.* Cache the resolver's "not in the store" answer (every bundled
+            manifest request is a DB round trip today, ×N on `/v1/models`); parsed library skills
+            by content hash; MCP `tools/list` per server with discovery gathered; secrets
+            providers and their SDK clients, off the loop.
+      - [ ] *Session log reads.* Every strategy loads the whole log, all branches and every old
+            compaction checkpoint, per turn; read from the newest checkpoint's `from_seq`. Fold
+            the leaf UPDATE into the append transaction, drop the index that duplicates the
+            `session_events` primary key, and stop the per-delta Redis `GET` in `is_aborted`.
+      - [ ] *Streams and governance fan-out.* Skip the resume grace window once pub/sub delivers;
+            notify on fiber status and approval insert so the durable stream can stop polling at
+            10 s; cache screening verdicts by content hash and gather windows and model judges;
+            Presidio and the fs object store off the event loop; attachments cached per file id.
+      - [ ] *Worker and data hygiene.* Two-stage pgvector queries so HNSW is used; chunk audit and
+            usage flushes under the bind-parameter limit; batched retention deletes; single-flight
+            cron ticks and a conditional `touch_run`; idle backoff in the fiber loop.
+
 - [x] **Moved off `psycopg[binary]` to `psycopg[c]`** — done well before the ignore expired,
       and `.trivyignore.yaml` is empty again because the findings went away with the library
       rather than being suppressed. One correction to this entry as written: the swap is in

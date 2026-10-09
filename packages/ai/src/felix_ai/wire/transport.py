@@ -12,8 +12,9 @@ import asyncio
 import logging
 import random
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+import weakref
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from typing import Any
 
 import httpx
@@ -28,6 +29,69 @@ logger = logging.getLogger("felix_ai.wire.transport")
 # failures are the class worth retrying. Mirrors `felix.timeouts.DEFAULT_CONNECT_TIMEOUT_S`;
 # duplicated rather than imported because this package may not import the harness.
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
+
+# How long an idle pooled connection to a provider is kept. httpx's default is 5s, which is
+# shorter than the gap between two steps of a tool loop, so the second step reconnected anyway.
+SHARED_KEEPALIVE_EXPIRY_S = 60.0
+
+
+class _SharedTransport(httpx.AsyncBaseTransport):
+    """A pooled transport that outlives the `AsyncClient` wrapping it.
+
+    Every model call used to open its own `httpx.AsyncClient`, so every turn, judge, screen
+    and decision paid a TCP connect and a TLS handshake, and built a fresh SSL context on
+    the event loop. Call sites keep their `async with httpx.AsyncClient(...)` — the timeout
+    stays per call, and tests that replace `httpx.AsyncClient` keep working — and pass this
+    as ``transport=``. The client's exit closes its transport; this one ignores that, so the
+    pool survives until `aclose_shared_transports`.
+    """
+
+    def __init__(self) -> None:
+        # No connection cap: a stream holds its connection for the whole turn, and one
+        # client per call never had a cap either. A bounded pool would queue the 101st
+        # concurrent turn behind a pool timeout.
+        self._inner = httpx.AsyncHTTPTransport(
+            limits=httpx.Limits(
+                max_connections=None,
+                max_keepalive_connections=64,
+                keepalive_expiry=SHARED_KEEPALIVE_EXPIRY_S,
+            )
+        )
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        """Deliberately nothing: the per-call client closing must not close the pool."""
+
+    async def close_pool(self) -> None:
+        await self._inner.aclose()
+
+
+# One pool per event loop: httpcore's connections are bound to the loop that opened them, and
+# a test suite (or a worker running `asyncio.run` per task) has more than one.
+_SHARED: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _SharedTransport] = weakref.WeakKeyDictionary()
+
+
+def shared_transport() -> httpx.AsyncBaseTransport:
+    """The connection pool model calls on the running loop share; see `_SharedTransport`."""
+    loop = asyncio.get_running_loop()
+    transport = _SHARED.get(loop)
+    if transport is None:
+        transport = _SharedTransport()
+        _SHARED[loop] = transport
+    return transport
+
+
+async def aclose_shared_transports() -> None:
+    """Close the running loop's shared pool. Called from API and worker shutdown."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    transport = _SHARED.pop(loop, None)
+    if transport is not None:
+        await transport.close_pool()
 
 
 class ModelGatewayError(Exception):
@@ -148,6 +212,43 @@ def _backoff_delay(attempt: int, retry_after: float | None) -> float:
     return base + random.uniform(0, base / 2)
 
 
+def _retry_delay(resp: Any, attempt: int, max_retries: int, label: str) -> float | None:
+    """Seconds to wait before retrying `resp`, or None when it is the answer to return."""
+    if resp.status_code not in _RETRY_STATUSES or attempt >= max_retries:
+        return None
+    if resp.status_code == 429 and _is_exhausted_quota(resp):
+        logger.warning("%s rate limit is a spent quota, not backpressure; not retrying", label)
+        record_counter("felix_model_retry_skipped", {"provider": label, "reason": "quota"})
+        return None
+    delay = _backoff_delay(attempt, _retry_after_seconds(resp))
+    record_counter("felix_model_retry", {"provider": label, "status": str(resp.status_code)})
+    logger.warning(
+        "%s returned %s; retrying in %.1fs (attempt %d/%d)",
+        label,
+        resp.status_code,
+        delay,
+        attempt + 1,
+        max_retries,
+    )
+    return delay
+
+
+def _record_mid_request_timeout(label: str) -> None:
+    # Not backpressure. The bytes were accepted (or are still going out) and a retry
+    # re-sends identical input to wait out an identical ceiling, so this used to cost
+    # three full timeouts before surfacing. Fail once and say so — the fix is a larger
+    # FELIX_MODEL_TIMEOUT_SECONDS, not another attempt.
+    #
+    # ConnectTimeout is deliberately NOT caught with it: nothing was accepted, the far side
+    # may be briefly unreachable, and the next attempt is a genuinely different bet.
+    record_counter("felix_model_timeout", {"provider": label})
+    logger.warning(
+        "%s timed out mid-request; not retrying — raise FELIX_MODEL_TIMEOUT_SECONDS "
+        "if this request is legitimately long",
+        label,
+    )
+
+
 async def post_with_retry(
     client: Any,
     url: str,
@@ -169,19 +270,7 @@ async def post_with_retry(
         try:
             resp = await client.post(url, json=json, headers=headers)
         except httpx.ReadTimeout, httpx.WriteTimeout:
-            # Not backpressure. The bytes were accepted (or are still going out) and a retry
-            # re-sends identical input to wait out an identical ceiling, so this used to cost
-            # three full timeouts before surfacing. Fail once and say so — the fix is a larger
-            # FELIX_MODEL_TIMEOUT_SECONDS, not another attempt.
-            #
-            # ConnectTimeout is deliberately NOT here: nothing was accepted, the far side may
-            # be briefly unreachable, and the next attempt is a genuinely different bet.
-            record_counter("felix_model_timeout", {"provider": label})
-            logger.warning(
-                "%s timed out mid-request; not retrying — raise FELIX_MODEL_TIMEOUT_SECONDS "
-                "if this request is legitimately long",
-                label,
-            )
+            _record_mid_request_timeout(label)
             raise
         except httpx.HTTPError as exc:
             last = exc
@@ -189,25 +278,61 @@ async def post_with_retry(
                 raise
             await asyncio.sleep(_backoff_delay(attempt, None))
             continue
-        if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
-            if resp.status_code == 429 and _is_exhausted_quota(resp):
-                logger.warning("%s rate limit is a spent quota, not backpressure; not retrying", label)
-                record_counter("felix_model_retry_skipped", {"provider": label, "reason": "quota"})
-                return resp
-            delay = _backoff_delay(attempt, _retry_after_seconds(resp))
-            record_counter("felix_model_retry", {"provider": label, "status": str(resp.status_code)})
-            logger.warning(
-                "%s returned %s; retrying in %.1fs (attempt %d/%d)",
-                label,
-                resp.status_code,
-                delay,
-                attempt + 1,
-                max_retries,
-            )
-            await asyncio.sleep(delay)
-            continue
-        return resp
+        delay = _retry_delay(resp, attempt, max_retries, label)
+        if delay is None:
+            return resp
+        await asyncio.sleep(delay)
     raise last if last is not None else RuntimeError("unreachable")
+
+
+@asynccontextmanager
+async def stream_with_retry(
+    client: Any,
+    url: str,
+    *,
+    label: str,
+    json: dict[str, Any],
+    headers: dict[str, str],
+    max_retries: int = MODEL_MAX_RETRIES,
+) -> AsyncIterator[Any]:
+    """Open a streamed POST with `post_with_retry`'s policy, then yield the response.
+
+    Retries happen only while opening — before a byte of the body has reached the caller —
+    so nothing is ever replayed into a stream someone is already reading. Streaming is the
+    default path for an interactive turn, and it had no retry at all: one 429 or 529 ended
+    the turn that the non-streaming path would have recovered.
+    """
+    for attempt in range(max_retries + 1):
+        opener = client.stream("POST", url, json=json, headers=headers)
+        try:
+            resp = await opener.__aenter__()
+        except httpx.ReadTimeout, httpx.WriteTimeout:
+            _record_mid_request_timeout(label)
+            raise
+        except httpx.HTTPError:
+            if attempt >= max_retries:
+                raise
+            await asyncio.sleep(_backoff_delay(attempt, None))
+            continue
+        if resp.status_code in _RETRY_STATUSES and attempt < max_retries:
+            # The quota check reads the body, which a streamed response has not loaded yet.
+            with suppress(httpx.HTTPError):
+                await resp.aread()
+            delay = _retry_delay(resp, attempt, max_retries, label)
+            if delay is not None:
+                await opener.__aexit__(None, None, None)
+                await asyncio.sleep(delay)
+                continue
+        break
+    else:  # pragma: no cover - every iteration either continues with a retry left or breaks
+        raise RuntimeError("unreachable")
+    try:
+        yield resp
+    except BaseException as exc:
+        if not await opener.__aexit__(type(exc), exc, exc.__traceback__):
+            raise
+    else:
+        await opener.__aexit__(None, None, None)
 
 
 __all__ = [
@@ -215,6 +340,9 @@ __all__ = [
     "MODEL_MAX_RETRIES",
     "ModelGatewayError",
     "ModelUnreachableError",
+    "aclose_shared_transports",
     "post_with_retry",
+    "shared_transport",
+    "stream_with_retry",
     "typed_transport_errors",
 ]

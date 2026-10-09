@@ -38,7 +38,12 @@ from felix_ai.wire.base import (
     tool_images,
     tool_json_schema,
 )
-from felix_ai.wire.transport import ModelGatewayError, post_with_retry
+from felix_ai.wire.transport import (
+    ModelGatewayError,
+    post_with_retry,
+    shared_transport,
+    stream_with_retry,
+)
 
 logger = logging.getLogger("felix_ai.wire.anthropic_messages")
 
@@ -514,7 +519,7 @@ class AnthropicMessagesClient(HttpModelClient):
                 "Content-Type": "application/json",
             }
         )
-        async with httpx.AsyncClient(timeout=self._timeout()) as client:
+        async with httpx.AsyncClient(timeout=self._timeout(), transport=shared_transport()) as client:
             resp = await post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/v1/messages",
@@ -593,14 +598,20 @@ class AnthropicMessagesClient(HttpModelClient):
         text_parts: list[str] = []
         thinking_by_index: dict[int, dict[str, Any]] = {}
         tools_by_index: dict[int, dict[str, Any]] = {}
+        # Deltas collect as parts and join once at the end. `block["x"] = block["x"] + delta`
+        # copies the whole string per delta — the dict holds a second reference, so CPython's
+        # in-place append never applies — which made a long thinking block or a large tool
+        # argument (a file write) quadratic in its length.
+        parts: dict[tuple[int, str], list[str]] = {}
         usage = TokenUsage()
         raw_stop: str | None = None
 
         async with (
-            httpx.AsyncClient(timeout=self._timeout()) as client,
-            client.stream(
-                "POST",
+            httpx.AsyncClient(timeout=self._timeout(), transport=shared_transport()) as client,
+            stream_with_retry(
+                client,
                 f"{self.base_url.rstrip('/')}/v1/messages",
+                label=self.route.provider,
                 json=body,
                 headers=headers,
             ) as resp,
@@ -641,21 +652,24 @@ class AnthropicMessagesClient(HttpModelClient):
                         text_parts.append(str(delta["text"]))
                         yield StreamDelta(kind="text", text=str(delta["text"]))
                     elif dtype == "thinking_delta" and delta.get("thinking"):
-                        block = thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
-                        block["thinking"] = str(block.get("thinking") or "") + str(delta["thinking"])
+                        thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
+                        parts.setdefault((index, "thinking"), []).append(str(delta["thinking"]))
                         yield StreamDelta(kind="thinking", text=str(delta["thinking"]))
                     elif dtype == "signature_delta" and delta.get("signature"):
-                        block = thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
-                        block["signature"] = str(block.get("signature") or "") + str(delta["signature"])
+                        thinking_by_index.setdefault(index, {"type": "thinking", "thinking": ""})
+                        parts.setdefault((index, "signature"), []).append(str(delta["signature"]))
                     elif dtype == "input_json_delta":
-                        entry = tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
-                        entry["json"] = str(entry["json"]) + str(delta.get("partial_json") or "")
+                        tools_by_index.setdefault(index, {"id": "", "name": "", "json": ""})
+                        parts.setdefault((index, "json"), []).append(str(delta.get("partial_json") or ""))
                 elif kind == "message_delta":
                     raw_stop = (data.get("delta") or {}).get("stop_reason") or raw_stop
                     out = (data.get("usage") or {}).get("output_tokens")
                     if out is not None:
                         usage.output = int(out)
 
+        for (index, key), pieces in parts.items():
+            target = tools_by_index[index] if key == "json" else thinking_by_index[index]
+            target[key] = str(target.get(key) or "") + "".join(pieces)
         tool_calls = [
             ToolCall(
                 id=entry["id"] or f"call_{uuid.uuid4().hex[:12]}",
