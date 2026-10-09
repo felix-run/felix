@@ -242,6 +242,27 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
 
 @parametrized
 @pytest.mark.asyncio
+async def test_a_sweep_larger_than_one_batch_removes_everything_it_should(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deletes run `DELETE_BATCH` rows at a time; a loop that stopped after one batch would leave
+    the rest for the next night, and the count would say so."""
+    monkeypatch.setattr(retention, "DELETE_BATCH", 3)
+    settings = _retention(retention_settings)
+    clock = Clock(ms=1_800_000_000_000)
+    clock.install(monkeypatch)
+    old = [await _seed_usage(settings, clock) for _ in range(10)]
+    clock.ms += 2 * DAY
+    new = await _seed_usage(settings, clock)
+
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["usage_events"] == len(old)
+    assert await _usage_ids(settings) == {new}
+
+
+@parametrized
+@pytest.mark.asyncio
 async def test_zero_days_keeps_the_table(retention_settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``0`` is keep-forever on every setting, and is the session default."""
     settings = _retention(retention_settings, audit=0, usage=0, fiber=0, session=0)

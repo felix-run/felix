@@ -981,9 +981,20 @@ comment explaining exactly that. It is conditional, not inert.
             stream with a durable run in flight keeps `notified_ceiling=poll_max`. Fiber status is
             written in about ten places, and a missed one delays an approval prompt a minute, so it
             wants its own change with a test per writer.
-      - [ ] *Worker and data hygiene.* Two-stage pgvector queries so HNSW is used; chunk audit and
-            usage flushes under the bind-parameter limit; batched retention deletes; single-flight
-            cron ticks and a conditional `touch_run`; idle backoff in the fiber loop.
+      - [x] *Worker and data hygiene.* Audit and usage flushes insert 1,000 rows a statement: a
+            full buffer was one INSERT past Postgres's 65,535 bind parameters, refused, and written
+            back one row per transaction. A scheduler tick claims a due job by compare-and-set on
+            its `next_run_at` (`jobs.store.claim_run`), so two ticks that read the same due job
+            fire it once. Retention deletes 5,000 rows a transaction, by `ctid`.
+      - [ ] *pgvector recall and the HNSW indexes.* Memory and document recall order by distance
+            *and* tiebreakers, so the HNSW indexes are never used and every recall is an exact
+            scan of the tenant's rows. Not changed with the rest because the fix changes results,
+            not only speed: the indexes are global, and an approximate search filtered to one
+            tenant can return fewer than `k` rows for a small tenant on a large install. Wants
+            per-tenant partial indexes or pgvector >= 0.8's iterative scan, decided deliberately.
+            Also left: an idle backoff in the fiber loop (one cheap `SKIP LOCKED` claim a second,
+            against up to the backoff in latency before a new durable run starts, unless submit
+            wakes the worker), and pagination for `GET /chat/sessions` (a wire-contract change).
 
 - [x] **Moved off `psycopg[binary]` to `psycopg[c]`** — done well before the ignore expired,
       and `.trivyignore.yaml` is empty again because the findings went away with the library

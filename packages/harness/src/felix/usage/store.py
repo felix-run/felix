@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from felix.buffers import DurableBuffer
+from felix.buffers import DurableBuffer, chunked
 from felix.config import Settings
 from felix.cursors import keyset_before, keyset_order, order_and_seek, take_page
 from felix.db.models import UsageEvent
@@ -175,33 +175,34 @@ async def _write_batch(settings: Settings, batch: list[dict[str, Any]]) -> None:
                 await apply_tenant_rls(db, settings, tenant_id)
                 # ON CONFLICT DO NOTHING: a flush that fails on a later tenant has already
                 # committed the earlier ones, and its retry must not collide on the key forever.
-                await db.execute(
-                    pg_insert(UsageEvent)
-                    .values(
-                        [
-                            {
-                                "tenant_id": event["tenant_id"],
-                                "id": event["id"],
-                                "ts": event["ts"],
-                                "manifest_id": event.get("manifest_id", ""),
-                                "model_id": event.get("model_id", ""),
-                                "kind": event.get("kind", "tokens"),
-                                "tokens_input": int(event.get("tokens_input") or 0),
-                                "tokens_output": int(event.get("tokens_output") or 0),
-                                "cache_creation": int(event.get("cache_creation") or 0),
-                                "cache_read": int(event.get("cache_read") or 0),
-                                "wire_model_id": event.get("wire_model_id", ""),
-                                "cost_usd": float(event.get("cost_usd") or 0.0),
-                                "meta_json": event.get("meta_json") or {},
-                                # `.get`: an event buffered by a process that predates the
-                                # column has no key, and is a call with no thread on record.
-                                "thread_id": event.get("thread_id") or "",
-                            }
-                            for event in events
-                        ]
+                for chunk in chunked(events):
+                    await db.execute(
+                        pg_insert(UsageEvent)
+                        .values(
+                            [
+                                {
+                                    "tenant_id": event["tenant_id"],
+                                    "id": event["id"],
+                                    "ts": event["ts"],
+                                    "manifest_id": event.get("manifest_id", ""),
+                                    "model_id": event.get("model_id", ""),
+                                    "kind": event.get("kind", "tokens"),
+                                    "tokens_input": int(event.get("tokens_input") or 0),
+                                    "tokens_output": int(event.get("tokens_output") or 0),
+                                    "cache_creation": int(event.get("cache_creation") or 0),
+                                    "cache_read": int(event.get("cache_read") or 0),
+                                    "wire_model_id": event.get("wire_model_id", ""),
+                                    "cost_usd": float(event.get("cost_usd") or 0.0),
+                                    "meta_json": event.get("meta_json") or {},
+                                    # `.get`: an event buffered by a process that predates the
+                                    # column has no key, and is a call with no thread on record.
+                                    "thread_id": event.get("thread_id") or "",
+                                }
+                                for event in chunk
+                            ]
+                        )
+                        .on_conflict_do_nothing(index_elements=["tenant_id", "id"])
                     )
-                    .on_conflict_do_nothing(index_elements=["tenant_id", "id"])
-                )
                 await db.commit()
 
 

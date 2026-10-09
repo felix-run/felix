@@ -350,3 +350,44 @@ async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
 
     assert [j["name"] for j in listed] == expected
     assert [j["name"] for j in await jobs.list_jobs(store_settings, TENANT)] == expected
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_two_ticks_claiming_one_due_run_fire_it_once(store_settings: Any) -> None:
+    """Two scheduler ticks read the same due job -- two workers, or a slow tick overlapping the
+    next. `touch_run` let both claim it; `claim_run` lets the first, and refuses the second."""
+    import asyncio
+
+    await _put(store_settings, schedule="*/5 * * * *")
+    await jobs.touch_run(store_settings, TENANT, JOB, last_run_at=0, next_run_at=1_000)
+
+    claims = await asyncio.gather(
+        *(
+            jobs.claim_run(
+                store_settings, TENANT, JOB, seen_next_run_at=1_000, last_run_at=2_000, next_run_at=301_000
+            )
+            for _ in range(2)
+        )
+    )
+    assert sorted(claims) == [False, True]
+    (row,) = [j for j in await jobs.list_jobs(store_settings, TENANT) if j["name"] == JOB]
+    assert (row["next_run_at"], row["last_status"]) == (301_000, "running")
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_a_job_with_no_due_time_is_claimed_once_too(store_settings: Any) -> None:
+    """A job with no schedule has a NULL `next_run_at`, which the scheduler treats as due, and
+    it must still be claimable -- on both arms. The second claim loses because the first moved
+    the due time, not because of how NULL compares."""
+    await _put(store_settings, schedule="")
+    (row,) = [j for j in await jobs.list_jobs(store_settings, TENANT) if j["name"] == JOB]
+    assert row["next_run_at"] is None, "this test is about the NULL case"
+    first = await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=None, last_run_at=1, next_run_at=9
+    )
+    second = await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=None, last_run_at=1, next_run_at=9
+    )
+    assert (first, second) == (True, False)

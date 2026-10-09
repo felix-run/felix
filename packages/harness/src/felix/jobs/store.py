@@ -228,6 +228,47 @@ async def touch_run(
         await db.commit()
 
 
+async def claim_run(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    *,
+    seen_next_run_at: int | None,
+    last_run_at: int,
+    next_run_at: int | None,
+) -> bool:
+    """Mark a due job running, only if its `next_run_at` is still the one this tick read.
+
+    `touch_run` writes unconditionally, so two scheduler ticks that read the same due job --
+    two workers, or a slow tick overlapping the next minute's -- both claimed it and both fired
+    it. Compare-and-set on `next_run_at`: the first claim moves it, and every later claim for
+    the same due time finds it moved and gets False. A single `UPDATE ... WHERE` on Postgres, so
+    the row lock decides between concurrent claims.
+    """
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None or row.get("next_run_at") != seen_next_run_at:
+            return False
+        row.update(last_run_at=last_run_at, next_run_at=next_run_at, last_status="running", last_error="")
+        return True
+
+    from sqlalchemy import update
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Job)
+            .where(
+                Job.tenant_id == tenant_id,
+                Job.name == name,
+                Job.next_run_at.is_not_distinct_from(seen_next_run_at),
+            )
+            .values(last_run_at=last_run_at, next_run_at=next_run_at, last_status="running", last_error="")
+        )
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
 async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
     if _use_memory(settings):
         deleted = _memory_jobs.pop((tenant_id, name), None) is not None
