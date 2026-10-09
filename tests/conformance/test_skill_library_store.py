@@ -137,6 +137,39 @@ async def test_pending_counts_one_manifests_agent_drafts(store_settings: Any) ->
 
 
 @parametrized
+async def test_pending_promotions_count_undecided_promoted_drafts_by_skill_and_author(
+    store_settings: Any,
+) -> None:
+    """What `library.promote` bounds the review queue on: one undecided promotion per skill, and a
+    cap per promoter. Decided drafts, other sources, other owners and other tenants do not count."""
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
+
+    async def promoted(name: str, version: str, author: str, *, at: int, store: Any = org, **kw: Any) -> None:
+        row = {**_row(version, at=at, source="promoted", origin=None), "name": name, "author": author}
+        await store.insert_version(kw.get("tenant", "acme"), row, FILES, created_by=author, at=at)
+
+    await promoted("invoice-triage", "0.1.0", "alice", at=1)
+    await promoted("invoice-triage", "0.1.1", "alice", at=2)
+    await promoted("receipts", "0.1.0", "bob", at=3)
+    await promoted("ledger", "0.1.0", "alice", at=4)
+    await promoted("ledger", "0.1.0", "alice", at=5, tenant="globex")
+    await promoted(
+        "ledger", "0.1.0", "alice", at=6, store=get_skill_library_store(store_settings, owner=ALICE)
+    )
+    await _save(org, "0.1.2", at=7)  # an agent's draft of the same skill
+    await org.reject("acme", "invoice-triage", "0.1.0", by="ops", note="", at=8)
+    await org.publish("acme", "ledger", "0.1.0", from_statuses={"draft"}, by="ops", at=9)
+
+    assert await org.count_pending_promotions("acme") == 2
+    assert await org.count_pending_promotions("acme", name="invoice-triage") == 1
+    assert await org.count_pending_promotions("acme", name="ledger") == 0, "published is decided"
+    assert await org.count_pending_promotions("acme", author="alice") == 1
+    assert await org.count_pending_promotions("acme", author="bob") == 1
+    assert await org.count_pending_promotions("acme", name="receipts", author="alice") == 0
+    assert await org.count_pending_promotions("globex") == 1
+
+
+@parametrized
 async def test_listings_are_ordered_and_tenant_scoped(store_settings: Any) -> None:
     store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     # Same millisecond: the order must still be one order, newest version first on the tie.
@@ -1125,6 +1158,7 @@ _STRANGER_EMPTY = {
     "version_ids": (("acme", "invoice-triage"), []),
     "list_files": (("acme", "invoice-triage", "0.1.0"), []),
     "count_pending": (("acme", "contributor"), 0),
+    "count_pending_promotions": (("acme",), 0),
     "usage": (("acme",), {"skills": 0, "bytes": 0}),
     "buildable_versions": (("acme", ["invoice-triage"]), {}),
 }
@@ -1157,6 +1191,8 @@ async def test_a_stranger_reaches_nothing_through_any_method(store_settings: Any
     alice = get_skill_library_store(store_settings, owner=ALICE)
     for store, version in ((org, "0.1.0"), (alice, "0.1.0"), (alice, "0.2.0")):
         await _save(store, version, at=int(version[2]) + 1)
+    # An undecided promotion of the org's, so `count_pending_promotions` has something to hide.
+    await _save(org, "0.2.0", at=4, source="promoted", origin=None)
     await org.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=5)
     await alice.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by=ALICE, at=6)
 

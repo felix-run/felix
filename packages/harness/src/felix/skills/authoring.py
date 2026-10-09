@@ -118,8 +118,9 @@ class _Composed(BaseModel):
     # Saved into the caller's own library rather than the tenant's.
     personal: bool = False
     parent: str | None = None
-    # Whether an operator wrote or imported the parent, live or not. An agent's edit of such a
-    # skill is review material in any mode (`make_skill_authoring_tools`).
+    # Whether a person wrote, imported or promoted the parent, live or not. An agent's edit of
+    # such a skill is review material in any mode (`make_skill_authoring_tools`) -- for a
+    # promotion, also because no reviewer may have read it yet.
     edits_operator_skill: bool = False
     # The parent's files the save keeps unchanged, as `{path, sha256}`: what an approver is
     # shown beside the SKILL.md, since the agent's arguments never name them.
@@ -344,7 +345,7 @@ class _SkillAuthor:
             files=files,
             parent=parent,
             personal=lib is self.mine,
-            edits_operator_skill=gate_source(parent_row) in {"operator", "import"},
+            edits_operator_skill=gate_source(parent_row) in {"operator", "import", "promoted"},
             inherited=inherited,
         )
 
@@ -362,7 +363,7 @@ class _SkillAuthor:
             by = "its owner" if composed.personal else "an operator"
             return {
                 **_draft_result(row, "draft"),
-                "review_required": f"the version this edits was written or imported by {by}; "
+                "review_required": f"the version this edits was written, imported or promoted by {by}; "
                 "a person must publish this",
             }
         try:

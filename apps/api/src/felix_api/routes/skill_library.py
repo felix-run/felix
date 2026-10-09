@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Path, Query, Request
@@ -67,6 +68,7 @@ from felix_api.routes._skill_library_models import (
     NewVersionIn,
     PersonalLibrariesOut,
     PolicyPatchIn,
+    PromoteIn,
     RejectIn,
     ReviewQueueOut,
     SkillArchivedOut,
@@ -100,6 +102,19 @@ def personal_library_param(
 # What only the tenant's library has: the review queue, the publish policy, adopting an import,
 # and the administrator's listing of personal libraries.
 org_router = APIRouter()
+
+
+def my_library_param(
+    library: str = Path(pattern=r"^me$", description="`me`: only the caller's own library."),
+) -> None:
+    """Declares `~{library}` on the mount of what only the caller's own library does, so an
+    administrator's digest is refused (422) before a handler runs. `library_request` reads it."""
+
+
+# What only the caller's own library does: promoting a version to the tenant's. Mounted at
+# `/skill-library/~{library}` under `my_library_param`; neither the tenant's library nor an
+# administrator's look into someone else's has the route.
+me_router = APIRouter()
 
 # Probes one listing runs at once (`shadows_operator_upload` is one object-store HEAD per key).
 _PROBE_CONCURRENCY = 16
@@ -154,8 +169,10 @@ async def list_library(
         default=None,
         description="`live`: has a live version. `draft`: has drafts awaiting review. `archived`: neither.",
     ),
-    source: Literal["agent", "operator", "import"] | None = Query(
-        default=None, description="Who wrote the newest version (`import`: fetched from GitHub)."
+    source: Literal["agent", "operator", "import", "promoted"] | None = Query(
+        default=None,
+        description="Who wrote the newest version (`import`: fetched from GitHub; `promoted`: proposed "
+        "from a personal library).",
     ),
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=64),
@@ -578,6 +595,47 @@ async def adopt_library_version(name: str, version: str, body: AdoptIn, request:
     except library.SkillLibraryError as exc:
         return refusal(exc)
     return await written_version(ctx, by, saved, publish=False)
+
+
+@me_router.post(
+    "/{name}/versions/{version}/promote", status_code=201, response_model=SkillWriteOut, responses=ERRORS
+)
+async def promote_library_version(
+    name: str, version: str, request: Request, body: PromoteIn | None = None
+) -> Any:
+    """Propose a version of your own library to the tenant's: its files, byte for byte, saved as a
+    draft of the tenant's skill of the name (`source: promoted`, `promoted_from` naming your
+    version), for the tenant's ordinary review queue. It follows the tenant's newest version that
+    was not rejected, or starts the skill. Never publishes; your own skill is left as it was.
+    Needs `skills:personal`; a reviewer still needs `skills:write` to publish the draft.
+
+    The draft is judged as an agent's: only its bundle's own `evals/` scenarios count toward the
+    publish policy, so it may not add or change `evals/` files (422 `invalid_bundle`) -- a
+    reviewer adds them. 409 `version_conflict` for a version never published in your library,
+    `promotion_pending` while the tenant's skill holds an undecided promotion, `parent_changed` /
+    `skill_exists` when the tenant's skill moved underneath; 429 `pending_cap_reached` while you
+    hold too many undecided promotions. Audited as `skill_promoted`.
+    """
+    ctx = await library_request(request, "write")
+    if not addressable(name, version):
+        return not_found(f"{name}@{version}")
+    by = subject_from_request(request)
+    try:
+        saved = await library.promote(
+            ctx.settings,
+            ctx.tenant_id,
+            name,
+            version,
+            by=by,
+            reason=body.reason if body is not None else "",
+            owner=ctx.owner,
+            object_store=ctx.store,
+        )
+    except library.SkillLibraryError as exc:
+        return refusal(exc)
+    # The draft is the tenant's: read it back from there.
+    org = replace(ctx, lib=get_skill_library_store(ctx.settings, owner=ORG_OWNER))
+    return await written_version(org, by, saved, publish=False)
 
 
 @router.delete("/{name}", response_model=SkillArchivedOut, responses=ERRORS)

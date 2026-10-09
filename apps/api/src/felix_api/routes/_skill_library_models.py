@@ -130,6 +130,9 @@ class SkillVersionOut(BaseModel):
     # The import-lineage version an operator adopted into this one (`POST .../adopt`): the same
     # files, vouched for by `author` with `reason`. Null on every other version.
     adopted_from: str | None = None
+    # The version of the promoter's (`author`'s) personal library this one was copied from
+    # (`source: promoted`, `POST /~me/.../promote`). Null on every other version.
+    promoted_from: str | None = None
 
 
 class SkillFileMetaOut(BaseModel):
@@ -588,6 +591,15 @@ class AdoptIn(BaseModel):
     reason: str = Field(min_length=1, max_length=REASON_LIMIT)
 
 
+class PromoteIn(BaseModel):
+    """Why the version is proposed to the tenant's library: optional, recorded on the draft and in
+    the `skill_promoted` audit event, and shown to the reviewer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=REASON_LIMIT)
+
+
 class FeedbackIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -637,6 +649,7 @@ __all__ = [
     "MakeLiveIn",
     "NewVersionIn",
     "PolicyPatchIn",
+    "PromoteIn",
     "RejectIn",
     "ReviewCheckOut",
     "ReviewQueueItemOut",

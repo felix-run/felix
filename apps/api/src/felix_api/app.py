@@ -340,6 +340,12 @@ def create_app(
         tags=["Skill library"],
         dependencies=[Depends(skill_library.personal_library_param)],
     )
+    app.include_router(
+        skill_library.me_router,
+        prefix="/skill-library/~{library}",
+        tags=["Skill library"],
+        dependencies=[Depends(skill_library.my_library_param)],
+    )
     app.include_router(skill_library.org_router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_library.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_quality.router, prefix="/skill-library", tags=["Skill library"])

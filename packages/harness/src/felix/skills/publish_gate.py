@@ -121,21 +121,26 @@ def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> Publish
     return replace(effective, source="tenant" if effective == tenant else "tenant+settings")
 
 
-# Who wrote a version, when its own text could steer the test it is graded on: an agent, or a
-# third party whose skill was imported. Neither's generated or default scenarios count.
-_UNTRUSTED_AUTHORS = {"agent": "an agent wrote this version", "import": "this version was imported"}
+# Who wrote a version, when its own text could steer the test it is graded on: an agent, a
+# third party whose skill was imported, or a personal library's -- where an agent may have
+# written it, and no reviewer of the tenant's read it. None's generated or default scenarios count.
+_UNTRUSTED_AUTHORS = {
+    "agent": "an agent wrote this version",
+    "import": "this version was imported",
+    "promoted": "this version was promoted from a personal library",
+}
 
 
 def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, Any]) -> tuple[bool, str]:
     """Whether ``evaluation`` can satisfy `require_eval` and `min_eval_uplift` for a version
     written by ``version_source``, and why not when it cannot.
 
-    For an agent's or an imported version only an evaluation on the bundle's own scenarios
-    counts. Generated and default scenarios are written from the skill's text -- the text the
-    agent, or the third party, wrote -- so its author could steer the test it is graded on. A
-    bundle's `evals/` files come only from an operator's save: an agent's save may only carry
-    them unchanged from its parent (`library.save_draft`), and an import drops them
-    (`importer.sanitize_bundle`).
+    For an agent's, an imported or a promoted version only an evaluation on the bundle's own
+    scenarios counts. Generated and default scenarios are written from the skill's text -- the
+    text the agent, the third party or the promoter wrote -- so its author could steer the test it
+    is graded on. A bundle's `evals/` files come only from an operator's save: an agent's save and
+    a promotion may only carry them unchanged from the tenant's parent (`library.save_draft`), and
+    an import drops them (`importer.sanitize_bundle`).
     """
     if evaluation.get("status") != "succeeded":
         return False, f"the evaluation has not succeeded (it is {evaluation.get('status')})"

@@ -2305,6 +2305,20 @@
         "title": "PolicyPatchIn",
         "type": "object"
       },
+      "PromoteIn": {
+        "additionalProperties": false,
+        "description": "Why the version is proposed to the tenant's library: optional, recorded on the draft and in\nthe `skill_promoted` audit event, and shown to the reviewer.",
+        "properties": {
+          "reason": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "title": "PromoteIn",
+        "type": "object"
+      },
       "RejectIn": {
         "additionalProperties": false,
         "properties": {
@@ -2627,6 +2641,17 @@
             ],
             "title": "Parent Version"
           },
+          "promoted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted From"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -2670,7 +2695,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -3767,6 +3793,17 @@
             ],
             "title": "Parent Version"
           },
+          "promoted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted From"
+          },
           "publish_blocked": {
             "anyOf": [
               {
@@ -3842,7 +3879,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -4484,6 +4522,17 @@
             ],
             "title": "Parent Version"
           },
+          "promoted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted From"
+          },
           "publish_blocked": {
             "anyOf": [
               {
@@ -4559,7 +4608,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -4810,6 +4860,17 @@
             ],
             "title": "Parent Version"
           },
+          "promoted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted From"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -4871,7 +4932,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -5072,6 +5134,17 @@
             ],
             "title": "Parent Version"
           },
+          "promoted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted From"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -5115,7 +5188,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -5318,6 +5392,17 @@
             ],
             "title": "Parent Version"
           },
+          "promoted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promoted From"
+          },
           "publish_blocked": {
             "anyOf": [
               {
@@ -5393,7 +5478,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -5996,7 +6082,8 @@
             "enum": [
               "agent",
               "operator",
-              "import"
+              "import",
+              "promoted"
             ],
             "title": "Source",
             "type": "string"
@@ -12324,7 +12411,7 @@
             }
           },
           {
-            "description": "Who wrote the newest version (`import`: fetched from GitHub).",
+            "description": "Who wrote the newest version (`import`: fetched from GitHub; `promoted`: proposed from a personal library).",
             "in": "query",
             "name": "source",
             "required": false,
@@ -12334,7 +12421,8 @@
                   "enum": [
                     "agent",
                     "operator",
-                    "import"
+                    "import",
+                    "promoted"
                   ],
                   "type": "string"
                 },
@@ -12342,7 +12430,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Who wrote the newest version (`import`: fetched from GitHub).",
+              "description": "Who wrote the newest version (`import`: fetched from GitHub; `promoted`: proposed from a personal library).",
               "title": "Source"
             }
           },
@@ -15405,7 +15493,7 @@
             }
           },
           {
-            "description": "Who wrote the newest version (`import`: fetched from GitHub).",
+            "description": "Who wrote the newest version (`import`: fetched from GitHub; `promoted`: proposed from a personal library).",
             "in": "query",
             "name": "source",
             "required": false,
@@ -15415,7 +15503,8 @@
                   "enum": [
                     "agent",
                     "operator",
-                    "import"
+                    "import",
+                    "promoted"
                   ],
                   "type": "string"
                 },
@@ -15423,7 +15512,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Who wrote the newest version (`import`: fetched from GitHub).",
+              "description": "Who wrote the newest version (`import`: fetched from GitHub; `promoted`: proposed from a personal library).",
               "title": "Source"
             }
           },
@@ -16228,6 +16317,127 @@
           }
         },
         "summary": "Preview Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}/promote": {
+      "post": {
+        "description": "Propose a version of your own library to the tenant's: its files, byte for byte, saved as a\ndraft of the tenant's skill of the name (`source: promoted`, `promoted_from` naming your\nversion), for the tenant's ordinary review queue. It follows the tenant's newest version that\nwas not rejected, or starts the skill. Never publishes; your own skill is left as it was.\nNeeds `skills:personal`; a reviewer still needs `skills:write` to publish the draft.\n\nThe draft is judged as an agent's: only its bundle's own `evals/` scenarios count toward the\npublish policy, so it may not add or change `evals/` files (422 `invalid_bundle`) -- a\nreviewer adds them. 409 `version_conflict` for a version never published in your library,\n`promotion_pending` while the tenant's skill holds an undecided promotion, `parent_changed` /\n`skill_exists` when the tenant's skill moved underneath; 429 `pending_cap_reached` while you\nhold too many undecided promotions. Audited as `skill_promoted`.",
+        "operationId": "promote_library_version_skill_library___library___name__versions__version__promote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me`: only the caller's own library.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me`: only the caller's own library.",
+              "pattern": "^me$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PromoteIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillWriteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Promote Library Version",
         "tags": [
           "Skill library"
         ]

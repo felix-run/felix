@@ -150,6 +150,13 @@ class SkillLibraryStore(Protocol):
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int: ...
 
+    async def count_pending_promotions(
+        self, tenant_id: str, *, name: str | None = None, author: str | None = None
+    ) -> int:
+        """Undecided promoted drafts (`library.promote`) in this library, of the skill ``name``
+        and by ``author`` when given: what bounds how many promotions wait on a reviewer."""
+        ...
+
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
     ) -> bool:
@@ -247,6 +254,7 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     **dict.fromkeys(ORIGIN_COLUMNS),
     "lineage_import": False,
     "adopted_from": None,
+    "promoted_from": None,
 }
 
 
@@ -429,6 +437,19 @@ class InMemorySkillLibraryStore:
 
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         return self._pending(tenant_id, origin_manifest_id)
+
+    async def count_pending_promotions(
+        self, tenant_id: str, *, name: str | None = None, author: str | None = None
+    ) -> int:
+        return sum(
+            1
+            for k, r in self._versions.items()
+            if self._mine(tenant_id, k)
+            and r["status"] == "draft"
+            and r["source"] == "promoted"
+            and (name is None or k.name == name)
+            and (author is None or r.get("author") == author)
+        )
 
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
@@ -898,6 +919,26 @@ class PostgresSkillLibraryStore:
     async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
         async with self._session(tenant_id) as db:
             return await self._pending(db, tenant_id, self._owner, origin_manifest_id)
+
+    async def count_pending_promotions(
+        self, tenant_id: str, *, name: str | None = None, author: str | None = None
+    ) -> int:
+        from sqlalchemy import func, select
+
+        from felix.db.models import SkillVersionRow as V
+
+        stmt = (
+            select(func.count())
+            .select_from(V)
+            .where(V.tenant_id == tenant_id, V.owner == self._owner)
+            .where(V.status == "draft", V.source == "promoted")
+        )
+        if name is not None:
+            stmt = stmt.where(V.name == name)
+        if author is not None:
+            stmt = stmt.where(V.author == author)
+        async with self._session(tenant_id) as db:
+            return int(await db.scalar(stmt) or 0)
 
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]

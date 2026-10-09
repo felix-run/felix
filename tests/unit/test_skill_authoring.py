@@ -787,6 +787,29 @@ async def test_publish_mode_never_auto_publishes_an_edit_of_an_imported_skill(
     assert skill is not None and skill["live_version"] == "0.1.0"
 
 
+async def test_publish_mode_never_auto_publishes_an_edit_of_a_promoted_draft(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """A promotion waits on a reviewer of the tenant's; an agent's edit built on it, published at
+    once, would put its text live with no reviewer having read it."""
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="promoted", author="alice", promoted_from="0.2.0"),
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
+    )
+    assert result["status"] == "draft" and "promoted" in result["review_required"]
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] is None
+
+
 def _spec(**spec: Any) -> dict[str, Any]:
     return {
         "apiVersion": "felix/v1",
