@@ -11220,7 +11220,7 @@
     },
     "/memory": {
       "get": {
-        "description": "Active memories, newest first.",
+        "description": "Active memories, newest first; or, with `status=forgotten`, the forgotten ones,\nmost recently forgotten first.\n\n`thread_id` takes the suffix and composes `{tenant}:{suffix}` here, the rule `/usage`\nand `/plans` follow, so a caller can never name another tenant's thread.",
         "operationId": "list_memories_memory_get",
         "parameters": [
           {
@@ -11259,6 +11259,38 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "The thread suffix; empty for rows written outside any thread.",
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The thread suffix; empty for rows written outside any thread.",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "active",
+              "enum": [
+                "active",
+                "forgotten"
+              ],
+              "title": "Status",
+              "type": "string"
             }
           }
         ],
@@ -11336,7 +11368,7 @@
     },
     "/memory/": {
       "get": {
-        "description": "Active memories, newest first.",
+        "description": "Active memories, newest first; or, with `status=forgotten`, the forgotten ones,\nmost recently forgotten first.\n\n`thread_id` takes the suffix and composes `{tenant}:{suffix}` here, the rule `/usage`\nand `/plans` follow, so a caller can never name another tenant's thread.",
         "operationId": "list_memories_memory__get",
         "parameters": [
           {
@@ -11375,6 +11407,38 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "The thread suffix; empty for rows written outside any thread.",
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The thread suffix; empty for rows written outside any thread.",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "active",
+              "enum": [
+                "active",
+                "forgotten"
+              ],
+              "title": "Status",
+              "type": "string"
             }
           }
         ],
@@ -11452,7 +11516,7 @@
     },
     "/memory/as-of/{turn_seq}": {
       "get": {
-        "description": "What was believed at a past turn, including facts since superseded.\n\nRead-only on purpose. Rewinding memory is a data-loss primitive on a shared\nmulti-tenant table, and Felix's session rewind is deliberately non-destructive.",
+        "description": "What was believed at a past turn, including facts since superseded.\n\nA turn number is an ordinal into one thread's log, so pass `thread_id` to ask about\none conversation. Without it the cut runs across every thread's ordinals at once,\nwhich is kept for compatibility and is rarely the question being asked.\n\nRead-only on purpose. Rewinding memory is a data-loss primitive on a shared\nmulti-tenant table, and Felix's session rewind is deliberately non-destructive.",
         "operationId": "memories_as_of_memory_as_of__turn_seq__get",
         "parameters": [
           {
@@ -11500,6 +11564,24 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "The thread suffix; empty for rows written outside any thread.",
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The thread suffix; empty for rows written outside any thread.",
+              "title": "Thread Id"
             }
           }
         ],
@@ -11659,6 +11741,51 @@
           }
         },
         "summary": "Forget Memory",
+        "tags": [
+          "Memory"
+        ]
+      }
+    },
+    "/memory/{memory_id}/restore": {
+      "post": {
+        "description": "Undo a forget: the memory is recalled again.\n\nOnly a forgotten memory can be restored (409 `not_forgotten` otherwise), and only by a\ncaller ranked at least as high as whoever forgot it (403 `restore_refused`).",
+        "operationId": "restore_memory_memory__memory_id__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Restore Memory Memory  Memory Id  Restore Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Restore Memory",
         "tags": [
           "Memory"
         ]

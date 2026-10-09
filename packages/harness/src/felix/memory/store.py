@@ -683,6 +683,114 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
         return bool(getattr(result, "rowcount", 0))
 
 
+async def list_forgotten(
+    settings: Settings,
+    tenant_id: str,
+    *,
+    manifest_id: str = "",
+    kind: str | None = None,
+    thread_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Forgotten rows, most recently forgotten first.
+
+    A forget is soft so that it can be seen and undone; a store that only ever lists
+    active rows makes it as final as a delete from the operator's side.
+    """
+    if _use_memory(settings):
+        items = [
+            _row_dict(r)
+            for (t, _), r in _memory_rows.items()
+            if t == tenant_id
+            and str(r.get("status") or ACTIVE) == FORGOTTEN
+            and (not manifest_id or r.get("manifest_id") == manifest_id)
+            and (kind is None or r.get("kind") == kind)
+            and (thread_id is None or (r.get("thread_id") or "") == thread_id)
+        ]
+        items.sort(key=lambda r: (r["updated_at"], r["id"]), reverse=True)
+        return items[:limit]
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        stmt = select(MemoryVector).where(
+            MemoryVector.tenant_id == tenant_id,
+            MemoryVector.status == FORGOTTEN,
+        )
+        if manifest_id:
+            stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
+        if kind:
+            stmt = stmt.where(MemoryVector.kind == kind)
+        if thread_id is not None:
+            stmt = stmt.where(func.coalesce(MemoryVector.thread_id, "") == thread_id)
+        stmt = stmt.order_by(MemoryVector.updated_at.desc(), collate(MemoryVector.id, "C").desc()).limit(
+            limit
+        )
+        return [_row_dict(r) for r in (await db.scalars(stmt)).all()]
+
+
+async def restore(settings: Settings, tenant_id: str, memory_id: str, *, source: str = "") -> str:
+    """Bring a forgotten memory back into recall.
+
+    Answers ``"restored"``, ``"missing"``, ``"not_forgotten"`` or ``"refused"``.
+
+    Only `forgotten` rows: a superseded row has a position in turn time, and making it
+    active again would give it two validity intervals that `as_of` cannot tell apart.
+    Gated on whoever *forgot* it, the same predicate `_may_reactivate` applies to a
+    re-store, so an agent cannot use this to undo an operator's forget. The retirer
+    stamp is cleared, because the row is no longer retired: leaving it would keep
+    ranking a decision that has been reversed.
+    """
+    ts = now_ms()
+    if _use_memory(settings):
+        row = _memory_rows.get((tenant_id, memory_id))
+        if row is None:
+            return "missing"
+        if str(row.get("status") or ACTIVE) != FORGOTTEN:
+            return "not_forgotten"
+        if _rank(source) < _retirer_rank(row):
+            logger.warning(
+                "refusing to restore a memory forgotten by a more-trusted writer id=%s",
+                loggable(memory_id, limit=80),
+            )
+            return "refused"
+        metadata = {k: v for k, v in dict(row.get("metadata") or {}).items() if k != RETIRED_BY_KEY}
+        row["status"] = ACTIVE
+        row["metadata"] = metadata
+        row["metadata_json"] = metadata
+        row["updated_at"] = ts
+        return "restored"
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(MemoryVector)
+            .where(
+                MemoryVector.tenant_id == tenant_id,
+                MemoryVector.id == memory_id,
+                MemoryVector.status == FORGOTTEN,
+                _retirer_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
+            )
+            .values(
+                status=ACTIVE,
+                updated_at=ts,
+                # jsonb - text removes the key and keeps the rest.
+                metadata_json=MemoryVector.metadata_json.op("-")(RETIRED_BY_KEY),
+            )
+        )
+        await db.commit()
+        if getattr(result, "rowcount", 0):
+            return "restored"
+        # Nothing matched: say which predicate refused it, read after the fact.
+        status = await db.scalar(
+            select(MemoryVector.status).where(
+                MemoryVector.tenant_id == tenant_id, MemoryVector.id == memory_id
+            )
+        )
+        if status is None:
+            return "missing"
+        return "not_forgotten" if status != FORGOTTEN else "refused"
+
+
 async def get_many(settings: Settings, tenant_id: str, ids: list[str]) -> dict[str, dict[str, Any]]:
     """Resolve many memories in one query — recall fuses candidate ids before reading."""
     if not ids:
@@ -711,8 +819,12 @@ async def list_active(
     kind: str | None = None,
     limit: int = 50,
     prioritized: bool = False,
+    thread_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Active rows for a tenant, newest first.
+
+    `thread_id` narrows to the rows one conversation wrote, in the stored
+    `{tenant}:{suffix}` form; `None` means every thread. Recall never passes it.
 
     `prioritized` orders by writer trust, then importance, then recency *before* the
     limit applies. Recall needs that: ranking after a recency-ordered fetch cannot see
@@ -727,6 +839,7 @@ async def list_active(
             and _is_active(r)
             and (not manifest_id or r.get("manifest_id") == manifest_id)
             and (kind is None or r.get("kind") == kind)
+            and (thread_id is None or (r.get("thread_id") or "") == thread_id)
         ]
         # `id` last on both branches, because every key above it ties routinely and this list
         # is then truncated: facts are written in batches so `created_at` collides, trust is
@@ -753,6 +866,8 @@ async def list_active(
             stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
+        if thread_id is not None:
+            stmt = stmt.where(func.coalesce(MemoryVector.thread_id, "") == thread_id)
         if prioritized:
             stmt = stmt.order_by(
                 _trust_of_column(MemoryVector.metadata_json).desc(),
@@ -779,8 +894,15 @@ async def as_of(
     manifest_id: str = "",
     kind: str | None = None,
     limit: int = 200,
+    thread_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """The memories that were current at turn ``turn_seq``.
+
+    ``turn_seq`` is an ordinal into *one* session log, so it only orders rows written by
+    the same thread. Without ``thread_id`` the comparison runs across every thread's
+    ordinals at once, and "turn 4" collects whatever any conversation wrote at its own
+    fourth turn. A caller asking what was believed at a point in a conversation passes
+    the thread.
 
     Includes facts that were later superseded, which is the whole point — a query over
     `status='active'` shows what is believed now, not what was believed then. Rows that
@@ -794,6 +916,7 @@ async def as_of(
             if t == tenant_id
             and (not manifest_id or r.get("manifest_id") == manifest_id)
             and (kind is None or r.get("kind") == kind)
+            and (thread_id is None or (r.get("thread_id") or "") == thread_id)
             and int(r.get("origin_seq") or 0) <= turn_seq
             and (r.get("superseded_seq") is None or int(r["superseded_seq"]) > turn_seq)
         ]
@@ -813,6 +936,8 @@ async def as_of(
             stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
+        if thread_id is not None:
+            stmt = stmt.where(func.coalesce(MemoryVector.thread_id, "") == thread_id)
         stmt = stmt.order_by(MemoryVector.created_at.desc(), collate(MemoryVector.id, "C").desc()).limit(
             limit
         )
