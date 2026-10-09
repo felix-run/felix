@@ -151,6 +151,44 @@ async def test_keys_are_scoped_to_the_principal_not_the_tenant(agent: _Agent) ->
 
 
 @pytest.mark.asyncio
+async def test_one_subject_at_two_issuers_is_two_callers(
+    agent: _Agent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subject is unique only within its issuer, and a turn's answer depends on whose personal
+    skills compiled it: `alice` at one identity provider must not be replayed what `alice` at
+    another was answered."""
+    from felix.auth.context import AuthContext as Verified
+    from felix.auth.context import Principal
+    from felix.plugins import PluginRegistry
+
+    async def no_token(_target: Any) -> str:
+        return ""
+
+    def builder(settings: Settings) -> Any:
+        async def authenticate(request: Any) -> Verified:
+            issuer = request.headers["x-test-issuer"]
+            principal = Principal(
+                subject="alice", tenant_id="acme", scopes=frozenset({"*"}), issuer=issuer, scheme="test"
+            )
+            return Verified(principal=principal, outbound_token=no_token, anonymous=False)
+
+        return authenticate
+
+    registry = PluginRegistry()
+    registry.register_authenticator("two-issuers", builder)
+    monkeypatch.setattr("felix.plugins._registry", registry)
+    async with _client(_settings("issuers", auth_mode="two-issuers")) as client:
+        replies = [
+            await client.post("/chat", json=TURN, headers={"x-test-issuer": iss, "idempotency-key": "shared"})
+            for iss in ("https://a.example", "https://b.example", "https://a.example")
+        ]
+    assert [r.status_code for r in replies] == [200, 200, 200]
+    assert agent.calls == 2, "b.example's alice ran her own turn; a.example's retry replayed"
+    assert "idempotent-replayed" not in replies[1].headers
+    assert replies[2].headers["idempotent-replayed"] == "true"
+
+
+@pytest.mark.asyncio
 async def test_a_retry_while_the_first_attempt_runs_is_told_so(agent: _Agent) -> None:
     agent.proceed.clear()
     async with _client(_settings("inflight")) as client:

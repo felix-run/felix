@@ -497,7 +497,7 @@ First, because everything else governs it.
         jobs pass `None` (org only); sub-agents inherit through the shared deps. Order: host dirs → caller's personal live skills → org library
         → operator uploads, so a personal skill shadows an org one of its name for its owner only;
         an explicit pin to an operator upload still wins.
-      - **Opt-in.** `spec.personal_skills: off | read` (step 2), default `off` so no stored
+      - **Opt-in.** `spec.personal_skills: off | read | write` (steps 2 and 3c), default `off` so no stored
         manifest's prompt changes; `read` loads the caller's skills. `write` — pointing
         `create_skill` / `update_skill` at the caller's namespace — is added in step 3 with the
         routes that review what it saves (widening the `Literal` is safe; accepting it earlier
@@ -592,8 +592,13 @@ First, because everything else governs it.
            open), written after the handler decides rather than before, with the issuer; a 404 for
            `~`-prefixed names on the tenant-only routes before their scope check (they fail safe
            today).
-         - [ ] 3c. `personal_skills: write`: the authoring tools save into the caller's library,
-           lifting the `personal_skill` refusal; idempotency keys scoped by owner.
+         - [x] 3c. `personal_skills: write` (needs `skill_authoring.enabled`): `create_skill`
+           saves into the caller's library, refused (never redirected) without one or without
+           `skills:personal`, checked at call time against the running caller; `update_skill`
+           edits where the skill lives -- the catalog entry decides, else the caller's library if
+           it holds the name (a fresh draft), else the tenant's. Feedback stays the tenant's and
+           still refuses a personal skill; `auto_eval` skips a personal save. `Idempotency-Key`
+           scopes add the caller's skill owner, so one subject at two issuers is two callers.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).
 
 ### B. Close the durable loop

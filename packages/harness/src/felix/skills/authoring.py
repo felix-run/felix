@@ -1,17 +1,22 @@
-"""`create_skill`, `update_skill` and `submit_skill_feedback`: an agent writing to its tenant's
-skill library.
+"""`create_skill`, `update_skill` and `submit_skill_feedback`: an agent writing to a skill library.
 
 Bound by `manifests/builder.py` for a manifest with `spec.skill_authoring.enabled`, before the
 governance stack, so an approvals rule holds the save until a person has read the SKILL.md the
 harness renders as the approval preview. Feedback changes no skill: a person decides it, and only
 a person's accept lets the worker rewrite the skill from it (`skills/feedback.py`).
+
+They write the tenant's library, unless the manifest sets `spec.personal_skills: write`: then
+`create_skill` saves into the caller's own library and `update_skill` edits a skill where its
+catalog entry came from. A personal save needs a caller who has a library and holds
+`skills:personal` -- the grant the `/skill-library/~me` routes ask for -- and is never redirected to
+the tenant's library when either is missing.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +25,9 @@ from felix.skills.publish_gate import gate_source
 from felix.skills.types import Skill, SkillCatalog
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
+if TYPE_CHECKING:
+    from felix.skills.library_store import SkillLibraryStore
+
 logger = logging.getLogger("felix.skills.authoring")
 
 SKILL_AUTHORING_TOOL_NAMES = frozenset({"create_skill", "update_skill", "submit_skill_feedback"})
@@ -27,6 +35,15 @@ SKILL_AUTHORING_TOOL_NAMES = frozenset({"create_skill", "update_skill", "submit_
 _PERSONAL_REFUSAL = {
     "detail": "this is one of the caller's own skills; saving to or filing feedback on a personal "
     "skill is not available, and these tools would act on the tenant's skill of that name instead"
+}
+_NO_LIBRARY = {
+    "error": "no_personal_library",
+    "detail": "this agent saves skills to the caller's own library, and this caller has none; "
+    "nothing was saved",
+}
+_NO_GRANT = {
+    "error": "missing_scope",
+    "detail": "saving to the caller's own skill library needs the skills:personal scope; nothing was saved",
 }
 
 
@@ -92,6 +109,8 @@ class _ComposeError(Exception):
 
 class _Composed(BaseModel):
     files: dict[str, str]
+    # Saved into the caller's own library rather than the tenant's.
+    personal: bool = False
     parent: str | None = None
     # Whether an operator wrote or imported the parent, live or not. An agent's edit of such a
     # skill is review material in any mode (`make_skill_authoring_tools`).
@@ -141,8 +160,13 @@ def _principal() -> str | None:
     return str(sub) if sub else None
 
 
+_INTO_OWN_LIBRARY = "Saves into the caller's own skill library, not the tenant's."
+
+
 def _preview_header(name: str, composed: _Composed, source: str) -> str:
     lines = [f"update_skill {name}: edited from {composed.parent} (written by {source or 'unknown'})"]
+    if composed.personal:
+        lines.append(_INTO_OWN_LIBRARY)
     if composed.inherited:
         lines.append(f"Kept unchanged from {composed.parent}:")
         lines += [f"  {f['path']}  sha256:{f['sha256']}" for f in composed.inherited]
@@ -152,7 +176,13 @@ def _preview_header(name: str, composed: _Composed, source: str) -> str:
 
 
 class _SkillAuthor:
-    """One manifest's authoring calls, bound to a tenant and the stores it writes."""
+    """One manifest's authoring calls, bound to a tenant and the stores it writes.
+
+    ``personal`` names the catalog's skills that are the caller's own, ``tenant`` the rest.
+    ``owner`` is the caller's library when the manifest writes personal skills
+    (`personal_skills: write`), and ``write_personal`` says it does -- kept apart from ``owner``
+    so a caller with no library is refused rather than handed the tenant's.
+    """
 
     def __init__(
         self,
@@ -165,14 +195,62 @@ class _SkillAuthor:
         object_store: Any | None,
         auto_eval: bool = False,
         personal: frozenset[str] = frozenset(),
+        tenant: frozenset[str] = frozenset(),
+        write_personal: bool = False,
+        owner: str | None = None,
     ) -> None:
         from felix.skills.library_store import get_skill_library_store
 
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.auto_eval = auto_eval
-        self.personal = personal
-        self.lib = get_skill_library_store(settings, owner=ORG_OWNER)
+        self.personal, self.tenant, self.write_personal = personal, tenant, write_personal
+        self.org = get_skill_library_store(settings, owner=ORG_OWNER)
+        self.mine = get_skill_library_store(settings, owner=owner) if write_personal and owner else None
+
+    def lib(self, personal: bool) -> SkillLibraryStore:
+        if not personal:
+            return self.org
+        if self.mine is None:  # `_into_personal` refused this call before it got here
+            raise RuntimeError("a personal save with no personal library")
+        return self.mine
+
+    async def _into_personal(self, name: str, *, update: bool) -> bool:
+        """Whether this call saves into the caller's own library: every `create_skill` under
+        `personal_skills: write`, and an `update_skill` of one of the caller's skills -- theirs in
+        this catalog, or a name only their library holds (a draft not yet live). A name the
+        catalog has from the tenant or the host is edited where it is, as without `write`."""
+        if not self.write_personal:
+            if name in self.personal:
+                # These tools write the tenant's library here. A name that is the caller's own
+                # skill in this catalog would be saved -- and in publish mode published -- as the
+                # tenant's, built on the tenant's skill of that name rather than the one the
+                # model read.
+                raise _ComposeError({"error": "personal_skill", **_PERSONAL_REFUSAL, "name": name})
+            return False
+        if update and (
+            name in self.tenant
+            or self.mine is None
+            or await self.mine.get_skill(self.tenant_id, name) is None
+        ):
+            return False
+        if self.mine is None:
+            raise _ComposeError(dict(_NO_LIBRARY))
+        if not self._holds_personal_grant():
+            raise _ComposeError(dict(_NO_GRANT))
+        return True
+
+    def _holds_personal_grant(self) -> bool:
+        """`skills:personal`, asked of the caller behind this call -- a resumed fiber carries its
+        starter's scopes and library -- and only for the library this agent was compiled for."""
+        from felix.auth.mgmt import SCOPE_SKILLS_PERSONAL, holds_mgmt_scopes
+        from felix.context import try_get_context
+
+        ctx = try_get_context()
+        auth = getattr(ctx, "auth", None) if ctx is not None else None
+        if auth is None or self.mine is None or auth.skill_owner != self.mine.owner:
+            return False
+        return holds_mgmt_scopes(self.settings, auth.scopes, SCOPE_SKILLS_PERSONAL)
 
     async def queue_eval(self, row: dict[str, Any]) -> str | None:
         """`skill_authoring.auto_eval`: queue an evaluation of the draft just saved. A failure to
@@ -196,19 +274,21 @@ class _SkillAuthor:
 
         name = str(args.get("name") or "")
         body = f"\n{args.get('body') or ''}"
-        skill = await self.lib.get_skill(self.tenant_id, name)
+        personal = await self._into_personal(name, update=update)
+        lib = self.lib(personal)
+        skill = await lib.get_skill(self.tenant_id, name)
         if not update:
             if skill is not None:
                 raise _ComposeError({"error": "skill_exists", "name": name, "detail": "use update_skill"})
             frontmatter = {"name": name, "description": str(args.get("description") or "")}
-            return _Composed(files={"SKILL.md": serialize_skill_md(frontmatter, body)})
+            return _Composed(files={"SKILL.md": serialize_skill_md(frontmatter, body)}, personal=personal)
         if skill is None:
             raise _ComposeError(
                 {"error": "unknown_skill", "name": name, "detail": "not in the skill library"}
             )
-        return await self._edit(name, args, body)
+        return await self._edit(name, args, body, lib)
 
-    async def _edit(self, name: str, args: ToolInput, body: str) -> _Composed:
+    async def _edit(self, name: str, args: ToolInput, body: str, lib: SkillLibraryStore) -> _Composed:
         """An edit of ``parent_version``, which must be the newest version that was not
         rejected: a rejected draft's files must not ride into the next one. Checked here for the
         preview and again, atomically with the save, by `save_draft(expect_newest=...)`."""
@@ -218,20 +298,18 @@ class _SkillAuthor:
 
         parent = str(args.get("parent_version") or "")
         newest = (
-            await library.newest_buildable_versions(
-                self.settings, self.tenant_id, [name], owner=self.lib.owner
-            )
+            await library.newest_buildable_versions(self.settings, self.tenant_id, [name], owner=lib.owner)
         ).get(name)
         if newest is None:
             raise _ComposeError({"error": "unknown_skill", "name": name})
         if parent != newest:
-            named = await self.lib.get_version(self.tenant_id, name, parent) if parent else None
+            named = await lib.get_version(self.tenant_id, name, parent) if parent else None
             error = "parent_rejected" if named is not None and is_rejected(named) else "parent_changed"
             raise _ComposeError({"error": error, "name": name, "expected": parent, "current": newest})
-        parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
-        file_rows = await self.lib.list_files(self.tenant_id, name, parent)
+        parent_row = await lib.get_version(self.tenant_id, name, parent) or {}
+        file_rows = await lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
-            self.settings, self.tenant_id, name, parent, object_store=self.object_store, owner=self.lib.owner
+            self.settings, self.tenant_id, name, parent, object_store=self.object_store, owner=lib.owner
         )
         parsed = parse_skill_md(files.get("SKILL.md", ""))
         frontmatter = dict(parsed.frontmatter) if parsed and isinstance(parsed.frontmatter, dict) else {}
@@ -245,6 +323,7 @@ class _SkillAuthor:
         return _Composed(
             files=files,
             parent=parent,
+            personal=lib is self.mine,
             edits_operator_skill=gate_source(parent_row) in {"operator", "import"},
             inherited=inherited,
         )
@@ -253,12 +332,11 @@ class _SkillAuthor:
         from felix.skills import library
 
         if composed.edits_operator_skill:
+            by = "its owner" if composed.personal else "an operator"
             return {
                 **_draft_result(row, "draft"),
-                "review_required": (
-                    "the version this edits was written or imported by an operator; "
-                    "a person must publish this"
-                ),
+                "review_required": f"the version this edits was written or imported by {by}; "
+                "a person must publish this",
             }
         try:
             published = await library.publish(
@@ -268,7 +346,7 @@ class _SkillAuthor:
                 row["version"],
                 by=self.manifest_id,
                 object_store=self.object_store,
-                owner=self.lib.owner,
+                owner=self.lib(composed.personal).owner,
             )
         except library.SkillPublishBlocked as exc:
             return {**_draft_result(row, "draft"), "publish_blocked": exc.reasons}
@@ -279,11 +357,6 @@ class _SkillAuthor:
     async def save(self, args: ToolInput, ctx: ToolInvocationCtx | None, *, update: bool) -> str:
         from felix.skills import library
 
-        if str(args.get("name") or "") in self.personal:
-            # These tools write the tenant's library. A name that is the caller's own skill in
-            # this catalog would be saved -- and in publish mode published -- as the tenant's,
-            # built on the tenant's skill of that name rather than the one the model read.
-            return json.dumps({"error": "personal_skill", **_PERSONAL_REFUSAL, "name": args.get("name")})
         try:
             composed = await self.compose(args, update=update)
             row = await library.save_draft(
@@ -303,7 +376,7 @@ class _SkillAuthor:
                 expect_newest=composed.parent if update else library.MUST_NOT_EXIST,
                 max_pending=self.max_pending,
                 object_store=self.object_store,
-                owner=self.lib.owner,
+                owner=self.lib(composed.personal).owner,
             )
         except _ComposeError as exc:
             return json.dumps(exc.result)
@@ -318,10 +391,13 @@ class _SkillAuthor:
         except Exception:
             logger.warning("skill save failed for %s", args.get("name"), exc_info=True)
             return json.dumps({"error": "save_failed", "name": args.get("name")})
-        eval_id = await self.queue_eval(row)
+        # An evaluation runs on the tenant's library alone.
+        eval_id = await self.queue_eval(row) if not composed.personal else None
         result = _draft_result(row, "draft") if self.mode != "publish" else await self.publish(row, composed)
         if eval_id is not None:
             result["eval_id"] = eval_id
+        if composed.personal:
+            result["library"] = "personal"
         return json.dumps(result)
 
     async def preview(self, args: ToolInput, *, update: bool) -> str:
@@ -332,8 +408,10 @@ class _SkillAuthor:
         except _ComposeError as exc:
             return json.dumps(exc.result)
         if not update or composed.parent is None:
-            return composed.files["SKILL.md"]
-        parent_row = await self.lib.get_version(self.tenant_id, str(args.get("name")), composed.parent) or {}
+            own = f"create_skill {args.get('name')}: {_INTO_OWN_LIBRARY}\n\n--- SKILL.md ---\n"
+            return (own if composed.personal else "") + composed.files["SKILL.md"]
+        lib = self.lib(composed.personal)
+        parent_row = await lib.get_version(self.tenant_id, str(args.get("name")), composed.parent) or {}
         header = _preview_header(str(args.get("name")), composed, str(parent_row.get("source") or ""))
         return header + composed.files["SKILL.md"]
 
@@ -348,8 +426,13 @@ def make_skill_authoring_tools(
     object_store: Any | None = None,
     auto_eval: bool = False,
     personal: frozenset[str] = frozenset(),
+    tenant: frozenset[str] = frozenset(),
+    write_personal: bool = False,
+    owner: str | None = None,
 ) -> list[Tool]:
-    """`create_skill` and `update_skill`, writing drafts to the tenant's skill library.
+    """`create_skill` and `update_skill`, writing drafts to the tenant's skill library -- or,
+    with ``write_personal``, `create_skill` into ``owner``'s and `update_skill` into whichever a
+    skill came from (`_SkillAuthor`).
 
     A draft enters no catalog. With ``mode="publish"`` the draft is published at once if the
     publish gate passes -- except an edit of a version an operator wrote, which always waits
@@ -367,6 +450,9 @@ def make_skill_authoring_tools(
         object_store=object_store,
         auto_eval=auto_eval,
         personal=personal,
+        tenant=tenant,
+        write_personal=write_personal,
+        owner=owner,
     )
 
     async def _create(args: _CreateSkillArgs, ctx: ToolInvocationCtx | None = None) -> str:
@@ -375,16 +461,26 @@ def make_skill_authoring_tools(
     async def _update(args: _UpdateSkillArgs, ctx: ToolInvocationCtx | None = None) -> str:
         return await author.save(args.model_dump(exclude_none=True), ctx, update=True)
 
+    publisher = "a person" if write_personal else "an operator"
     outcome = (
         "It is published at once if it passes the publish gate; otherwise it waits as a draft."
         if mode == "publish"
-        else "It is saved as a draft and enters no catalog until an operator publishes it."
+        else f"It is saved as a draft and enters no catalog until {publisher} publishes it."
+    )
+    where = (
+        "the user's own skill library, where it reaches only their sessions"
+        if write_personal
+        else "this tenant's skill library"
+    )
+    edits = (
+        "in the library it came from (the user's own, or this tenant's)"
+        if write_personal
+        else "in this tenant's library"
     )
     create = define_tool(
         name="create_skill",
         description=(
-            "Save a reusable skill — instructions for a task you expect to repeat — to this "
-            f"tenant's skill library. {outcome}"
+            f"Save a reusable skill — instructions for a task you expect to repeat — to {where}. {outcome}"
         ),
         args=_CreateSkillArgs,
         handler=_create,
@@ -392,7 +488,7 @@ def make_skill_authoring_tools(
     update = define_tool(
         name="update_skill",
         description=(
-            "Save a new version of a skill in this tenant's library with a new body (and "
+            f"Save a new version of a skill {edits} with a new body (and "
             "optionally a new description); its other files are kept. Pass the skill's newest "
             "version as parent_version (`newest_version` from list_skills or activate_skill, or "
             "the `version` your last save returned); a stale one is refused with parent_changed "

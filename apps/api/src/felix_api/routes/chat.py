@@ -520,7 +520,7 @@ async def chat(body: ChatRequest, request: Request, lease_token: LeaseToken = No
     try:
         response, replayed = await once(
             request.app.state.idempotency_store,
-            principal_scope(auth.tenant_id, auth.principal_sub),
+            principal_scope(auth.tenant_id, auth.principal_sub, skill_owner=auth.skill_owner),
             key,
             request_fingerprint("/chat", body.model_dump(mode="json")),
             run,
@@ -890,7 +890,8 @@ async def _claim_stream_key(
     """Claim ``key`` for this streamed send, or answer the resend of one that already ran."""
     settings = request.app.state.settings
     store: IdempotencyStore = request.app.state.idempotency_store
-    scope = f"{principal_scope(auth.tenant_id, auth.principal_sub)}#stream#{thread}"
+    caller = principal_scope(auth.tenant_id, auth.principal_sub, skill_owner=auth.skill_owner)
+    scope = f"{caller}#stream#{thread}"
     try:
         claim = await store.claim(
             scope, key, request_fingerprint("/chat/stream", body.model_dump(mode="json"))

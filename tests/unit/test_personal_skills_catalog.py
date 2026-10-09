@@ -87,11 +87,8 @@ def _spec(**spec: Any) -> Any:
 def test_personal_skills_are_off_unless_asked_for() -> None:
     assert _spec().personal_skills == "off"
     assert _spec(personal_skills="read").personal_skills == "read"
-
-
-def test_writing_to_a_personal_library_is_not_accepted_before_it_does_anything() -> None:
     with pytest.raises(ManifestParseError):
-        _spec(personal_skills="write")
+        _spec(personal_skills="always")
 
 
 def test_a_declared_catalog_refuses_personal_skills() -> None:

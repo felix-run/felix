@@ -1592,6 +1592,7 @@ def _bind_skill_authoring(
     from felix.skills.authoring import make_skill_authoring_tools, make_skill_feedback_tool, personal_names
 
     spec = m.spec.skill_authoring
+    personal = personal_names(catalog)
     _append_unique_tools(
         resolved,
         [
@@ -1603,8 +1604,13 @@ def _bind_skill_authoring(
                 max_pending=spec.max_pending,
                 object_store=deps.object_store,
                 auto_eval=spec.auto_eval,
-                # They write the tenant's library; a name that is the caller's own is refused.
-                personal=personal_names(catalog),
+                # The tenant's library, unless `personal_skills: write`: then a new skill goes
+                # into the caller's and an edit to wherever the skill came from. Without it, a
+                # name that is the caller's own is refused.
+                personal=personal,
+                tenant=frozenset(catalog.skills) - personal,
+                write_personal=m.spec.personal_skills == "write",
+                owner=deps.skill_owner,
             ),
             make_skill_feedback_tool(
                 deps.settings,
