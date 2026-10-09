@@ -162,3 +162,146 @@ async def test_a_resumed_run_answers_every_outstanding_call() -> None:
     called = {c.id for m in model.seen if m.role == "assistant" for c in (m.tool_calls or [])}
     answered = {m.tool_call_id for m in model.seen if m.role == "tool"}
     assert called and called <= answered, f"unanswered tool calls reached the provider: {called - answered}"
+
+
+# --- a run that dies mid-batch leaves the call in the log ------------------------
+#
+# felix-run/felix#531. The assistant message holding a batch's tool calls was appended only
+# once the whole batch returned, so a run that died inside a tool -- a worker restart, a lost
+# fiber lease -- left no trace of a call that may already have taken effect. The re-run asked
+# the model again from the user's turn, and it issued the same writes again: on a production
+# `cowork` thread, the same files were written twice. Written ahead of the batch, the call is
+# in the history, and the next run closes it as interrupted instead.
+
+
+class _CallsChargeOnce:
+    """Asks for `charge` once; answers in text after that."""
+
+    model_id = "claude-sonnet-4-5"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.seen: list[ChatMessage] = []
+
+    async def chat(self, messages: list[ChatMessage], tools: list[Any], opts: Any = None):
+        self.calls += 1
+        self.seen = list(messages)
+        if self.calls == 1:
+            return ModelChatResult(
+                message=_assistant_calling("charge", "call_pay"),
+                stop_reason="tool_use",
+                usage=TokenUsage(input=5, output=5),
+            )
+        return ModelChatResult(
+            message=ChatMessage(role="assistant", content="checked; it went through"),
+            stop_reason="end_turn",
+            usage=TokenUsage(input=5, output=5),
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_dies_inside_a_tool_leaves_the_call_for_the_next_run_to_close() -> None:
+    import asyncio
+
+    from felix.config import Settings
+    from felix.session.store import get_session_store
+    from felix.session.types import event_to_chat_message
+
+    settings = Settings(database_url="memory://interrupted-mid-batch", object_store="memory", redis_url="")
+    store = get_session_store(settings, tenant_id="default")
+    thread = "default:dies-mid-batch"
+    entered = asyncio.Event()
+    charged = 0
+
+    async def _charge(args: dict[str, Any], ctx: Any = None) -> str:
+        nonlocal charged
+        charged += 1
+        entered.set()
+        await asyncio.Event().wait()  # the worker dies here, mid-call
+        return "charged"
+
+    charge = define_tool(name="charge", description="takes money", handler=_charge)
+    model = _CallsChargeOnce()
+    agent = _ReactAgent(
+        tools=[charge],
+        pattern="react",
+        manifest_id="test",
+        manifest_version="1",
+        system_prompt="s",
+        model_spec=None,
+        settings=None,
+        recursion_limit=3,
+        session_store=store,
+    )
+    agent._resolve_model = lambda _i: model  # type: ignore[method-assign]
+
+    run = asyncio.create_task(
+        agent.invoke(InvokeInput(messages=[ChatMessage(role="user", content="pay it")], thread_id=thread))
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+    logged = [event_to_chat_message(e) for e in await store.open(thread).get_events()]
+    calls = [c.id for m in logged if m.role == "assistant" for c in (m.tool_calls or [])]
+    assert calls == ["call_pay"], f"the call that was running is not in the log: {logged}"
+
+    # The next run, from the log: the model is told the call did not finish and may already
+    # have taken effect -- not handed a history in which it never happened.
+    await agent.invoke(InvokeInput(messages=[*logged, ChatMessage(role="user", content="[continue]")]))
+    closed = [m for m in model.seen if m.role == "tool" and m.tool_call_id == "call_pay"]
+    assert closed and "may have already taken effect" in closed[0].content.lower()
+    assert charged == 1
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_withdraws_the_gates_its_interrupted_calls_left_open() -> None:
+    """felix-run/felix#531: the dead attempt's approval and client request stop being offered.
+
+    Left open, the approval stayed `pending` to its deadline on every surface that lists one,
+    and approving it then installed a grant for a call the model had been told did not finish.
+    """
+    from felix.approvals import store as approvals
+    from felix.config import Settings
+    from felix.tools import client_requests
+
+    settings = Settings(database_url="memory://interrupted-gates", object_store="memory", redis_url="")
+    thread = "default:gated-and-gone"
+    gate = await approvals.create_pending(
+        settings,
+        "default",
+        tool_name="charge",
+        call_signature="sig-pay",
+        manifest_id="test",
+        args={},
+        thread_id=thread,
+        tool_call_id="call_pay",
+    )
+    await client_requests.record(thread, {"id": "call_pay", "name": "charge"}, timeout=300)
+
+    model = _Capturing()
+    agent = _ReactAgent(
+        tools=[UNSAFE],
+        pattern="react",
+        manifest_id="test",
+        manifest_version="1",
+        system_prompt="s",
+        model_spec=None,
+        settings=settings,
+        recursion_limit=3,
+    )
+    agent._resolve_model = lambda _i: model  # type: ignore[method-assign]
+    await agent.invoke(
+        InvokeInput(
+            messages=[
+                _assistant_calling("charge", "call_pay"),
+                ChatMessage(role="user", content="[continue]"),
+            ],
+            thread_id=thread,
+        )
+    )
+
+    row = await approvals.get_approval(settings, "default", gate["id"])
+    assert row is not None and (row["status"], row["decision_note"]) == ("denied", "interrupted")
+    assert await client_requests.pending(thread) == []
