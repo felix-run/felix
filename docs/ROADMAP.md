@@ -1050,17 +1050,19 @@ comment explaining exactly that. It is conditional, not inert.
             order from the global HNSW index and sorts the tiebreakers on top, and the scan visits
             `hnsw.ef_search` (40) candidates before the tenant filter runs. Measured on synthetic
             clustered vectors, pgvector 0.8, 100k rows: document recall asked for 40 and got 35.
-            Its prescribed fix -- an
-            index-ordered inner query re-sorted outside -- was worse: a 5k-row tenant got 1.4 rows
-            of 16. Each vector channel now sets `hnsw.iterative_scan = strict_order` for its
-            transaction (`felix.db.vector`), which scans until the `LIMIT` is met; the queries are
-            unchanged, and a tenant the planner scans exactly is untouched. Still approximate for
-            a large tenant (about 93% of the exact top-k in that measurement), by choice: exact
-            costs a full scan of the tenant per recall. pgvector before 0.8 runs as before and
-            logs once. Per-tenant partial indexes were ruled out: DDL per tenant.
-            Also left: an idle backoff in the fiber loop (one cheap `SKIP LOCKED` claim a second,
-            against up to the backoff in latency before a new durable run starts, unless submit
-            wakes the worker).
+            The fix this entry prescribed, an index-ordered inner query re-sorted outside, was
+            worse: a 5k-row tenant got 1.4 rows of 16. Each vector channel now sets
+            `hnsw.iterative_scan = strict_order` for its transaction (`felix.db.vector`), which
+            scans until the `LIMIT` is met or `hnsw.max_scan_tuples` (20,000) are visited; the
+            queries are unchanged, and a tenant the planner scans exactly is untouched. Still
+            approximate for a large tenant (about 93% of the exact top-k in that measurement), by
+            choice: exact costs a full scan of the tenant per recall. pgvector before 0.8 runs as
+            before and logs once. Per-tenant partial indexes were ruled out: DDL per tenant.
+            Document search's two channels now run in a savepoint each, as memory recall's do: a
+            failed lexical channel had left the transaction aborted under the vector channel.
+      - [ ] *An idle backoff in the fiber loop.* One cheap `SKIP LOCKED` claim a second, against up
+            to the backoff in latency before a new durable run starts, unless submit wakes the
+            worker. Not taken in the audit's run.
       - [x] *`GET /chat/sessions` pages.* It read every `thread_state` row a tenant had, unordered,
             on each call. It now returns newest first, `limit` (default 100, at most 500) a page,
             with a `felix.cursors` keyset cursor on `(updated_at, thread_id COLLATE "C")` and an

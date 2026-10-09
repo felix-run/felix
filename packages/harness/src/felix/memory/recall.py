@@ -29,6 +29,7 @@ from typing import Any
 
 from felix.config import Settings
 from felix.db.session import _use_memory, get_session_factory
+from felix.db.vector import enable_iterative_hnsw_scan
 from felix.memory import store as memory_store
 
 logger = logging.getLogger("felix.memory.recall")
@@ -399,9 +400,7 @@ async def _channels_in_postgres(
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         if qvec is not None:
-            from felix.db.vector import scan_until_limit
-
-            await scan_until_limit(db)
+            await enable_iterative_hnsw_scan(db)
         for name, sql, bound in statements:
             # A savepoint per channel. The `except` below promises a deployment mid-upgrade
             # "loses a channel, not the turn", and in one shared transaction that was not
