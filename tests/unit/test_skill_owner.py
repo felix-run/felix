@@ -87,7 +87,10 @@ def test_a_personal_object_key_is_its_own_and_carries_no_subject() -> None:
 
 
 def test_a_store_spells_keys_with_its_own_owner() -> None:
-    org, alice = get_skill_library_store(None), get_skill_library_store(None, owner="iss|alice")
+    org, alice = (
+        get_skill_library_store(None, owner=ORG_OWNER),
+        get_skill_library_store(None, owner="iss|alice"),
+    )
     assert org.object_key("acme", "notes", "0.1.0", "SKILL.md") == library_object_key(
         "acme", "notes", "0.1.0", "SKILL.md", owner=ORG_OWNER
     )
@@ -103,16 +106,19 @@ def test_the_org_pending_lock_is_spelled_as_it_was_and_a_personal_one_differs() 
     )
 
 
-def test_an_unnamed_store_is_the_orgs() -> None:
-    assert get_skill_library_store(None).owner == ORG_OWNER
+def test_a_store_cannot_be_asked_for_without_naming_whose() -> None:
+    """A flow that forgot the owner would read and write the tenant's library for a person."""
+    with pytest.raises(TypeError):
+        get_skill_library_store(None)  # type: ignore[call-arg]
+    assert get_skill_library_store(None, owner=ORG_OWNER).owner == ORG_OWNER
     assert get_skill_library_store(None, owner="iss|alice").owner == "iss|alice"
 
 
 def test_the_twin_hands_back_one_store_per_owner() -> None:
     """Tests patch a method on the store the factory returns and expect the code under test to
     get that same object, as it did when the twin was one process global."""
-    org = get_skill_library_store(None)
-    assert org is get_skill_library_store(None)
+    org = get_skill_library_store(None, owner=ORG_OWNER)
+    assert org is get_skill_library_store(None, owner=ORG_OWNER)
     alice = get_skill_library_store(None, owner="iss|alice")
     assert alice is get_skill_library_store(None, owner="iss|alice")
     assert alice is not org

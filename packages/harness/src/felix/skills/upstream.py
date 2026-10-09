@@ -176,7 +176,7 @@ async def _head(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """The skill, and its newest version that was not rejected -- `buildable_versions`, then
     `newest_version`, as an import judges a name. Either is None when there is none."""
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     skill = await lib.get_skill(tenant_id, name)
     if skill is None:
         return None, None
@@ -200,7 +200,7 @@ async def _imported_page(
 ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], str | None]:
     """Up to ``limit`` of the tenant's imported skills after ``after``, by name, each with its
     newest version that was not rejected; and the cursor past the last, or None at the end."""
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     found: list[tuple[dict[str, Any], dict[str, Any]]] = []
     cursor = after
     while True:

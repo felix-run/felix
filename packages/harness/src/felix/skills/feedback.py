@@ -21,6 +21,7 @@ from typing import Any, Literal
 from felix.config import Settings
 from felix.skills.feedback_store import get_skill_feedback_store
 from felix.skills.library import SkillLibraryError, SkillNotFound, newest_version
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.quality_store import FeedbackSource, SkillFeedbackAtCap, SkillFeedbackConflict
 
@@ -84,7 +85,7 @@ def audit_feedback(
 
 async def _target(settings: Settings, tenant_id: str, name: str, version: str | None) -> str:
     """The version feedback is about: the one named, else the live one, else the newest."""
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     skill = await lib.get_skill(tenant_id, name)
     if skill is None:
         raise SkillNotFound(f"{name} is not in the library")

@@ -30,7 +30,7 @@ from felix.logging_setup import loggable
 from felix.skills.binary import encode_base64, is_binary_asset_path
 from felix.skills.copy_rule import copy_digests, digest, file_digest, normalized_digest, stored_bytes
 from felix.skills.format import ValidationIssue, validate_skill_bundle
-from felix.skills.library_keys import ORG_OWNER
+from felix.skills.library_keys import ORG_OWNER, library_label
 from felix.skills.library_store import (
     ANY_LIVE,
     MAX_VERSIONS_PER_SKILL,
@@ -59,6 +59,16 @@ from felix.skills.publish_gate import (
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
 
 logger = logging.getLogger("felix.skills.library")
+
+# Skills one personal library may hold. A person's own instructions, not a shared catalog: the
+# bound is what keeps an agent with `personal_skills: write` saving in a loop from filling one. Soft
+# by the saves in flight at once -- two first saves of new names can both pass the count -- since
+# a person's library is not a queue anyone else waits on, unlike the pending cap.
+MAX_PERSONAL_SKILLS = 100
+PERSONAL_EVAL_REQUIRED = (
+    "this tenant requires an evaluation before a skill is published, and a personal skill has "
+    "none: evaluations are kept for the tenant's own library"
+)
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -235,6 +245,19 @@ class SkillReasonRequired(SkillLibraryError):
     code = "reason_required"
 
 
+class SkillOrgOnly(SkillLibraryError):
+    """Something only the tenant's own library holds -- an import, an adopt -- aimed at a
+    personal library."""
+
+    code = "org_only"
+
+
+class SkillPersonalLibraryFull(SkillLibraryError):
+    """A personal library already holds `MAX_PERSONAL_SKILLS` skills and a save would add one."""
+
+    code = "personal_library_full"
+
+
 class SkillPublishBlocked(SkillLibraryError):
     code = "publish_blocked"
 
@@ -252,7 +275,14 @@ def _object_store(settings: Settings, object_store: Any | None) -> Any:
 
 
 def _audit(
-    settings: Settings, tenant_id: str, event_type: str, row: Mapping[str, Any], *, by: str, **extra: Any
+    settings: Settings,
+    tenant_id: str,
+    event_type: str,
+    row: Mapping[str, Any],
+    *,
+    by: str,
+    owner: str,
+    **extra: Any,
 ) -> None:
     """One event per state change, written straight to the audit store.
 
@@ -272,6 +302,8 @@ def _audit(
         "quality_score": row.get("quality_score"),
         "security_status": row.get("security_status"),
         **{k: row[k] for k in ORIGIN_COLUMNS if row.get(k) is not None},
+        # Whose library changed: `org`, or a personal library's digest -- never the subject.
+        "library": library_label(owner),
         **extra,
     }
     record_offline_event(
@@ -318,6 +350,7 @@ async def shadows_operator_upload(
     name: str,
     versions: Iterable[str | None] = (),
     *,
+    owner: str,
     object_store: Any | None = None,
 ) -> bool:
     """True when an operator upload exists under ``name`` at a key the loader reads for a ref.
@@ -333,6 +366,9 @@ async def shadows_operator_upload(
     """
     from felix.skills.loader import operator_skill_keys, pinned_operator_skill_keys, safe_skill_key_parts
 
+    if owner != ORG_OWNER:
+        # A personal skill answers no ref (`loader.load_manifest_skills`), so it splits nothing.
+        return False
     if not safe_skill_key_parts(name):
         return False
     keys = operator_skill_keys(tenant_id, name)
@@ -509,8 +545,11 @@ async def save_draft(
     max_pending: int | None = None,
     expect_newest: str | _MustNotExist | None = None,
     object_store: Any | None = None,
+    owner: str,
 ) -> dict[str, Any]:
-    """Validate, review and scan a bundle, then save it as a new immutable draft.
+    """Validate, review and scan a bundle, then save it as a new immutable draft in ``owner``'s
+    library. A personal library takes no import and no adopt (`SkillOrgOnly`) and holds at most
+    `MAX_PERSONAL_SKILLS` skills (`SkillPersonalLibraryFull`); everything else is judged the same.
 
     ``name``, when given, must be the SKILL.md's own name. ``parent`` is the version this one
     was edited from (lineage, not the bump base: the bump is from the newest version, so a
@@ -538,7 +577,9 @@ async def save_draft(
     if await host_owns(settings, tenant_id, skill_name, store):
         raise SkillNameShadowed(f"{skill_name!r} is a host skill; the library cannot replace it")
 
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=owner)
+    if owner != ORG_OWNER:
+        await _check_personal(lib, tenant_id, skill_name, provenance)
     await _check_pending(lib, tenant_id, provenance, max_pending)
     if parent is not None and await lib.get_version(tenant_id, skill_name, parent) is None:
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
@@ -582,7 +623,7 @@ async def save_draft(
         await _discard(lib, store, tenant_id, row, files)
         raise
     shadows = await shadows_operator_upload(
-        settings, tenant_id, skill_name, [row["version"]], object_store=store
+        settings, tenant_id, skill_name, [row["version"]], owner=owner, object_store=store
     )
     if shadows and provenance.source == "import":
         await _discard(lib, store, tenant_id, row, files)
@@ -594,6 +635,7 @@ async def save_draft(
         tenant_id,
         "skill_draft_saved",
         row,
+        owner=owner,
         by=provenance.author,
         parent=parent,
         reason=_redacted(settings, row["reason"][:200]),
@@ -601,6 +643,35 @@ async def save_draft(
         **({"principal": provenance.principal} if provenance.principal else {}),
     )
     return {**row, "tenant_id": tenant_id, "shadows_operator_upload": shadows}
+
+
+async def _check_personal(
+    lib: SkillLibraryStore, tenant_id: str, name: str, provenance: DraftProvenance
+) -> None:
+    """What a personal library refuses that the tenant's takes. Imports and adopts are the
+    tenant's: their origin, sightings and update checks are keyed by name alone, and a person's
+    copy of a third party's skill would escape all three."""
+    if provenance.source == "import" or provenance.adopted_from is not None:
+        raise SkillOrgOnly("imports and adopts go to the tenant's library, not a personal one")
+    if (
+        await lib.get_skill(tenant_id, name) is None
+        and await _skills_in_use(lib, tenant_id) >= MAX_PERSONAL_SKILLS
+    ):
+        raise SkillPersonalLibraryFull(
+            f"a personal library holds at most {MAX_PERSONAL_SKILLS} skills in use (live, or with a "
+            "draft waiting); archive one, or reject its drafts, to make room"
+        )
+
+
+async def _skills_in_use(lib: SkillLibraryStore, tenant_id: str) -> int:
+    """The skills that count against `MAX_PERSONAL_SKILLS`: live, or holding an undecided draft.
+    An archived skill keeps its row and history but no place, so archiving frees one."""
+    from felix.skills.library_store import MAX_LIBRARY_SKILLS
+
+    rows = await lib.list_skills(tenant_id, limit=MAX_LIBRARY_SKILLS)
+    idle = [str(r["name"]) for r in rows if not r.get("live_version")]
+    drafts = await lib.summarize(tenant_id, idle) if idle else {}
+    return len(rows) - len(idle) + sum(1 for n in idle if (drafts.get(n) or {}).get("pending"))
 
 
 async def _lineage_import(
@@ -788,6 +859,7 @@ async def evaluate_version(
     *,
     policy: PublishPolicy | None = None,
     object_store: Any | None = None,
+    owner: str,
 ) -> Verdict:
     """Re-read a saved version against its digests and judge it as a publish would be.
 
@@ -801,9 +873,16 @@ async def evaluate_version(
         policy = (await load_publish_policy(settings, tenant_id)).policy
     # Who wrote the version can only tighten the policy (`policy_for_source`), and decides which
     # evaluations count (`publish_gate.eval_counts_for_gate`).
-    row = await get_skill_library_store(settings).get_version(tenant_id, name, version)
+    row = await get_skill_library_store(settings, owner=owner).get_version(tenant_id, name, version)
     source = gate_source(row)
     policy = policy_for_source(policy, source)
+    # Evaluations are kept by skill name, for the tenant's library: one found for a personal
+    # version would be of the tenant's skill of its name. So a personal version cannot meet a
+    # policy that requires one -- and a tenant's bar is never lowered, so it is refused, with
+    # everything else judged as usual so the reasons say all of what stands in the way.
+    eval_unmet = owner != ORG_OWNER and policy.needs_eval
+    if owner != ORG_OWNER:
+        policy = policy.without_eval()
     latest_eval = None
     if policy.needs_eval:
         # Only a policy that reads the evaluation pays for the lookup.
@@ -814,15 +893,24 @@ async def evaluate_version(
         )
     try:
         files = await read_version_files(
-            settings, tenant_id, name, version, object_store=object_store, owner=ORG_OWNER
+            settings, tenant_id, name, version, object_store=object_store, owner=owner
         )
     except SkillVersionCorrupt as exc:
         return Verdict(valid=False, reasons=[str(exc)])
-    return await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
+    verdict = await asyncio.to_thread(evaluate_files, files, name, policy, latest_eval)
+    if eval_unmet:
+        verdict.reasons.append(PERSONAL_EVAL_REQUIRED)
+    return verdict
 
 
 async def _gate(
-    settings: Settings, tenant_id: str, row: Mapping[str, Any], object_store: Any, *, rollback: bool
+    settings: Settings,
+    tenant_id: str,
+    row: Mapping[str, Any],
+    object_store: Any,
+    *,
+    rollback: bool,
+    owner: str,
 ) -> None:
     """Re-read, re-validate and re-scan what is about to go live, then apply the policy.
 
@@ -843,6 +931,7 @@ async def _gate(
         str(row["version"]),
         policy=policy.without_eval() if rollback else policy,
         object_store=object_store,
+        owner=owner,
     )
     if not verdict.passes:
         raise SkillPublishBlocked(verdict.reasons)
@@ -866,9 +955,10 @@ async def _make_live(
     event: str,
     object_store: Any | None,
     expected_live: ExpectedLive = ANY_LIVE,
+    owner: str,
 ) -> dict[str, Any]:
     from_statuses = _LIVE_FROM[event]
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=owner)
     row = await lib.get_version(tenant_id, name, version)
     if row is None:
         raise SkillNotFound(f"{name}@{version} does not exist")
@@ -884,9 +974,10 @@ async def _make_live(
             row,
             _object_store(settings, object_store),
             rollback=event == "skill_rolled_back",
+            owner=owner,
         )
     except SkillPublishBlocked as exc:
-        _audit(settings, tenant_id, event, row, by=by, status="blocked", reasons=exc.reasons)
+        _audit(settings, tenant_id, event, row, owner=owner, by=by, status="blocked", reasons=exc.reasons)
         raise
     try:
         previous = await lib.publish(
@@ -902,7 +993,7 @@ async def _make_live(
         raise SkillLiveChanged(str(exc)) from exc
     except SkillStateConflict as exc:
         raise SkillVersionConflict(f"{name}@{version} changed state while it was being published") from exc
-    _audit(settings, tenant_id, event, row, by=by, previous=previous)
+    _audit(settings, tenant_id, event, row, owner=owner, by=by, previous=previous)
     return await lib.get_version(tenant_id, name, version) or row
 
 
@@ -915,6 +1006,7 @@ async def publish(
     by: str,
     object_store: Any | None = None,
     expected_live: ExpectedLive = ANY_LIVE,
+    owner: str,
 ) -> dict[str, Any]:
     """Publish a draft: it becomes `live_version`, and the version it replaces is archived.
 
@@ -930,6 +1022,7 @@ async def publish(
         event="skill_published",
         object_store=object_store,
         expected_live=expected_live,
+        owner=owner,
     )
 
 
@@ -942,6 +1035,7 @@ async def rollback(
     by: str,
     object_store: Any | None = None,
     expected_live: ExpectedLive = ANY_LIVE,
+    owner: str,
 ) -> dict[str, Any]:
     """Make a once-published version live again, through the same gate as a publish
     (without its evaluation requirement). ``expected_live`` as for `publish`."""
@@ -954,6 +1048,7 @@ async def rollback(
         event="skill_rolled_back",
         object_store=object_store,
         expected_live=expected_live,
+        owner=owner,
     )
 
 
@@ -966,6 +1061,7 @@ async def adopt(
     by: str,
     reason: str,
     object_store: Any | None = None,
+    owner: str,
 ) -> dict[str, Any]:
     """An operator vouches for an import-lineage version: its files, byte for byte, saved as a new
     operator draft built on it that does not carry `lineage_import`.
@@ -984,7 +1080,10 @@ async def adopt(
     reason = (reason or "").strip()
     if not reason:
         raise SkillReasonRequired("say why this imported text is now the operator's own")
-    lib = get_skill_library_store(settings)
+    if owner != ORG_OWNER:
+        # Only the tenant's library holds imports, so only it holds anything to adopt.
+        raise SkillOrgOnly("adopts are the tenant's library's; a personal one holds no imports")
+    lib = get_skill_library_store(settings, owner=owner)
     row = await lib.get_version(tenant_id, name, version)
     if row is None:
         raise SkillNotFound(f"{name}@{version} does not exist")
@@ -998,9 +1097,7 @@ async def adopt(
     saved = await save_draft(
         settings,
         tenant_id,
-        files=await read_version_files(
-            settings, tenant_id, name, version, object_store=store, owner=ORG_OWNER
-        ),
+        files=await read_version_files(settings, tenant_id, name, version, object_store=store, owner=owner),
         provenance=DraftProvenance(
             source="operator", author=by, reason=reason, principal=by, adopted_from=version
         ),
@@ -1008,12 +1105,14 @@ async def adopt(
         parent=version,
         expect_newest=version,
         object_store=store,
+        owner=owner,
     )
     _audit(
         settings,
         tenant_id,
         "skill_adopted",
         saved,
+        owner=owner,
         by=by,
         adopted_from=version,
         reason=_redacted(settings, reason[:200]),
@@ -1042,10 +1141,10 @@ async def _newer_than_adopted(
 
 
 async def reject(
-    settings: Settings, tenant_id: str, name: str, version: str, *, by: str, note: str
+    settings: Settings, tenant_id: str, name: str, version: str, *, by: str, note: str, owner: str
 ) -> dict[str, Any]:
-    """Archive a draft without publishing it, recording why."""
-    lib = get_skill_library_store(settings)
+    """Archive a draft in ``owner``'s library without publishing it, recording why."""
+    lib = get_skill_library_store(settings, owner=owner)
     row = await lib.get_version(tenant_id, name, version)
     if row is None:
         raise SkillNotFound(f"{name}@{version} does not exist")
@@ -1053,25 +1152,30 @@ async def reject(
         await lib.reject(tenant_id, name, version, by=by, note=(note or "")[:_REASON_LIMIT], at=now_ms())
     except SkillStateConflict as exc:
         raise SkillVersionConflict(f"{name}@{version} is not a draft") from exc
-    _audit(settings, tenant_id, "skill_rejected", row, by=by, note=(note or "")[:200])
+    _audit(settings, tenant_id, "skill_rejected", row, owner=owner, by=by, note=(note or "")[:200])
     return await lib.get_version(tenant_id, name, version) or row
 
 
-async def archive_skill(settings: Settings, tenant_id: str, name: str, *, by: str) -> dict[str, Any]:
-    """Take a skill out of every catalog: `live_version` is cleared, its history kept."""
-    lib = get_skill_library_store(settings)
+async def archive_skill(
+    settings: Settings, tenant_id: str, name: str, *, by: str, owner: str
+) -> dict[str, Any]:
+    """Take a skill of ``owner``'s library out of every catalog: `live_version` is cleared, its
+    history kept."""
+    lib = get_skill_library_store(settings, owner=owner)
     try:
         previous = await lib.archive_skill(tenant_id, name, by=by, at=now_ms())
     except SkillStateConflict as exc:
         raise SkillNotFound(f"{name} is not in the library") from exc
     row = (await lib.get_version(tenant_id, name, previous) if previous else None) or {"name": name}
-    _audit(settings, tenant_id, "skill_archived", row, by=by, previous=previous)
+    _audit(settings, tenant_id, "skill_archived", row, owner=owner, by=by, previous=previous)
     return await lib.get_skill(tenant_id, name) or {"name": name, "live_version": None}
 
 
 __all__ = [
+    "MAX_PERSONAL_SKILLS",
     "MUST_NOT_EXIST",
     "ORIGIN_COLUMNS",
+    "PERSONAL_EVAL_REQUIRED",
     "VERSION_RE",
     "DraftProvenance",
     "ImportOrigin",
@@ -1084,10 +1188,12 @@ __all__ = [
     "SkillNameShadowed",
     "SkillNotFound",
     "SkillNotImportLineage",
+    "SkillOrgOnly",
     "SkillOriginMismatch",
     "SkillParentChanged",
     "SkillParentRejected",
     "SkillPendingCapReached",
+    "SkillPersonalLibraryFull",
     "SkillPublishBlocked",
     "SkillReasonRequired",
     "SkillVersionCapReached",

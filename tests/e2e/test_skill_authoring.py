@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from felix.manifests.loader import parse_manifest
+from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
@@ -125,6 +126,7 @@ async def test_publishing_over_http_needs_skills_write(boot: Any) -> None:
             provenance=library.DraftProvenance(
                 source="agent", author="e2e-author", origin_manifest_id="e2e-author"
             ),
+            owner=ORG_OWNER,
         )
         reader = {"Authorization": "Bearer sk-e2e-reader"}
         writer = {"Authorization": "Bearer sk-e2e-writer"}

@@ -132,6 +132,7 @@ async def test_feedback_is_only_for_library_skills_in_the_catalog(settings: Sett
         files=bundle("unseen-skill"),
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=object_store(settings),
+        owner=ORG_OWNER,
     )
 
     for name in ("unseen-skill", "calculator-help", "no-such-skill"):
@@ -204,6 +205,7 @@ async def test_feedback_targets_the_live_version_unless_told(settings: Settings)
         provenance=library.DraftProvenance(source="operator", author="ops"),
         parent=live,
         object_store=object_store(settings),
+        owner=ORG_OWNER,
     )
     row = await feedback.submit_feedback(
         settings,
@@ -253,7 +255,7 @@ async def test_an_accepted_improvement_saves_a_draft_for_review(
         IMPROVER,
         None,
     )
-    draft = await get_skill_library_store(settings).get_version(TENANT, NAME, "0.1.1")
+    draft = await get_skill_library_store(settings, owner=ORG_OWNER).get_version(TENANT, NAME, "0.1.1")
     assert draft is not None
     assert (draft["status"], draft["source"], draft["author"], draft["parent_version"]) == (
         "draft",
@@ -267,9 +269,9 @@ async def test_an_accepted_improvement_saves_a_draft_for_review(
     )
     assert "the due date" in files["SKILL.md"] and files["SKILL.md"] == IMPROVED
     # Never published: the live version is unchanged and the draft is in the review queue.
-    skill = await get_skill_library_store(settings).get_skill(TENANT, NAME)
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill(TENANT, NAME)
     assert skill is not None and skill["live_version"] == version
-    queue = await get_skill_library_store(settings).list_drafts(TENANT)
+    queue = await get_skill_library_store(settings, owner=ORG_OWNER).list_drafts(TENANT)
     assert [(d["name"], d["version"]) for d in queue] == [(NAME, "0.1.1")]
     (event,) = await _events(settings, "skill_feedback_applied")
     assert event["payload_json"]["result_version"] == "0.1.1"
@@ -315,7 +317,7 @@ async def test_invalid_model_output_fails_the_feedback_and_saves_nothing(
 
     assert done is not None and done["status"] == "failed" and done["result_version"] is None
     assert done["error"].startswith("invalid_bundle:"), done["error"]
-    assert await get_skill_library_store(settings).version_ids(TENANT, NAME) == [version]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids(TENANT, NAME) == [version]
     assert len(await _events(settings, "skill_feedback_failed")) == 1
 
 
@@ -329,7 +331,10 @@ async def test_rerunning_an_applied_improvement_does_nothing(
 
     assert (await run_jobs(settings))["improvements"] == 0, "applied feedback is not claimed again"
     assert len(routes.calls) == 1
-    assert await get_skill_library_store(settings).version_ids(TENANT, NAME) == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids(TENANT, NAME) == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
 
 async def test_a_draft_saved_before_a_crash_is_recorded_not_saved_again(
@@ -356,6 +361,7 @@ async def test_a_draft_saved_before_a_crash_is_recorded_not_saved_again(
         ),
         parent=version,
         object_store=object_store(settings),
+        owner=ORG_OWNER,
     )
     store = get_skill_feedback_store(settings)
     # The dead worker's claim, taken a lease ago.
@@ -368,7 +374,10 @@ async def test_a_draft_saved_before_a_crash_is_recorded_not_saved_again(
 
     assert done is not None and (done["status"], done["result_version"]) == ("applied", "0.1.1")
     assert routes.calls == []
-    assert await get_skill_library_store(settings).version_ids(TENANT, NAME) == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids(TENANT, NAME) == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
 
 async def test_a_skill_that_moved_on_fails_the_feedback_without_a_model_call(
@@ -383,6 +392,7 @@ async def test_a_skill_that_moved_on_fails_the_feedback_without_a_model_call(
         provenance=library.DraftProvenance(source="agent", author="other-agent", origin_manifest_id="other"),
         parent=version,
         object_store=object_store(settings),
+        owner=ORG_OWNER,
     )
 
     await run_jobs(settings)
@@ -445,6 +455,7 @@ async def test_a_race_lost_to_this_feedbacks_own_save_records_that_draft(
             ),
             parent=version,
             object_store=object_store(settings),
+            owner=ORG_OWNER,
         )
 
     routes.before(IMPROVER, 1, other_run_saves_first)
@@ -454,7 +465,10 @@ async def test_a_race_lost_to_this_feedbacks_own_save_records_that_draft(
 
     done = await get_skill_feedback_store(settings).get(TENANT, accepted["id"])
     assert done is not None and (done["status"], done["result_version"]) == ("applied", "0.1.1"), done
-    assert await get_skill_library_store(settings).version_ids(TENANT, NAME) == ["0.1.0", "0.1.1"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids(TENANT, NAME) == [
+        "0.1.0",
+        "0.1.1",
+    ]
 
 
 async def test_an_agent_save_may_not_add_or_change_evals_files(settings: Settings) -> None:
@@ -470,6 +484,7 @@ async def test_an_agent_save_may_not_add_or_change_evals_files(settings: Setting
             files=bundle("fresh-skill", **{"evals/scenarios.json": scenarios}),
             provenance=agent,
             object_store=store,
+            owner=ORG_OWNER,
         )
     parent = await published(settings, bundle(**{"evals/scenarios.json": scenarios}))
     with pytest.raises(library.SkillBundleInvalid) as changed:
@@ -480,6 +495,7 @@ async def test_an_agent_save_may_not_add_or_change_evals_files(settings: Setting
             provenance=agent,
             parent=parent,
             object_store=store,
+            owner=ORG_OWNER,
         )
     assert [i.path for i in changed.value.issues] == ["evals/scenarios.json"]
     kept = await library.save_draft(
@@ -489,6 +505,7 @@ async def test_an_agent_save_may_not_add_or_change_evals_files(settings: Setting
         provenance=agent,
         parent=parent,
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert kept["version"] == "0.1.1"
 

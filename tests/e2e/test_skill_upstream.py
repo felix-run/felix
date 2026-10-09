@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 import pytest
+from felix.skills.library_keys import ORG_OWNER
 
 from tests.skill_import_fake import FakeRepos, skill_md
 
@@ -112,6 +113,7 @@ async def test_a_skill_that_was_not_imported_has_no_upstream(boot: Any, gh: Fake
             "default",
             files={"SKILL.md": skill_md("house-rules", "The house rules.").decode()},
             provenance=library.DraftProvenance(source="operator", author="ops"),
+            owner=ORG_OWNER,
         )
         for call in (
             app.client.get("/skill-library/house-rules/-/upstream"),
@@ -151,6 +153,7 @@ async def test_a_stored_origin_and_a_named_ref_pass_the_tenants_allowlist_again(
                 author="ops",
                 origin=ImportOrigin(source=SOURCE, ref="main", commit="c" * 40, tree_hash="a" * 64),
             ),
+            owner=ORG_OWNER,
         )
         for resp in (
             await app.client.get(f"/skill-library/{NAME}/-/upstream", params={"ref": "v2"}, headers=headers),

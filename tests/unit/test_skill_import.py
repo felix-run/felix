@@ -351,7 +351,7 @@ async def test_an_import_saves_a_draft_with_its_origin(
         "MIT",
     )
     assert result.dropped_files == ["LICENSE", "evals/evals.json"]
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     stored = await lib.get_version("acme", NAME, "0.1.0")
     assert stored is not None and stored["origin_tree_hash"] == row["origin_tree_hash"]
     files = await library.read_version_files(
@@ -405,7 +405,7 @@ async def test_a_reimport_of_the_same_files_saves_nothing_even_across_commits(
     again = await _import(settings, store, gh)
 
     assert again.unchanged and again.version["version"] == "0.1.0"
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == ["0.1.0"]
     assert not [p for p in gh.paths()[before:] if "/blobs/" in p], "the digest alone shows nothing changed"
 
 
@@ -433,6 +433,7 @@ async def test_an_import_never_takes_over_another_origins_skill(
         files={"SKILL.md": skill_md(NAME).decode()},
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     with pytest.raises(library.SkillOriginMismatch):
         await _import(settings, store, gh)
@@ -444,7 +445,9 @@ async def test_an_import_never_takes_over_another_origins_skill(
     with pytest.raises(library.SkillOriginMismatch) as caught:
         await _import(settings, store, gh, source="github:evil/fork/skills/refunds")
     assert caught.value.code == "origin_mismatch"
-    assert await get_skill_library_store(settings).version_ids("acme", "refunds") == ["0.1.0"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", "refunds") == [
+        "0.1.0"
+    ]
 
 
 async def test_a_host_skill_name_is_still_refused(
@@ -507,7 +510,7 @@ async def test_upstream_failures_have_their_own_codes(
         with pytest.raises(github.ImportUpstreamError) as down:
             await importer.import_skill(settings, "acme", source=SOURCE, by="ops", deps=_deps(http))
     assert down.value.code == "upstream_error"
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == []
 
 
 async def test_the_token_goes_in_a_header_to_github_and_nowhere_else(
@@ -547,7 +550,7 @@ async def test_an_imported_skill_that_fails_the_scan_saves_but_never_publishes(
     assert result.version["security_status"] == "fail", "the draft saves; it is the publish that is refused"
 
     with pytest.raises(library.SkillPublishBlocked) as caught:
-        await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+        await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
     assert any("security scan failed" in r for r in caught.value.reasons)
 
 
@@ -560,10 +563,12 @@ async def test_an_advisory_scan_blocks_an_import_whatever_the_policy_says(
     assert result.version["security_status"] == "advisory"
     assert settings.skill_publish_block_on_advisory is False
 
-    verdict = await library.evaluate_version(settings, "acme", NAME, "0.1.0", object_store=store)
+    verdict = await library.evaluate_version(
+        settings, "acme", NAME, "0.1.0", object_store=store, owner=ORG_OWNER
+    )
     assert not verdict.passes, "the preview a reviewer sees is the verdict the publish gets"
     with pytest.raises(library.SkillPublishBlocked, match="advisory"):
-        await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+        await library.publish(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
 
     # The same bytes from an operator publish under the same policy: the bar is the source's.
     operator = await library.save_draft(
@@ -572,9 +577,12 @@ async def test_an_advisory_scan_blocks_an_import_whatever_the_policy_says(
         files={"SKILL.md": skill_md("same-bytes", body=body).decode()},
         provenance=library.DraftProvenance(source="operator", author="ops"),
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert operator["security_status"] == "advisory"
-    published = await library.publish(settings, "acme", "same-bytes", "0.1.0", by="ops", object_store=store)
+    published = await library.publish(
+        settings, "acme", "same-bytes", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
     assert published["status"] == "published"
 
 
@@ -622,7 +630,7 @@ async def test_a_first_sighting_under_a_cooldown_is_refused_and_nothing_is_saved
     assert caught.value.code == "too_recent"
     assert (caught.value.first_seen_at, caught.value.eligible_at) == (T0, T0 + 10 * DAY)
     assert _iso(T0 + 10 * DAY) in str(caught.value), "the refusal names when it becomes eligible"
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == []
     assert not any("/blobs/" in p for p in gh.paths()), "refused before any file is read"
 
 
@@ -745,7 +753,7 @@ async def test_a_commit_only_in_a_fork_is_refused(
         with pytest.raises(github.ImportCommitNotInRepo) as caught:
             await _import(settings, store, gh, ref=ref)
         assert caught.value.code == "commit_not_in_repo"
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == []
 
 
 async def test_a_commit_on_the_default_branch_and_a_tag_are_the_repositorys_own(
@@ -769,7 +777,9 @@ async def test_a_skill_md_naming_another_skill_than_its_folder_is_refused(
     gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md("payroll-export")})
     with pytest.raises(library.SkillBundleInvalid, match="invoice-triage"):
         await _import(settings, store, gh)
-    assert await get_skill_library_store(settings).version_ids("acme", "payroll-export") == []
+    assert (
+        await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", "payroll-export") == []
+    )
 
 
 async def test_an_import_is_refused_where_an_operator_upload_holds_the_name(
@@ -780,7 +790,7 @@ async def test_an_import_is_refused_where_an_operator_upload_holds_the_name(
     await store.put(f"skills/acme/{NAME}/0.1.0/SKILL.md", skill_md(NAME))
     with pytest.raises(library.SkillNameShadowed, match="operator upload"):
         await _import(settings, store, gh)
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == []
 
 
 async def test_a_rejected_draft_is_not_the_version_an_import_replaces(
@@ -794,8 +804,9 @@ async def test_a_rejected_draft_is_not_the_version_an_import_replaces(
         provenance=library.DraftProvenance(source="agent", author="contributor", origin_manifest_id="c"),
         parent="0.1.0",
         object_store=store,
+        owner=ORG_OWNER,
     )
-    await library.reject(settings, "acme", NAME, edit["version"], by="ops", note="no")
+    await library.reject(settings, "acme", NAME, edit["version"], by="ops", note="no", owner=ORG_OWNER)
     files = dict(gh.repos[REPO].commits[gh.repos[REPO].refs["main"]])
     gh.push(REPO, {**files, "skills/invoice-triage/references/queues.md": b"# Queues\n\nlegal\n"})
 
@@ -817,7 +828,7 @@ async def test_of_two_imports_racing_to_one_skill_one_saves(
     refused = [o for o in outcomes if isinstance(o, library.SkillLibraryError)]
     assert len(saved) == 1 and len(refused) == 1, outcomes
     assert refused[0].code in {"skill_exists", "parent_changed"}
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == ["0.1.0"]
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == ["0.1.0"]
 
 
 async def test_a_redirect_is_never_followed_and_the_token_never_leaves(
@@ -838,7 +849,7 @@ async def test_an_answer_past_its_cap_is_cut_off_mid_stream(
     gh.padding["skills/invoice-triage/references/queues.md"] = 2 * 1024 * 1024
     with pytest.raises(github.ImportSourceTooLarge, match="over"):
         await _import(settings, store, gh)
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == []
 
 
 _TOKEN_BASE: dict[str, Any] = {
@@ -903,10 +914,13 @@ async def test_an_edit_of_an_import_keeps_the_import_gate(
         provenance=library.DraftProvenance(**who),
         parent="0.1.0",
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert edit["lineage_import"] is True and edit["source"] == editor
     with pytest.raises(library.SkillPublishBlocked, match="advisory"):
-        await library.publish(settings, "acme", NAME, edit["version"], by="ops", object_store=store)
+        await library.publish(
+            settings, "acme", NAME, edit["version"], by="ops", object_store=store, owner=ORG_OWNER
+        )
 
 
 async def test_rolling_back_to_an_advisory_import_is_blocked(
@@ -917,14 +931,14 @@ async def test_rolling_back_to_an_advisory_import_is_blocked(
     body = "# Triage\n\nUse this when an invoice arrives and must be routed.\n" + ADVISORY
     gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME, body=body)})
     await _import(settings, store, gh)
-    lib = get_skill_library_store(settings)
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
     await lib.publish("acme", NAME, "0.1.0", from_statuses={"draft"}, by="ops", at=1)
     gh.push(REPO, {"skills/invoice-triage/SKILL.md": skill_md(NAME)})
     await _import(settings, store, gh)
-    await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store)
+    await library.publish(settings, "acme", NAME, "0.1.1", by="ops", object_store=store, owner=ORG_OWNER)
 
     with pytest.raises(library.SkillPublishBlocked, match="advisory"):
-        await library.rollback(settings, "acme", NAME, "0.1.0", by="ops", object_store=store)
+        await library.rollback(settings, "acme", NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
     assert (await lib.get_skill("acme", NAME) or {})["live_version"] == "0.1.1"
 
 
@@ -952,7 +966,7 @@ async def test_a_branch_named_like_a_commit_id_is_refused_not_followed(
     with pytest.raises(github.ImportRefAmbiguous) as caught:
         await _import(settings, store, gh, ref=first[:12])
     assert caught.value.code == "ambiguous_ref"
-    assert await get_skill_library_store(settings).version_ids("acme", NAME) == []
+    assert await get_skill_library_store(settings, owner=ORG_OWNER).version_ids("acme", NAME) == []
 
 
 async def test_a_default_branch_named_like_a_commit_id_is_still_a_branch(
@@ -1222,6 +1236,7 @@ async def test_lineage_survives_every_hop(
             provenance=library.DraftProvenance(**who),
             parent=parent,
             object_store=store,
+            owner=ORG_OWNER,
         )
 
     if hops == "operator-of-agent-of-import":
@@ -1231,7 +1246,9 @@ async def test_lineage_survives_every_hop(
         last = await save("operator", None, "Saved over it, naming no parent.")
     assert last["lineage_import"] is True
     with pytest.raises(library.SkillPublishBlocked, match="advisory"):
-        await library.publish(settings, "acme", NAME, last["version"], by="ops", object_store=store)
+        await library.publish(
+            settings, "acme", NAME, last["version"], by="ops", object_store=store, owner=ORG_OWNER
+        )
 
 
 async def test_an_agent_copying_an_imported_file_into_a_new_skill_carries_the_lineage(
@@ -1252,6 +1269,7 @@ async def test_an_agent_copying_an_imported_file_into_a_new_skill_carries_the_li
         files=bundle("queue-notes", **{"references/queues.md": imported["references/queues.md"]}),
         provenance=agent,
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert laundered["lineage_import"] is True
     own = await library.save_draft(
@@ -1260,6 +1278,7 @@ async def test_an_agent_copying_an_imported_file_into_a_new_skill_carries_the_li
         files=bundle("own-notes", **{"references/notes.md": "# Our own notes\n"}),
         provenance=agent,
         object_store=store,
+        owner=ORG_OWNER,
     )
     assert own["lineage_import"] is False
 

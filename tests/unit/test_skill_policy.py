@@ -64,6 +64,7 @@ async def _draft(
         provenance=library.DraftProvenance(source=source, author="ops"),  # type: ignore[arg-type]
         parent=parent,
         object_store=object_store(settings),
+        owner=ORG_OWNER,
     )
     return str(row["version"])
 
@@ -94,7 +95,7 @@ async def _eval(
 
 async def _publish(settings: Settings, version: str) -> Any:
     return await library.publish(
-        settings, TENANT, NAME, version, by="ops", object_store=object_store(settings)
+        settings, TENANT, NAME, version, by="ops", object_store=object_store(settings), owner=ORG_OWNER
     )
 
 
@@ -304,7 +305,7 @@ async def test_min_eval_uplift_reads_the_latest_counting_eval(settings: Settings
     await _eval(settings, version, uplift=4, n=2)  # later, and below the floor
 
     verdict = await library.evaluate_version(
-        settings, TENANT, NAME, version, object_store=object_store(settings)
+        settings, TENANT, NAME, version, object_store=object_store(settings), owner=ORG_OWNER
     )
     assert verdict.reasons == [
         "evaluation 00000000-0000-4000-8000-000000000002 has uplift 4, below the minimum 10"
@@ -324,12 +325,14 @@ async def test_a_rollback_skips_the_evaluation_requirement_and_nothing_else(sett
     await set_publish_policy(settings, TENANT, {"require_eval": True, "min_eval_uplift": 50}, by="ops")
 
     rolled = await library.rollback(
-        settings, TENANT, NAME, first, by="ops", object_store=object_store(settings)
+        settings, TENANT, NAME, first, by="ops", object_store=object_store(settings), owner=ORG_OWNER
     )
     assert rolled["status"] == "published"
 
     await set_publish_policy(settings, TENANT, {"min_quality": 100}, by="ops")
     with pytest.raises(library.SkillPublishBlocked) as blocked:
-        await library.rollback(settings, TENANT, NAME, second, by="ops", object_store=object_store(settings))
+        await library.rollback(
+            settings, TENANT, NAME, second, by="ops", object_store=object_store(settings), owner=ORG_OWNER
+        )
     assert any("quality score" in r for r in blocked.value.reasons)
     assert not any("evaluation" in r for r in blocked.value.reasons)

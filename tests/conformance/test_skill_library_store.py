@@ -12,6 +12,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import SkillStateConflict, SkillVersionExists, get_skill_library_store
 
 BACKENDS = ["memory", "postgres"]
@@ -50,7 +51,7 @@ async def _save(store: Any, version: str, *, at: int, tenant: str = "acme", **kw
 
 @parametrized
 async def test_a_version_is_written_once(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     with pytest.raises(SkillVersionExists):
         await _save(store, "0.1.0", at=2)
@@ -69,7 +70,7 @@ async def test_a_version_is_written_once(store_settings: Any) -> None:
 
 @parametrized
 async def test_publishing_moves_live_and_archives_the_previous_version(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await _save(store, "0.1.1", at=2)
 
@@ -92,7 +93,7 @@ async def test_publishing_moves_live_and_archives_the_previous_version(store_set
 
 @parametrized
 async def test_a_publish_from_the_wrong_state_changes_nothing(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await store.reject("acme", "invoice-triage", "0.1.0", by="ops", note="no", at=5)
 
@@ -109,7 +110,7 @@ async def test_a_publish_from_the_wrong_state_changes_nothing(store_settings: An
 
 @parametrized
 async def test_archiving_clears_live_and_keeps_history(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=10)
 
@@ -124,7 +125,7 @@ async def test_archiving_clears_live_and_keeps_history(store_settings: Any) -> N
 
 @parametrized
 async def test_pending_counts_one_manifests_agent_drafts(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await _save(store, "0.1.1", at=2)
     await _save(store, "0.1.2", at=3, source="operator")
@@ -137,7 +138,7 @@ async def test_pending_counts_one_manifests_agent_drafts(store_settings: Any) ->
 
 @parametrized
 async def test_listings_are_ordered_and_tenant_scoped(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     # Same millisecond: the order must still be one order, newest version first on the tie.
     await _save(store, "0.1.0", at=7)
     await _save(store, "0.1.1", at=7)
@@ -158,7 +159,7 @@ async def test_listings_are_ordered_and_tenant_scoped(store_settings: Any) -> No
 
 @parametrized
 async def test_deleting_a_draft_removes_an_otherwise_empty_skill(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await store.delete_draft("acme", "invoice-triage", "0.1.0")
 
@@ -180,7 +181,7 @@ def _columns(model: Any) -> set[str]:
 async def test_rows_carry_exactly_the_table_columns(store_settings: Any) -> None:
     from felix.db.models import SkillFileRow, SkillRow, SkillVersionRow
 
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     assert set(await store.get_version("acme", "invoice-triage", "0.1.0") or {}) == _columns(SkillVersionRow)
     assert set(await store.get_skill("acme", "invoice-triage") or {}) == _columns(SkillRow)
@@ -190,7 +191,7 @@ async def test_rows_carry_exactly_the_table_columns(store_settings: Any) -> None
 
 @parametrized
 async def test_republishing_an_archived_version_keeps_its_first_publish_time(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await _save(store, "0.1.1", at=2)
     await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=10)
@@ -211,7 +212,7 @@ async def test_republishing_an_archived_version_keeps_its_first_publish_time(sto
 
 @parametrized
 async def test_list_live_carries_the_skill_md_digest(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     assert await store.list_live("acme") == []
     await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=2)
@@ -223,7 +224,7 @@ async def test_list_live_carries_the_skill_md_digest(store_settings: Any) -> Non
 
 @parametrized
 async def test_deleting_a_draft_keeps_a_skill_with_other_versions(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await _save(store, "0.1.1", at=2)
     await store.delete_draft("acme", "invoice-triage", "0.1.1")
@@ -233,7 +234,7 @@ async def test_deleting_a_draft_keeps_a_skill_with_other_versions(store_settings
 
 @parametrized
 async def test_skills_list_in_codepoint_order_and_honour_the_limit(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     for i, name in enumerate(["ab", "a-c", "b"]):
         row = {**_row("0.1.0", at=i), "name": name}
         await store.insert_version("acme", row, [], created_by="ops", at=i)
@@ -244,7 +245,7 @@ async def test_skills_list_in_codepoint_order_and_honour_the_limit(store_setting
 
 @parametrized
 async def test_a_publish_racing_a_reject_has_one_winner(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     results = await asyncio.gather(
         store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="ops", at=5),
@@ -264,7 +265,7 @@ async def test_a_publish_racing_a_reject_has_one_winner(store_settings: Any) -> 
 
 @parametrized
 async def test_two_publishes_leave_exactly_one_published_version(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await _save(store, "0.1.1", at=2)
     await asyncio.gather(
@@ -291,7 +292,13 @@ async def test_concurrent_agent_saves_stay_within_the_pending_cap(store_settings
     results = await asyncio.gather(
         *(
             library.save_draft(
-                store_settings, "acme", files=files, provenance=who, max_pending=1, object_store=objects
+                store_settings,
+                "acme",
+                files=files,
+                provenance=who,
+                max_pending=1,
+                object_store=objects,
+                owner=ORG_OWNER,
             )
             for _ in range(3)
         ),
@@ -299,7 +306,7 @@ async def test_concurrent_agent_saves_stay_within_the_pending_cap(store_settings
     )
     assert sum(isinstance(r, library.SkillPendingCapReached) for r in results) == 2, results
     assert all(isinstance(r, dict | library.SkillLibraryError) for r in results), results
-    assert await get_skill_library_store(store_settings).count_pending("acme", "m") == 1
+    assert await get_skill_library_store(store_settings, owner=ORG_OWNER).count_pending("acme", "m") == 1
 
 
 async def _named(store: Any, name: str, version: str, *, at: int, tenant: str = "acme") -> None:
@@ -308,7 +315,7 @@ async def _named(store: Any, name: str, version: str, *, at: int, tenant: str = 
 
 @parametrized
 async def test_skills_page_after_a_name_in_codepoint_order(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     for i, name in enumerate(["ab", "a-c", "b"]):
         await _named(store, name, "0.1.0", at=i)
     assert [s["name"] for s in await store.list_skills("acme", after="a-c")] == ["ab", "b"]
@@ -318,7 +325,7 @@ async def test_skills_page_after_a_name_in_codepoint_order(store_settings: Any) 
 
 @parametrized
 async def test_the_review_queue_is_every_draft_oldest_first_and_pages(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     # Two drafts in one millisecond across skills, a tie on name broken by version, a
     # published version that must not appear, and another tenant's draft.
     await _named(store, "b-skill", "0.1.0", at=5)
@@ -347,7 +354,7 @@ async def test_the_review_queue_is_every_draft_oldest_first_and_pages(store_sett
 
 @parametrized
 async def test_summaries_name_the_newest_version_and_count_drafts(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _named(store, "a-skill", "0.1.0", at=1)
     await _named(store, "a-skill", "0.1.1", at=2)
     await _named(store, "a-skill", "0.1.2", at=2)  # a tie: the higher version is the newer
@@ -373,7 +380,7 @@ async def test_summaries_name_the_newest_version_and_count_drafts(store_settings
 
 @parametrized
 async def test_skills_are_fetched_by_name_in_one_call_and_tenant_scoped(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _named(store, "a-skill", "0.1.0", at=1)
     await _named(store, "b-skill", "0.1.0", at=1)
     await _named(store, "c-skill", "0.1.0", at=1, tenant="globex")
@@ -388,7 +395,7 @@ async def test_skills_are_fetched_by_name_in_one_call_and_tenant_scoped(store_se
 
 @parametrized
 async def test_the_review_queue_pages_one_at_a_time_across_a_millisecond(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _named(store, "a-skill", "0.1.1", at=5)
     await _named(store, "b-skill", "0.1.0", at=5)
     await _named(store, "a-skill", "0.1.0", at=5)
@@ -414,7 +421,7 @@ async def test_the_review_queue_pages_one_at_a_time_across_a_millisecond(store_s
 async def test_a_publish_can_require_the_live_version_it_saw(store_settings: Any) -> None:
     from felix.skills.library_store import SkillLiveMismatch
 
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     for n, version in enumerate(("0.1.0", "0.1.1", "0.1.2"), start=1):
         await _save(store, version, at=n)
 
@@ -452,7 +459,7 @@ async def test_a_publish_can_require_the_live_version_it_saw(store_settings: Any
 
 @parametrized
 async def test_buildable_versions_leave_out_rejected_drafts_only(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     for n, version in enumerate(("0.1.0", "0.1.1", "0.1.2", "0.1.3"), start=1):
         await _save(store, version, at=n)
     await store.publish("acme", "invoice-triage", "0.1.0", from_statuses={"draft"}, by="o", at=10)
@@ -485,7 +492,7 @@ async def test_an_imported_version_keeps_its_origin_and_others_read_back_null(st
     """The `import` source and its five origin columns: written and read back alike on both arms
     (the check constraint admits the source), and null -- not missing -- on a version that is
     not an import, as Postgres returns them."""
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     row = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN}
     await store.insert_version("acme", row, FILES, created_by="ops", at=1)
     await _save(store, "0.1.1", at=2)
@@ -502,7 +509,7 @@ async def test_an_imported_version_keeps_its_origin_and_others_read_back_null(st
 
 @parametrized
 async def test_lineage_reads_back_on_the_version_and_on_the_live_listing(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
     await store.insert_version("acme", imported, FILES, created_by="ops", at=1)
     await _save(store, "0.1.1", at=2)
@@ -533,7 +540,7 @@ async def test_a_sighting_keeps_its_first_stamp_and_is_tenant_scoped(store_setti
 
 @parametrized
 async def test_a_file_of_an_import_lineage_version_is_found_by_its_digest(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
     await store.insert_version("acme", imported, FILES, created_by="ops", at=1)
     own = [{"path": "SKILL.md", "sha256": "e" * 64, "size": 4}]
@@ -553,7 +560,7 @@ async def test_a_file_of_an_import_lineage_version_is_found_by_its_digest(store_
 async def test_a_file_of_an_import_is_found_by_its_normalized_digest_too(store_settings: Any) -> None:
     """Either digest matches; a byte digest is never compared with a normalized one; a row with
     no normalized digest (saved before 0032, or a binary asset) matches by its bytes only."""
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
     files = [
         {"path": "SKILL.md", "sha256": "a" * 64, "size": 10, "normalized_sha256": "1" * 64},
@@ -587,7 +594,7 @@ async def test_a_file_of_an_import_is_found_by_its_normalized_digest_too(store_s
 async def test_a_file_of_an_adopted_version_still_counts_as_imported(store_settings: Any) -> None:
     """An adopted version is not import-lineage, and its files are still a third party's text:
     the copy rule counts them whether or not the version it was adopted from is still held."""
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     adopted = {**_row("0.1.1", at=1, source="operator", origin=None), "adopted_from": "0.1.0"}
     files = [{"path": "references/x.md", "sha256": "c" * 64, "size": 3}]
     await store.insert_version("acme", adopted, files, created_by="ops", at=1)
@@ -693,7 +700,7 @@ async def test_a_spent_tenant_is_left_out_of_the_due_rows(store_settings: Any) -
 
 @parametrized
 async def test_versions_are_read_by_key_in_one_call(store_settings: Any) -> None:
-    store = get_skill_library_store(store_settings)
+    store = get_skill_library_store(store_settings, owner=ORG_OWNER)
     await _save(store, "0.1.0", at=1)
     await _save(store, "0.1.1", at=2)
     await _save(store, "0.1.0", at=3, tenant="globex")
@@ -912,7 +919,7 @@ BOB = "https://id.example|bob"
 async def test_a_personal_skill_and_an_org_skill_share_a_name_and_never_see_each_other(
     store_settings: Any,
 ) -> None:
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     assert (org.owner, alice.owner) == ("", ALICE)
     await _save(org, "0.1.0", at=1)
@@ -962,7 +969,7 @@ async def test_publishing_and_archiving_a_personal_skill_leave_the_org_one_alone
     """Alice publishes a different version from the org's live one: publishing archives every
     other published version of the name, so only a version that differs shows that the archive
     stays in her namespace. Her SKILL.md differs too, so each live listing's digest is its own."""
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     await _save(org, "0.1.0", at=1)
     alices = [{"path": "SKILL.md", "sha256": "9" * 64, "size": 10}]
@@ -987,7 +994,7 @@ async def test_publishing_and_archiving_a_personal_skill_leave_the_org_one_alone
 
 @parametrized
 async def test_a_personal_draft_is_deleted_and_rejected_in_its_own_namespace(store_settings: Any) -> None:
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     await _save(org, "0.1.0", at=1)
     await _save(alice, "0.1.0", at=2)
@@ -1010,7 +1017,7 @@ async def test_a_personal_draft_is_deleted_and_rejected_in_its_own_namespace(sto
 async def test_deleting_a_personal_skills_last_draft_removes_its_skill_row_only(store_settings: Any) -> None:
     """The skill row goes when its owner's last version does -- counted in her namespace, so the
     org's versions of the name neither keep her row nor go with it."""
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     await _save(org, "0.1.0", at=1)
     await _save(alice, "0.1.0", at=2)
@@ -1027,7 +1034,7 @@ async def test_deleting_a_personal_skills_last_draft_removes_its_skill_row_only(
 async def test_the_pending_cap_counts_one_namespaces_drafts(store_settings: Any) -> None:
     from felix.skills.library_store import SkillPendingFull
 
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     await _save(org, "0.1.0", at=1)
     await _save(org, "0.1.1", at=2)
@@ -1042,7 +1049,7 @@ async def test_the_pending_cap_counts_one_namespaces_drafts(store_settings: Any)
 async def test_the_copy_rule_searches_its_own_namespace_and_the_orgs_only(store_settings: Any) -> None:
     """A personal save copying org import text is caught; neither the org nor another person
     can learn from the answer whether someone holds given bytes."""
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     bob = get_skill_library_store(store_settings, owner=BOB)
     imported = {**_row("0.1.0", at=1, source="import", origin=None), **ORIGIN, "lineage_import": True}
@@ -1063,7 +1070,7 @@ async def test_the_copy_rule_judges_a_file_by_its_own_namespaces_version(store_s
     """A file counts as imported by the version it belongs to. The org's own `invoice-triage@0.1.0`
     is an agent's text; alice's version of the same name and number is an import. Joined without
     the owner, the org's bytes would borrow her version's lineage and read as third-party."""
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     own = [{"path": "SKILL.md", "sha256": "e" * 64, "size": 4}]
     await org.insert_version("acme", _row("0.1.0", at=1), own, created_by="c", at=1)
@@ -1092,7 +1099,7 @@ async def test_personal_rows_carry_exactly_the_table_columns(store_settings: Any
 async def test_a_row_cannot_name_its_own_owner(store_settings: Any) -> None:
     """The store's owner is the row's, whatever the row says: a caller cannot write into another
     namespace by putting `owner` in what it saves."""
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     files = [{**FILES[0], "owner": ALICE}, FILES[1]]
     await org.insert_version("acme", {**_row("0.1.0", at=1), "owner": ALICE}, files, created_by="x", at=1)
@@ -1142,7 +1149,7 @@ _STRANGER_OTHER = {
 async def test_a_stranger_reaches_nothing_through_any_method(store_settings: Any) -> None:
     from felix.skills.library_store import SkillLibraryStore
 
-    org = get_skill_library_store(store_settings)
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     for store, version in ((org, "0.1.0"), (alice, "0.1.0"), (alice, "0.2.0")):
         await _save(store, version, at=int(version[2]) + 1)

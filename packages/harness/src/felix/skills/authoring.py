@@ -172,7 +172,7 @@ class _SkillAuthor:
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.auto_eval = auto_eval
         self.personal = personal
-        self.lib = get_skill_library_store(settings)
+        self.lib = get_skill_library_store(settings, owner=ORG_OWNER)
 
     async def queue_eval(self, row: dict[str, Any]) -> str | None:
         """`skill_authoring.auto_eval`: queue an evaluation of the draft just saved. A failure to
@@ -218,7 +218,9 @@ class _SkillAuthor:
 
         parent = str(args.get("parent_version") or "")
         newest = (
-            await library.newest_buildable_versions(self.settings, self.tenant_id, [name], owner=ORG_OWNER)
+            await library.newest_buildable_versions(
+                self.settings, self.tenant_id, [name], owner=self.lib.owner
+            )
         ).get(name)
         if newest is None:
             raise _ComposeError({"error": "unknown_skill", "name": name})
@@ -229,7 +231,7 @@ class _SkillAuthor:
         parent_row = await self.lib.get_version(self.tenant_id, name, parent) or {}
         file_rows = await self.lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
-            self.settings, self.tenant_id, name, parent, object_store=self.object_store, owner=ORG_OWNER
+            self.settings, self.tenant_id, name, parent, object_store=self.object_store, owner=self.lib.owner
         )
         parsed = parse_skill_md(files.get("SKILL.md", ""))
         frontmatter = dict(parsed.frontmatter) if parsed and isinstance(parsed.frontmatter, dict) else {}
@@ -266,6 +268,7 @@ class _SkillAuthor:
                 row["version"],
                 by=self.manifest_id,
                 object_store=self.object_store,
+                owner=self.lib.owner,
             )
         except library.SkillPublishBlocked as exc:
             return {**_draft_result(row, "draft"), "publish_blocked": exc.reasons}
@@ -300,6 +303,7 @@ class _SkillAuthor:
                 expect_newest=composed.parent if update else library.MUST_NOT_EXIST,
                 max_pending=self.max_pending,
                 object_store=self.object_store,
+                owner=self.lib.owner,
             )
         except _ComposeError as exc:
             return json.dumps(exc.result)

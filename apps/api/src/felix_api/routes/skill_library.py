@@ -36,6 +36,7 @@ from fastapi.responses import JSONResponse
 from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_request
 from felix.skills import library
 from felix.skills.format import bundle_path_issue
+from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import ANY_LIVE, MAX_VERSIONS_LISTED, DraftCursor, ExpectedLive
 from felix.skills.policy import delete_publish_policy, load_publish_policy, policy_body, set_publish_policy
 from felix.skills.upstream import recorded_state
@@ -236,7 +237,13 @@ async def get_library_skill(name: str, request: Request) -> Any:
         **skill,
         "versions": [ctx.redact(v) for v in versions],
         "shadows_operator_upload": shadows,
-        "upstream": await recorded_state(ctx.settings, ctx.tenant_id, name, now=library.now_ms()),
+        # Upstream checks are the tenant's library's (imports are), kept by skill name: a personal
+        # skill of the name would be shown the tenant's import's state.
+        "upstream": (
+            await recorded_state(ctx.settings, ctx.tenant_id, name, now=library.now_ms())
+            if ctx.owner == ORG_OWNER
+            else None
+        ),
     }
 
 
@@ -283,7 +290,7 @@ async def get_library_file(name: str, version: str, path: str, request: Request)
         return not_found(f"{name}@{version}/{path}")
     try:
         content = await library.read_version_file(
-            ctx.settings, ctx.tenant_id, name, version, path, owner=ctx.lib.owner, object_store=ctx.store
+            ctx.settings, ctx.tenant_id, name, version, path, owner=ctx.owner, object_store=ctx.store
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)
@@ -317,6 +324,7 @@ async def preview_library_version(name: str, version: str, request: Request) -> 
         version,
         policy=(await load_publish_policy(ctx.settings, ctx.tenant_id)).policy,
         object_store=ctx.store,
+        owner=ctx.owner,
     )
     assessment = verdict.assessment
     return ctx.redact(
@@ -353,6 +361,7 @@ async def _saved(
                 source="operator", author=by, reason=body.reason, principal=by
             ),
             object_store=ctx.store,
+            owner=ctx.owner,
             **save,
         )
     except library.SkillLibraryError as exc:
@@ -435,6 +444,7 @@ async def publish_library_version(
             by=by,
             object_store=ctx.store,
             expected_live=_expected(body),
+            owner=ctx.owner,
         )
 
     return await _transition(request, name, version, move)
@@ -456,6 +466,7 @@ async def rollback_library_version(
             by=by,
             object_store=ctx.store,
             expected_live=_expected(body),
+            owner=ctx.owner,
         )
 
     return await _transition(request, name, version, move)
@@ -466,7 +477,9 @@ async def reject_library_version(name: str, version: str, body: RejectIn, reques
     """Archive a draft without publishing it, recording the note."""
 
     async def move(ctx: LibraryRequest, by: str) -> dict[str, Any]:
-        return await library.reject(ctx.settings, ctx.tenant_id, name, version, by=by, note=body.note)
+        return await library.reject(
+            ctx.settings, ctx.tenant_id, name, version, by=by, note=body.note, owner=ctx.owner
+        )
 
     return await _transition(request, name, version, move)
 
@@ -493,7 +506,14 @@ async def adopt_library_version(name: str, version: str, body: AdoptIn, request:
     by = subject_from_request(request)
     try:
         saved = await library.adopt(
-            ctx.settings, ctx.tenant_id, name, version, by=by, reason=body.reason, object_store=ctx.store
+            ctx.settings,
+            ctx.tenant_id,
+            name,
+            version,
+            by=by,
+            reason=body.reason,
+            object_store=ctx.store,
+            owner=ctx.owner,
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)
@@ -509,7 +529,7 @@ async def archive_library_skill(name: str, request: Request) -> Any:
         return not_found(name)
     try:
         return await library.archive_skill(
-            ctx.settings, ctx.tenant_id, name, by=subject_from_request(request)
+            ctx.settings, ctx.tenant_id, name, by=subject_from_request(request), owner=ctx.owner
         )
     except library.SkillLibraryError as exc:
         return refusal(exc)
