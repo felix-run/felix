@@ -1119,10 +1119,11 @@ class Spec(_Strict):
     # Whether the caller's personal skill library joins the catalog. `off`, the default, so no
     # stored manifest's prompt changes; `read` loads the live skills the caller owns, ahead of the
     # tenant's own library, so one of theirs shadows a tenant skill of its name for them alone.
-    # A closed list on purpose: each value is a decision about whose instructions reach the model,
-    # not a swappable implementation. `write` (saving into it) comes with the routes that let a
-    # person review what was saved; accepting it before then would be a setting that did nothing.
-    personal_skills: Literal["off", "read"] = "off"
+    # `write` reads too, and points `skill_authoring` at it: `create_skill` saves into the
+    # caller's library and `update_skill` edits a skill where it came from, for a caller holding
+    # `skills:personal`. A closed list on purpose: each value is a decision about whose
+    # instructions reach the model, not a swappable implementation.
+    personal_skills: Literal["off", "read", "write"] = "off"
     mcp: list[McpServerRef] = Field(default_factory=list, alias="mcp_servers", max_length=MAX_REFS)
     peers: list[A2APeerRef] = Field(default_factory=list, max_length=MAX_REFS)
     # How to use a tool well, one line per tool name or glob, appended to the system prompt only
@@ -1220,6 +1221,16 @@ class Spec(_Strict):
             raise ValueError(
                 "personal_skills must be off when skills_declared_only is set: a caller's own "
                 "skills are not named in the manifest"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _writing_personal_skills_needs_authoring(self) -> Spec:
+        """`write` changes where `skill_authoring` saves; without it there is nothing to point."""
+        if self.personal_skills == "write" and not self.skill_authoring.enabled:
+            raise ValueError(
+                "personal_skills: write needs skill_authoring.enabled: it is where the agent's "
+                "create_skill and update_skill save"
             )
         return self
 

@@ -16,6 +16,7 @@ from felix.manifests.loader import parse_manifest
 from felix.skills.format import serialize_skill_md
 from felix.skills.library_keys import library_label
 from felix_ai.providers.scripted import ScriptedTurn
+from felix_ai.types import ToolCall
 
 KEYS = {
     "alice": {"tenant_id": "default", "sub": "alice", "scopes": ["skills:personal"]},
@@ -48,7 +49,15 @@ MANIFESTS = {
             "metadata": {"name": "e2e-personal"},
             "spec": {"personal_skills": "read"},
         }
-    )
+    ),
+    "e2e-personal-writer": parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "e2e-personal-writer"},
+            "spec": {"personal_skills": "write", "skill_authoring": {"enabled": True}},
+        }
+    ),
 }
 
 
@@ -241,3 +250,59 @@ async def test_without_real_authentication_no_one_looks_into_a_personal_library(
         digest = await app.client.get(f"/skill-library/{ALICE_LIBRARY}/notes")
         mine = await app.client.get("/skill-library/~me")
     assert listing.status_code == digest.status_code == mine.status_code == 403
+
+
+async def test_an_agent_saves_into_its_callers_library_and_they_review_it(boot: Any) -> None:
+    """`personal_skills: write`: the skill the agent writes lands in the caller's `~me` as a draft
+    for them to review, and nowhere in the tenant's library; a caller without `skills:personal`
+    gets a refusal and nothing saved."""
+    create = ToolCall(
+        id="c1",
+        name="create_skill",
+        args={
+            "name": "notes",
+            "description": "Alice's own way of taking notes",
+            "body": BODY,
+            "reason": "she asks for it every week",
+        },
+    )
+    turns = [
+        ScriptedTurn(content="", tool_calls=[create], stop_reason="tool_use"),
+        ScriptedTurn(content="saved"),
+    ] * 2 + [ScriptedTurn(content="ok")]
+    async with boot(turns, env=ENV, manifests=MANIFESTS) as app:
+        for who in ("alice", "bob"):
+            resp = await app.client.post(
+                "/chat",
+                json={
+                    "manifest": "e2e-personal-writer",
+                    "messages": [{"role": "user", "content": "keep it"}],
+                },
+                headers=_h(who),
+            )
+            assert resp.status_code == 200, resp.text
+        hers = (await app.client.get("/skill-library/~me/notes", headers=_h("alice"))).json()
+        bobs = (await app.client.get("/skill-library/~me", headers=_h("bob"))).json()
+        tenants = (await app.client.get("/skill-library", headers=_h("writer"))).json()
+        # The second prompt of each caller's turn carries the tool's result: Alice's, then Bob's.
+        results = [json.loads(str(m.content)) for i in (1, 3) for m in app.spy.prompts[i] if m.role == "tool"]
+        version = hers["versions"][0]["version"]
+        published = await app.client.post(
+            f"/skill-library/~me/notes/versions/{version}/publish", headers=_h("alice")
+        )
+        later = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-personal-writer", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_h("alice"),
+        )
+        prompt = "\n".join(str(m.content) for m in app.spy.prompts[-1] if m.role == "system")
+
+    assert hers["live_version"] is None and len(hers["versions"]) == 1, hers
+    assert hers["versions"][0]["status"] == "draft"
+    assert bobs["items"] == [] and tenants["items"] == []
+    assert [(r.get("library"), r.get("error")) for r in results] == [
+        ("personal", None),
+        (None, "missing_scope"),
+    ], results
+    assert published.status_code == 200 and later.status_code == 200, (published.text, later.text)
+    assert "Alice's own way of taking notes" in prompt, "what she published reaches her next turn"
