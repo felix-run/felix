@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from collections.abc import Awaitable, Callable
@@ -99,6 +100,10 @@ async def _stop_fiber_loop() -> None:
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def _on_worker_shutdown(_state: object) -> None:
     await _stop_fiber_loop()
+    from felix_ai.wire.transport import aclose_shared_transports
+
+    with contextlib.suppress(Exception):
+        await aclose_shared_transports()
     # Without this the BatchSpanProcessor's queue dies with the process and the last
     # batch of spans is simply lost.
     shutdown_observability()

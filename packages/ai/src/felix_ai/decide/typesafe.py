@@ -21,7 +21,12 @@ import httpx
 from felix_ai.decide.types import DecisionResult, Question, answers_from_wire, question_to_wire
 from felix_ai.providers.base import ProviderConfigError
 from felix_ai.types import TokenUsage
-from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S, ModelGatewayError, post_with_retry
+from felix_ai.wire.transport import (
+    DEFAULT_CONNECT_TIMEOUT_S,
+    ModelGatewayError,
+    post_with_retry,
+    shared_transport,
+)
 
 TYPESAFE_BASE_URL = "https://api.typesafe.ai/v1"
 WORKERS_AI_BASE_URL = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai"
@@ -128,7 +133,7 @@ class JevDecider:
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, transport=shared_transport()) as client:
             resp = await post_with_retry(
                 client,
                 self._url,

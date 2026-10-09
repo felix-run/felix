@@ -178,6 +178,11 @@ def create_app(
                 await reset_notifications()
             with contextlib.suppress(Exception):
                 await dispose_engine()
+            # The pooled connections to model providers, shared by every model call.
+            from felix_ai.wire.transport import aclose_shared_transports
+
+            with contextlib.suppress(Exception):
+                await aclose_shared_transports()
             shutdown_observability()
 
     app = FastAPI(
