@@ -116,7 +116,6 @@ async def fire_job(
     thread, the same screening of its prompt, the same run record. A manual run records its
     `trigger` and who asked, and leaves the schedule where it was.
     """
-    manual = trigger != "schedule"
     try:
         result: dict[str, Any] = {"status": "ok"}
         if job.get("manifest_id"):
@@ -141,17 +140,16 @@ async def fire_job(
             result=result,
         )
         # Do not write `enabled=True` back from a stale read — that silently
-        # re-enabled a job an operator had just disabled.
+        # re-enabled a job an operator had just disabled. And never the schedule: a manual run
+        # leaves it where it was, and a scheduled one was advanced by its claim (`claim_run`).
+        # Writing it again here moved it *back* when a run outlasted its interval -- the next
+        # tick had already claimed the next slot, and this rewrote that slot as due.
         await jobs_store.touch_run(
             settings,
             tenant_id,
             job["name"],
             last_run_at=started_at,
-            next_run_at=(
-                jobs_store.KEEP_SCHEDULE
-                if manual
-                else next_run_at_ms(str(job.get("schedule") or ""), started_at)
-            ),
+            next_run_at=jobs_store.KEEP_SCHEDULE,
             last_status=status,
             last_error=str(result.get("error") or ""),
         )
@@ -183,18 +181,23 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
             continue
         # Claim the job *before* invoking it. touch_run used to run only after the
         # invocation finished, so the every-minute cron re-fired the same job on every
-        # tick until the first run completed.
+        # tick until the first run completed. And the claim is conditional on the due time
+        # this tick read, so a second worker -- or this worker's next tick, overlapping a
+        # slow one -- that read the same due job does not fire it again.
         try:
-            await jobs_store.touch_run(
+            claimed = await jobs_store.claim_run(
                 settings,
                 tenant_id,
                 job["name"],
+                seen_next_run_at=next_run,
                 last_run_at=ts,
                 next_run_at=next_run_at_ms(str(job.get("schedule") or ""), ts),
-                last_status="running",
             )
         except Exception:
             logger.warning("job_claim_failed name=%s", job.get("name"), exc_info=True)
+            continue
+        if not claimed:
+            logger.info("job_already_claimed name=%s", job.get("name"))
             continue
 
         await fire_job(settings, tenant_id, job, started_at=ts)
