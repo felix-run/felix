@@ -25,7 +25,7 @@ SOURCE_ROOTS = [
     ROOT / "packages" / "ai" / "src",
     ROOT / "packages" / "client" / "src",
     ROOT / "packages" / "harness" / "src",
-    ROOT / "packages" / "cli" / "src",
+    ROOT / "apps" / "cli" / "src",
     ROOT / "apps" / "api" / "src",
     ROOT / "apps" / "worker" / "src",
 ]

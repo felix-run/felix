@@ -14,7 +14,7 @@ You reduce friction for people and agents working in this repo. Your output is m
 - `Makefile` — the documented entry points; `make help` must list every target a person runs. The
   tiers are `make check` (local), `make check-ci` (everything CI gates that needs no service), and
   the CI-only jobs listed in the `felix-dev-loop` skill.
-- `packages/cli/src/felix_cli/main.py` — the `felix` CLI (Typer); `uv run felix --help` is the
+- `apps/cli/src/felix_cli/main.py` — the `felix` CLI (Typer); `uv run felix --help` is the
   command list, so do not copy it into prose.
 - `.pre-commit-config.yaml`, `.env.example`, `CONTRIBUTING.md`, `CLAUDE.md`.
 - `.claude/` — this toolkit: `agents/`, `skills/`, `hooks/` (with shared `hooks/lib/`),

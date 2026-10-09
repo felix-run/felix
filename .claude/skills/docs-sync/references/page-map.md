@@ -23,7 +23,7 @@ together — `scripts/validate-toolkit.py` fails when a route module is missing 
 | `db/*`, `session/store.py`, `migrations/versions/*` | `$DOCS/internals/persistence.mdx` |
 | `observability/*`, `audit/*`, `usage/*` | `$DOCS/internals/observability.mdx` |
 | `config.py`, `deploy/**`, `Makefile`, `.env.example` | `$DOCS/guide/deploy.mdx`, `$DOCS/guide/getting-started.mdx` |
-| `sdk.py`, `clients/cli.py`, `packages/cli/.../main.py` | `$DOCS/guide/getting-started.mdx` |
+| `sdk.py`, `clients/cli.py`, `apps/cli/.../main.py` | `$DOCS/guide/getting-started.mdx` |
 | `felix/skills/*`, `skills/*/SKILL.md` | `$DOCS/guide/concepts.mdx` |
 | `tests/**` (only if the testing story changed) | `$DOCS/internals/testing.mdx` |
 

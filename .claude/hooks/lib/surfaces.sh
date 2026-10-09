@@ -43,7 +43,7 @@ surface_page() {
       echo "guide/getting-started.mdx (Python client usage: prompt/stream/steer/follow_up/fork/rewind/set_model)." ;;
     packages/harness/src/felix/skills/*|skills/*/SKILL.md)
       echo "guide/concepts.mdx (Agent Skills: progressive disclosure, spec.skills wiring)." ;;
-    packages/cli/src/felix_cli/main.py)
+    apps/cli/src/felix_cli/main.py)
       echo "guide/getting-started.mdx + guide/deploy.mdx (the CLI command list must match 'felix --help')." ;;
     *) return 1 ;;
   esac
@@ -63,7 +63,7 @@ surface_blocks() {
     packages/harness/src/felix/config.py|packages/harness/src/felix/sdk.py) return 0 ;;
     packages/harness/src/felix/auth/*|packages/harness/src/felix/governance/*) return 0 ;;
     packages/harness/src/felix/patterns/react.py|packages/harness/src/felix/patterns/registry.py) return 0 ;;
-    packages/cli/src/felix_cli/main.py|migrations/versions/*) return 0 ;;
+    apps/cli/src/felix_cli/main.py|migrations/versions/*) return 0 ;;
     deploy/docker/compose*.yml|deploy/helm/felix/values.yaml) return 0 ;;
     *) return 1 ;;
   esac

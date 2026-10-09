@@ -193,7 +193,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `felix-scheduler` | Enqueues labeled Taskiq cron tasks — **required alongside the worker**, or nothing periodic fires |
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
-| `packages/cli` | `felix migrate \| eval \| mint-jwt \| login \| ingest-docs \| skills \| workspace \| sessions \| bundle-manifests \| validate-manifest \| doctor \| version` |
+| `apps/cli` | `felix migrate \| eval \| mint-jwt \| login \| ingest-docs \| skills \| workspace \| sessions \| bundle-manifests \| validate-manifest \| doctor \| version` |
 | `manifests/` | Bundled agents: `quick`, `assistant`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
 
 ### Vendor independence

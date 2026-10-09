@@ -7,7 +7,7 @@ a grep for its name finds nothing.
 
 `felix-api` (Granian/FastAPI: the factory string is `felix_api.main:create_application`, which
 calls `apps/api/src/felix_api/app.py:create_app`), `felix-worker` and `felix-scheduler` (Taskiq,
-`apps/worker/src/felix_worker/tasks.py`), the `felix` CLI (`packages/cli/src/felix_cli/main.py`;
+`apps/worker/src/felix_worker/tasks.py`), the `felix` CLI (`apps/cli/src/felix_cli/main.py`;
 `uv run felix --help` lists the commands), and Alembic (`migrations/versions/`). Every
 `[project.scripts]` target and factory string is pinned by `tests/unit/test_entrypoint_wiring.py`.
 
