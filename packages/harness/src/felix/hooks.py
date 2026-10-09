@@ -208,7 +208,10 @@ async def run_after_tool(
     is_error: bool = False,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Postprocess a tool result. May return ``{terminate: true, details?, content?}``."""
+    """Postprocess a tool result. May return ``{terminate: true, content?}``.
+
+    On a failed call ``result`` is the error text the model would see, and ``content`` replaces it.
+    """
     ctx = context or {}
     merged: dict[str, Any] = {}
     for hook in list(_hooks.after_tool):
