@@ -1110,9 +1110,13 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
             thread_id = (ctx.thread_id if ctx else None) or (req.thread_id if req else None)
             if not granted and req is not None:
                 try:
-                    sig = hashlib.sha256(json.dumps(args, sort_keys=True, default=str).encode()).hexdigest()[
-                        :32
-                    ]
+                    # A tool's binding joins the arguments: what the call does that they do not
+                    # name. Raises into the handler below, which writes no row and runs nothing.
+                    binding = await tool.approval_binding(args) if tool.approval_binding else None
+                    signed = args if binding is None else {"args": args, "binding": binding}
+                    sig = hashlib.sha256(
+                        json.dumps(signed, sort_keys=True, default=str).encode()
+                    ).hexdigest()[:32]
                     approved = await approvals_store.find_approved(
                         req.settings,
                         req.auth.tenant_id,
@@ -1609,6 +1613,7 @@ def _bind_skill_authoring(
                 # name that is the caller's own is refused.
                 personal=personal,
                 tenant=frozenset(catalog.skills) - personal,
+                declared=frozenset(ref.name for ref in m.spec.skills),
                 write_personal=m.spec.personal_skills == "write",
                 owner=deps.skill_owner,
             ),

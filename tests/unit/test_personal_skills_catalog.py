@@ -87,7 +87,7 @@ def _spec(**spec: Any) -> Any:
 def test_personal_skills_are_off_unless_asked_for() -> None:
     assert _spec().personal_skills == "off"
     assert _spec(personal_skills="read").personal_skills == "read"
-    with pytest.raises(ManifestParseError):
+    with pytest.raises(ManifestParseError, match="personal_skills"):
         _spec(personal_skills="always")
 
 

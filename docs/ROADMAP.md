@@ -498,10 +498,9 @@ First, because everything else governs it.
         → operator uploads, so a personal skill shadows an org one of its name for its owner only;
         an explicit pin to an operator upload still wins.
       - **Opt-in.** `spec.personal_skills: off | read | write` (steps 2 and 3c), default `off` so no stored
-        manifest's prompt changes; `read` loads the caller's skills. `write` — pointing
-        `create_skill` / `update_skill` at the caller's namespace — is added in step 3 with the
-        routes that review what it saves (widening the `Literal` is safe; accepting it earlier
-        would be a field that did nothing). A validator refuses anything
+        manifest's prompt changes; `read` loads the caller's skills. `write` points
+        `create_skill` / `update_skill` at the caller's namespace (3c, after the routes that
+        review what it saves) and needs `skill_authoring.enabled`. A validator refuses anything
         but `off` with `skills_declared_only`, which promises an enumerable catalog.
       - **Lifecycle.** The owner publishes their own drafts — no org review queue, no `skills:write`
         — but the security scan, the import copy rule and approvals on the authoring tools all
@@ -595,10 +594,20 @@ First, because everything else governs it.
          - [x] 3c. `personal_skills: write` (needs `skill_authoring.enabled`): `create_skill`
            saves into the caller's library, refused (never redirected) without one or without
            `skills:personal`, checked at call time against the running caller; `update_skill`
-           edits where the skill lives -- the catalog entry decides, else the caller's library if
-           it holds the name (a fresh draft), else the tenant's. Feedback stays the tenant's and
+           edits the caller's library when it holds the name (live or a fresh draft) unless the
+           manifest names it in `spec.skills`, else the tenant's -- every library numbers from
+           `0.1.0`, so `parent_version` cannot tell them apart and the narrower one wins. An
+           approval grant binds the library the call saves into (`Tool.approval_binding`, hashed
+           into the call signature), so a grant for Alice's save authorizes none into Bob's or the
+           tenant's. In publish mode a personal skill that would replace a tenant or host skill
+           for its owner is held as a draft for them to publish. Feedback stays the tenant's and
            still refuses a personal skill; `auto_eval` skips a personal save. `Idempotency-Key`
            scopes add the caller's skill owner, so one subject at two issuers is two callers.
+           Deferred: approval of a personal save by its owner alone (today any `approvals:write`
+           holder); a call waiting on an approval re-resolves its library when it runs, so a
+           personal skill of the name created during the wait takes the edit (toward the
+           caller's own library only); a preview that already knows the call is refused
+           (`missing_scope`, `skill_exists`) still opens a pending row.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).
 
 ### B. Close the durable loop

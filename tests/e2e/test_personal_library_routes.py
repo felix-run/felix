@@ -269,7 +269,7 @@ async def test_an_agent_saves_into_its_callers_library_and_they_review_it(boot: 
     turns = [
         ScriptedTurn(content="", tool_calls=[create], stop_reason="tool_use"),
         ScriptedTurn(content="saved"),
-    ] * 2
+    ] * 2 + [ScriptedTurn(content="ok")]
     async with boot(turns, env=ENV, manifests=MANIFESTS) as app:
         for who in ("alice", "bob"):
             resp = await app.client.post(
@@ -284,9 +284,25 @@ async def test_an_agent_saves_into_its_callers_library_and_they_review_it(boot: 
         hers = (await app.client.get("/skill-library/~me/notes", headers=_h("alice"))).json()
         bobs = (await app.client.get("/skill-library/~me", headers=_h("bob"))).json()
         tenants = (await app.client.get("/skill-library", headers=_h("writer"))).json()
-        results = [m.content for prompt in app.spy.prompts for m in prompt if m.role == "tool"]
+        # The second prompt of each caller's turn carries the tool's result: Alice's, then Bob's.
+        results = [json.loads(str(m.content)) for i in (1, 3) for m in app.spy.prompts[i] if m.role == "tool"]
+        version = hers["versions"][0]["version"]
+        published = await app.client.post(
+            f"/skill-library/~me/notes/versions/{version}/publish", headers=_h("alice")
+        )
+        later = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-personal-writer", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_h("alice"),
+        )
+        prompt = "\n".join(str(m.content) for m in app.spy.prompts[-1] if m.role == "system")
 
     assert hers["live_version"] is None and len(hers["versions"]) == 1, hers
     assert hers["versions"][0]["status"] == "draft"
     assert bobs["items"] == [] and tenants["items"] == []
-    assert any("missing_scope" in str(r) for r in results), results
+    assert [(r.get("library"), r.get("error")) for r in results] == [
+        ("personal", None),
+        (None, "missing_scope"),
+    ], results
+    assert published.status_code == 200 and later.status_code == 200, (published.text, later.text)
+    assert "Alice's own way of taking notes" in prompt, "what she published reaches her next turn"

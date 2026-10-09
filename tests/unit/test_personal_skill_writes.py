@@ -18,6 +18,7 @@ from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.skills import library
+from felix.skills.authoring import _INTO_OWN_LIBRARY
 from felix.skills.format import serialize_skill_md
 from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
@@ -144,7 +145,7 @@ async def test_create_saves_into_the_callers_own_library(
     assert result["status"] == "draft" and result["library"] == "personal", result
     assert await _versions(settings, ALICE, "notes") == [result["version"]]
     assert await _versions(settings, ORG_OWNER, "notes") == [], "the tenant's library is untouched"
-    assert "caller's own skill library" in preview, "an approver is told where it saves"
+    assert _INTO_OWN_LIBRARY in preview, "an approver is told where it saves"
 
 
 async def test_a_caller_without_skills_personal_saves_nothing(
@@ -265,7 +266,8 @@ async def test_a_tenant_skill_is_edited_as_before_without_skills_personal(
             tools["update_skill"],
             {"name": "shared", "parent_version": shared, "body": BODY + "3. Ours.\n", "reason": "r"},
         )
-    assert result["status"] == "draft", result
+    assert result["status"] == "draft" and "library" not in result, result
+    assert len(await _versions(settings, ORG_OWNER, "shared")) == 2
 
 
 async def test_feedback_still_refuses_a_callers_own_skill(
@@ -296,3 +298,271 @@ async def test_a_declared_skill_is_edited_in_the_tenants_library_though_the_call
     assert "library" not in result and result["status"] == "draft", result
     assert len(await _versions(settings, ORG_OWNER, "notes")) == 2
     assert len(await _versions(settings, ALICE, "notes")) == 1
+
+
+# -- approvals bind the library -------------------------------------------------------------------
+
+
+async def _approve_next(settings: Settings, call: Any, *, decision: Any = "approved") -> dict[str, Any]:
+    """Run ``call`` until it waits on a fresh pending approval, decide that row, and return the
+    call's result -- with the id of the row it waited on, or None if it waited on none."""
+    import asyncio
+
+    from felix.approvals import store as approvals_store
+    from felix.approvals.interrupt import signal_decision
+
+    before = {r["id"] for r in await approvals_store.list_approvals(settings, "acme", status=None)}
+    task = asyncio.create_task(call)
+    row = None
+    for _ in range(200):
+        if task.done():
+            break
+        fresh = [r for r in await approvals_store.list_approvals(settings, "acme") if r["id"] not in before]
+        if fresh:
+            row = fresh[0]
+            await approvals_store.decide(settings, "acme", row["id"], decision=decision, decided_by="ops")
+            await signal_decision(row["id"], decision)  # what `/approvals/{id}/decide` does next
+            break
+        await asyncio.sleep(0.01)
+    out = await asyncio.wait_for(task, 5)
+    return {"out": tool_output_content(out), "approval": row}
+
+
+async def test_a_grant_for_one_library_authorizes_no_save_into_another(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Both libraries hold `notes@0.1.0`, so an edit's arguments are the same whoever sends them.
+    Alice's approved edit goes into her library; Bob, sending the identical call, would edit the
+    tenant's -- and her grant must not be his."""
+    from felix.approvals import store as approvals_store
+
+    await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
+    await _publish(settings, store, ALICE, "notes", "Alice's notes")
+    rule = [{"id": "author", "tools": ["create_skill", "update_skill"], "ttl_seconds": 60}]
+    edit = {"name": "notes", "parent_version": "0.1.0", "body": BODY + "3. Mine.\n", "reason": "r"}
+    alice = await _tools(settings, store, ALICE, approvals=rule)
+    bob = await _tools(settings, store, BOB, approvals=rule)
+    ctx = ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1")
+
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        first = await _approve_next(settings, alice["update_skill"].executor.execute(edit, ctx))
+    async with async_run_with_context(_ctx(settings, BOB, "skills:personal")):
+        bobs = await _approve_next(
+            settings, bob["update_skill"].executor.execute(edit, ctx), decision="denied"
+        )
+    granted = await approvals_store.list_approvals(settings, "acme", status="approved")
+
+    assert first["approval"] is not None and json.loads(first["out"])["library"] == "personal", first
+    assert bobs["approval"] is not None, "Bob's call asked for its own approval rather than using Alice's"
+    assert "denied" in bobs["out"]
+    assert [r["id"] for r in granted] == [first["approval"]["id"]]
+    assert await _versions(settings, ORG_OWNER, "notes") == ["0.1.0"], "the tenant's notes is untouched"
+    assert len(await _versions(settings, ALICE, "notes")) == 2
+
+
+async def test_a_grant_for_one_callers_new_skill_is_not_anothers(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """The same `create_skill` call, injected into Bob's session after Alice's was approved,
+    would save into Bob's library: it asks for its own approval."""
+    rule = [{"id": "author", "tools": ["create_skill", "update_skill"], "ttl_seconds": 60}]
+    alice = await _tools(settings, store, ALICE, approvals=rule)
+    bob = await _tools(settings, store, BOB, approvals=rule)
+    ctx = ToolInvocationCtx(thread_id="acme:t1", tool_call_id="c1")
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        first = await _approve_next(settings, alice["create_skill"].executor.execute(NEW, ctx))
+    async with async_run_with_context(_ctx(settings, BOB, "skills:personal")):
+        bobs = await _approve_next(
+            settings, bob["create_skill"].executor.execute(NEW, ctx), decision="denied"
+        )
+    assert first["approval"] is not None and json.loads(first["out"])["library"] == "personal", first
+    assert bobs["approval"] is not None and "denied" in bobs["out"], bobs
+    assert await _versions(settings, BOB, "notes") == []
+
+
+# -- what the reviewers asked to pin ---------------------------------------------------------------
+
+
+async def test_an_edit_of_a_new_personal_draft_stays_personal_though_the_tenant_has_the_name(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Every library numbers from 0.1.0: the agent's draft `notes@0.1.0` and the tenant's live
+    `notes@0.1.0` share a parent_version, so the edit goes to the narrower library."""
+    await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
+    tools = await _tools(settings, store, ALICE)
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        created = await _call(tools["create_skill"], NEW)
+        edited = await _call(
+            tools["update_skill"],
+            {
+                "name": "notes",
+                "parent_version": created["version"],
+                "body": BODY + "3. More.\n",
+                "reason": "r",
+            },
+        )
+    assert created["library"] == edited["library"] == "personal", (created, edited)
+    assert len(await _versions(settings, ALICE, "notes")) == 2
+    assert await _versions(settings, ORG_OWNER, "notes") == ["0.1.0"]
+
+
+async def test_a_personal_save_queues_no_evaluation(settings: Settings, store: MemoryObjectStore) -> None:
+    """Evaluations run on the tenant's library: queued for a personal `notes`, one would score
+    the tenant's `notes` and hand its id back as this save's."""
+    from felix.skills.eval_store import get_skill_eval_store
+
+    await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
+    tools = await _tools(settings, store, ALICE, skill_authoring={"enabled": True, "auto_eval": True})
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        result = await _call(tools["create_skill"], NEW)
+    assert result["library"] == "personal" and "eval_id" not in result, result
+    assert await get_skill_eval_store(settings).list_for_skill("acme", "notes") == []
+
+
+async def test_publish_mode_holds_a_personal_skill_that_would_replace_a_tenant_one(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    from felix.skills.authoring import make_skill_authoring_tools
+
+    await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
+    tools = {
+        t.name: t
+        for t in make_skill_authoring_tools(
+            settings,
+            tenant_id="acme",
+            manifest_id="writer",
+            mode="publish",
+            object_store=store,
+            tenant=frozenset({"notes"}),
+            write_personal=True,
+            owner=ALICE,
+        )
+    }
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        held = await _call(tools["create_skill"], NEW)
+        other = await _call(tools["create_skill"], {**NEW, "name": "journal"})
+    assert held["status"] == "draft" and "replace the tenant's skill notes" in held["review_required"], held
+    assert other["status"] == "published", "a name the tenant does not have publishes as before"
+    mine = await get_skill_library_store(settings, owner=ALICE).get_skill("acme", "notes")
+    assert mine is not None and mine["live_version"] is None
+
+
+async def test_publish_mode_holds_a_shadow_of_a_tenant_skill_the_catalog_did_not_hold(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Published after this agent compiled, the tenant's `notes` is in no catalog yet; the
+    library itself says a personal `notes` would replace it."""
+    from felix.skills.authoring import make_skill_authoring_tools
+
+    await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
+    tools = {
+        t.name: t
+        for t in make_skill_authoring_tools(
+            settings,
+            tenant_id="acme",
+            manifest_id="writer",
+            mode="publish",
+            object_store=store,
+            write_personal=True,
+            owner=ALICE,
+        )
+    }
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        held = await _call(tools["create_skill"], NEW)
+    assert held["status"] == "draft" and "review_required" in held, held
+
+
+async def test_publish_mode_holds_an_edit_of_a_skill_its_owner_wrote(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """A person's own `~me` save is source `operator`: the agent's edit of it waits for them."""
+    from felix.skills.authoring import make_skill_authoring_tools
+
+    files = {"SKILL.md": serialize_skill_md({"name": "notes", "description": "Alice's notes"}, f"\n{BODY}")}
+    row = await library.save_draft(
+        settings,
+        "acme",
+        files=files,
+        provenance=library.DraftProvenance(source="operator", author="alice"),
+        object_store=store,
+        owner=ALICE,
+    )
+    await library.publish(
+        settings, "acme", "notes", row["version"], by="alice", object_store=store, owner=ALICE
+    )
+    tools = {
+        t.name: t
+        for t in make_skill_authoring_tools(
+            settings,
+            tenant_id="acme",
+            manifest_id="writer",
+            mode="publish",
+            object_store=store,
+            personal=frozenset({"notes"}),
+            write_personal=True,
+            owner=ALICE,
+        )
+    }
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        result = await _call(
+            tools["update_skill"],
+            {"name": "notes", "parent_version": row["version"], "body": BODY + "3. More.\n", "reason": "r"},
+        )
+    assert result["status"] == "draft" and "by its owner" in result["review_required"], result
+    mine = await get_skill_library_store(settings, owner=ALICE).get_skill("acme", "notes")
+    assert mine is not None and mine["live_version"] == row["version"]
+
+
+async def test_an_edit_preview_says_which_library_it_saves_into(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    mine = await _publish(settings, store, ALICE, "notes", "Alice's notes")
+    shared = await _publish(settings, store, ORG_OWNER, "shared", "The tenant's shared skill")
+    tools = await _tools(settings, store, ALICE)
+    preview = tools["update_skill"].approval_preview
+    assert preview is not None
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        own = await preview({"name": "notes", "parent_version": mine, "body": "B.", "reason": "r"})
+        tenants = await preview({"name": "shared", "parent_version": shared, "body": "B.", "reason": "r"})
+    assert _INTO_OWN_LIBRARY in own
+    assert _INTO_OWN_LIBRARY not in tenants
+
+
+async def test_editing_ones_own_skill_also_needs_skills_personal(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    mine = await _publish(settings, store, ALICE, "notes", "Alice's notes")
+    tools = await _tools(settings, store, ALICE)
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:write")):
+        result = await _call(
+            tools["update_skill"], {"name": "notes", "parent_version": mine, "body": BODY, "reason": "r"}
+        )
+    assert result["error"] == "missing_scope", result
+    assert await _versions(settings, ALICE, "notes") == [mine]
+
+
+async def test_a_caller_with_no_library_still_edits_a_tenant_skill(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    shared = await _publish(settings, store, ORG_OWNER, "shared", "The tenant's shared skill")
+    tools = await _tools(settings, store, None)
+    async with async_run_with_context(_ctx(settings, None)):
+        result = await _call(
+            tools["update_skill"],
+            {"name": "shared", "parent_version": shared, "body": BODY + "3. Ours.\n", "reason": "r"},
+        )
+    assert result["status"] == "draft" and "library" not in result, result
+    assert len(await _versions(settings, ORG_OWNER, "shared")) == 2
+
+
+async def test_a_personal_create_checks_only_the_callers_library_for_the_name(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
+    await _publish(settings, store, ALICE, "journal", "Alice's journal")
+    tools = await _tools(settings, store, ALICE)
+    async with async_run_with_context(_ctx(settings, ALICE, "skills:personal")):
+        shadow = await _call(tools["create_skill"], NEW)
+        again = await _call(tools["create_skill"], {**NEW, "name": "journal"})
+    assert shadow["library"] == "personal" and shadow["status"] == "draft", shadow
+    assert again["error"] == "skill_exists", again

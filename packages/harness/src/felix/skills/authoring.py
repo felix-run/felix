@@ -36,6 +36,12 @@ _PERSONAL_REFUSAL = {
     "detail": "this is one of the caller's own skills; saving to or filing feedback on a personal "
     "skill is not available, and these tools would act on the tenant's skill of that name instead"
 }
+# Feedback is the tenant's review loop; under `personal_skills: write` the caller's own skill is
+# edited with `update_skill` instead.
+_PERSONAL_FEEDBACK_REFUSAL = {
+    "detail": "this is one of the caller's own skills; feedback is for the tenant's library, so "
+    "none is filed on a personal skill"
+}
 _NO_LIBRARY = {
     "error": "no_personal_library",
     "detail": "this agent saves skills to the caller's own library, and this caller has none; "
@@ -178,7 +184,8 @@ def _preview_header(name: str, composed: _Composed, source: str) -> str:
 class _SkillAuthor:
     """One manifest's authoring calls, bound to a tenant and the stores it writes.
 
-    ``personal`` names the catalog's skills that are the caller's own, ``tenant`` the rest.
+    ``personal`` names the catalog's skills that are the caller's own, ``tenant`` the rest, and
+    ``declared`` the ones the manifest names in `spec.skills` -- always the tenant's or the host's.
     ``owner`` is the caller's library when the manifest writes personal skills
     (`personal_skills: write`), and ``write_personal`` says it does -- kept apart from ``owner``
     so a caller with no library is refused rather than handed the tenant's.
@@ -196,6 +203,7 @@ class _SkillAuthor:
         auto_eval: bool = False,
         personal: frozenset[str] = frozenset(),
         tenant: frozenset[str] = frozenset(),
+        declared: frozenset[str] = frozenset(),
         write_personal: bool = False,
         owner: str | None = None,
     ) -> None:
@@ -204,7 +212,8 @@ class _SkillAuthor:
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.auto_eval = auto_eval
-        self.personal, self.tenant, self.write_personal = personal, tenant, write_personal
+        self.personal, self.tenant, self.declared = personal, tenant, declared
+        self.write_personal = write_personal
         self.org = get_skill_library_store(settings, owner=ORG_OWNER)
         self.mine = get_skill_library_store(settings, owner=owner) if write_personal and owner else None
 
@@ -217,9 +226,10 @@ class _SkillAuthor:
 
     async def _into_personal(self, name: str, *, update: bool) -> bool:
         """Whether this call saves into the caller's own library: every `create_skill` under
-        `personal_skills: write`, and an `update_skill` of one of the caller's skills -- theirs in
-        this catalog, or a name only their library holds (a draft not yet live). A name the
-        catalog has from the tenant or the host is edited where it is, as without `write`."""
+        `personal_skills: write`, and an `update_skill` of a name the caller's library holds --
+        live or a draft not yet in any catalog -- unless the manifest names it in `spec.skills`,
+        which a caller's skill never shadows. Every library numbers its versions from `0.1.0`,
+        so a `parent_version` cannot tell the libraries apart; the narrower one wins."""
         if not self.write_personal:
             if name in self.personal:
                 # These tools write the tenant's library here. A name that is the caller's own
@@ -229,7 +239,7 @@ class _SkillAuthor:
                 raise _ComposeError({"error": "personal_skill", **_PERSONAL_REFUSAL, "name": name})
             return False
         if update and (
-            name in self.tenant
+            name in self.declared
             or self.mine is None
             or await self.mine.get_skill(self.tenant_id, name) is None
         ):
@@ -251,6 +261,16 @@ class _SkillAuthor:
         if auth is None or self.mine is None or auth.skill_owner != self.mine.owner:
             return False
         return holds_mgmt_scopes(self.settings, auth.scopes, SCOPE_SKILLS_PERSONAL)
+
+    async def binding(self, args: ToolInput, *, update: bool) -> str:
+        """The library this call would save into, for an approval to bind (`Tool.approval_binding`):
+        the arguments do not name it, so a grant given for a save into one caller's library must
+        authorize none into another's or the tenant's."""
+        try:
+            personal = await self._into_personal(str(args.get("name") or ""), update=update)
+        except _ComposeError as exc:
+            return f"refused:{exc.result.get('error')}"
+        return f"personal:{self.lib(True).owner}" if personal else "tenant"
 
     async def queue_eval(self, row: dict[str, Any]) -> str | None:
         """`skill_authoring.auto_eval`: queue an evaluation of the draft just saved. A failure to
@@ -331,6 +351,13 @@ class _SkillAuthor:
     async def publish(self, row: dict[str, Any], composed: _Composed) -> dict[str, Any]:
         from felix.skills import library
 
+        name = str(row["name"])
+        if composed.personal and await self._shadows_tenant_skill(name):
+            return {
+                **_draft_result(row, "draft"),
+                "review_required": f"this would replace the tenant's skill {name} for the user; "
+                "they publish it from their own library",
+            }
         if composed.edits_operator_skill:
             by = "its owner" if composed.personal else "an operator"
             return {
@@ -353,6 +380,14 @@ class _SkillAuthor:
         except library.SkillLibraryError as exc:
             return {**_draft_result(row, "draft"), "publish_blocked": [str(exc)]}
         return _draft_result(published, "published")
+
+    async def _shadows_tenant_skill(self, name: str) -> bool:
+        """Whether a live personal skill of ``name`` would take the place of the tenant's or the
+        host's for this caller -- which an agent may draft, and only a person may publish."""
+        if name in self.tenant:
+            return True
+        org = await self.org.get_skill(self.tenant_id, name)
+        return bool(org and org.get("live_version"))
 
     async def save(self, args: ToolInput, ctx: ToolInvocationCtx | None, *, update: bool) -> str:
         from felix.skills import library
@@ -427,6 +462,7 @@ def make_skill_authoring_tools(
     auto_eval: bool = False,
     personal: frozenset[str] = frozenset(),
     tenant: frozenset[str] = frozenset(),
+    declared: frozenset[str] = frozenset(),
     write_personal: bool = False,
     owner: str | None = None,
 ) -> list[Tool]:
@@ -451,6 +487,7 @@ def make_skill_authoring_tools(
         auto_eval=auto_eval,
         personal=personal,
         tenant=tenant,
+        declared=declared,
         write_personal=write_personal,
         owner=owner,
     )
@@ -501,6 +538,8 @@ def make_skill_authoring_tools(
     # the arguments rather than described by the model.
     create.approval_preview = lambda a: author.preview(a, update=False)
     update.approval_preview = lambda a: author.preview(a, update=True)
+    create.approval_binding = lambda a: author.binding(a, update=False)
+    update.approval_binding = lambda a: author.binding(a, update=True)
     return [create, update]
 
 
@@ -563,7 +602,11 @@ def make_skill_feedback_tool(
         if args.name in personal:
             # Feedback is filed against, and accepted into, the tenant's skill of a name.
             return json.dumps(
-                {"error": "personal_skill", **_PERSONAL_REFUSAL, "name": loggable(args.name, limit=64)}
+                {
+                    "error": "personal_skill",
+                    **_PERSONAL_FEEDBACK_REFUSAL,
+                    "name": loggable(args.name, limit=64),
+                }
             )
         skill = library_skills.get(args.name)
         if skill is None:
