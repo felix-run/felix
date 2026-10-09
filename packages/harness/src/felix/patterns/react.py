@@ -928,6 +928,46 @@ class _ReactAgent:
         )
         return messages
 
+    async def _deliver_follow_ups(
+        self,
+        tenant_id: str,
+        thread_id: str | None,
+        messages: list[ChatMessage],
+        produced: list[ChatMessage],
+        delivered: list[ChatMessage],
+        step: int,
+        *,
+        emit_events: bool,
+    ) -> AsyncIterator[Event]:
+        """Hand queued follow-ups to a run that has gone idle, so the loop takes another turn.
+
+        Called where the loop would stop with an answer — a reply with no tool calls, or a
+        terminal tool — and nowhere else. The follow-ups land in `delivered` (an async
+        generator cannot return a value); the caller `continue`s when there are any, so a
+        follow-up's turn is an ordinary step: streamed, tools run, overflow recovered, stop
+        reason recorded, budgets and abort checked. It used to be a bare `model.chat` after the
+        loop, which did none of that — a tool call in its reply was appended and never run.
+
+        Left queued, for the thread's next run, when the run has no step left to answer with or
+        has been aborted. A run that stops on a budget, a truncation or the step limit never
+        reaches here, so its follow-ups wait the same way rather than buying an uncapped turn.
+        """
+        if not thread_id or step + 1 >= self.recursion_limit or await is_aborted(tenant_id, thread_id):
+            return
+        for follow in await drain_follow_up(
+            tenant_id,
+            thread_id,
+            mode=self.follow_up_mode,  # type: ignore[arg-type]
+        ):
+            chat = ChatMessage(role="user", content=follow.text)
+            messages.append(chat)
+            produced.append(chat)
+            delivered.append(chat)
+            if emit_events:
+                yield Event(event="follow_up", data={"content": follow.text})
+        if delivered:
+            await self._append_produced(thread_id, delivered)
+
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         """Run a turn to completion and return the result.
 
@@ -1198,6 +1238,19 @@ class _ReactAgent:
                         usage=usage_block,
                         status=self._note_stop_reason(stop_reason, input.thread_id),
                     )
+                    delivered: list[ChatMessage] = []
+                    async for ev in self._deliver_follow_ups(
+                        tenant_id,
+                        input.thread_id,
+                        messages,
+                        produced,
+                        delivered,
+                        _step,
+                        emit_events=emit_events,
+                    ):
+                        yield ev
+                    if delivered:
+                        continue
                     break
 
                 for call in assistant.tool_calls:
@@ -1275,6 +1328,19 @@ class _ReactAgent:
                     fatal = True
                     break
                 if all_terminate:
+                    delivered = []
+                    async for ev in self._deliver_follow_ups(
+                        tenant_id,
+                        input.thread_id,
+                        messages,
+                        produced,
+                        delivered,
+                        _step,
+                        emit_events=emit_events,
+                    ):
+                        yield ev
+                    if delivered:
+                        continue
                     break
                 if input.thread_id and await is_aborted(tenant_id, input.thread_id):
                     if emit_events:
@@ -1307,38 +1373,6 @@ class _ReactAgent:
                 if emit_events:
                     yield Event(event="max_turns", data={"limit": self.recursion_limit})
 
-            if not fatal and input.thread_id and not await is_aborted(tenant_id, input.thread_id):
-                for follow in await drain_follow_up(
-                    tenant_id,
-                    input.thread_id,
-                    mode=self.follow_up_mode,  # type: ignore[arg-type]
-                ):
-                    follow_chat = ChatMessage(role="user", content=follow.text)
-                    produced.append(follow_chat)
-                    if emit_events:
-                        yield Event(event="follow_up", data={"content": follow.text})
-                    await self._append_produced(input.thread_id, [follow_chat])
-                    messages.append(follow_chat)
-                    follow_tools = await _tools_for_run()
-                    outgoing = await self._before_model(
-                        [*messages, *transient], follow_tools, model, input.thread_id
-                    )
-                    result = await model.chat(outgoing, follow_tools, opts)
-                    follow_usage = record_model_usage(result, model, manifest_id=self.manifest_id) or None
-                    last_usage = follow_usage or last_usage
-                    assistant = await self._after_model(result.message, result, model, input.thread_id)
-                    messages.append(assistant)
-                    produced.append(assistant)
-                    final = assistant
-                    if emit_events and assistant.content:
-                        yield Event(
-                            event="text_delta",
-                            data={
-                                "chunk": {"content": assistant.content},
-                                "delta": assistant.content,
-                            },
-                        )
-                    await self._append_produced(input.thread_id, [assistant], usage=follow_usage)
         finally:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
