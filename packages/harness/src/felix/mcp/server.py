@@ -7,6 +7,7 @@ from typing import Any
 from felix import __version__
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.tools.errors import read_tool_error_code
 from felix.tools.provider import ToolProvider
 from felix.tools.types import (
     ToolInvocationCtx,
@@ -153,7 +154,8 @@ async def handle_rpc(
                     }
                 try:
                     out = await tool.executor.execute(args, ToolInvocationCtx(manifest_id=manifest_name))
-                    denied = is_wrapper_deny(out)
+                    # A tool's own marked error is a failed call too, not only a governance deny.
+                    failed = is_wrapper_deny(out) or read_tool_error_code(out) is not None
                     return {
                         "jsonrpc": "2.0",
                         "id": rpc_id,
@@ -162,7 +164,7 @@ async def handle_rpc(
                                 {"type": "text", "text": tool_output_content(out)},
                                 *await _image_blocks(out),
                             ],
-                            "isError": denied,
+                            "isError": failed,
                         },
                     }
                 except Exception as exc:
