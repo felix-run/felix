@@ -56,6 +56,7 @@ from felix_api.routes._skill_library_http import (
     library_request,
     not_found,
     refusal,
+    require_personal_admin,
     written_version,
 )
 from felix_api.routes._skill_library_models import (
@@ -159,7 +160,8 @@ async def list_library(
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=64),
 ) -> Any:
-    """The tenant's library skills by name, each with its live and newest version.
+    """A library's skills by name -- the tenant's, or under `~{library}` a person's -- each with
+    its live and newest version.
 
     Pages by name. The filters apply to a page after it is read, so a filtered page can be
     short -- even empty -- and still have a next one; keep following `next_cursor` until null.
@@ -198,30 +200,32 @@ async def list_library(
 @org_router.get("/-/personal", response_model=PersonalLibrariesOut, responses=ERRORS)
 async def list_personal_libraries(request: Request) -> Any:
     """Every personal library in the tenant, for an administrator: whose it is, its digest -- the
-    `~{library}` that reads or archives it -- and how many skills it holds. Audited, as every
-    administrator's look into a personal library is."""
+    `~{library}` that reads or archives it -- and how many skills it holds, archived ones included.
+    The first `MAX_OWNERS_LISTED`, in codepoint order of owner; `truncated` says there are more.
+    Audited, as every administrator's look into a personal library is."""
     from felix.audit.emit import record_offline_event
-    from felix.auth.mgmt import require_mgmt_scopes
+    from felix.logging_setup import loggable
+    from felix.skills.library_store import MAX_OWNERS_LISTED
 
-    require_mgmt_scopes(request, "admin")
+    require_personal_admin(request)
     settings = request.app.state.settings
     tenant_id = tenant_id_from_request(request)
-    owners = await get_skill_library_store(settings, owner=ORG_OWNER).list_owners(tenant_id)
-    counts = await asyncio.gather(
-        *(get_skill_library_store(settings, owner=o).list_skills(tenant_id) for o in owners)
+    rows = await get_skill_library_store(settings, owner=ORG_OWNER).list_owners(
+        tenant_id, limit=MAX_OWNERS_LISTED + 1
     )
     record_offline_event(
         settings,
         tenant_id,
         "personal_library_accessed",
         principal=subject_from_request(request),
-        payload={"library": "*", "method": request.method, "path": request.url.path},
+        payload={"library": "*", "method": request.method, "path": loggable(request.url.path, limit=300)},
     )
     return {
         "items": [
-            {"library": library_label(o), "owner": o, "skills": len(rows)}
-            for o, rows in zip(owners, counts, strict=True)
-        ]
+            {"library": library_label(r["owner"]), "owner": r["owner"], "skills": r["skills"]}
+            for r in rows[:MAX_OWNERS_LISTED]
+        ],
+        "truncated": len(rows) > MAX_OWNERS_LISTED,
     }
 
 

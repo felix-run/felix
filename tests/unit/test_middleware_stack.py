@@ -258,7 +258,12 @@ _BUNDLE_SIZED = CORE_BODY_LIMIT_BYTES * 4
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "path"),
-    [("POST", "/skill-library"), ("PUT", "/skill-library/some-skill/versions")],
+    [
+        ("POST", "/skill-library"),
+        ("PUT", "/skill-library/some-skill/versions"),
+        ("POST", "/skill-library/~me"),
+        ("PUT", "/skill-library/~me/some-skill/versions"),
+    ],
 )
 async def test_a_bundle_sized_body_reaches_the_skill_write_routes(method: str, path: str) -> None:
     """Over the core cap but under the bundle cap: the middleware lets it through, and the
@@ -278,6 +283,8 @@ async def test_a_bundle_sized_body_reaches_the_skill_write_routes(method: str, p
         ("POST", "/skill-library/-/import"),
         ("POST", "/skill-library/some-skill/versions/0.1.0/publish"),
         ("PUT", "/skill-library/some-skill/versions/extra"),
+        ("POST", "/skill-library/~me/some-skill/versions/0.1.0/publish"),
+        ("PUT", "/skill-library/~me/some-skill/versions/extra"),
         ("GET", "/skill-library"),
     ],
 )

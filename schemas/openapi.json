@@ -2179,10 +2179,16 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "truncated": {
+            "description": "More personal libraries exist than the listing holds.",
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [
-          "items"
+          "items",
+          "truncated"
         ],
         "title": "PersonalLibrariesOut",
         "type": "object"
@@ -12251,7 +12257,7 @@
     },
     "/skill-library": {
       "get": {
-        "description": "The tenant's library skills by name, each with its live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort -- even empty -- and still have a next one; keep following `next_cursor` until null.",
+        "description": "A library's skills by name -- the tenant's, or under `~{library}` a person's -- each with\nits live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort -- even empty -- and still have a next one; keep following `next_cursor` until null.",
         "operationId": "list_library_skill_library_get",
         "parameters": [
           {
@@ -13032,7 +13038,7 @@
     },
     "/skill-library/-/personal": {
       "get": {
-        "description": "Every personal library in the tenant, for an administrator: whose it is, its digest -- the\n`~{library}` that reads or archives it -- and how many skills it holds. Audited, as every\nadministrator's look into a personal library is.",
+        "description": "Every personal library in the tenant, for an administrator: whose it is, its digest -- the\n`~{library}` that reads or archives it -- and how many skills it holds, archived ones included.\nThe first `MAX_OWNERS_LISTED`, in codepoint order of owner; `truncated` says there are more.\nAudited, as every administrator's look into a personal library is.",
         "operationId": "list_personal_libraries_skill_library___personal_get",
         "responses": {
           "200": {
@@ -15320,7 +15326,7 @@
     },
     "/skill-library/~{library}": {
       "get": {
-        "description": "The tenant's library skills by name, each with its live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort -- even empty -- and still have a next one; keep following `next_cursor` until null.",
+        "description": "A library's skills by name -- the tenant's, or under `~{library}` a person's -- each with\nits live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort -- even empty -- and still have a next one; keep following `next_cursor` until null.",
         "operationId": "list_library_skill_library___library__get",
         "parameters": [
           {

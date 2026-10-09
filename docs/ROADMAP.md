@@ -514,8 +514,6 @@ First, because everything else governs it.
         archive for the caller alone. `POST /skill-library/~me/{name}/versions/{v}/promote` copies
         the bytes server-side into an **org draft** (`source="promoted"`) that takes the normal
         review queue — promotion never skips review.
-      - **Open decisions:** whether owner self-publish is right or a reviewer is required;
-        whether an admin may read a personal skill's content or only see and archive it.
       1. [x] (#517, #519) Migration `0033_skill_owner`, a store bound to one owner
          (`get_skill_library_store(settings, owner=)`, org by default), the twin, and contracts on
          both arms — including one that walks every `SkillLibraryStore` member as a stranger's
@@ -579,9 +577,21 @@ First, because everything else governs it.
            adopt stay on an org-only router. A digest names no owner -- `library_label` is one-way
            -- so admin access needs a store method listing a tenant's distinct owners (both arms
            and a conformance case) to resolve one. Shipped as described, with `list_owners` and
-           `GET /-/personal` (owner, digest, skill count); `~me` needs no management scope and is
-           refused (403 `no_personal_library`) to a caller with no library; a digest is `admin`
-           only, read and archive, every look audited as `personal_library_accessed`.
+           `GET /-/personal` (owner, digest, skill count, `truncated`); reading `~me` needs no
+           scope, writing it `skills:personal` (decided 2026-10-09 from security review: a
+           principal is a credential, and a shared one is one library for everyone holding it);
+           it is refused (403 `no_personal_library`) to a caller with no library; a digest is
+           `admin` only, read and archive, every look audited as `personal_library_accessed`, and
+           refused under `auth_mode=none`. Storage is bounded per library by 500 names ever and
+           `FELIX_SKILL_PERSONAL_MAX_BYTES` (50 MiB) across every version kept, counted by store
+           queries (`usage`); the bundle routes' 12 MiB body limit covers `~me`.
+           Deferred from review (admin scale, not exposure): resolving a digest past the first
+           `MAX_OWNERS_LISTED` (1000) owners -- page `list_owners` or store the label as an
+           indexed column; a cursor on `GET /-/personal` beyond `truncated`; making the
+           administrator's audit row a precondition of the look (`record_offline_event` fails
+           open), written after the handler decides rather than before, with the issuer; a 404 for
+           `~`-prefixed names on the tenant-only routes before their scope check (they fail safe
+           today).
          - [ ] 3c. `personal_skills: write`: the authoring tools save into the caller's library,
            lifting the `personal_skill` refusal; idempotency keys scoped by owner.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).

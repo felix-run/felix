@@ -83,6 +83,7 @@ class PersonalLibraryOut(BaseModel):
 
 class PersonalLibrariesOut(BaseModel):
     items: list[PersonalLibraryOut]
+    truncated: bool = Field(description="More personal libraries exist than the listing holds.")
 
 
 class SkillListOut(BaseModel):

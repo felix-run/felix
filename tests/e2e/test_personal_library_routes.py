@@ -18,7 +18,7 @@ from felix.skills.library_keys import library_label
 from felix_ai.providers.scripted import ScriptedTurn
 
 KEYS = {
-    "alice": {"tenant_id": "default", "sub": "alice", "scopes": []},
+    "alice": {"tenant_id": "default", "sub": "alice", "scopes": ["skills:personal"]},
     "bob": {"tenant_id": "default", "sub": "bob", "scopes": []},
     "writer": {"tenant_id": "default", "sub": "writer", "scopes": ["skills:write"]},
     "ops": {"tenant_id": "default", "sub": "ops", "scopes": ["admin"]},
@@ -152,7 +152,10 @@ async def test_an_administrator_reads_and_archives_by_digest_and_is_audited(boot
         await audit_store.flush_pending(app.settings)
         events, _ = await audit_store.list_events(app.settings, "default", limit=200)
 
-    assert listed.json()["items"] == [{"library": ALICE_LIBRARY, "owner": "api_key|alice", "skills": 1}]
+    assert listed.json() == {
+        "items": [{"library": ALICE_LIBRARY, "owner": "api_key|alice", "skills": 1}],
+        "truncated": False,
+    }
     assert read.status_code == 200 and "Alice takes notes" in file.json()["content"]
     assert write.status_code == publish.status_code == 403
     assert not_admin.status_code == not_admin_listing.status_code == 403
@@ -167,3 +170,74 @@ async def test_an_administrator_reads_and_archives_by_digest_and_is_audited(boot
         "read, file, archive"
     )
     assert all(e["principal_subj"] == "ops" for e in looks), "only the administrator's looks are recorded"
+
+
+async def test_reading_your_library_is_yours_and_writing_it_takes_skills_personal(boot: Any) -> None:
+    """A principal may be a credential many hold, so authoring instructions its turns will follow
+    is an operator's grant per credential; reading what is there needs none."""
+    async with boot(env=ENV) as app:
+        read = await app.client.get("/skill-library/~me", headers=_h("bob"))
+        write = await app.client.post("/skill-library/~me", json={"files": _files()}, headers=_h("bob"))
+        after = (await app.client.get("/skill-library/~me", headers=_h("bob"))).json()
+    assert read.status_code == 200 and read.json()["items"] == []
+    assert write.status_code == 403 and "skills:personal" in write.json()["detail"]
+    assert after["items"] == []
+
+
+async def test_a_person_edits_rolls_back_and_rejects_in_their_own_library(boot: Any) -> None:
+    async with boot(env=ENV) as app:
+        first = await _alice_publishes(app)
+        second = await app.client.put(
+            "/skill-library/~me/notes/versions",
+            json={
+                "files": _files("Alice's notes, revised"),
+                "parent_version": first["version"],
+                "publish": True,
+            },
+            headers=_h("alice"),
+        )
+        third = await app.client.put(
+            "/skill-library/~me/notes/versions",
+            json={"files": _files("Alice's notes, a third take"), "parent_version": second.json()["version"]},
+            headers=_h("alice"),
+        )
+        rejected = await app.client.post(
+            f"/skill-library/~me/notes/versions/{third.json()['version']}/reject",
+            json={"note": "not this"},
+            headers=_h("alice"),
+        )
+        rolled = await app.client.post(
+            f"/skill-library/~me/notes/versions/{first['version']}/rollback", headers=_h("alice")
+        )
+        detail = (await app.client.get("/skill-library/~me/notes", headers=_h("alice"))).json()
+        tenants = (await app.client.get("/skill-library", headers=_h("writer"))).json()
+    assert second.status_code == 201 and second.json()["published"] is True, second.text
+    assert third.status_code == 201 and rejected.status_code == 200, (third.text, rejected.text)
+    assert rolled.status_code == 200, rolled.text
+    assert detail["live_version"] == first["version"]
+    assert tenants["items"] == []
+
+
+async def test_a_personal_bundle_gets_the_room_a_tenant_bundle_gets(boot: Any) -> None:
+    """A bundle over the 1 MiB core body cap: the bundle routes' larger limit covers `~me` too."""
+    big = {**_files(), "references/notes.md": "A line of reference text.\n" * 60_000}
+    async with boot(env=ENV) as app:
+        resp = await app.client.post("/skill-library/~me", json={"files": big}, headers=_h("alice"))
+        version = resp.json().get("version")
+        again = await app.client.put(
+            "/skill-library/~me/notes/versions",
+            json={"files": big, "parent_version": version},
+            headers=_h("alice"),
+        )
+    assert len(json.dumps(big)) > 1024 * 1024
+    assert resp.status_code == 201, resp.text[:300]
+    assert again.status_code == 201, again.text[:300]
+
+
+async def test_without_real_authentication_no_one_looks_into_a_personal_library(boot: Any) -> None:
+    """`auth_mode=none` checks no scope anywhere and has no administrator to audit."""
+    async with boot(env={"FELIX_AUTH_MODE": "none"}) as app:
+        listing = await app.client.get("/skill-library/-/personal")
+        digest = await app.client.get(f"/skill-library/{ALICE_LIBRARY}/notes")
+        mine = await app.client.get("/skill-library/~me")
+    assert listing.status_code == digest.status_code == mine.status_code == 403

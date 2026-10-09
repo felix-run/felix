@@ -69,11 +69,12 @@ CORE_BODY_LIMIT_BYTES = 1024 * 1024
 
 # A skill bundle may hold MAX_BUNDLE_BYTES of files, and it arrives as JSON with binary assets
 # base64-encoded (4/3 the size) plus keys and escaping. The two routes that carry a whole bundle
-# get room for the largest one the library accepts; every other route keeps the core cap.
+# get room for the largest one the library accepts, on the tenant's library and on a person's
+# (`/skill-library/~{library}`); every other route keeps the core cap.
 SKILL_BUNDLE_BODY_LIMIT_BYTES = 12 * 1024 * 1024
 SKILL_BUNDLE_ROUTES: tuple[tuple[str, re.Pattern[str], int], ...] = (
-    ("POST", re.compile(r"/skill-library/?"), SKILL_BUNDLE_BODY_LIMIT_BYTES),
-    ("PUT", re.compile(r"/skill-library/[^/]+/versions/?"), SKILL_BUNDLE_BODY_LIMIT_BYTES),
+    ("POST", re.compile(r"/skill-library(?:/~[^/]+)?/?"), SKILL_BUNDLE_BODY_LIMIT_BYTES),
+    ("PUT", re.compile(r"/skill-library/(?:~[^/]+/)?[^/]+/versions/?"), SKILL_BUNDLE_BODY_LIMIT_BYTES),
 )
 
 

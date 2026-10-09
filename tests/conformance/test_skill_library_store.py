@@ -1125,6 +1125,7 @@ _STRANGER_EMPTY = {
     "version_ids": (("acme", "invoice-triage"), []),
     "list_files": (("acme", "invoice-triage", "0.1.0"), []),
     "count_pending": (("acme", "contributor"), 0),
+    "usage": (("acme",), {"skills": 0, "bytes": 0}),
     "buildable_versions": (("acme", ["invoice-triage"]), {}),
 }
 _STRANGER_REFUSED = {
@@ -1190,10 +1191,26 @@ async def test_owners_are_listed_across_namespaces_and_tenant_scoped(store_setti
         await _save(get_skill_library_store(store_settings, owner=owner), f"0.1.{at}", at=at)
     await _save(get_skill_library_store(store_settings, owner=BOB), "0.1.0", at=5, tenant="globex")
 
-    assert await org.list_owners("acme") == sorted([ALICE, BOB])
-    assert await get_skill_library_store(store_settings, owner=BOB).list_owners("acme") == sorted(
-        [ALICE, BOB]
-    )
-    assert await org.list_owners("acme", limit=1) == sorted([ALICE, BOB])[:1]
-    assert await org.list_owners("globex") == [BOB]
+    both = sorted([{"owner": ALICE, "skills": 1}, {"owner": BOB, "skills": 1}], key=lambda r: r["owner"])
+    assert await org.list_owners("acme") == both, "one skill each: Alice saved two versions of one"
+    assert await get_skill_library_store(store_settings, owner=BOB).list_owners("acme") == both
+    assert await org.list_owners("acme", limit=1) == both[:1]
+    assert await org.list_owners("acme", limit=None) == both
+    assert await org.list_owners("globex") == [{"owner": BOB, "skills": 1}]
     assert await org.list_owners("initech") == []
+
+
+@parametrized
+async def test_usage_is_one_librarys_skills_and_bytes(store_settings: Any) -> None:
+    """What a personal library's quota is held to: every skill row and every version's file
+    bytes, archived included, of this owner only."""
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
+    alice = get_skill_library_store(store_settings, owner=ALICE)
+    await _save(org, "0.1.0", at=1)
+    await _save(alice, "0.1.0", at=2)
+    await _save(alice, "0.1.1", at=3)
+    await alice.archive_skill("acme", "invoice-triage", by=ALICE, at=4)
+    per_version = sum(f["size"] for f in FILES)
+    assert await alice.usage("acme") == {"skills": 1, "bytes": 2 * per_version}
+    assert await org.usage("acme") == {"skills": 1, "bytes": per_version}
+    assert await alice.usage("globex") == {"skills": 0, "bytes": 0}

@@ -65,6 +65,10 @@ logger = logging.getLogger("felix.skills.library")
 # by the saves in flight at once -- two first saves of new names can both pass the count -- since
 # a person's library is not a queue anyone else waits on, unlike the pending cap.
 MAX_PERSONAL_SKILLS = 100
+# Skill names one personal library may ever hold, archived and rejected ones included: rows are
+# never deleted, so this, with `FELIX_SKILL_PERSONAL_MAX_BYTES`, is what bounds its storage. No
+# more than `MAX_LIBRARY_SKILLS`, so the in-use count below reads every row there is.
+MAX_PERSONAL_SKILL_NAMES = 500
 PERSONAL_EVAL_REQUIRED = (
     "this tenant requires an evaluation before a skill is published, and a personal skill has "
     "none: evaluations are kept for the tenant's own library"
@@ -579,7 +583,7 @@ async def save_draft(
 
     lib = get_skill_library_store(settings, owner=owner)
     if owner != ORG_OWNER:
-        await _check_personal(lib, tenant_id, skill_name, provenance)
+        await _check_personal(settings, lib, tenant_id, skill_name, provenance, files)
     await _check_pending(lib, tenant_id, provenance, max_pending)
     if parent is not None and await lib.get_version(tenant_id, skill_name, parent) is None:
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
@@ -646,17 +650,31 @@ async def save_draft(
 
 
 async def _check_personal(
-    lib: SkillLibraryStore, tenant_id: str, name: str, provenance: DraftProvenance
+    settings: Settings,
+    lib: SkillLibraryStore,
+    tenant_id: str,
+    name: str,
+    provenance: DraftProvenance,
+    files: Mapping[str, str],
 ) -> None:
     """What a personal library refuses that the tenant's takes. Imports and adopts are the
     tenant's: their origin, sightings and update checks are keyed by name alone, and a person's
     copy of a third party's skill would escape all three."""
     if provenance.source == "import" or provenance.adopted_from is not None:
         raise SkillOrgOnly("imports and adopts go to the tenant's library, not a personal one")
-    if (
-        await lib.get_skill(tenant_id, name) is None
-        and await _skills_in_use(lib, tenant_id) >= MAX_PERSONAL_SKILLS
-    ):
+    usage = await lib.usage(tenant_id)
+    new_name = await lib.get_skill(tenant_id, name) is None
+    if new_name and usage["skills"] >= MAX_PERSONAL_SKILL_NAMES:
+        raise SkillPersonalLibraryFull(
+            f"a personal library holds at most {MAX_PERSONAL_SKILL_NAMES} skill names, archived ones included"
+        )
+    size = sum(r["size"] for r in _file_rows(files))
+    if usage["bytes"] + size > settings.skill_personal_max_bytes:
+        raise SkillPersonalLibraryFull(
+            f"a personal library holds at most {settings.skill_personal_max_bytes} bytes across its "
+            f"versions; it holds {usage['bytes']} and this save adds {size}"
+        )
+    if new_name and await _skills_in_use(lib, tenant_id) >= MAX_PERSONAL_SKILLS:
         raise SkillPersonalLibraryFull(
             f"a personal library holds at most {MAX_PERSONAL_SKILLS} skills in use (live, or with a "
             "draft waiting); archive one, or reject its drafts, to make room"
@@ -1173,6 +1191,7 @@ async def archive_skill(
 
 __all__ = [
     "MAX_PERSONAL_SKILLS",
+    "MAX_PERSONAL_SKILL_NAMES",
     "MUST_NOT_EXIST",
     "ORIGIN_COLUMNS",
     "PERSONAL_EVAL_REQUIRED",

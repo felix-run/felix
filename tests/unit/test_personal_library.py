@@ -220,3 +220,34 @@ async def test_an_adopt_aimed_at_a_personal_library_is_refused(
         await library.adopt(
             settings, "acme", "notes", "0.1.0", by=ALICE, reason="mine", object_store=store, owner=ALICE
         )
+
+
+async def test_a_personal_library_is_bounded_in_bytes_archived_versions_included(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Versions are never deleted, so archiving or rejecting frees no bytes: the quota holds over
+    every version kept. The tenant's library has no such quota."""
+    one = sum(len(v.encode()) for v in _bundle().values())
+    tight = settings.model_copy(update={"skill_personal_max_bytes": 2 * one + 10})
+    first = await _save(tight, store, ALICE)
+    await _save(tight, store, ALICE, files=_bundle(body=BODY + "x"))
+    await library.archive_skill(tight, "acme", "notes", by=ALICE, owner=ALICE)
+    with pytest.raises(library.SkillPersonalLibraryFull, match="bytes"):
+        await _save(tight, store, ALICE, files=_bundle(body=BODY + "xx"))
+    assert first["version"] in await get_skill_library_store(tight, owner=ALICE).version_ids("acme", "notes")
+    for name in ("one", "two", "three"):
+        await _save(tight, store, ORG_OWNER, name, files=_bundle(name))
+
+
+async def test_a_personal_library_holds_a_bounded_number_of_names_ever(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Archiving gives back a place among the skills in use, never a name: a person cannot
+    churn new names forever."""
+    monkeypatch.setattr(library, "MAX_PERSONAL_SKILL_NAMES", 2)
+    for name in ("one", "two"):
+        await _save(settings, store, ALICE, name, files=_bundle(name))
+        await library.archive_skill(settings, "acme", name, by=ALICE, owner=ALICE)
+    with pytest.raises(library.SkillPersonalLibraryFull, match="names"):
+        await _save(settings, store, ALICE, "three", files=_bundle("three"))
+    await _save(settings, store, ALICE, "two", files=_bundle("two", BODY + "\n3. Again.\n"))

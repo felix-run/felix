@@ -138,6 +138,11 @@ SCOPE_SKILLS_READ = "skills:read"
 # it is a grant of its own rather than a side effect of `manifests:write`. Implies
 # `skills:read` through the usual rule.
 SCOPE_SKILLS_WRITE = "skills:write"
+# Writing one's own personal skill library (`/skill-library/~me`). Its own grant, not implied by
+# anything but `admin` / `*`: a personal skill reaches only its owner's turns, but an owner is a
+# principal, and a shared service credential is one principal for everyone holding it -- so who
+# may author instructions their turns will follow is an operator's decision per credential.
+SCOPE_SKILLS_PERSONAL = "skills:personal"
 
 __all__ = [
     "SCOPE_APPROVALS_READ",
@@ -158,6 +163,7 @@ __all__ = [
     "SCOPE_MEMORY_WRITE",
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
+    "SCOPE_SKILLS_PERSONAL",
     "SCOPE_SKILLS_READ",
     "SCOPE_SKILLS_WRITE",
     "SCOPE_USAGE_READ",
