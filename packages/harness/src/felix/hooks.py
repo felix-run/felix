@@ -17,8 +17,14 @@ BeforeCompactHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, A
 BeforeToolHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 AfterToolHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
 CompactFailedHook = Callable[..., Awaitable[None] | None]
-BeforeModelHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
-AfterModelHook = Callable[..., Awaitable[dict[str, Any] | None] | dict[str, Any] | None]
+# Spelled out, unlike the six above: every hook is called positionally as `hook(envelope, ctx)`,
+# and a plugin written against `**kwargs` raised on each call and was skipped without a word.
+BeforeModelHook = Callable[
+    [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any] | None] | dict[str, Any] | None
+]
+AfterModelHook = Callable[
+    [dict[str, Any], dict[str, Any]], Awaitable[dict[str, Any] | None] | dict[str, Any] | None
+]
 
 
 @dataclass
@@ -190,11 +196,11 @@ async def run_compact_failed(
 
 
 async def run_before_model(
-    messages: list[Any],
+    messages: list[ChatMessage],
     *,
     tools: list[str],
     context: dict[str, Any] | None = None,
-) -> list[Any]:
+) -> list[ChatMessage]:
     """Return the messages one model call sends; a hook returns ``{messages: [...]}`` to replace them.
 
     The replacement goes to this call only. The run's history is untouched, so whatever a hook
@@ -213,8 +219,10 @@ async def run_before_model(
             if not isinstance(result, dict) or "messages" not in result:
                 continue
             replaced = result["messages"]
-            if not isinstance(replaced, list):
-                logger.warning("before_model hook returned non-list messages; ignored")
+            # Checked here rather than left to the wire encoder, where a stray dict fails the
+            # whole run instead of this one hook.
+            if not isinstance(replaced, list) or not all(isinstance(m, ChatMessage) for m in replaced):
+                logger.warning("before_model hook returned something other than a list of messages; ignored")
                 continue
             current = list(replaced)
         except Exception:
@@ -223,11 +231,11 @@ async def run_before_model(
 
 
 async def run_after_model(
-    message: Any,
+    message: ChatMessage,
     *,
     stop_reason: str | None,
     context: dict[str, Any] | None = None,
-) -> Any:
+) -> ChatMessage:
     """Return the assistant message a model call produced; a hook returns ``{message: ...}`` to replace it.
 
     The replacement is what the run records, persists and acts on — tool calls included — but

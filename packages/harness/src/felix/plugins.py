@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from felix.config import Settings
+    from felix.hooks import AfterModelHook, BeforeModelHook
     from felix.tools.types import Tool
 
 logger = logging.getLogger("felix.plugins")
@@ -163,12 +164,12 @@ class PluginRegistry:
 
         get_agent_hooks().register_compact_failed(hook)
 
-    def register_before_model(self, hook: Callable[..., Any]) -> None:
+    def register_before_model(self, hook: BeforeModelHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_before_model(hook)
 
-    def register_after_model(self, hook: Callable[..., Any]) -> None:
+    def register_after_model(self, hook: AfterModelHook) -> None:
         from felix.hooks import get_agent_hooks
 
         get_agent_hooks().register_after_model(hook)

@@ -1167,6 +1167,10 @@ class _ReactAgent:
                 # not a completed turn, and recording either as one hides a partial or
                 # absent answer behind a successful-looking run.
                 stop_reason = getattr(result, "stop_reason", "end_turn")
+                if stop_reason == "tool_use" and not assistant.tool_calls:
+                    # An after_model hook took the calls out, so this is the final answer; left
+                    # as `tool_use`, the OpenAI wire reports `finish_reason: tool_calls` with none.
+                    stop_reason = "end_turn"
                 last_stop = stop_reason or "end_turn"
 
                 if assistant.tool_calls and stop_reason == "max_tokens":
