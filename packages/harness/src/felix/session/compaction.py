@@ -11,6 +11,7 @@ from felix.patterns.types import ChatMessage
 from felix.security.fencing import fence
 from felix.session.types import (
     AppendableEvent,
+    GetEventsOpts,
     Session,
     SessionEvent,
     SessionRenderOpts,
@@ -758,30 +759,55 @@ class _Pass:
         )
 
 
-async def _load_branch(session: Session) -> tuple[list[SessionEvent], _LatestSummary]:
-    """The active branch, and the newest summary that describes it."""
-    all_events = await session.get_events()
-    summaries = [
-        e
-        for e in all_events
-        if (
-            e.kind == "compaction"
-            or (
-                e.kind == "audit"
-                and (e.metadata or {}).get("type") in {COMPACTION_METADATA_TYPE, SUMMARY_METADATA_TYPE}
-            )
-        )
-    ]
-    summaries.sort(key=lambda e: e.seq, reverse=True)
+def _is_summary(e: SessionEvent) -> bool:
+    return e.kind == "compaction" or (
+        e.kind == "audit"
+        and (e.metadata or {}).get("type") in {COMPACTION_METADATA_TYPE, SUMMARY_METADATA_TYPE}
+    )
+
+
+def _branch_and_summary(
+    session: Session, events: list[SessionEvent]
+) -> tuple[list[SessionEvent], SessionEvent | None]:
+    """The active branch through `events`, and the newest summary that describes it."""
     from felix.session.tree import active_branch_events, get_event_id
 
-    branch = active_branch_events(all_events, session_id=getattr(session, "id", ""))
+    summaries = sorted((e for e in events if _is_summary(e)), key=lambda e: e.seq, reverse=True)
+    branch = active_branch_events(events, session_id=getattr(session, "id", ""))
     # The newest summary *of this branch*: after a rewind the newest in the log can describe
     # turns the branch no longer has, and replaying its summary and kept turns resurrects them.
     branch_seqs = {e.seq for e in branch}
     branch_ids = {i for i in (get_event_id(e) for e in branch) if i}
-    summaries = [e for e in summaries if _summary_on_branch(e, branch_seqs, branch_ids)]
-    return branch, _LatestSummary.of(summaries[0] if summaries else None)
+    on_branch = [e for e in summaries if _summary_on_branch(e, branch_seqs, branch_ids)]
+    return branch, (on_branch[0] if on_branch else None)
+
+
+async def _load_branch(session: Session) -> tuple[list[SessionEvent], _LatestSummary]:
+    """The active branch, and the newest summary that describes it.
+
+    Only what a render reads is loaded whole. Everything a summary covers is replaced by the
+    summary, so those events are needed for their *shape* -- the tree walk, which summary is
+    on the branch -- and never their content; `rewalk_events`, `_replay` and the pass all read
+    past `covered`. A store with `get_event_skeletons` answers the shape of the whole log
+    cheaply, and full rows are read only from the summary on. Without one, or with no summary
+    on the branch, the whole log is read as it always was.
+    """
+    skeletons = getattr(session, "get_event_skeletons", None)
+    if skeletons is None:
+        branch, summary = _branch_and_summary(session, await session.get_events())
+        return branch, _LatestSummary.of(summary)
+    shape, summary = _branch_and_summary(session, await skeletons())
+    if summary is None:
+        branch, summary = _branch_and_summary(session, await session.get_events())
+        return branch, _LatestSummary.of(summary)
+    covered = _LatestSummary.of(summary).covered
+    start = min(summary.seq, covered + 1)
+    whole = {e.seq: e for e in await session.get_events(GetEventsOpts(from_seq=start))}
+    # Events at or before `covered` stay skeletons: nothing past this function reads them. One
+    # past it with no full row was deleted between the two reads -- a thread cleared or swept
+    # mid-render -- and is dropped: as a skeleton it would reach the model with no content.
+    branch = [whole[e.seq] if e.seq >= start else e for e in shape if e.seq < start or e.seq in whole]
+    return branch, _LatestSummary.of(whole.get(summary.seq, summary))
 
 
 def _context_tokens(

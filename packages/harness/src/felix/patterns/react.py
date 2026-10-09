@@ -41,6 +41,7 @@ from felix.patterns.types import (
 from felix.side_events import drain as drain_side_events
 from felix.side_events import release as release_side_events
 from felix.steer import (
+    AbortPoll,
     clear_abort,
     clear_cancel_flag,
     drain_follow_up,
@@ -544,6 +545,7 @@ class _ReactAgent:
         Extracted so the caller can retry the whole turn after compacting, which it can
         only do while nothing has been emitted.
         """
+        poll = AbortPoll(tenant_id, thread_id) if thread_id else None
         if supports_stream_turn(model):
             stream_turn = model.stream_turn
             # One request for the whole turn. See `stream_turn` for why the
@@ -552,7 +554,7 @@ class _ReactAgent:
                 if isinstance(item, ModelChatResult):
                     yield item
                     continue
-                if thread_id and await is_aborted(tenant_id, thread_id):
+                if poll is not None and await poll.aborted():
                     return
                 if item.kind == "text":
                     yield Event(
@@ -589,7 +591,7 @@ class _ReactAgent:
         # from the streamed request, so the authoritative turn still costs a second call.
         # Plugin-supplied clients land here.
         async for delta in model.stream(messages, active_tools, opts):
-            if thread_id and await is_aborted(tenant_id, thread_id):
+            if poll is not None and await poll.aborted():
                 return
             yield Event(event="text_delta", data={"chunk": {"content": delta}, "delta": delta})
             yield Event(

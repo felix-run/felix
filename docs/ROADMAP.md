@@ -958,10 +958,16 @@ comment explaining exactly that. It is conditional, not inert.
             per server ref for 60 s, gathered across servers; AWS/GCP secret lookups off the loop
             with one SDK client per process and values for 5 min; the local JWT key parsed once.
             Still per compile, on purpose: memory facts (volatile) and the compiled agent itself.
-      - [ ] *Session log reads.* Every strategy loads the whole log, all branches and every old
-            compaction checkpoint, per turn; read from the newest checkpoint's `from_seq`. Fold
-            the leaf UPDATE into the append transaction, drop the index that duplicates the
-            `session_events` primary key, and stop the per-delta Redis `GET` in `is_aborted`.
+      - [x] *Session log reads.* `compacting` (every bundled manifest's strategy) reads the log's
+            shape -- seq, kind, role and the tree/summary metadata keys -- and full rows only from
+            the newest on-branch summary on: 37.9 → 16.4 ms per render on a 2,020-event thread
+            against local Postgres, more over a network. 0036 drops the btree that duplicated the
+            `session_events` primary key, and a streamed turn asks Redis whether it was aborted at
+            most every 250 ms instead of per token. Declined: folding the leaf UPDATE into the
+            append transaction -- `store_leaf` is separate so a failed leaf write cannot lose the
+            events, and the saving is a few LAN round trips. Still whole-log: `full_replay`,
+            `windowed:N`, `semantic:N` and `summarizing` (they have no checkpoint to start from),
+            the thread snapshot, and `/chat/sessions/feedback`; the skeleton pass itself is O(n).
       - [ ] *Streams and governance fan-out.* Skip the resume grace window once pub/sub delivers;
             notify on fiber status and approval insert so the durable stream can stop polling at
             10 s; cache screening verdicts by content hash and gather windows and model judges;
