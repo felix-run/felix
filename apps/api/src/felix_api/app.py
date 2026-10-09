@@ -9,7 +9,7 @@ import re
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from felix import __version__ as harness_version
 from felix.auth.github import GITHUB_LOGIN_PREFIX
 from felix.auth.middleware import AuthMiddleware
@@ -332,6 +332,14 @@ def create_app(
     app.include_router(documents.router, prefix="/documents")
     app.include_router(skills.router, prefix="/skills")
     app.include_router(skill_import.router, prefix="/skill-library", tags=["Skill library"])
+    # A person's library first, so the tenant's `GET /{name}` never takes `~me` for a name.
+    app.include_router(
+        skill_library.router,
+        prefix="/skill-library/~{library}",
+        tags=["Skill library"],
+        dependencies=[Depends(skill_library.personal_library_param)],
+    )
+    app.include_router(skill_library.org_router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_library.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(skill_quality.router, prefix="/skill-library", tags=["Skill library"])
     app.include_router(a2a.router, prefix="/a2a")

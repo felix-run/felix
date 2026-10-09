@@ -35,6 +35,7 @@ EXEMPT = {
     "repos/checkouts.py:list_files": "sorts a set of paths: every key is the whole path, unique",
     "session/strategies.py:render": "a stable sort over seq-ordered events: ties keep seq order",
     "session/thread_state.py:threads_missing_preview": "sorts the thread ids themselves (the dict's keys), unique; the SQL arm ends on `thread_id`",
+    "skills/library_store.py:list_owners": "one row per owner (grouped, a set in the twin) of one tenant, so every key is unique",
     "skills/quality_store.py:_claim_once": "ends on the head's `id` then `tenant_id`, the primary key of the table passed in (skill_feedback or skill_eval)",
     "skills/suggest.py:_rank": "ends on the skill's position in the catalogue, unique per skill",
     "tools/decider_retrieval.py:shortlist": "ends on the tool's position in the offered list, unique per tool",

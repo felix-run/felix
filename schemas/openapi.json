@@ -2171,6 +2171,47 @@
         "title": "OutdatedItemOut",
         "type": "object"
       },
+      "PersonalLibrariesOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PersonalLibraryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PersonalLibrariesOut",
+        "type": "object"
+      },
+      "PersonalLibraryOut": {
+        "properties": {
+          "library": {
+            "description": "The library's digest: `~me` is its owner's, this is an administrator's way in.",
+            "title": "Library",
+            "type": "string"
+          },
+          "owner": {
+            "description": "Whose library it is: the principal's issuer and subject, `issuer|subject`.",
+            "title": "Owner",
+            "type": "string"
+          },
+          "skills": {
+            "title": "Skills",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "library",
+          "owner",
+          "skills"
+        ],
+        "title": "PersonalLibraryOut",
+        "type": "object"
+      },
       "PlanUpsert": {
         "additionalProperties": false,
         "properties": {
@@ -12989,6 +13030,78 @@
         ]
       }
     },
+    "/skill-library/-/personal": {
+      "get": {
+        "description": "Every personal library in the tenant, for an administrator: whose it is, its digest -- the\n`~{library}` that reads or archives it -- and how many skills it holds. Audited, as every\nadministrator's look into a personal library is.",
+        "operationId": "list_personal_libraries_skill_library___personal_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalLibrariesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Personal Libraries",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
     "/skill-library/-/policy": {
       "delete": {
         "description": "Drop the tenant's own policy, so the settings alone decide; returns the policy now in force.",
@@ -15116,6 +15229,1231 @@
             "required": true,
             "schema": {
               "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MakeLiveIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Rollback Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}": {
+      "get": {
+        "description": "The tenant's library skills by name, each with its live and newest version.\n\nPages by name. The filters apply to a page after it is read, so a filtered page can be\nshort -- even empty -- and still have a next one; keep following `next_cursor` until null.",
+        "operationId": "list_library_skill_library___library__get",
+        "parameters": [
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`live`: has a live version. `draft`: has drafts awaiting review. `archived`: neither.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "live",
+                    "draft",
+                    "archived"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`live`: has a live version. `draft`: has drafts awaiting review. `archived`: neither.",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Who wrote the newest version (`import`: fetched from GitHub).",
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "agent",
+                    "operator",
+                    "import"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who wrote the newest version (`import`: fetched from GitHub).",
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "List Library",
+        "tags": [
+          "Skill library"
+        ]
+      },
+      "post": {
+        "description": "Save a new skill as an operator draft (version 0.1.0), and publish it if `publish`.\n\nThe name is the SKILL.md's own. 409 `skill_exists` if the library already holds it --\n`PUT /{name}/versions` adds a version.",
+        "operationId": "create_library_skill_skill_library___library__post",
+        "parameters": [
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSkillIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillWriteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Create Library Skill",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}": {
+      "delete": {
+        "description": "Take a skill out of every catalog. Its versions and their bytes are kept, and a\nrollback brings one back.",
+        "operationId": "archive_library_skill_skill_library___library___name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillArchivedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Archive Library Skill",
+        "tags": [
+          "Skill library"
+        ]
+      },
+      "get": {
+        "description": "One skill and every version it holds (metadata only; files are read per version).",
+        "operationId": "get_library_skill_skill_library___library___name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Library Skill",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions": {
+      "put": {
+        "description": "Save a new version of an existing skill, edited from `parent_version`.\n\n`parent_version` must be the skill's newest version (409 `parent_changed` otherwise). The\nnew version is `version` if given -- it must be newer than every existing one -- or the\nnewest bumped by `bump` (default patch).",
+        "operationId": "save_library_version_skill_library___library___name__versions_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewVersionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillWriteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Save Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}": {
+      "get": {
+        "description": "One version: its review record, the checks and scan findings it was saved with, and\nits files' digests.",
+        "operationId": "get_library_version_skill_library___library___name__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionDetailOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}/files/{path}": {
+      "get": {
+        "description": "One file of a version, checked against the digest recorded when it was saved.\n\nText is secret-redacted, as `GET /skills/{manifest}/{skill}` redacts a body: this is the\nlower scope, and an embedded credential must not ride out on it. A binary asset comes back\nbase64 and unredacted -- there is no text in it to redact.",
+        "operationId": "get_library_file_skill_library___library___name__versions__version__files__path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Get Library File",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}/preview": {
+      "get": {
+        "description": "Re-run review and the security scan on the stored bytes and say whether the publish\npolicy would pass them. Read-only: no state changes and nothing is audited.",
+        "operationId": "preview_library_version_skill_library___library___name__versions__version__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillPreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Preview Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}/publish": {
+      "post": {
+        "description": "Publish a draft: it becomes the live version, and the version it replaces is archived.\n422 `publish_blocked` with the gate's reasons when the policy refuses it; 409 `live_changed`\nwhen `expected_live_version` was sent and another version is live.",
+        "operationId": "publish_library_version_skill_library___library___name__versions__version__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MakeLiveIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Publish Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}/reject": {
+      "post": {
+        "description": "Archive a draft without publishing it, recording the note.",
+        "operationId": "reject_library_version_skill_library___library___name__versions__version__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillVersionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Unprocessable Content"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillLibraryErrorOut"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Reject Library Version",
+        "tags": [
+          "Skill library"
+        ]
+      }
+    },
+    "/skill-library/~{library}/{name}/versions/{version}/rollback": {
+      "post": {
+        "description": "Make a version that was once live, live again -- through the same gate as a publish,\nwithout its evaluation requirement. 409 `live_changed` as for a publish.",
+        "operationId": "rollback_library_version_skill_library___library___name__versions__version__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+            "in": "path",
+            "name": "library",
+            "required": true,
+            "schema": {
+              "description": "`me` for the caller's own library; a library's digest (from `GET /-/personal`, without its `~`) for an administrator's look into someone else's.",
+              "pattern": "^(me|[0-9a-f]{32})$",
+              "title": "Library",
               "type": "string"
             }
           }

@@ -568,7 +568,7 @@ First, because everything else governs it.
            2026-10-09: a tenant's bar is never lowered) until evaluations are keyed by owner. A
            personal skill splits no operator upload's name; every library audit event carries
            `library`; the skill detail's `upstream` is null for a personal library.
-         - [ ] 3b. `/skill-library/~me/…` (list, get, files, preview, create, versions, publish,
+         - [x] 3b. `/skill-library/~me/…` (list, get, files, preview, create, versions, publish,
            rollback, reject, archive) for the caller; admin access to another's library by its
            digest (`library_label`), reads audited; `make contract` (the library section of
            `schemas/openapi.json` roughly doubles). Shape, from review: `library_request(request,
@@ -578,7 +578,10 @@ First, because everything else governs it.
            included first so `GET /{name}` does not swallow `~me`; `/-/review`, `/-/policy` and
            adopt stay on an org-only router. A digest names no owner -- `library_label` is one-way
            -- so admin access needs a store method listing a tenant's distinct owners (both arms
-           and a conformance case) to resolve one.
+           and a conformance case) to resolve one. Shipped as described, with `list_owners` and
+           `GET /-/personal` (owner, digest, skill count); `~me` needs no management scope and is
+           refused (403 `no_personal_library`) to a caller with no library; a digest is `admin`
+           only, read and archive, every look audited as `personal_library_accessed`.
          - [ ] 3c. `personal_skills: write`: the authoring tools save into the caller's library,
            lifting the `personal_skill` refusal; idempotency keys scoped by owner.
       4. [ ] Promotion, then felix-web docs (library, management API, manifest reference).

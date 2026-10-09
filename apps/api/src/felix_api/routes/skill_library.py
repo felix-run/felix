@@ -31,13 +31,19 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Path, Query, Request
 from fastapi.responses import JSONResponse
-from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_request
+from felix.auth.mgmt import subject_from_request, tenant_id_from_request
 from felix.skills import library
 from felix.skills.format import bundle_path_issue
-from felix.skills.library_keys import ORG_OWNER
-from felix.skills.library_store import ANY_LIVE, MAX_VERSIONS_LISTED, DraftCursor, ExpectedLive
+from felix.skills.library_keys import ORG_OWNER, library_label
+from felix.skills.library_store import (
+    ANY_LIVE,
+    MAX_VERSIONS_LISTED,
+    DraftCursor,
+    ExpectedLive,
+    get_skill_library_store,
+)
 from felix.skills.policy import delete_publish_policy, load_publish_policy, policy_body, set_publish_policy
 from felix.skills.upstream import recorded_state
 
@@ -58,6 +64,7 @@ from felix_api.routes._skill_library_models import (
     CreateSkillIn,
     MakeLiveIn,
     NewVersionIn,
+    PersonalLibrariesOut,
     PolicyPatchIn,
     RejectIn,
     ReviewQueueOut,
@@ -72,7 +79,26 @@ from felix_api.routes._skill_library_models import (
     SkillWriteOut,
 )
 
+# The handlers any library takes: mounted at `/skill-library` for the tenant's own and at
+# `/skill-library/~{library}` for a person's (`library_request` decides whose, and who may). The
+# personal mount is included first, so `GET /{name}` here never takes `~me` for a skill's name.
 router = APIRouter()
+
+
+def personal_library_param(
+    library: str = Path(
+        pattern=r"^(me|[0-9a-f]{32})$",
+        description="`me` for the caller's own library; a library's digest (from `GET /-/personal`, "
+        "without its `~`) for an administrator's look into someone else's.",
+    ),
+) -> None:
+    """Declares `~{library}` on the personal mount, so the schema names it and a malformed one is
+    refused before a handler runs. `library_request` reads it."""
+
+
+# What only the tenant's library has: the review queue, the publish policy, adopting an import,
+# and the administrator's listing of personal libraries.
+org_router = APIRouter()
 
 # Probes one listing runs at once (`shadows_operator_upload` is one object-store HEAD per key).
 _PROBE_CONCURRENCY = 16
@@ -138,7 +164,7 @@ async def list_library(
     Pages by name. The filters apply to a page after it is read, so a filtered page can be
     short -- even empty -- and still have a next one; keep following `next_cursor` until null.
     """
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     skills = await ctx.lib.list_skills(ctx.tenant_id, limit=limit, after=cursor or None)
     summaries = await ctx.lib.summarize(ctx.tenant_id, [s["name"] for s in skills])
     empty: dict[str, Any] = {"latest": None, "pending": 0}
@@ -169,14 +195,44 @@ async def list_library(
     return {"items": items, "next_cursor": next_cursor}
 
 
-@router.get("/-/review", response_model=ReviewQueueOut, responses=ERRORS)
+@org_router.get("/-/personal", response_model=PersonalLibrariesOut, responses=ERRORS)
+async def list_personal_libraries(request: Request) -> Any:
+    """Every personal library in the tenant, for an administrator: whose it is, its digest -- the
+    `~{library}` that reads or archives it -- and how many skills it holds. Audited, as every
+    administrator's look into a personal library is."""
+    from felix.audit.emit import record_offline_event
+    from felix.auth.mgmt import require_mgmt_scopes
+
+    require_mgmt_scopes(request, "admin")
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+    owners = await get_skill_library_store(settings, owner=ORG_OWNER).list_owners(tenant_id)
+    counts = await asyncio.gather(
+        *(get_skill_library_store(settings, owner=o).list_skills(tenant_id) for o in owners)
+    )
+    record_offline_event(
+        settings,
+        tenant_id,
+        "personal_library_accessed",
+        principal=subject_from_request(request),
+        payload={"library": "*", "method": request.method, "path": request.url.path},
+    )
+    return {
+        "items": [
+            {"library": library_label(o), "owner": o, "skills": len(rows)}
+            for o, rows in zip(owners, counts, strict=True)
+        ]
+    }
+
+
+@org_router.get("/-/review", response_model=ReviewQueueOut, responses=ERRORS)
 async def review_queue(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=128),
 ) -> Any:
     """Every draft in the tenant awaiting a decision, oldest first, across skills."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     after = _decode_review_cursor(cursor) if cursor else None
     if cursor and after is None:
         return bad_cursor()
@@ -190,15 +246,15 @@ async def review_queue(
     return {"items": items, "next_cursor": next_cursor}
 
 
-@router.get("/-/policy", response_model=SkillPolicyOut, responses=ERRORS)
+@org_router.get("/-/policy", response_model=SkillPolicyOut, responses=ERRORS)
 async def get_publish_policy(request: Request) -> Any:
     """The gate every publish and rollback passes: the deployment's `FELIX_SKILL_PUBLISH_*`
     settings, tightened by the tenant's own policy when it has one. `source` says which."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     return policy_body(await load_publish_policy(ctx.settings, ctx.tenant_id))
 
 
-@router.patch("/-/policy", response_model=SkillPolicyOut, responses=ERRORS)
+@org_router.patch("/-/policy", response_model=SkillPolicyOut, responses=ERRORS)
 async def patch_publish_policy(body: PolicyPatchIn, request: Request) -> Any:
     """Set fields of the tenant's own publish policy; returns the policy now in force.
 
@@ -206,16 +262,16 @@ async def patch_publish_policy(body: PolicyPatchIn, request: Request) -> Any:
     deployment's settings tightened by it: a value looser than a setting is outvoted, and
     `source` is then `tenant+settings`. A failing security scan blocks whatever this says.
     """
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     changes = body.model_dump(include=body.model_fields_set)
     state = await set_publish_policy(ctx.settings, ctx.tenant_id, changes, by=subject_from_request(request))
     return policy_body(state)
 
 
-@router.delete("/-/policy", response_model=SkillPolicyOut, responses=ERRORS)
+@org_router.delete("/-/policy", response_model=SkillPolicyOut, responses=ERRORS)
 async def delete_publish_policy_route(request: Request) -> Any:
     """Drop the tenant's own policy, so the settings alone decide; returns the policy now in force."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     return policy_body(
         await delete_publish_policy(ctx.settings, ctx.tenant_id, by=subject_from_request(request))
     )
@@ -224,7 +280,7 @@ async def delete_publish_policy_route(request: Request) -> Any:
 @router.get("/{name}", response_model=SkillDetailOut, responses=ERRORS)
 async def get_library_skill(name: str, request: Request) -> Any:
     """One skill and every version it holds (metadata only; files are read per version)."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name):
         return not_found(name)
     skill = await ctx.lib.get_skill(ctx.tenant_id, name)
@@ -251,7 +307,7 @@ async def get_library_skill(name: str, request: Request) -> Any:
 async def get_library_version(name: str, version: str, request: Request) -> Any:
     """One version: its review record, the checks and scan findings it was saved with, and
     its files' digests."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name, version):
         return not_found(f"{name}@{version}")
     row = await ctx.lib.get_version(ctx.tenant_id, name, version)
@@ -279,7 +335,7 @@ async def get_library_file(name: str, version: str, path: str, request: Request)
     from felix.secrets import redact_text
     from felix.skills.binary import binary_asset_mime_type, is_binary_asset_path
 
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name, version):
         return not_found(f"{name}@{version}")
     if path != "SKILL.md" and bundle_path_issue(path) is not None:
@@ -311,7 +367,7 @@ async def get_library_file(name: str, version: str, path: str, request: Request)
 async def preview_library_version(name: str, version: str, request: Request) -> Any:
     """Re-run review and the security scan on the stored bytes and say whether the publish
     policy would pass them. Read-only: no state changes and nothing is audited."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if not addressable(name, version):
         return not_found(f"{name}@{version}")
     row = await ctx.lib.get_version(ctx.tenant_id, name, version)
@@ -376,7 +432,7 @@ async def create_library_skill(body: CreateSkillIn, request: Request) -> Any:
     The name is the SKILL.md's own. 409 `skill_exists` if the library already holds it --
     `PUT /{name}/versions` adds a version.
     """
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     return await _saved(request, ctx, body, expect_newest=library.MUST_NOT_EXIST)
 
 
@@ -388,7 +444,7 @@ async def save_library_version(name: str, body: NewVersionIn, request: Request) 
     new version is `version` if given -- it must be newer than every existing one -- or the
     newest bumped by `bump` (default patch).
     """
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not addressable(name) or await ctx.lib.get_skill(ctx.tenant_id, name) is None:
         return not_found(name)
     return await _saved(
@@ -418,7 +474,7 @@ async def _transition(
     move: Callable[[LibraryRequest, str], Awaitable[dict[str, Any]]],
 ) -> Any:
     """Run one state change on ``name@version`` as the caller, mapping a refusal."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not addressable(name, version):
         return not_found(f"{name}@{version}")
     try:
@@ -484,7 +540,7 @@ async def reject_library_version(name: str, version: str, body: RejectIn, reques
     return await _transition(request, name, version, move)
 
 
-@router.post(
+@org_router.post(
     "/{name}/versions/{version}/adopt", status_code=201, response_model=SkillWriteOut, responses=ERRORS
 )
 async def adopt_library_version(name: str, version: str, body: AdoptIn, request: Request) -> Any:
@@ -500,7 +556,7 @@ async def adopt_library_version(name: str, version: str, body: AdoptIn, request:
     names who wrote the newer one); 422 `reason_required` for a blank reason. Audited as
     `skill_adopted`.
     """
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not addressable(name, version):
         return not_found(f"{name}@{version}")
     by = subject_from_request(request)
@@ -524,7 +580,7 @@ async def adopt_library_version(name: str, version: str, body: AdoptIn, request:
 async def archive_library_skill(name: str, request: Request) -> Any:
     """Take a skill out of every catalog. Its versions and their bytes are kept, and a
     rollback brings one back."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "archive")
     if not addressable(name):
         return not_found(name)
     try:

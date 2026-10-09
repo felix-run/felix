@@ -44,6 +44,8 @@ MAX_VERSIONS_LISTED = 500
 # Versions one skill may hold. Each is rows plus objects that nothing collects, so a loop
 # saving the same skill is bounded per name as well as per manifest (the pending cap).
 MAX_VERSIONS_PER_SKILL = 200
+# Personal libraries one administrator listing reads, at most.
+MAX_OWNERS_LISTED = 1000
 
 SkillStatus = Literal["draft", "published", "archived"]
 
@@ -100,6 +102,12 @@ class SkillLibraryStore(Protocol):
         ...
 
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None: ...
+
+    async def list_owners(self, tenant_id: str, *, limit: int = MAX_OWNERS_LISTED) -> list[str]:
+        """Every personal owner holding a skill in the tenant, in codepoint order. The one read
+        that crosses owners, whichever store asks: it is how an administrator turns a library's
+        digest (`library_keys.library_label`, one-way) back into the library it names."""
+        ...
 
     async def get_skills(self, tenant_id: str, names: Collection[str]) -> dict[str, dict[str, Any]]: ...
 
@@ -302,6 +310,10 @@ class InMemorySkillLibraryStore:
 
     def _mine(self, tenant_id: str, key: _SkillKey | _VersionKey) -> bool:
         return key.tenant == tenant_id and key.owner == self._owner
+
+    async def list_owners(self, tenant_id: str, *, limit: int = MAX_OWNERS_LISTED) -> list[str]:
+        owners = {k.owner for k in self._skills if k.tenant == tenant_id and k.owner != ORG_OWNER}
+        return sorted(owners)[:limit]
 
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None:
         row = self._skills.get(_SkillKey(tenant_id, self._owner, name))
@@ -560,6 +572,24 @@ class PostgresSkillLibraryStore:
     @staticmethod
     def _row(row: Any) -> dict[str, Any]:
         return {c.key: getattr(row, c.key) for c in row.__table__.columns}
+
+    async def list_owners(self, tenant_id: str, *, limit: int = MAX_OWNERS_LISTED) -> list[str]:
+        from sqlalchemy import collate, select
+
+        from felix.db.models import SkillRow
+
+        async with self._session(tenant_id) as db:
+            rows = await db.scalars(
+                select(SkillRow.owner)
+                .where(SkillRow.tenant_id == tenant_id, SkillRow.owner != ORG_OWNER)
+                # GROUP BY, not DISTINCT: Postgres refuses a DISTINCT ordered by an expression
+                # (the collated owner) that is not in the select list.
+                .group_by(SkillRow.owner)
+                # "C" so the order is the twin's codepoint order, whatever the database's collation.
+                .order_by(collate(SkillRow.owner, "C"))
+                .limit(limit)
+            )
+            return list(rows.all())
 
     async def get_skill(self, tenant_id: str, name: str) -> dict[str, Any] | None:
         from felix.db.models import SkillRow
@@ -1154,6 +1184,7 @@ __all__ = [
     "ANY_LIVE",
     "LIBRARY_PREFIX",
     "MAX_LIBRARY_SKILLS",
+    "MAX_OWNERS_LISTED",
     "MAX_OWNER_LENGTH",
     "MAX_VERSIONS_LISTED",
     "MAX_VERSIONS_PER_SKILL",

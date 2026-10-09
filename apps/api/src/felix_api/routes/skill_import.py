@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response
-from felix.auth.mgmt import SCOPE_SKILLS_READ, SCOPE_SKILLS_WRITE, subject_from_request
+from felix.auth.mgmt import subject_from_request
 from felix.skills import importer, library, upstream
 
 from felix_api.routes._skill_library_http import (
@@ -84,7 +84,7 @@ async def browse_source(
     name and description its frontmatter declares. Each item's `source` is what to import it by,
     and `eligible_at` when the minimum import age lets it in -- counted from the first time this
     tenant saw those files, which a browse records."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     try:
         listing = await importer.browse(ctx.settings, ctx.tenant_id, source, ref, deps=_deps(request, ctx))
     except library.SkillLibraryError as exc:
@@ -115,7 +115,7 @@ async def import_from_source(body: ImportIn, request: Request, response: Respons
     Never published here: `publish: true` is 422 `publish_not_allowed`. Third-party text is
     reviewed first, then published with `POST /skill-library/{name}/versions/{version}/publish`.
     """
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if body.publish:
         return error(
             422,
@@ -157,7 +157,7 @@ async def list_upstream(
     GitHub calls, charged to the budget, and records what it found; a budget spent part way ends
     the page there (`stopped`), as does running long, and one spent before the first check is 429.
     A refused check is listed with its code (`error`)."""
-    ctx = library_request(request, SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "read")
     if cursor and not addressable(cursor):
         return bad_cursor()
     try:
@@ -196,7 +196,7 @@ async def check_upstream(
     The stored ref is a read (`skills:read`). Naming another `ref` needs `skills:write`: it points
     the deployment's token, and the budget, at any branch, tag or commit of the source -- a choice
     of what to fetch, as an import is."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE if ref else SCOPE_SKILLS_READ)
+    ctx = await library_request(request, "write" if ref else "read")
     if not addressable(name):
         return not_found(name)
     try:
@@ -223,7 +223,7 @@ async def update_from_upstream(
 
     `diff` is the saved draft against the live version (else the version it was built on). 409
     `not_imported` for a skill whose newest version was not imported."""
-    ctx = library_request(request, SCOPE_SKILLS_WRITE)
+    ctx = await library_request(request, "write")
     if not addressable(name):
         return not_found(name)
     by = subject_from_request(request)

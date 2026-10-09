@@ -71,6 +71,20 @@ class SkillSummaryOut(BaseModel):
     updated_at: int
 
 
+class PersonalLibraryOut(BaseModel):
+    library: str = Field(
+        description="The library's digest: `~me` is its owner's, this is an administrator's way in."
+    )
+    owner: str = Field(
+        description="Whose library it is: the principal's issuer and subject, `issuer|subject`."
+    )
+    skills: int
+
+
+class PersonalLibrariesOut(BaseModel):
+    items: list[PersonalLibraryOut]
+
+
 class SkillListOut(BaseModel):
     items: list[SkillSummaryOut]
     # Pass back as `cursor` for the next page; null on the last. A filtered page may hold
