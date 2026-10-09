@@ -79,6 +79,22 @@ def next_poll_delay(
     return min(delay * POLL_BACKOFF_FACTOR, ceiling)
 
 
+def wait_before_deadline(timeout: float, deadline_ms: float | None, *, floor: float, now_s: float) -> float:
+    """`timeout`, cut short so a wait never runs past `deadline_ms` (by more than `floor`).
+
+    A durable run's expiry is a time, not a write: nothing announces it, so the poll is what finds
+    it. With the long notified ceiling a wait could end a minute after the run expired, and the
+    stream reported it a minute late.
+    """
+    if not deadline_ms:
+        return timeout
+    remaining = deadline_ms / 1000 - now_s
+    # Past the deadline the cut stops: a run still held there (its lease outlived `expires_at`,
+    # waiting on a person) ends through `_save_fiber`'s announcement, and clamping every wait to
+    # the floor would poll it once a second for as long as it is held.
+    return timeout if remaining <= 0 else min(timeout, max(floor, remaining))
+
+
 def session_event_frame(event: SessionEvent, cursor: int) -> str:
     """One `session_event` SSE frame.
 
@@ -183,10 +199,11 @@ class ResumePacing:
     ceiling: float
     idle_limit: float
     #: The ceiling a stream may decay to *once wakes are being delivered*. The long
-    #: default is right for a stream whose only source is the session log, because the
-    #: poll is then a safety net rather than the mechanism. A caller that also polls
-    #: something the notification does not cover has to pass its own -- being woken for
-    #: one resource says nothing about the other. `durable_run_gen` is that caller.
+    #: default is right for a stream whose every source announces, because the poll is
+    #: then a safety net rather than the mechanism. A caller that also polls something no
+    #: notification covers has to pass its own -- being woken for one resource says nothing
+    #: about the other. No caller does today: a durable run's status and gates announce too
+    #: (`fibers._announce_fiber`, `approvals.store._wake_thread`, `client_requests._wake`).
     notified_ceiling: float = NOTIFIED_POLL_CEILING_SECONDS
     #: How long to wait for the next append. The loop reads this, never computes it.
     timeout: float = 0.0
@@ -226,9 +243,8 @@ class ResumePacing:
         # notified does not get that from the poll: an append wakes it at once. So it decays
         # from the first quiet round -- about a dozen polls per idle cycle rather than the
         # thirty the grace held at the floor, which was most of an idle tab's queries. Not a
-        # stream that also polls what no notification covers -- a durable run's status, its
-        # approval and client-request gates -- which says so by pinning `notified_ceiling` to
-        # its own ceiling: there, the poll is still how a waiting approval is found.
+        # stream that also polls what no notification covers, which says so by pinning
+        # `notified_ceiling` to its own ceiling: there, the poll is still how it is found.
         skip_grace = self._notified and self.notified_ceiling > self.ceiling
         grace = 0.0 if skip_grace else POLL_BACKOFF_GRACE_SECONDS
         self.timeout = next_poll_delay(
@@ -316,15 +332,11 @@ async def resume_stream_gen(
             yield frame({"event": "snapshot", "data": snapshot}, cursor=cursor)
 
         store = get_session_store(settings, tenant_id=tenant_id)
-        # While a durable run is in flight, `notified_ceiling=poll_max`, for `durable_run_gen`'s
-        # reason: the gates are a second resource the thread notification does not cover -- an
-        # approval or a client request landing publishes nothing -- so the long ceiling would
-        # announce a write waiting on a person up to a minute late. Otherwise the long ceiling
-        # stands, as #93 set it: a transient run's gates ride its own stream, and one whose
-        # stream dropped was torn down, so a reattach to it has nothing to be asked.
+        # The long notified ceiling holds with a durable run in flight too: its gates wake this
+        # thread when they open or are answered -- `approvals.store._wake_thread`,
+        # `client_requests._wake` -- so the poll is the safety net for them as it is for the log.
+        # They published nothing until they did, and this stream was pinned to `poll_max`.
         pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=idle_limit)
-        if await active_durable_run(settings, tenant_id, thread) is not None:
-            pacing.notified_ceiling = poll_max
         # One subscription for the life of the stream. Waiting through a watch rather than
         # a call per iteration is what keeps this to a single SUBSCRIBE/UNSUBSCRIBE pair
         # instead of one per poll interval.
@@ -343,7 +355,6 @@ async def resume_stream_gen(
                     if await active_durable_run(settings, tenant_id, thread) is None:
                         break
                     pacing.renew()
-                    pacing.notified_ceiling = poll_max
                 yield KEEP_ALIVE
                 # Wait for the thread to move rather than sleeping through it. The query
                 # above runs either way, so a dropped notification costs latency and never
@@ -678,10 +689,9 @@ class DurableTail:
     async def wait(self, *, timeout: float) -> Wake:
         """Wait for the thread to move, or just wait, when there is no thread to watch.
 
-        A wake here means the *session log* moved; an approval landing publishes nothing, so
-        it is found by the poll underneath rather than announced. That is why the durable
-        loop keeps its notified ceiling at `poll_max` instead of the long one — see
-        `durable_run_gen`.
+        A wake here means the thread moved: its session log, the run's status, or one of its
+        gates -- each announces on the thread. The poll underneath is the safety net for a
+        dropped notification, as it is on the reattach stream.
         """
         if self._watch is None:
             await asyncio.sleep(timeout)
@@ -779,9 +789,9 @@ async def durable_run_gen(
     principle as the transcript, applied to the other half: re-derive from the durable record
     rather than forward a message, so a dropped anything costs latency instead of a decision.
 
-    An approval landing publishes no thread notification, so it is found by the poll rather
-    than announced — which is the second reason this loop keeps `notified_ceiling=poll_max`
-    below rather than the long default.
+    An approval landing wakes the thread (`approvals.store._wake_thread`), as does every status
+    the fiber saves (`fibers._announce_fiber`), so both are announced rather than found by the
+    poll, and the poll relaxes to the long notified ceiling as the reattach stream's does.
     """
     from felix.durability.runs import get_durable_run
 
@@ -798,14 +808,13 @@ async def durable_run_gen(
         # infinite idle limit rather than a second set of backoff rules.
         deadline = float(accepted.get("expires_at") or 0) or None
 
-        # `notified_ceiling=poll_max`, deliberately, and this is the one place that needs to
-        # say why. The long notified ceiling exists because a stream whose only source is the
-        # session log polls as a safety net once wakes are being delivered. This loop polls a
-        # *second* resource — the durable run row — and the fiber's status write publishes no
-        # thread notification, so a wake being delivered says nothing about it. Left at the
-        # default, a run that appends nothing for a few minutes (queued, a long tool call, a
-        # fiber that died before its first append) would report its status up to a minute late.
-        pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf, notified_ceiling=poll_max)
+        # The default, long notified ceiling. This loop polls a second resource -- the durable
+        # run row -- and was pinned to `poll_max` while the fiber's status write published
+        # nothing. Every save announces now (`fibers._announce_fiber`), so a wake being
+        # delivered covers the row as it covers the log. A worker that dies mid-step writes
+        # nothing at all, announced or not; that run is found by the poll, now up to a minute
+        # later rather than ten seconds, and is reported then.
+        pacing = ResumePacing(floor=poll, ceiling=poll_max, idle_limit=math.inf)
         last_status = ""
 
         async with durable_tail(
@@ -850,7 +859,8 @@ async def durable_run_gen(
                 # Wait for the thread to move rather than sleeping through it. The status
                 # query above runs either way, so a dropped notification costs latency and
                 # never correctness -- the same property the reattach stream relies on.
-                pacing.waited(await tail.wait(timeout=pacing.timeout))
+                wait = wait_before_deadline(pacing.timeout, deadline, floor=poll, now_s=time.time())
+                pacing.waited(await tail.wait(timeout=wait))
     except asyncio.CancelledError:
         # The client hung up. The *run* survives -- that is what durable means -- so let the
         # cancellation through untouched rather than reporting a failure for work still going.

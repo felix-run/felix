@@ -1016,3 +1016,66 @@ async def test_another_threads_client_tool_is_not_announced(monkeypatch: pytest.
         await client_requests.clear("default:theirs", "call_x")
 
     assert "tool_request" not in _names(body), "another thread's client tool reached this stream"
+
+
+def _spy_watch(monkeypatch: pytest.MonkeyPatch, *, delivering: bool) -> list[float]:
+    """Replace the stream's watch with one that records each wait and never sleeps."""
+    import contextlib
+
+    from felix.session.notify import Wake
+    from felix_api.routes import _streaming as streaming_mod
+
+    slept: list[float] = []
+
+    class _Watch:
+        async def wait(self, *, timeout: float) -> Wake:
+            slept.append(timeout)
+            return Wake(woken=False, by_notification=delivering)
+
+    @contextlib.asynccontextmanager
+    async def _watch(_tenant: str, _thread: str):
+        yield _Watch()
+
+    monkeypatch.setattr(streaming_mod, "thread_watch", _watch)
+    return slept
+
+
+@pytest.mark.asyncio
+async def test_a_notified_durable_stream_relaxes_past_the_short_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The run's status and its gates announce on the thread now, so a delivered wake covers
+    everything this loop polls, and the poll relaxes to the long notified ceiling. It was pinned
+    to `poll_max` (10 s) while they published nothing."""
+    from felix_api.routes._streaming import NOTIFIED_POLL_CEILING_SECONDS
+
+    settings = _settings("tail-relaxes")
+    _force_durable(monkeypatch)
+    _stub_fiber(monkeypatch, statuses=["running"] * 20)
+    slept = _spy_watch(monkeypatch, delivering=True)
+
+    async with _client(settings) as client:
+        body = await _post_stream(client, "relaxes")
+
+    assert "final" in _names(body)
+    assert 10.0 < max(slept) <= NOTIFIED_POLL_CEILING_SECONDS, f"waits: {slept}"
+
+
+@pytest.mark.asyncio
+async def test_a_durable_stream_never_waits_past_the_runs_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expiry is a time nothing announces; with the long ceiling, a wait that ran past it would
+    report the expired run a minute late."""
+    import time
+
+    settings = _settings("tail-deadline")
+    _force_durable(monkeypatch)
+    expires_at = int((time.time() + 3) * 1000)
+    _stub_fiber(monkeypatch, statuses=["running"] * 20, expires_at=expires_at)
+    slept = _spy_watch(monkeypatch, delivering=True)
+
+    async with _client(settings) as client:
+        await _post_stream(client, "deadline")
+
+    assert slept and max(slept) <= 3.0, f"waited past the deadline: {slept}"

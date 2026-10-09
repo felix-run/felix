@@ -142,12 +142,12 @@ class _ClientToolExecutor:
         timeout = DEFAULT_TIMEOUT_SECONDS if self._timeout is None else float(self._timeout)
         # Recorded as well as emitted: the side event reaches only a stream in this process,
         # and a durable run's stream is served by another one. See `client_requests`.
-        await client_requests.record(thread_id, request, timeout=timeout)
+        await client_requests.record(thread_id, request, timeout=timeout, tenant_id=_tenant())
         try:
             await emit_side_event(thread_id, "tool_request", request)
             result = await wait_for_result(thread_id, tool_call_id, timeout=timeout, tenant_id=_tenant())
         finally:
-            await client_requests.clear(thread_id, tool_call_id)
+            await client_requests.clear(thread_id, tool_call_id, tenant_id=_tenant())
         if result.error:
             # Kept as a failure, not flattened into text: `error` was dropped here, so a client
             # that reported a failed write handed the model a plain string, and the trajectory,

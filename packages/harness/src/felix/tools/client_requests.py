@@ -51,27 +51,46 @@ def _key(thread_id: str) -> str:
     return f"{_PREFIX}{waiter_name('client_pending', thread_id)}"
 
 
-async def record(thread_id: str, request: dict[str, Any], *, timeout: float) -> None:
-    """Note that `request` (a `tool_request` payload) is waiting on its client. Never raises."""
+async def record(thread_id: str, request: dict[str, Any], *, timeout: float, tenant_id: str = "") -> None:
+    """Note that `request` (a `tool_request` payload) is waiting on its client. Never raises.
+
+    With `tenant_id`, the thread's watchers are woken too (`_wake`)."""
     tool_call_id = str(request.get("id") or "")
     if not thread_id or not tool_call_id:
         return
     expires_at = int((time.time() + timeout) * 1000)
     raw = json.dumps({**request, "expires_at": expires_at}, default=str)
     client = await _conn.get()
+    stored = False
     if client is not None:
         try:
             key = _key(thread_id)
             await client.hset(key, tool_call_id, raw)
             await client.expire(key, int(timeout) + _EXPIRY_MARGIN_SECONDS)
-            return
+            stored = True
         except Exception:
             await _conn.fallback("client request redis hset")
-    async with _lock:
-        _local.setdefault(_key(thread_id), {})[tool_call_id] = raw
+    if not stored:
+        async with _lock:
+            _local.setdefault(_key(thread_id), {})[tool_call_id] = raw
+    await _wake(tenant_id, thread_id)
 
 
-async def clear(thread_id: str, tool_call_id: str) -> None:
+async def _wake(tenant_id: str, thread_id: str) -> None:
+    """Wake the streams watching this thread: a request opened or closed.
+
+    The session log carries no client request, so a stream announcing a run's gates found a new
+    one only on its next poll. The tenant is the caller's -- a request is keyed by thread alone
+    -- and without one nobody is woken and the poll finds it, as before.
+    """
+    if not tenant_id:
+        return
+    from felix.session.notify import notify_appended
+
+    await notify_appended(tenant_id, thread_id)
+
+
+async def clear(thread_id: str, tool_call_id: str, *, tenant_id: str = "") -> None:
     """Forget a request once its wait has ended, answered or not. Never raises."""
     if not thread_id or not tool_call_id:
         return
@@ -89,6 +108,7 @@ async def clear(thread_id: str, tool_call_id: str) -> None:
             held.pop(tool_call_id, None)
             if not held:
                 _local.pop(_key(thread_id), None)
+    await _wake(tenant_id, thread_id)
 
 
 async def pending(thread_id: str) -> list[dict[str, Any]]:

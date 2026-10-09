@@ -617,7 +617,8 @@ First, because everything else governs it.
       reached nobody and timed out. `GateAnnouncer` now serves both loops: the reattach stream
       announces the thread's gates too (approvals behind `approvals:read`, as before), stays
       open past its idle limit while a durable run is in flight (on the short poll ceiling then,
-      since a gate landing publishes no notification), and the durable stream closes at its
+      since a gate landing published no notification -- until gates announced, see "Durable
+      streams stop polling at 10 s"), and the durable stream closes at its
       deadline only when no worker holds the run (`run_in_flight`, #529's predicate). Each
       stream announces a gate once; a client attached twice must dedupe by id.
 - [x] **One durable run per thread** (felix-run/felix#529). A send to a thread whose durable run
@@ -976,11 +977,15 @@ comment explaining exactly that. It is conditional, not inert.
             model call. Declined: `max_tokens` on the screener (a reasoning model would answer
             nothing and every screen fail closed), and a process-wide attachment cache (a deleted
             image would outlive its deletion, and base64 images weigh on a 2 GiB VM).
-      - [ ] *Durable streams stop polling at 10 s.* Still open from the item above: approvals,
-            client tool requests and fiber status changes publish no thread notification, so a
-            stream with a durable run in flight keeps `notified_ceiling=poll_max`. Fiber status is
-            written in about ten places, and a missed one delays an approval prompt a minute, so it
-            wants its own change with a test per writer.
+      - [x] *Durable streams stop polling at 10 s.* The status writers turned out to be few:
+            `_save_fiber`, its fallback `_record_attempt`, and the claim, each of which now
+            announces on the run's thread. Approvals announce when they open and when they are answered, and
+            client tool requests when they open and close. Both streams that were pinned to
+            `poll_max` -- `durable_run_gen` and a reattach with a run in flight -- relax to the
+            long ceiling, and a durable wait never runs past the run's deadline. Pinned per writer
+            and per backend (`tests/conformance/test_gates_wake.py`). Not announced: a worker
+            that dies mid-step writes nothing, so its run is found by the poll, now within a
+            minute rather than ten seconds.
       - [x] *Worker and data hygiene.* Audit and usage flushes insert 1,000 rows a statement: a
             full buffer was one INSERT past Postgres's 65,535 bind parameters, refused, and written
             back one row per transaction. A scheduler tick claims a due job by compare-and-set on
