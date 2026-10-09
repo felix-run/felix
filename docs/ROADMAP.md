@@ -304,14 +304,15 @@ First, because everything else governs it.
       `jev` to Workers AI through the `felix-prod` AI Gateway. Partner models bill against prepaid,
       account-level AI Gateway credits (a 402, code 2021, when empty), not Workers AI usage.
 
-- [ ] **Clef as the default decider.** Cloudflare's Clef and Clef-flash (2026-10-01) are
+- [x] **Clef as the default decider.** Cloudflare's Clef and Clef-flash (2026-10-01) are
       Jev-API compatible, open-weight, 64K context, and billed as Workers AI usage on the credential
       the chat routes already hold. `clef` and `clef-flash` are now default decision routes and
-      `decider-support` uses `clef`; the `jev` routes stay. Open: one live call. A `@cf/` model is
-      run by path (`/ai/run/@cf/cloudflare/clef`) with flat fields, unlike Jev's nested
-      partner run, and its single-envelope response is taken from the model page, not observed;
-      Jev's page was wrong about exactly this. Not wired: Clef reads images (`images`, up to 4),
-      which `image_screening` could use instead of transcribing first.
+      `decider-support` uses `clef`; the `jev` routes stay. A `@cf/` model is run by path
+      (`/ai/run/@cf/cloudflare/clef`) with flat fields, unlike Jev's nested partner run. Verified
+      live on 2026-10-06 from the production container through the `felix-prod` AI Gateway: both
+      models answered every question type in a single `{result: {model, answers, usage}}`
+      envelope, about 0.6–0.75 s per call including connect. Follow-up, not wired: Clef reads images (`images`,
+      up to 4), which `image_screening` could use instead of transcribing first.
 
 - [x] **Sub-agents are compiled from bundled YAML only.** Found in a real run of the router
       e2e test: `runtime.py:build_tenant_agent` never sets `BuildDeps.sub_agent_builder`, so
@@ -1045,15 +1046,24 @@ comment explaining exactly that. It is conditional, not inert.
             back one row per transaction. A scheduler tick claims a due job by compare-and-set on
             its `next_run_at` (`jobs.store.claim_run`), so two ticks that read the same due job
             fire it once. Retention deletes 5,000 rows a transaction, by `ctid`.
-      - [ ] *pgvector recall and the HNSW indexes.* Memory and document recall order by distance
-            *and* tiebreakers, so the HNSW indexes are never used and every recall is an exact
-            scan of the tenant's rows. Not changed with the rest because the fix changes results,
-            not only speed: the indexes are global, and an approximate search filtered to one
-            tenant can return fewer than `k` rows for a small tenant on a large install. Wants
-            per-tenant partial indexes or pgvector >= 0.8's iterative scan, decided deliberately.
-            Also left: an idle backoff in the fiber loop (one cheap `SKIP LOCKED` claim a second,
-            against up to the backoff in latency before a new durable run starts, unless submit
-            wakes the worker).
+      - [x] *pgvector recall and the HNSW indexes.* This entry had the diagnosis backwards: the
+            indexes *are* used. For a tenant holding most of a table the planner serves recall's
+            order from the global HNSW index and sorts the tiebreakers on top, and the scan visits
+            `hnsw.ef_search` (40) candidates before the tenant filter runs. Measured on synthetic
+            clustered vectors, pgvector 0.8, 100k rows: document recall asked for 40 and got 35.
+            The fix this entry prescribed, an index-ordered inner query re-sorted outside, was
+            worse: a 5k-row tenant got 1.4 rows of 16. Each vector channel now sets
+            `hnsw.iterative_scan = strict_order` for its transaction (`felix.db.vector`), which
+            scans until the `LIMIT` is met or `hnsw.max_scan_tuples` (20,000) are visited; the
+            queries are unchanged, and a tenant the planner scans exactly is untouched. Still
+            approximate for a large tenant (about 93% of the exact top-k in that measurement), by
+            choice: exact costs a full scan of the tenant per recall. pgvector before 0.8 runs as
+            before and logs once. Per-tenant partial indexes were ruled out: DDL per tenant.
+            Document search's two channels now run in a savepoint each, as memory recall's do: a
+            failed lexical channel had left the transaction aborted under the vector channel.
+      - [ ] *An idle backoff in the fiber loop.* One cheap `SKIP LOCKED` claim a second, against up
+            to the backoff in latency before a new durable run starts, unless submit wakes the
+            worker. Not taken in the audit's run.
       - [x] *`GET /chat/sessions` pages.* It read every `thread_state` row a tenant had, unordered,
             on each call. It now returns newest first, `limit` (default 100, at most 500) a page,
             with a `felix.cursors` keyset cursor on `(updated_at, thread_id COLLATE "C")` and an
