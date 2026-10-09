@@ -215,12 +215,12 @@ SHORTHAND_ROOTS = (
     "packages/harness/src/felix/",
     "apps/api/src/felix_api/",
     "packages/ai/src/felix_ai/",
-    "packages/cli/src/felix_cli/",
+    "apps/cli/src/felix_cli/",
     "apps/worker/src/felix_worker/",
     # `felix/config.py`, `felix_ai/registry.py`: the import-path spelling.
     "packages/harness/src/",
     "packages/ai/src/",
-    "packages/cli/src/",
+    "apps/cli/src/",
     "apps/api/src/",
     "apps/worker/src/",
     # `hooks/lib/surfaces.sh`, `lib/command.sh`: relative to the toolkit.

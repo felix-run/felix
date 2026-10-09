@@ -1,6 +1,6 @@
 """The CLI resolves plugin patterns and rejects unknown ones.
 
-`packages/cli` never called `load_optional_plugins()`, so `validate-manifest`,
+`apps/cli` never called `load_optional_plugins()`, so `validate-manifest`,
 `eval` and `doctor` saw only built-ins: a manifest naming a plugin-registered
 pattern validated as broken here while working against the API. The pattern check
 itself is new, so it is also the only place a bad pattern name is caught before
