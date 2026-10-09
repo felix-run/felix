@@ -266,9 +266,9 @@ my-plugin = "my_plugin:register"
 
 `register(registry)` is then called once. Through the registry a plugin adds **tools**, **HTTP
 routes**, **cron tasks**, **auth modes**, **rate-limit keys**, **body limits**,
-**self-authenticating mounts**, **startup hooks**, **audit/usage sinks**, and six
-**agent-loop hooks** (`before_turn`, `filter_history`, `before_compact`, `before_tool`,
-`after_tool`, `compact_failed`).
+**self-authenticating mounts**, **startup hooks**, **audit/usage sinks**, and eight
+**agent-loop hooks** (`before_turn`, `filter_history`, `before_compact`, `before_model`,
+`after_model`, `before_tool`, `after_tool`, `compact_failed`).
 
 Core also exposes open registries, callable at import time, each selected by ordinary config:
 
