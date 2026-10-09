@@ -12,6 +12,8 @@ from typing import Any
 
 import pytest
 
+from tests.session_listing import every_listed
+
 BACKENDS = ["memory", "postgres"]
 TENANT = "conformance"
 OTHER = "conformance-other"
@@ -107,7 +109,7 @@ async def test_a_thread_without_a_preview_gets_its_first_user_message(store_sett
 @parametrized
 @pytest.mark.asyncio
 async def test_the_backfill_moves_neither_timestamp_and_creates_no_thread(store_settings: Any) -> None:
-    from felix.session.thread_state import backfill_preview, list_thread_metadata
+    from felix.session.thread_state import backfill_preview
 
     thread = _thread()
     await _old_thread(store_settings, thread, revision=3)
@@ -127,7 +129,7 @@ async def test_the_backfill_moves_neither_timestamp_and_creates_no_thread(store_
     assert not await backfill_preview(
         settings=store_settings, tenant_id=TENANT, thread_id=ghost, text="orphan"
     )
-    listed = {m["id"] for m in await list_thread_metadata(settings=store_settings, tenant_id=TENANT)}
+    listed = {m["id"] for m in await every_listed(store_settings, TENANT)}
     assert ghost not in listed
 
 

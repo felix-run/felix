@@ -47,6 +47,8 @@ Position = tuple[int, str]
 
 _warned_legacy = False
 
+_BIGINT_MIN, _BIGINT_MAX = -(2**63), 2**63 - 1
+
 
 class InvalidCursor(ValueError):
     """A cursor a client sent that this deployment cannot read.
@@ -83,6 +85,13 @@ def decode_cursor(cursor: str) -> Position:
         from felix.logging_setup import loggable
 
         raise InvalidCursor(f"cursor is not a page position: {loggable(cursor, limit=64)}") from exc
+    # What `int()` and `str` accept and the database refuses: a timestamp past a `bigint`, or a
+    # NUL in the id, is a `DataError` from Postgres -- a 500 for a client's typo, where the twin
+    # answers 200. Refused here, so both arms and every paged route say 400.
+    if not _BIGINT_MIN <= ts <= _BIGINT_MAX or "\x00" in row_id:
+        from felix.logging_setup import loggable
+
+        raise InvalidCursor(f"cursor is not a page position: {loggable(cursor, limit=64)}")
     if not found and not _warned_legacy:
         _warned_legacy = True
         logger.warning(
