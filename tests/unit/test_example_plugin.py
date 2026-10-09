@@ -144,3 +144,48 @@ async def test_the_example_before_tool_hook_blocks_through_the_runner(example_re
     blocked = await run_before_tool({"id": "1", "name": "example__forbidden", "args": {}}, context=ctx)
     assert blocked and blocked.get("block") is True, blocked
     assert await run_before_tool({"id": "2", "name": "example__greet", "args": {}}, context=ctx) is None
+
+
+def _example_tools(example_register: Any) -> Any:
+    from felix.plugins import PluginRegistry
+    from felix.tools.provider import InMemoryToolProvider
+
+    registry = PluginRegistry()
+    example_register(registry)
+    provider = InMemoryToolProvider()
+    registry.plugins[0].register_tools(provider.register)
+    return provider
+
+
+def test_the_greet_tool_shows_the_model_a_name_parameter(example_register: Any) -> None:
+    """Found in a live run: with no schema the model was shown no parameters, sent `{}`, and got
+    "hello, world" for a request to greet someone by name. Executing it directly with a name, as
+    the test above does, could never notice."""
+    from felix_ai.wire.base import tool_json_schema
+
+    schema = tool_json_schema(_example_tools(example_register).get("example__greet"))
+
+    assert "name" in schema.get("properties", {}), schema
+
+
+@pytest.mark.asyncio
+async def test_a_stock_install_has_the_tool_its_hook_blocks_and_the_runner_blocks_it(
+    example_register: Any,
+) -> None:
+    """The hook named a tool nothing registered, so with only this plugin installed the block
+    had nothing to fire on. Driven end to end: the plugin's tool, its hook, the real runner."""
+    from felix.patterns.tool_runner import ToolRunner
+    from felix.patterns.types import ToolCall
+
+    provider = _example_tools(example_register)
+    assert provider.has("example__forbidden"), "the hook blocks a tool this plugin never registers"
+    tool = provider.get("example__forbidden")
+    runner = ToolRunner(tool_map={tool.name: tool}, manifest_id="m")
+
+    messages, _, _, denied = await runner.run_batch(
+        [ToolCall(id="1", name=tool.name, args={})], thread_id="th", tenant_id="t"
+    )
+
+    assert messages[0].content.startswith("[error/blocked] "), messages[0].content
+    assert "unreachable" not in messages[0].content
+    assert denied is True
