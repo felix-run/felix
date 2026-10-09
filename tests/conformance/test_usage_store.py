@@ -27,7 +27,9 @@ def _cost(tokens: int) -> float:
     return usage_with_cost({"input": tokens}, model_id=WIRE)["cost"]["total"]
 
 
-def _record(settings: Any, *, manifest: str, model: str, tokens: int, tenant: str = TENANT) -> None:
+def _record(
+    settings: Any, *, manifest: str, model: str, tokens: int, tenant: str = TENANT, thread: str = ""
+) -> None:
     usage_store.record_tokens(
         settings,
         tenant_id=tenant,
@@ -36,6 +38,7 @@ def _record(settings: Any, *, manifest: str, model: str, tokens: int, tenant: st
         wire_model_id=WIRE,
         tokens_input=tokens,
         cost_usd=_cost(tokens),
+        thread_id=thread,
     )
 
 
@@ -242,3 +245,128 @@ async def test_a_retried_flush_does_not_duplicate_or_block(usage_settings: Any) 
     assert len(usage_store.pending_buffer()) == 0 and usage_store.pending_buffer().quarantined == 0
     rows, _ = await usage_store.query(usage_settings, TENANT, limit=10)
     assert [r["tokens_input"] for r in rows] == [5], "billed once"
+
+
+# --- by thread ---------------------------------------------------------------------------
+
+
+def _t(suffix: str) -> str:
+    return f"{TENANT}:{suffix}"
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_the_thread_survives_the_round_trip_and_filters_the_listing(usage_settings: Any) -> None:
+    _record(usage_settings, manifest="support", model="fast", tokens=10, thread=_t("a"))
+    _record(usage_settings, manifest="support", model="fast", tokens=20, thread=_t("b"))
+    _record(usage_settings, manifest="support", model="fast", tokens=30)
+    _record(usage_settings, manifest="support", model="fast", tokens=40, tenant="other", thread="other:a")
+    assert await usage_store.flush_pending(usage_settings) == 4
+
+    every, _ = await usage_store.query(usage_settings, TENANT, limit=10)
+    assert sorted(r["thread_id"] for r in every) == ["", _t("a"), _t("b")]
+    only_a, _ = await usage_store.query(usage_settings, TENANT, thread_id=_t("a"))
+    assert [r["tokens_input"] for r in only_a] == [10]
+    off_thread, _ = await usage_store.query(usage_settings, TENANT, thread_id="")
+    assert [r["tokens_input"] for r in off_thread] == [30], "'' is the calls outside a thread, not no filter"
+    assert (await usage_store.query(usage_settings, TENANT, thread_id="other:a"))[0] == []
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_an_event_buffered_before_the_column_flushes_as_no_thread(usage_settings: Any) -> None:
+    """A process that predates the field buffered events with no `thread_id` key; a durable
+    buffer can hand them to one that has it."""
+    _record(usage_settings, manifest="m", model="fast", tokens=5)
+    [event] = usage_store.pending_buffer().snapshot()
+    usage_store.pending_buffer().reset_for_tests()
+    event.pop("thread_id")
+    usage_store.pending_buffer().append(event)
+    assert await usage_store.flush_pending(usage_settings) == 1
+    (row,) = (await usage_store.query(usage_settings, TENANT))[0]
+    assert row["thread_id"] == ""
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_threads_group_order_and_total_over_the_window(
+    usage_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = {"now": 1_000_000}
+    monkeypatch.setattr(usage_store, "now_ms", lambda: clock["now"])
+
+    def at(ts: int, tokens: int, thread: str = "", tenant: str = TENANT) -> None:
+        clock["now"] = ts
+        _record(usage_settings, manifest="m", model="fast", tokens=tokens, thread=thread, tenant=tenant)
+
+    at(1_000, 100, _t("old"))
+    at(5_000, 200, _t("old"))
+    at(2_000, 300)  # outside any thread
+    at(6_000, 400, _t("Zed"))
+    # Mixed case at one `last_ts`: the tie breaks on `thread_id` by code point on both arms.
+    at(6_000, 500, _t("alpha"))
+    at(4_000, 600, _t("alpha"))
+    at(9_000, 9_000, "other:x", tenant="other")
+    at(20_000, 700, _t("later"))  # outside the window below
+    await usage_store.flush_pending(usage_settings)
+
+    out = await usage_store.threads(usage_settings, TENANT, since_ms=1_000, until_ms=20_000)
+    assert (out["since_ms"], out["until_ms"]) == (1_000, 20_000)
+    assert out["truncated"] is False
+    assert [i["thread_id"] for i in out["items"]] == [_t("Zed"), _t("alpha"), _t("old"), ""]
+    by = {i["thread_id"]: i for i in out["items"]}
+    assert by[_t("alpha")] == {
+        "thread_id": _t("alpha"),
+        "calls": 2,
+        "tokens_input": 1_100,
+        "tokens_output": 0,
+        "cache_creation": 0,
+        "cache_read": 0,
+        "cost_usd": pytest.approx(_cost(500) + _cost(600)),
+        "first_ts": 4_000,
+        "last_ts": 6_000,
+    }
+    assert (by[_t("old")]["first_ts"], by[_t("old")]["last_ts"]) == (1_000, 5_000), (
+        "the window is inclusive below"
+    )
+    assert by[""]["calls"] == 1 and by[""]["tokens_input"] == 300
+    assert out["totals"]["calls"] == 6
+    assert out["totals"]["tokens_input"] == 2_100, "not the later row, not the other tenant's"
+
+    # Half-open: a row at exactly `until_ms` is out, and so is everything before `since_ms`.
+    narrow = await usage_store.threads(usage_settings, TENANT, since_ms=5_000, until_ms=6_000)
+    assert [(i["thread_id"], i["calls"]) for i in narrow["items"]] == [(_t("old"), 1)]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_threads_truncate_the_page_but_total_every_thread(
+    usage_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = {"now": 0}
+    monkeypatch.setattr(usage_store, "now_ms", lambda: clock["now"])
+    for i in range(5):
+        clock["now"] = 1_000 + i
+        _record(usage_settings, manifest="m", model="fast", tokens=10 * (i + 1), thread=_t(f"t{i}"))
+    await usage_store.flush_pending(usage_settings)
+
+    page = await usage_store.threads(usage_settings, TENANT, since_ms=0, until_ms=10_000, limit=2)
+    assert [i["thread_id"] for i in page["items"]] == [_t("t4"), _t("t3")]
+    assert page["truncated"] is True
+    assert page["totals"]["calls"] == 5
+    assert page["totals"]["tokens_input"] == 150, "the totals are the window's, not the page's"
+
+    exact = await usage_store.threads(usage_settings, TENANT, since_ms=0, until_ms=10_000, limit=5)
+    assert exact["truncated"] is False and len(exact["items"]) == 5
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_threads_default_to_the_summary_window(usage_settings: Any) -> None:
+    _record(usage_settings, manifest="m", model="fast", tokens=10, thread=_t("now"))
+    await usage_store.flush_pending(usage_settings)
+    out = await usage_store.threads(usage_settings, TENANT)
+    assert out["until_ms"] - out["since_ms"] == usage_store.SUMMARY_DEFAULT_WINDOW_MS
+    assert [i["thread_id"] for i in out["items"]] == [_t("now")]
+    empty = await usage_store.threads(usage_settings, "nobody")
+    assert empty["items"] == [] and empty["truncated"] is False and empty["totals"]["calls"] == 0

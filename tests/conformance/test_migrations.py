@@ -129,7 +129,10 @@ async def test_migration_only_ddl_exists_after_upgrade() -> None:
         await drop_everything(url)
 
 
-async def test_a_column_added_to_a_live_table_is_not_null_with_a_default() -> None:
+@pytest.mark.parametrize(
+    ("table", "revision"), [("approvals", "0014"), ("usage_events", "0035_usage_thread")]
+)
+async def test_a_column_added_to_a_live_table_is_not_null_with_a_default(table: str, revision: str) -> None:
     """`approvals.thread_id`, and the promise its migration makes about historical rows.
 
     `create_pending` always passes an explicit `""`, so every store-level test sees the Python
@@ -137,6 +140,8 @@ async def test_a_column_added_to_a_live_table_is_not_null_with_a_default() -> No
     the whole conformance file stays green while every row predating the migration surfaces as
     `null` over `GET /approvals` — two contracts for one field, which is the thing a client
     author discovers in production. This asserts the column as the migration declares it.
+    `usage_events.thread_id` makes the same promise, to `GET /usage/threads`, whose no-thread
+    item is every row written before the column existed.
     """
     url = _url_or_skip()
     try:
@@ -148,14 +153,15 @@ async def test_a_column_added_to_a_live_table_is_not_null_with_a_default() -> No
                     await conn.execute(
                         text(
                             "SELECT is_nullable, column_default FROM information_schema.columns "
-                            "WHERE table_name = 'approvals' AND column_name = 'thread_id'"
-                        )
+                            "WHERE table_name = :table AND column_name = 'thread_id'"
+                        ),
+                        {"table": table},
                     )
                 ).first()
         finally:
             await engine.dispose()
 
-        assert row is not None, "0014 did not add approvals.thread_id"
+        assert row is not None, f"{revision} did not add {table}.thread_id"
         assert row[0] == "NO", f"thread_id is nullable, so an old row reads as null: {row[0]!r}"
         assert row[1] == "''::text", f"no server default, so the backfill-free claim fails: {row[1]!r}"
     finally:
@@ -220,7 +226,8 @@ async def _as_migrator(url: str) -> str:
     """A URL for a role that owns the skill tables and `alembic_version` and is bound by RLS.
 
     Plus every table a migration *after* `0033` alters, because reaching `0033` from head
-    downgrades through each of them first: `fibers` (`0034_fiber_thread`)."""
+    downgrades through each of them first: `fibers` (`0034_fiber_thread`) and `usage_events`
+    (`0035_usage_thread`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -228,7 +235,10 @@ async def _as_migrator(url: str) -> str:
         url,
         f"CREATE ROLE {_MIGRATOR} LOGIN PASSWORD '{_MIGRATOR_PASSWORD}' NOSUPERUSER NOBYPASSRLS",
         f"GRANT USAGE, CREATE ON SCHEMA public TO {_MIGRATOR}",
-        *(f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}' for t in (*_SKILL_TABLES, "fibers", "alembic_version")),
+        *(
+            f'ALTER TABLE "{t}" OWNER TO {_MIGRATOR}'
+            for t in (*_SKILL_TABLES, "fibers", "usage_events", "alembic_version")
+        ),
     )
     return (
         make_url(url)

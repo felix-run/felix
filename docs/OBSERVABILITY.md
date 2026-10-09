@@ -15,7 +15,7 @@ time, so a metric added without a row here fails CI.
 | Metrics (worker) | `FELIX_METRICS_PORT` on the worker process (the Helm chart sets it from `worker.metricsPort` and probes it for liveness) | nothing |
 | Traces | OTLP export | `FELIX_OTEL_ENABLED=true` + `felix-harness[otel]` |
 | Logs | OTLP export, trace-correlated | `FELIX_OTEL_ENABLED=true` + `FELIX_OTEL_LOGS=true` + the extra |
-| Audit / usage rows | Postgres, `GET /audit`, `GET /usage`, `GET /usage/summary` | nothing |
+| Audit / usage rows | Postgres, `GET /audit`, `GET /usage` (`?thread_id=` for one conversation), `GET /usage/summary`, `GET /usage/threads` (spend by thread) | nothing |
 
 Traces go wherever you point them. Every `FELIX_OTEL_*` setting is passed through
 `deploy/docker/compose.yml`, so the base stack (`make up`) exports to a backend you already

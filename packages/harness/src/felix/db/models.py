@@ -605,9 +605,13 @@ class UsageEvent(Base):
     wire_model_id: Mapped[str] = mapped_column(Text, server_default="", default="")
     cost_usd: Mapped[float] = mapped_column(Numeric(14, 8, asdecimal=False), server_default="0", default=0)
     meta_json: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default=text("'{}'::jsonb"), default=dict)
+    # The `{tenant}:{suffix}` thread the call was made on — the spelling the audit payload's
+    # `thread_id` uses, so the two join — or `''` for a call outside any thread.
+    thread_id: Mapped[str] = mapped_column(Text, server_default="", default="")
 
     __table_args__ = (
         Index("idx_usage_tenant_ts_id", "tenant_id", text("ts DESC"), text('id COLLATE "C" DESC')),
+        Index("idx_usage_tenant_thread_ts", "tenant_id", "thread_id", text("ts DESC")),
     )
 
 

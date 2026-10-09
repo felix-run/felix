@@ -15236,6 +15236,7 @@
     },
     "/usage": {
       "get": {
+        "description": "Usage rows, newest first, each with the cost it was priced at.\n\n`thread_id` narrows to one conversation and takes the **suffix** a client holds, composed\ninto `{tenant}:{suffix}` here so a caller can never name another tenant's thread \u2014 the\nrule `/plans` follows. `?thread_id=` (empty) is a real value, the calls made outside any\nthread, distinct from omitting it; a suffix that cannot be a thread id answers 400\n`invalid_thread_id`. Each row's `thread_id` is the stored `{tenant}:{suffix}` form, the\none the audit payload carries, and `''` for none.",
         "operationId": "list_usage_usage_get",
         "parameters": [
           {
@@ -15280,6 +15281,24 @@
                 }
               ],
               "title": "Manifest Id"
+            }
+          },
+          {
+            "description": "The thread's suffix, as every chat route takes it; empty for calls outside a thread.",
+            "in": "query",
+            "name": "thread_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The thread's suffix, as every chat route takes it; empty for calls outside a thread.",
+              "title": "Thread Id"
             }
           }
         ],
@@ -15398,6 +15417,92 @@
           }
         },
         "summary": "Usage Summary",
+        "tags": [
+          "Usage"
+        ]
+      }
+    },
+    "/usage/threads": {
+      "get": {
+        "description": "Spend grouped by thread over a window, most recently active first.\n\nEach item is one thread's calls, tokens, cost and first and last call in the window;\n`thread_id` is the stored `{tenant}:{suffix}` form, and the calls made outside any thread\n(the session summarizer's off-thread work, maintenance paths) are one item with\n`thread_id: \"\"`, ordered like any other. Items sort by `last_ts` descending, then\n`thread_id`. `totals` sums **every** thread in the window, not only the `limit` returned,\nand `truncated` is true when more threads exist than `limit`. The window is\n`/usage/summary`'s: half-open, thirty days by default.\n\nRows written before the harness recorded a thread carry `''`, so a window reaching back\npast that upgrade attributes their spend to the no-thread item.",
+        "operationId": "usage_threads_usage_threads_get",
+        "parameters": [
+          {
+            "description": "Inclusive lower bound, epoch ms. Default: 30 days ago.",
+            "in": "query",
+            "name": "since_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive lower bound, epoch ms. Default: 30 days ago.",
+              "title": "Since Ms"
+            }
+          },
+          {
+            "description": "Exclusive upper bound, epoch ms. Default: now.",
+            "in": "query",
+            "name": "until_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive upper bound, epoch ms. Default: now.",
+              "title": "Until Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Usage Threads Usage Threads Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage Threads",
         "tags": [
           "Usage"
         ]
