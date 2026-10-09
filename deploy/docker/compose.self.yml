@@ -44,6 +44,10 @@ x-shell-shared: &shell-shared
 
 x-self-env: &self-env
   <<: *shell-shared
+  # `contributor` and `triage` live outside the bundled manifests, because only this stack
+  # has the workspace and shell runner they need. From the image, never from /workspace: the
+  # agent edits /workspace, and must not be able to edit the manifest that governs it.
+  FELIX_MANIFESTS_DIR: /app/manifests/self
   # Approvals must not be anonymous: under `none` the caller could approve its own mutation.
   # The base anchor already defaults to api_key; pinned here so an overlay cannot loosen it.
   FELIX_AUTH_MODE: api_key

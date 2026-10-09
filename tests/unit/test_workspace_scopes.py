@@ -231,8 +231,12 @@ def test_the_self_build_manifests_ask_for_the_deployment_scope_and_cowork_does_n
 
     repo = Path(__file__).resolve().parents[2]
     scopes = {
-        name: load_manifest_file(repo / "manifests" / f"{name}.yaml").spec.workspace.scope
-        for name in ("contributor", "triage", "cowork")
+        name: load_manifest_file(repo / "manifests" / path).spec.workspace.scope
+        for name, path in (
+            ("contributor", "self/contributor.yaml"),
+            ("triage", "self/triage.yaml"),
+            ("cowork", "cowork.yaml"),
+        )
     }
     assert scopes == {"contributor": "deployment", "triage": "deployment", "cowork": "thread"}
 

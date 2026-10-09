@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=../schemas/manifest.schema.json
+# yaml-language-server: $schema=../../schemas/manifest.schema.json
 # Felix working on Felix — rung 2 and 3 of docs/SELF.md. Workspace file tools over its own
 # checkout, a governed shell that runs the repository's gates in that checkout, developer
 # skills, `publish_commits` to publish its local commits as a branch, and GitHub over MCP for the
@@ -18,7 +18,7 @@
 #
 # Validate (the write check needs the operator allowlist, as a deployment would):
 #   FELIX_SHELL_ALLOWED_COMMANDS="uv run ruff,uv run ty,./scripts/test.sh,make lint,make type,make test,make schema,uv run felix validate-manifest,git status,git diff,git log,git fetch,git switch,git restore,git stash,git add,git commit,git branch" \
-#     felix validate-manifest manifests/contributor.yaml -e production
+#     felix validate-manifest manifests/self/contributor.yaml -e production
 apiVersion: felix/v1
 kind: Agent
 metadata:

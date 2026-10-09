@@ -224,7 +224,7 @@ def test_every_bundled_fixture_validates_and_names_tools_its_manifest_binds() ->
         assert report.errors == [], f"{path.name}: {report.errors}"
         seen += 1
         if path.stem == "contributor":
-            manifest = load_bundled("contributor")
+            manifest = load_bundled("contributor", bundled_dir=fixtures.parents[1] / "manifests" / "self")
             bound = set(manifest.spec.tools) | {ref.name for ref in manifest.spec.sandboxes}
             bound |= {ref.name for ref in getattr(manifest.spec, "shell_tools", [])}
             for item in payload["items"]:

@@ -163,14 +163,14 @@ person merging a change to the workflow. Until that check lands, CODEOWNERS plus
 the gate.
 
 ```
-.github/**                                   manifests/contributor.yaml
-.claude/**                                   manifests/triage.yaml
-CODEOWNERS                                   docs/SELF.md
-uv.lock                                      scripts/felix_boundary.py
-migrations/**                                tests/unit/test_*_manifest.py
-deploy/**                                    packages/harness/src/felix/manifests/builder.py
-packages/harness/src/felix/governance/**     packages/harness/src/felix/tools/shell.py
-packages/harness/src/felix/auth/**           packages/harness/src/felix/security/**
+.github/**                                   manifests/self/**
+.claude/**                                   docs/SELF.md
+CODEOWNERS                                   scripts/felix_boundary.py
+uv.lock                                      tests/unit/test_*_manifest.py
+migrations/**                                packages/harness/src/felix/manifests/builder.py
+deploy/**                                    packages/harness/src/felix/tools/shell.py
+packages/harness/src/felix/governance/**     packages/harness/src/felix/security/**
+packages/harness/src/felix/auth/**
 ```
 
 A ticket whose `surface` names one of these is `felix:needs-human` at rung 1 and a person implements it.
