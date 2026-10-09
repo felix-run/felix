@@ -41,10 +41,13 @@ def _producer_spellings() -> set[str]:
     found: set[str] = set()
     for f in files:
         for m in re.finditer(
-            r'(?:deny_output|tool_error_output|content=)\(?\s*f?"(\[[^"\]]*\]?)', f.read_text()
+            r'(?:deny_output|tool_error_output|content=|text = )\(?\s*f?"(\[[^"\]]*\]?)', f.read_text()
         ):
             found.add(m.group(1))
     assert found, "no denial literals found — has the producer spelling moved?"
+    # The runner's own spellings, named: a renamed variable there would otherwise drop them from
+    # the scan without failing it, since the other files still supply literals.
+    assert {"[error/", "[fatal/"} <= {lit[:7] for lit in found}, found
     return found
 
 

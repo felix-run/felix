@@ -23,9 +23,36 @@ from felix.patterns.types import ChatMessage, ImageAttachment, ToolCall
 from felix.steer import should_cancel_remaining_tools
 from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
 from felix.tools.tool_images import ImageBudget, store_tool_images
-from felix.tools.types import Tool, ToolInvocationCtx, deny_source, is_wrapper_deny, tool_output_images
+from felix.tools.types import (
+    Tool,
+    ToolInvocationCtx,
+    deny_source,
+    is_failure_content,
+    is_wrapper_deny,
+    tool_output_images,
+)
 
 logger = logging.getLogger("felix.patterns.tool_runner")
+
+
+def _applied_hook_content(replacement: Any, original: str, tool_name: str) -> str:
+    """The text an after-tool hook's `content` puts in place of `original`.
+
+    The one place a replacement is applied, on every path. Eval counts a failed or refused call
+    by its text alone (`is_failure_content`), so a rewrite of one that dropped its leading
+    `[error/...]`, `[tool error/...]` or `[policy ...]` would score it as a success; the original
+    tag goes back in front. A replacement whose `str()` raises keeps the original text.
+    """
+    try:
+        text = str(replacement)
+    except Exception:
+        logger.warning(
+            "after_tool content for %s is unprintable; kept the original", tool_name, exc_info=True
+        )
+        return original
+    if not is_failure_content(original) or is_failure_content(text):
+        return text
+    return f"{original.split(']', 1)[0]}] {text}"
 
 
 def _transport_of(tool: Any | None) -> str:
@@ -140,33 +167,25 @@ class ToolRunner:
                         "manifest_id": self.manifest_id,
                     },
                 )
+                if tool.fatal:
+                    text = f"[fatal/{code.value}] {exc}"
+                else:
+                    text = f"[error/{code.value}] {exc}"
+                # The hook is handed the text the model would see and may replace it, as on
+                # success: an exception's message is where a secret or an internal path is most
+                # likely to surface, so a redacting hook that skipped failures would miss it.
                 after = await run_after_tool(
                     {"id": call.id, "name": call.name, "args": call.args},
-                    None,
+                    text,
                     is_error=True,
                     context={"manifest_id": self.manifest_id, "thread_id": thread_id},
                 )
                 terminate = bool(after and after.get("terminate"))
-                if tool.fatal:
-                    return (
-                        "fatal",
-                        ChatMessage(
-                            role="tool",
-                            tool_call_id=call.id,
-                            name=call.name,
-                            content=f"[fatal/{code.value}] {exc}",
-                        ),
-                        terminate,
-                        False,
-                    )
+                if after and after.get("content") is not None:
+                    text = _applied_hook_content(after["content"], text, call.name)
                 return (
-                    "ok",
-                    ChatMessage(
-                        role="tool",
-                        tool_call_id=call.id,
-                        name=call.name,
-                        content=f"[error/{code.value}] {exc}",
-                    ),
+                    "fatal" if tool.fatal else "ok",
+                    ChatMessage(role="tool", tool_call_id=call.id, name=call.name, content=text),
                     terminate,
                     False,
                 )
@@ -292,13 +311,14 @@ class ToolRunner:
             )
             after = await run_after_tool(
                 {"id": call.id, "name": call.name, "args": call.args},
-                result,
+                # A failed call's hook gets the text the model would see, as when the tool raised.
+                content if err else result,
                 is_error=bool(err),
                 context={"manifest_id": self.manifest_id, "thread_id": thread_id},
             )
             terminate = bool(after and after.get("terminate"))
             if after and after.get("content") is not None:
-                content = str(after["content"])
+                content = _applied_hook_content(after["content"], content, call.name)
                 rewritten = True
         except Exception:
             logger.warning("post-call handling failed for %s; the tool already ran", call.name, exc_info=True)
