@@ -192,12 +192,29 @@ async def run_before_tool(
     *,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Preflight a tool call. Return ``{block: true, reason?, terminate?}`` to deny."""
+    """Preflight a tool call. Return ``{block: true, reason?, terminate?}`` to deny.
+
+    The first block wins and ends the chain; the answer comes back with ``hook`` naming the hook
+    that blocked, for the audit row. Anything else lets the call through to the next hook. Any
+    non-empty answer used to end the chain, so a hook answering ``{"deny": True}`` — the reference
+    plugin's old shape — both blocked nothing and switched off every hook registered after it.
+    """
     ctx = context or {}
     for hook in list(_hooks.before_tool):
         result = await _call("before_tool", hook, tool_call, ctx)
-        if isinstance(result, dict) and result:
-            return result
+        if result is _FAILED or result is None:
+            continue
+        if not isinstance(result, dict):
+            _note_misbehaviour(
+                "before_tool", hook, "answered with something other than a dict", exc_info=False
+            )
+            continue
+        if not result:
+            continue
+        if result.get("block"):
+            return {**result, "hook": _name(hook)}
+        if "block" not in result:
+            _note_misbehaviour("before_tool", hook, "answered without a `block` key", exc_info=False)
     return None
 
 
