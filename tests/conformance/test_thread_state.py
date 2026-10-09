@@ -20,6 +20,8 @@ from typing import Any
 
 import pytest
 
+from tests.session_listing import every_listed
+
 BACKENDS = ["memory", "postgres"]
 TENANT = "conformance"
 
@@ -31,9 +33,7 @@ def _unknown_thread() -> str:
 
 
 async def _listed(settings: Any) -> set[str]:
-    from felix.session.thread_state import list_thread_metadata
-
-    return {str(m["id"]) for m in await list_thread_metadata(settings=settings, tenant_id=TENANT)}
+    return {str(m["id"]) for m in await every_listed(settings, TENANT)}
 
 
 async def _get_meta(settings: Any, thread: str) -> None:
@@ -432,9 +432,7 @@ async def test_a_key_added_to_the_defaults_later_still_answers(store_settings: A
 
 
 async def _row(settings: Any, thread: str) -> dict[str, Any]:
-    from felix.session.thread_state import list_thread_metadata
-
-    rows = [m for m in await list_thread_metadata(settings=settings, tenant_id=TENANT) if m["id"] == thread]
+    rows = [m for m in await every_listed(settings, TENANT) if m["id"] == thread]
     assert len(rows) == 1, rows
     return rows[0]
 

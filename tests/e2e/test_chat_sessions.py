@@ -139,6 +139,38 @@ async def test_reading_an_unknown_thread_does_not_add_it_to_the_session_list(boo
         assert not [t for t in threads if t.endswith(f":{unknown}")], threads
 
 
+async def test_the_session_list_pages_newest_first(boot: Any) -> None:
+    """`limit` and `cursor` reach the store, and `next_cursor` walks to the end and stops there.
+
+    A listing that ignored `limit` returns all three threads on page one, and one that dropped
+    `cursor` returns the first page again until the walk gives up. The three turns usually share
+    a second, so the order this pins is the id tie-break -- named so that it agrees with write
+    order, and holds either way; the timestamp order is pinned by
+    `tests/conformance/test_session_listing.py`.
+    """
+    async with boot([_answer(), _answer(), _answer()]) as app:
+        written = [(await _seed(app, f"e2e-page-{n}"))["thread_id"] for n in range(3)]
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(4):
+            params: dict[str, Any] = {"limit": 1, **({"cursor": cursor} if cursor else {})}
+            resp = await app.client.get("/chat/sessions", params=params)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert len(body["sessions"]) == 1, body
+            seen.append(body["sessions"][0]["id"])
+            cursor = body["next_cursor"]
+            if cursor is None:
+                break
+
+        assert seen == written[::-1], seen
+        assert cursor is None, "the walk did not end"
+
+        bad = await app.client.get("/chat/sessions", params={"cursor": "not-a-cursor"})
+        assert bad.status_code == 400, bad.text
+
+
 async def test_search_finds_a_thread_by_its_content(boot: Any) -> None:
     """The search index is fed by the turn, not by a separate write the test performs."""
     async with boot([_answer()]) as app:
