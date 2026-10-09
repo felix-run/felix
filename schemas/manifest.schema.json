@@ -2113,7 +2113,8 @@
           "default": "off",
           "enum": [
             "off",
-            "read"
+            "read",
+            "write"
           ],
           "title": "Personal Skills",
           "type": "string"

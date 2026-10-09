@@ -242,7 +242,8 @@ Real, documented rather than hidden:
   `logger.info` line instead. The series simply never appears in `/metrics`.
 - **`policy_deny` rows carry `payload.control`.** One of `policy`, `limits`, `guardrails`,
   `approvals`, `command`, `screening` — the wrapper that refused the call, read from the deny
-  marker every wrapper already stamps. `GET /audit?event_type=policy_deny` plus that key answers
+  marker every wrapper already stamps — or `hook`, when a plugin's `before_tool` hook blocked it;
+  that row also carries `payload.hook`, the blocking hook's `module.qualname`. `GET /audit?event_type=policy_deny` plus that key answers
   "every call blocked by approvals this week"; before it, the layer existed only in the tool
   message. A `tool_call` row never carries the key.
 - **Failed `tool_call` rows carry `payload.error_code`.** The call's `ToolErrorCode`

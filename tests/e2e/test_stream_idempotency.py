@@ -325,3 +325,45 @@ async def test_a_claim_that_raises_a_conflict_is_a_409_not_a_500(boot: Any, monk
         resp = await app.client.post("/chat/stream", json=_send(thread), headers={KEY: "send-7"})
         assert (resp.status_code, resp.json()["detail"]) == (409, "idempotency_in_progress"), resp.text
         assert app.spy.calls == []
+
+
+async def test_one_subject_at_two_issuers_does_not_share_a_streamed_key(boot: Any, monkeypatch: Any) -> None:
+    """`alice` at one identity provider and `alice` at another are two callers with two personal
+    skill libraries; a streamed resend of one's key is not the other's turn to replay."""
+    from felix.auth.context import AuthContext, Principal
+    from felix.plugins import PluginRegistry
+
+    async def no_token(_target: Any) -> str:
+        return ""
+
+    def builder(settings: Any) -> Any:
+        async def authenticate(request: Any) -> AuthContext:
+            principal = Principal(
+                subject="alice",
+                tenant_id="default",
+                scopes=frozenset({"*"}),
+                issuer=request.headers["x-test-issuer"],
+                scheme="test",
+            )
+            return AuthContext(principal=principal, outbound_token=no_token, anonymous=False)
+
+        return authenticate
+
+    registry = PluginRegistry()
+    registry.register_authenticator("two-issuers", builder)
+    monkeypatch.setattr("felix.plugins._registry", registry)
+    thread = "e2e-idem-stream-issuers"
+    async with boot(
+        [_answer("a's answer"), _answer("b's answer")], env={"FELIX_AUTH_MODE": "two-issuers"}
+    ) as app:
+        replies = [
+            await app.client.post(
+                "/chat/stream", json=_send(thread), headers={KEY: "send-1", "x-test-issuer": issuer}
+            )
+            for issuer in ("https://a.example", "https://b.example", "https://a.example")
+        ]
+        turns = len(app.spy.calls)
+    assert [r.status_code for r in replies] == [200, 200, 200], [r.text[:200] for r in replies]
+    assert "idempotent-replayed" not in replies[1].headers, "b.example's alice was replayed a.example's turn"
+    assert replies[2].headers.get("idempotent-replayed") == "true"
+    assert turns == 2
