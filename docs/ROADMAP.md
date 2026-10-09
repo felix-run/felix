@@ -620,17 +620,30 @@ First, because everything else governs it.
            rejected (`expect_newest`, so a racing save is `parent_changed`), or starts the skill
            (`MUST_NOT_EXIST`); a name whose every version was rejected takes a promotion again,
            building on nothing. Only the caller's `~me` has the route (a separate `me_router`); the
-           tenant's mount 404s and an administrator's digest is a 422. Promoted text is judged as an
-           agent's: `promoted` is in `publish_gate._UNTRUSTED_AUTHORS` (only a bundle-scenario
-           evaluation counts), the copy rule runs on it and it inherits the personal version's
-           `lineage_import`, it may not add or change `evals/` (`invalid_bundle`, never stripped),
-           an agent's publish-mode edit of it is held for a person, and an undecided one cannot be
-           adopted. Review-queue bound: one undecided promotion per tenant skill (`promotion_pending`,
-           409) and `MAX_PENDING_PROMOTIONS` (20, the agent pending cap's default -- there is no
-           setting, the cap is a manifest field) per promoter (`pending_cap_reached`, 429); both an
-           early count (`count_pending_promotions`, both store arms and a conformance case), soft by
-           the promotions in flight. Audited as `skill_promoted` with the personal library's label.
-           The downgrade refuses while a promoted row exists, counted under `app.rls_bypass`.
+           tenant's mount 404s and an administrator's digest is a 422. A name whose tenant skill
+           carries imported text is refused (`origin_mismatch`) until a reviewer adopts it: the
+           promotion would become the newest version an update builds on, freezing the import's
+           updates and staling its adopt. Promoted text is judged as an agent's, each rule read
+           from one table, `skills/sources.py` (`SOURCES`, a row per `SkillSourceKind`, and a test
+           holding the two equal): only a bundle-scenario evaluation counts, the copy rule runs on
+           it and it inherits the personal version's `lineage_import`, its `evals/` must equal the
+           tenant parent's exactly -- none added, changed or removed (`invalid_bundle`, never
+           stripped) -- an undecided one cannot be adopted, and an agent's publish-mode edit of it
+           is held for a person, as is an edit of any undecided draft chain that leads back to it
+           (`library.builds_on_unreviewed_text`, walked through undecided drafts and bounded by the
+           version cap; an unknown source counts as needing review). Review-queue bound: one
+           undecided promotion per tenant skill (`promotion_pending`, 409) and
+           `MAX_PENDING_PROMOTIONS` (20, the agent pending cap's default -- there is no setting,
+           the cap is a manifest field) per promoter (`pending_cap_reached`, 429); both an early
+           count (`count_drafts`, which replaced `count_pending` for every draft count, on both
+           store arms with conformance cases), soft by the promotions in flight. Audited as
+           `skill_promoted` with the personal library's label. The downgrade refuses while a
+           promoted row exists, counted under `app.rls_bypass`.
+           Known and accepted (security review): a `skills:personal`-only caller learns a little
+           about the tenant's library from a promotion's answer -- whether a name exists, is
+           imported, or holds a pending promotion, and the version the draft follows. The
+           `skill_promoted` audit event links the promoter's subject to their library's digest,
+           which an `audit:read` holder can then match to `~{digest}`.
            Deferred: a hard (transactional) promotion cap; telling the promoter when their draft is
            decided; promoting into a name only rejected versions hold has no race check.
          - [ ] felix-web docs (library, management API, manifest reference).

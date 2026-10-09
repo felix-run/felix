@@ -448,7 +448,12 @@ async def test_concurrent_agent_saves_cannot_pass_the_pending_cap(
     refused = [r for r in results if isinstance(r, library.SkillPendingCapReached)]
     assert len(refused) == 2 and all(isinstance(r, dict | library.SkillPendingCapReached) for r in results)
     # Exact, not conservative: the one that fits lands, rather than every racer backing out.
-    assert await get_skill_library_store(settings, owner=ORG_OWNER).count_pending("acme", "contributor") == 1
+    assert (
+        await get_skill_library_store(settings, owner=ORG_OWNER).count_drafts(
+            "acme", source="agent", origin_manifest_id="contributor"
+        )
+        == 1
+    )
 
 
 async def test_a_failed_write_leaves_no_row_and_no_bytes(settings: Settings) -> None:
@@ -469,7 +474,7 @@ async def test_a_failed_write_leaves_no_row_and_no_bytes(settings: Settings) -> 
     lib = get_skill_library_store(settings, owner=ORG_OWNER)
     assert await lib.get_skill("acme", "invoice-triage") is None
     assert await lib.version_ids("acme", "invoice-triage") == []
-    assert await lib.count_pending("acme", "contributor") == 0
+    assert await lib.count_drafts("acme", source="agent", origin_manifest_id="contributor") == 0
     assert [k for k in store._data if k.startswith("skill-library/")] == []
 
 

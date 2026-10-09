@@ -215,8 +215,47 @@ async def test_a_promotion_cannot_add_or_change_evals(
 
     assert refused.value.code == "invalid_bundle"
     assert [i.path for i in refused.value.issues] == ["evals/scenarios.json"]
-    assert "a promotion cannot add or change evals/" in str(refused.value)
+    assert refused.value.issues[0].message == library.PROMOTED_EVALS
     assert await _org_lib(settings).version_ids(TENANT, NAME) == (["0.1.0"] if org_has_skill else [])
+
+
+async def test_a_promotion_cannot_drop_the_tenants_evals(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Dropping a scenario the tenant's reviewers wrote -- the one the version fails, say -- games
+    the gate as surely as writing one."""
+    await _org(
+        settings,
+        store,
+        _files(body=BODY + "\nOrg.\n", **{"evals/scenarios.json": EVALS, "evals/edge.json": EVALS}),
+    )
+    await _personal(settings, store, _files(**{"evals/scenarios.json": EVALS}))
+
+    with pytest.raises(library.SkillBundleInvalid) as refused:
+        await _promote(settings, store)
+
+    assert [(i.path, i.message) for i in refused.value.issues] == [
+        ("evals/edge.json", library.PROMOTED_EVALS)
+    ]
+    assert await _org_lib(settings).version_ids(TENANT, NAME) == ["0.1.0"]
+
+
+async def test_an_agents_save_may_still_drop_an_eval_file(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """The exact rule is a promotion's; an agent's save keeps the rule it had (add or change)."""
+    await _org(settings, store, _files(body=BODY + "\nOrg.\n", **{"evals/scenarios.json": EVALS}))
+    saved = await library.save_draft(
+        settings,
+        TENANT,
+        files=_files(body=BODY + "\nAgent.\n"),
+        provenance=library.DraftProvenance(source="agent", author="m", origin_manifest_id="m"),
+        name=NAME,
+        parent="0.1.0",
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    assert saved["version"] == "0.1.1"
 
 
 async def test_a_promotion_may_carry_the_orgs_own_evals_unchanged(
@@ -282,6 +321,37 @@ async def test_a_promotion_copying_an_orgs_imported_file_carries_its_lineage(
     await _personal(settings, store, _files(**{"references/queues.md": QUEUES}))
     draft = await _promote(settings, store)
     assert draft["lineage_import"] is True, "the copy rule runs on a promotion, as on an agent's save"
+
+
+async def test_a_promotion_never_takes_over_an_imported_skill(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Promoted into an import's name, the draft would be the newest version an update builds on,
+    and an update never replaces another origin's version: the import would stop taking updates
+    and its adopt would be stale. Refused until a reviewer adopts the import."""
+    origin = ImportOrigin(
+        source=f"github:acme/skills/skills/{NAME}", ref="main", commit="a" * 40, tree_hash="t"
+    )
+    await library.save_draft(
+        settings,
+        TENANT,
+        files=_files(body=BODY + "\nTheirs.\n"),
+        provenance=library.DraftProvenance(source="import", author="ops", origin=origin),
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    await _personal(settings, store)
+
+    with pytest.raises(library.SkillOriginMismatch) as refused:
+        await _promote(settings, store)
+    assert refused.value.code == "origin_mismatch" and "adopt" in str(refused.value)
+    assert await _org_lib(settings).version_ids(TENANT, NAME) == ["0.1.0"]
+
+    await library.adopt(
+        settings, TENANT, NAME, "0.1.0", by="ops", reason="ours now", object_store=store, owner=ORG_OWNER
+    )
+    draft = await _promote(settings, store)
+    assert (draft["version"], draft["parent_version"]) == ("0.1.2", "0.1.1")
 
 
 async def test_an_undecided_promotion_carrying_imported_text_cannot_be_adopted(
@@ -548,3 +618,84 @@ async def test_the_routes_refusals(
 
     assert resp.status_code == status, resp.text
     assert resp.json()["error"] == error
+
+
+# -- races and edges, pinned as intended ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("org_has_skill", [False, True], ids=["new-name", "existing-name"])
+async def test_a_save_landing_while_a_promotion_reads_its_files_wins(
+    settings: Settings, store: MemoryObjectStore, monkeypatch: pytest.MonkeyPatch, org_has_skill: bool
+) -> None:
+    """`expect_newest`: an org save that lands between the promotion's choice of parent and its
+    write refuses the promotion (`skill_exists` for a new name, `parent_changed` otherwise), and
+    no promoted draft is left behind."""
+    if org_has_skill:
+        await _org(settings, store)
+        await library.publish(settings, TENANT, NAME, "0.1.0", by="ops", object_store=store, owner=ORG_OWNER)
+    await _personal(settings, store)
+    real = library.read_version_files
+
+    async def racing(*args: Any, **kwargs: Any) -> dict[str, str]:
+        await _org(settings, store, _files(body=BODY + "\nA racing save.\n"))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(library, "read_version_files", racing)
+    expected = library.SkillParentChanged if org_has_skill else library.SkillExists
+    with pytest.raises(expected):
+        await _promote(settings, store)
+    assert await _org_lib(settings).count_drafts(TENANT, source="promoted") == 0
+
+
+async def test_an_older_superseded_personal_version_is_promoted_as_itself(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _personal(settings, store)
+    await _personal(settings, store, _files(body=BODY + "\nSecond take.\n"))
+    draft = await _promote(settings, store, "0.1.0")
+    assert (draft["status"], draft["promoted_from"]) == ("draft", "0.1.0")
+    assert (
+        await library.read_version_files(
+            settings, TENANT, NAME, draft["version"], object_store=store, owner=ORG_OWNER
+        )
+        == _files()
+    )
+
+
+async def test_a_version_of_a_personal_skill_its_owner_archived_can_still_be_promoted(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _personal(settings, store)
+    await library.archive_skill(settings, TENANT, NAME, by="alice", owner=ALICE)
+    draft = await _promote(settings, store)
+    assert (draft["status"], draft["promoted_from"]) == ("draft", "0.1.0")
+
+
+async def test_the_same_person_may_promote_bytes_a_reviewer_rejected_again(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    await _personal(settings, store)
+    await _promote(settings, store)
+    await library.reject(settings, TENANT, NAME, "0.1.0", by="ops", note="not yet", owner=ORG_OWNER)
+    again = await _promote(settings, store)
+    assert (again["version"], again["status"], again["promoted_from"]) == ("0.1.1", "draft", "0.1.0")
+
+
+# -- the source table ------------------------------------------------------------------------
+
+
+def test_every_source_has_one_row_in_the_traits_table() -> None:
+    from typing import get_args
+
+    from felix.skills.sources import SOURCES, SkillSourceKind
+
+    assert set(SOURCES) == set(get_args(SkillSourceKind))
+
+
+def test_an_unknown_source_is_review_material_and_held_to_its_bundles_evals() -> None:
+    from felix.skills.publish_gate import gate_scenario_source
+    from felix.skills.sources import needs_review_when_agent_edits
+
+    assert needs_review_when_agent_edits("someday-source") is True
+    assert needs_review_when_agent_edits("agent") is False
+    assert gate_scenario_source("someday-source") == "bundle"

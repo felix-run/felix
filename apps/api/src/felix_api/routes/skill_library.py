@@ -46,6 +46,7 @@ from felix.skills.library_store import (
     get_skill_library_store,
 )
 from felix.skills.policy import delete_publish_policy, load_publish_policy, policy_body, set_publish_policy
+from felix.skills.sources import SkillSourceKind
 from felix.skills.upstream import recorded_state
 
 from felix_api.routes._skill_library_http import (
@@ -169,7 +170,7 @@ async def list_library(
         default=None,
         description="`live`: has a live version. `draft`: has drafts awaiting review. `archived`: neither.",
     ),
-    source: Literal["agent", "operator", "import", "promoted"] | None = Query(
+    source: SkillSourceKind | None = Query(
         default=None,
         description="Who wrote the newest version (`import`: fetched from GitHub; `promoted`: proposed "
         "from a personal library).",
