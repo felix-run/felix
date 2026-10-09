@@ -699,6 +699,12 @@ because an explicit transport disables httpx's environment proxies, `HTTP_PROXY`
 `HTTPS_PROXY` do **not** apply to these calls. A deployment whose egress containment is a
 proxy allowlist needs to know that.
 
+Model, decision-model and embedding calls are the opposite case. They share a connection pool,
+which also takes an explicit transport, so when the environment names a proxy
+(`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) Felix skips the pool for them and builds a plain
+client that routes through the proxy as before (`felix_ai.wire.transport.model_http_client`).
+Provider traffic stays on the proxy route; it only loses connection reuse.
+
 **Two outbound paths take the URL from the *model* rather than from a manifest** —
 `spec.browser_tools` and `spec.http_tools` — which makes them the highest-value rebinding
 targets in the harness. They are pinned differently because they dial differently.

@@ -18,7 +18,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol, runtime_checkable
 
-from felix_ai.wire.transport import shared_transport
+from felix_ai.wire.transport import model_http_client
 
 from felix.config import Settings
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
@@ -119,7 +119,7 @@ class OpenAIEmbedder:
         # Connect is pinned separately: raising the request ceiling for a large batch must
         # not also raise the ceiling on reaching a provider that is simply not there.
         timeout = httpx.Timeout(self._timeout_s, connect=DEFAULT_CONNECT_TIMEOUT_S)
-        async with httpx.AsyncClient(timeout=timeout, transport=shared_transport()) as client:
+        async with model_http_client(timeout) as client:
             resp = await client.post(
                 f"{self._base_url}/embeddings",
                 json={"model": self.model, "input": list(texts)},

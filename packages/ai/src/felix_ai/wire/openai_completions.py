@@ -13,8 +13,6 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from felix_ai.catalog import effort_for_budget, effort_for_spec, known_entry_for
 from felix_ai.context import resolve_cache_key
 from felix_ai.output_schema import is_strict
@@ -41,8 +39,8 @@ from felix_ai.wire.base import (
 )
 from felix_ai.wire.transport import (
     ModelGatewayError,
+    model_http_client,
     post_with_retry,
-    shared_transport,
     stream_with_retry,
 )
 
@@ -380,7 +378,7 @@ class OpenAICompletionsClient(HttpModelClient):
             output_schema=output_schema,
         )
         headers = self._headers(self._auth_headers())
-        async with httpx.AsyncClient(timeout=self._timeout(), transport=shared_transport()) as client:
+        async with model_http_client(self._timeout()) as client:
             resp = await post_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/chat/completions",
@@ -438,7 +436,7 @@ class OpenAICompletionsClient(HttpModelClient):
         raw_stop: str | None = None
 
         async with (
-            httpx.AsyncClient(timeout=self._timeout(), transport=shared_transport()) as client,
+            model_http_client(self._timeout()) as client,
             stream_with_retry(
                 client,
                 f"{self.base_url.rstrip('/')}/chat/completions",
