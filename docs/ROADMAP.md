@@ -1039,7 +1039,15 @@ comment explaining exactly that. It is conditional, not inert.
             per-tenant partial indexes or pgvector >= 0.8's iterative scan, decided deliberately.
             Also left: an idle backoff in the fiber loop (one cheap `SKIP LOCKED` claim a second,
             against up to the backoff in latency before a new durable run starts, unless submit
-            wakes the worker), and pagination for `GET /chat/sessions` (a wire-contract change).
+            wakes the worker).
+      - [x] *`GET /chat/sessions` pages.* It read every `thread_state` row a tenant had, unordered,
+            on each call. It now returns newest first, `limit` (default 100, at most 500) a page,
+            with a `felix.cursors` keyset cursor on `(updated_at, thread_id COLLATE "C")` and an
+            index that serves that order (`0037`). The sort key is the row's second, not the
+            metadata's millisecond `updatedAt` the row reports, because the column is what the
+            index orders; the two move in one transaction, so they differ only inside a second,
+            where the id breaks the tie. A client that never sends `cursor` now sees its 100 most
+            recent threads rather than all of them.
 
 - [x] **Moved off `psycopg[binary]` to `psycopg[c]`** — done well before the ignore expired,
       and `.trivyignore.yaml` is empty again because the findings went away with the library

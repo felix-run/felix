@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from felix.auth.mgmt import SCOPE_APPROVALS_READ, holds_mgmt_scopes
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
@@ -1552,19 +1552,35 @@ async def append_custom_entry(
 
 
 @router.get("/sessions")
-async def list_sessions(request: Request) -> dict[str, Any]:
-    """The caller's tenant's threads, from their stored metadata (one read, no session logs).
+async def list_sessions(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """One page of the caller's tenant's threads, newest first, from their stored metadata.
 
     Each row is `{id, createdAt, updatedAt, parentSessionId, sessionName, preview, manifest}`.
     `preview` is the thread's first user message, masked, whitespace-collapsed and cut to 120
     characters; `manifest` is the manifest its newest turn ran under. Either is `null` for a
     thread that has none, or that was written before the harness recorded it.
+
+    Ordered by last update, to the second, then by id. `next_cursor` is `null` on the last page;
+    otherwise pass it back as `cursor` for the next.
     """
+    from felix.cursors import InvalidCursor
     from felix.session.thread_state import list_thread_metadata
 
     auth = _auth_from_request(request)
-    items = await list_thread_metadata(settings=request.app.state.settings, tenant_id=auth.tenant_id)
-    return {"sessions": items, "items": items}
+    try:
+        items, next_cursor = await list_thread_metadata(
+            settings=request.app.state.settings, tenant_id=auth.tenant_id, limit=limit, cursor=cursor
+        )
+    except InvalidCursor as exc:
+        # A query parameter, so anything; a malformed one is the client's error, not a 500.
+        raise HTTPException(
+            status_code=400, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from exc
+    return {"sessions": items, "items": items, "next_cursor": next_cursor}
 
 
 @router.get("/sessions/search")

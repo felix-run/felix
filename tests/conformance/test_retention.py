@@ -28,6 +28,8 @@ from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 from felix.usage import store as usage_store
 
+from tests.session_listing import every_listed
+
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("retention_settings", BACKENDS, indirect=True)
 
@@ -146,9 +148,7 @@ async def _thread_len(settings: Any, thread_id: str) -> int:
 async def _thread_meta_ids(settings: Any) -> set[str]:
     if settings.database_url.startswith("memory://"):
         return set(thread_state._meta_by_thread)  # the memory lister keys on a tenant prefix threads lack
-    return {
-        str(m["id"]) for m in await thread_state.list_thread_metadata(settings=settings, tenant_id=TENANT)
-    }
+    return {str(m["id"]) for m in await every_listed(settings, TENANT)}
 
 
 async def _seed_memory(settings: Any, *, superseded: bool) -> str:

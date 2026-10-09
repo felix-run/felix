@@ -344,12 +344,13 @@ async def test_a_fork_from_a_cold_replica_copies_the_stored_branch(store_setting
 @pytest.mark.asyncio
 async def test_an_unknown_thread_has_no_leaf_and_is_not_created(store_settings: Any) -> None:
     from felix.session.store import get_session_store
-    from felix.session.thread_state import list_thread_metadata
     from felix.session.tree import sync_leaf
+
+    from tests.session_listing import every_listed
 
     thread = _thread()
     assert await sync_leaf(get_session_store(store_settings, tenant_id=TENANT).open(thread)) is None
-    listed = {str(m["id"]) for m in await list_thread_metadata(settings=store_settings, tenant_id=TENANT)}
+    listed = {str(m["id"]) for m in await every_listed(store_settings, TENANT)}
     assert thread not in listed
 
 

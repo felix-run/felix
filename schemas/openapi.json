@@ -8111,8 +8111,38 @@
     },
     "/chat/sessions": {
       "get": {
-        "description": "The caller's tenant's threads, from their stored metadata (one read, no session logs).\n\nEach row is `{id, createdAt, updatedAt, parentSessionId, sessionName, preview, manifest}`.\n`preview` is the thread's first user message, masked, whitespace-collapsed and cut to 120\ncharacters; `manifest` is the manifest its newest turn ran under. Either is `null` for a\nthread that has none, or that was written before the harness recorded it.",
+        "description": "One page of the caller's tenant's threads, newest first, from their stored metadata.\n\nEach row is `{id, createdAt, updatedAt, parentSessionId, sessionName, preview, manifest}`.\n`preview` is the thread's first user message, masked, whitespace-collapsed and cut to 120\ncharacters; `manifest` is the manifest its newest turn ran under. Either is `null` for a\nthread that has none, or that was written before the harness recorded it.\n\nOrdered by last update, to the second, then by id. `next_cursor` is `null` on the last page;\notherwise pass it back as `cursor` for the next.",
         "operationId": "list_sessions_chat_sessions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -8125,6 +8155,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Sessions",
