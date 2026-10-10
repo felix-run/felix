@@ -6134,6 +6134,102 @@
         ],
         "title": "VersionHeadOut",
         "type": "object"
+      },
+      "WorkspaceEditedOut": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session entry's id, when `recorded`.",
+            "title": "Event Id"
+          },
+          "status": {
+            "description": "`queued`: a run is in flight and reads the note before its next model call. `recorded`: no run is, so the note was appended to the thread for the next one.",
+            "enum": [
+              "queued",
+              "recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "thread_id"
+        ],
+        "title": "WorkspaceEditedOut",
+        "type": "object"
+      },
+      "WorkspaceEditedRequest": {
+        "additionalProperties": false,
+        "description": "The operator changed a workspace file directly. Structure only: the server writes the note.",
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Size after a `write`. Not sent for `delete`.",
+            "title": "Bytes"
+          },
+          "op": {
+            "default": "write",
+            "enum": [
+              "write",
+              "delete",
+              "rename"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "path": {
+            "description": "Workspace path the operator changed.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "to_path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "New path. Required for `rename`, only.",
+            "title": "To Path"
+          }
+        },
+        "required": [
+          "thread_id",
+          "path"
+        ],
+        "title": "WorkspaceEditedRequest",
+        "type": "object"
       }
     }
   },
@@ -9614,6 +9710,78 @@
           }
         },
         "summary": "Chat Ui Response",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/workspace/edited": {
+      "post": {
+        "description": "Tell the agent the operator edited, deleted or renamed a workspace file directly.\n\nA run in flight reads it before its next model call, without cancelling any tool call\n(`status: queued`, and a `workspace_note` frame on that run's stream); otherwise it is\nappended to the thread for the next run (`status: recorded`). Either way it lands in the\nsession log once, as an in-context `custom` entry with `metadata.type: workspace_edit`.\nThe text the model reads is written by the server from these fields.",
+        "operationId": "chat_workspace_edited_chat_workspace_edited_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceEditedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceEditedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Workspace Edited",
         "tags": [
           "Threads"
         ]
