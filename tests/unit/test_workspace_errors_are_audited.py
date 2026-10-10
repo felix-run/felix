@@ -68,7 +68,6 @@ def ws(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.mark.asyncio
 async def test_a_write_the_filesystem_refuses_is_audited_as_an_error(
     monkeypatch: pytest.MonkeyPatch, ws: Path
 ) -> None:
@@ -91,7 +90,6 @@ async def test_a_write_the_filesystem_refuses_is_audited_as_an_error(
     assert is_failure_content(content), "the eval trajectory would not count this as a failure"
 
 
-@pytest.mark.asyncio
 async def test_a_refused_edit_is_an_error_the_model_can_fix(
     monkeypatch: pytest.MonkeyPatch, ws: Path
 ) -> None:
@@ -111,7 +109,6 @@ async def test_a_refused_edit_is_an_error_the_model_can_fix(
     assert (ws / "a.txt").read_text(encoding="utf-8") == "alpha\n"
 
 
-@pytest.mark.asyncio
 async def test_a_path_that_escapes_is_refused_and_audited(monkeypatch: pytest.MonkeyPatch, ws: Path) -> None:
     audited, content = await _run(monkeypatch, root=str(ws), tool="read_file", args={"path": "../outside"})
 
@@ -120,7 +117,6 @@ async def test_a_path_that_escapes_is_refused_and_audited(monkeypatch: pytest.Mo
     assert "escapes workspace root" in content
 
 
-@pytest.mark.asyncio
 async def test_a_missing_workspace_is_the_transport_not_the_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -133,7 +129,6 @@ async def test_a_missing_workspace_is_the_transport_not_the_model(
     assert content.startswith("[tool error/transport_unavailable]"), content
 
 
-@pytest.mark.asyncio
 async def test_a_write_that_works_is_still_ok(monkeypatch: pytest.MonkeyPatch, ws: Path) -> None:
     """The guard against over-correcting: success keeps its status and its JSON body."""
     audited, content = await _run(

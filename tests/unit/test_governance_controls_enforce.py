@@ -59,7 +59,6 @@ def _tool(payload: ToolOutput, name: str = "fetch") -> Tool:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_resolved_secret_is_redacted_from_tool_output() -> None:
     tool = apply_secret_masking([_tool("token is s3cret-value here")], ["s3cret-value"], "m")[0]
 
@@ -69,7 +68,6 @@ async def test_a_resolved_secret_is_redacted_from_tool_output() -> None:
     assert "[REDACTED]" in out
 
 
-@pytest.mark.asyncio
 async def test_every_configured_secret_is_redacted_not_just_the_first() -> None:
     """A loop that returns after the first match leaks the rest, and looks identical."""
     tool = apply_secret_masking([_tool("a=AAA b=BBB")], ["AAA", "BBB"], "m")[0]
@@ -79,7 +77,6 @@ async def test_every_configured_secret_is_redacted_not_just_the_first() -> None:
     assert "AAA" not in out and "BBB" not in out, f"a secret survived: {out}"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "read"),
     [
@@ -100,7 +97,6 @@ async def test_masking_handles_each_tool_output_shape(payload: ToolOutput, read)
         assert out["ok"] is True, "masking dropped the rest of the output"
 
 
-@pytest.mark.asyncio
 async def test_masking_leaves_a_tool_alone_when_there_are_no_secrets() -> None:
     """The early return is the common path — every manifest without a `secret:` ref."""
     original = _tool("nothing to hide")
@@ -108,7 +104,6 @@ async def test_masking_leaves_a_tool_alone_when_there_are_no_secrets() -> None:
     assert apply_secret_masking([original], [], "m")[0] is original
 
 
-@pytest.mark.asyncio
 async def test_masking_survives_the_whole_governance_stack() -> None:
     """Pin the wiring, not just the function.
 
@@ -147,7 +142,6 @@ def _with_scopes(*scopes: str):
     return run_with_context(RequestContext(settings=settings, auth=auth, manifest_id="m"))
 
 
-@pytest.mark.asyncio
 async def test_a_policy_denies_a_tool_when_the_caller_lacks_the_scope() -> None:
     inner = _tool("side effect happened")
     tool = apply_policies([inner], [POLICY], "m")[0]
@@ -160,7 +154,6 @@ async def test_a_policy_denies_a_tool_when_the_caller_lacks_the_scope() -> None:
     assert inner.executor.calls == 0, "the tool ran anyway — the deny is advisory"
 
 
-@pytest.mark.asyncio
 async def test_a_policy_allows_the_tool_when_the_scope_is_present() -> None:
     """A control that denies everything is as broken as one that denies nothing."""
     tool = apply_policies([_tool("ok")], [POLICY], "m")[0]
@@ -169,7 +162,6 @@ async def test_a_policy_allows_the_tool_when_the_scope_is_present() -> None:
         assert await tool.executor.execute({}) == "ok"
 
 
-@pytest.mark.asyncio
 async def test_a_policy_denies_when_there_is_no_request_context_at_all() -> None:
     """Fail closed. A background or durable run with no request context has no scopes, and
     "no scopes" must not read as "all scopes"."""
@@ -183,7 +175,6 @@ async def test_a_policy_denies_when_there_is_no_request_context_at_all() -> None
     assert inner.executor.calls == 0
 
 
-@pytest.mark.asyncio
 async def test_every_rule_on_a_tool_has_to_pass_not_just_one() -> None:
     """Two policies naming the same tool are an AND, or the second is decoration."""
     rules = [
@@ -200,7 +191,6 @@ async def test_every_rule_on_a_tool_has_to_pass_not_just_one() -> None:
     assert inner.executor.calls == 0
 
 
-@pytest.mark.asyncio
 async def test_a_tool_no_policy_names_is_left_alone() -> None:
     """Policies gate the tools they name. Gating everything would be a different control."""
     original = _tool("ok", name="unnamed")
@@ -208,7 +198,6 @@ async def test_a_tool_no_policy_names_is_left_alone() -> None:
     assert apply_policies([original], [POLICY], "m")[0] is original
 
 
-@pytest.mark.asyncio
 async def test_a_policied_tool_keeps_the_fields_it_was_declared_with() -> None:
     """The regression this file's audit turned up.
 
@@ -233,7 +222,6 @@ async def test_a_policied_tool_keeps_the_fields_it_was_declared_with() -> None:
     assert wrapped.fatal is True
 
 
-@pytest.mark.asyncio
 async def test_a_declared_flag_survives_the_whole_compile() -> None:
     """The end-to-end version, against `build_agent` rather than one wrapper.
 
@@ -306,7 +294,6 @@ def test_a_policy_that_names_no_tools_is_rejected() -> None:
         Policy(id="orphan", required_scopes=["tools:calc"])
 
 
-@pytest.mark.asyncio
 async def test_a_scopeless_rule_reaching_the_wrapper_denies_rather_than_permits() -> None:
     """Defense in depth, for a `Policy` built in code rather than parsed.
 
@@ -326,7 +313,6 @@ async def test_a_scopeless_rule_reaching_the_wrapper_denies_rather_than_permits(
     assert inner.executor.calls == 0
 
 
-@pytest.mark.asyncio
 async def test_a_str_scope_set_cannot_satisfy_a_policy_by_substring() -> None:
     """`s not in scopes` is a substring test when `scopes` is a `str`, not a set.
 
@@ -421,7 +407,6 @@ def test_a_refusal_message_never_carries_the_offending_value() -> None:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_policy_glob_gates_the_tools_it_names() -> None:
     """`github__*` is the shape MCP prefixing makes natural, and the docs told operators
     to write it. Before this it matched no bound tool and the policy wrapped nothing."""
@@ -482,7 +467,6 @@ def _gated_tool(rules, name="github__delete_repo"):
     return inner, apply_approvals([inner], rules, "m")[0]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("order", ["literal-then-glob", "glob-then-literal"], ids=lambda o: o)
 async def test_a_broad_glob_rule_cannot_displace_a_strict_literal_one(order: str) -> None:
     """The regression globbing introduced, in the order that triggered it.
@@ -507,7 +491,6 @@ async def test_a_broad_glob_rule_cannot_displace_a_strict_literal_one(order: str
     assert "strict" in tool_output_content(out), "the broad rule displaced the strict one"
 
 
-@pytest.mark.asyncio
 async def test_a_glob_gates_a_tool_no_literal_rule_names() -> None:
     """The widening globs exist for: gated where nothing gated before."""
     from felix.manifests.schema import ApprovalRule
@@ -784,7 +767,6 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_build_agent_warns_about_the_untrusted_tools_it_actually_bound(caplog) -> None:
     """The wiring, not the helper.
 
@@ -842,7 +824,6 @@ async def test_build_agent_warns_about_the_untrusted_tools_it_actually_bound(cap
     assert "unscreened" not in caplog.text, f"warned with screening enabled: {caplog.text}"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("content", "quarantined"),
     [

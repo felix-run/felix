@@ -44,7 +44,6 @@ async def _long_session() -> Any:
     return session
 
 
-@pytest.mark.asyncio
 async def test_a_stored_summary_render_runs_no_pass_and_fires_no_hook() -> None:
     """What `POST /chat/ask` asks for: the cut a pass would make, without the pass."""
     from felix.hooks import get_agent_hooks, reset_agent_hooks
@@ -75,7 +74,6 @@ async def test_a_stored_summary_render_runs_no_pass_and_fires_no_hook() -> None:
     assert len(rendered) < len(before), "and it is the cut window, not the whole thread"
 
 
-@pytest.mark.asyncio
 async def test_a_compacting_render_over_budget_appends_nothing_through_the_read_only_view() -> None:
     session = await _long_session()
     before = await session.get_events()
@@ -104,7 +102,6 @@ def test_only_the_sentinel_alone_reads_not_in_context(reply: str, status: str) -
     assert _read_answer(reply)[0] == status
 
 
-@pytest.mark.asyncio
 async def test_the_summarizing_strategy_shows_its_stored_summary_without_a_new_one() -> None:
     from felix.session.strategies import SummarizingSessionStrategy
 

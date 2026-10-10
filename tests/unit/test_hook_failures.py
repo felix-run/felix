@@ -44,7 +44,6 @@ async def kwargs_only_hook(**kwargs: Any) -> dict[str, Any] | None:
     return {"block": True}
 
 
-@pytest.mark.asyncio
 async def test_a_hook_with_the_wrong_signature_warns_once_and_is_counted_every_time(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -63,7 +62,6 @@ async def test_a_hook_with_the_wrong_signature_warns_once_and_is_counted_every_t
     assert _failures("before_tool") == before + 3
 
 
-@pytest.mark.asyncio
 async def test_each_broken_hook_gets_its_own_warning(caplog: pytest.LogCaptureFixture) -> None:
     def first(tool_call, ctx):
         raise RuntimeError("first")
@@ -81,7 +79,6 @@ async def test_each_broken_hook_gets_its_own_warning(caplog: pytest.LogCaptureFi
     assert named == [False, True], "one warning per hook, not one for the whole kind"
 
 
-@pytest.mark.asyncio
 async def test_a_wrong_shaped_answer_warns_once_too(caplog: pytest.LogCaptureFixture) -> None:
     def impersonates_the_user(response, ctx):
         return {"message": ChatMessage(role="user", content="not an assistant")}
@@ -97,7 +94,6 @@ async def test_a_wrong_shaped_answer_warns_once_too(caplog: pytest.LogCaptureFix
     assert _failures("after_model") == before + 2
 
 
-@pytest.mark.asyncio
 async def test_a_working_hook_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
     get_agent_hooks().register_before_tool(lambda tool_call, ctx: None)
     before = _failures("before_tool")

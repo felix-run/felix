@@ -54,7 +54,6 @@ async def _resolve(settings, messages, tenant_id: str = "acme"):
     return await resolve_file_refs(messages, tenant_id=tenant_id, object_store=get_object_store(settings))
 
 
-@pytest.mark.asyncio
 async def test_a_reference_reaches_the_model_as_the_bytes_it_names() -> None:
     settings = _settings()
     file_id = await _stored(settings, "acme", PNG, "image/png")
@@ -68,7 +67,6 @@ async def test_a_reference_reaches_the_model_as_the_bytes_it_names() -> None:
     assert resolved.content_blocks[1].url == url
 
 
-@pytest.mark.asyncio
 async def test_the_media_type_is_read_off_the_bytes_not_a_stored_label() -> None:
     """There is no stored label on the default backend — `storage/fs.py` discards the
     content type — so a sniff is the only answer that is right on every backend."""
@@ -92,7 +90,6 @@ async def test_the_media_type_is_read_off_the_bytes_not_a_stored_label() -> None
     assert sniff_media_type(b"RIFF" + b"\x00" * 4 + b"WAVEfmt ") is None
 
 
-@pytest.mark.asyncio
 async def test_one_tenant_cannot_name_another_tenants_file() -> None:
     """The tenant comes from the request context; the reference only carries an id.
 
@@ -108,7 +105,6 @@ async def test_one_tenant_cannot_name_another_tenants_file() -> None:
     assert [b.type for b in resolved.content_blocks] == ["text"]
 
 
-@pytest.mark.asyncio
 async def test_a_deleted_attachment_drops_rather_than_breaking_the_thread() -> None:
     """Raising here would make a thread unanswerable forever the moment an attachment is
     deleted: the turn is already in an append-only log, so every later turn replays it."""
@@ -120,7 +116,6 @@ async def test_a_deleted_attachment_drops_rather_than_breaking_the_thread() -> N
     assert resolved.content_blocks[0].text == "what is this"
 
 
-@pytest.mark.asyncio
 async def test_a_turn_that_was_only_a_reference_still_says_something() -> None:
     """Dropping a reference must not leave an empty message.
 
@@ -141,7 +136,6 @@ async def test_a_turn_that_was_only_a_reference_still_says_something() -> None:
     assert "0" * 32 in resolved.content_blocks[0].text
 
 
-@pytest.mark.asyncio
 async def test_an_unparseable_reference_is_not_echoed_back_at_the_model() -> None:
     """The marker reaches the model, and a reference is caller-written — so the id is
     echoed only when `valid_file_id` accepts it. The one that failed to resolve is the one
@@ -155,7 +149,6 @@ async def test_an_unparseable_reference_is_not_echoed_back_at_the_model() -> Non
     assert "no longer available" in text
 
 
-@pytest.mark.asyncio
 async def test_one_reference_repeated_across_a_replayed_context_is_read_once() -> None:
     """`full_replay` re-sends every prior turn, so one image arrives once per turn in a
     single render — five messages, one object.
@@ -186,7 +179,6 @@ async def test_one_reference_repeated_across_a_replayed_context_is_read_once() -
     assert all(m.attachments[0].url.startswith("data:image/png") for m in resolved)
 
 
-@pytest.mark.asyncio
 async def test_messages_without_a_reference_come_back_untouched() -> None:
     """The overwhelmingly common message. Identity rather than equality, because a copy
     per turn on every model call would be the cost of a feature nobody used."""
@@ -198,7 +190,6 @@ async def test_messages_without_a_reference_come_back_untouched() -> None:
     assert resolved[0] is plain
 
 
-@pytest.mark.asyncio
 async def test_resolving_does_not_rewrite_the_caller_s_message() -> None:
     """These belong to the session, and the next turn is rebuilt from them. Expanding one
     in place would put the base64 back in the log, which is the thing being avoided."""
@@ -212,7 +203,6 @@ async def test_resolving_does_not_rewrite_the_caller_s_message() -> None:
     assert original.content_blocks[1].url == file_ref_url(file_id)
 
 
-@pytest.mark.asyncio
 async def test_the_session_serialisers_carry_a_reference_through_unchanged() -> None:
     """`session/types.py` persists `attachments[].url` and restores it, so a reference
     survives a turn as a reference rather than as bytes.
@@ -241,7 +231,6 @@ async def test_the_session_serialisers_carry_a_reference_through_unchanged() -> 
     assert event_to_chat_message(_Restored()).attachments[0].url == file_ref_url(file_id)
 
 
-@pytest.mark.asyncio
 async def test_a_request_reads_each_attachment_once_however_many_model_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

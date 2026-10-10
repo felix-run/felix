@@ -72,7 +72,6 @@ def _bound(**kw: object) -> _HttpFetchExecutor:
 # --- content handling -----------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_html_is_returned_as_readable_text() -> None:
     page = b"""<html><head><title>T</title><style>body{color:red}</style></head>
     <body><h1>Heading</h1><p>First para.</p><script>alert('ignore me')</script>
@@ -89,7 +88,6 @@ async def test_html_is_returned_as_readable_text() -> None:
     assert "<p>" not in out
 
 
-@pytest.mark.asyncio
 async def test_json_is_passed_through_untouched() -> None:
     body = b'{"a": 1, "b": "<not html>"}'
     async with _serve(lambda req, w: _respond(w, body, ctype="application/json")) as base:
@@ -97,7 +95,6 @@ async def test_json_is_passed_through_untouched() -> None:
     assert '"b": "<not html>"' in out
 
 
-@pytest.mark.asyncio
 async def test_binary_is_described_rather_than_returned() -> None:
     png = b"\x89PNG\r\n\x1a\n" + b"\xff" * 500
     async with _serve(lambda req, w: _respond(w, png, ctype="image/png")) as base:
@@ -107,7 +104,6 @@ async def test_binary_is_described_rather_than_returned() -> None:
     assert "�" not in out, "binary must not be decoded into the transcript"
 
 
-@pytest.mark.asyncio
 async def test_non_2xx_reports_status_and_keeps_the_body() -> None:
     """A 404's body is often the useful part; a model told only 'failed' retries the URL."""
     body = b'{"error": "no such document", "try": "/docs/index"}'
@@ -119,14 +115,12 @@ async def test_non_2xx_reports_status_and_keeps_the_body() -> None:
     assert "no such document" in out
 
 
-@pytest.mark.asyncio
 async def test_an_empty_body_is_reported_as_such() -> None:
     async with _serve(lambda req, w: _respond(w, b"")) as base:
         out = await _bound().execute({"url": base})
     assert "(empty body)" in out
 
 
-@pytest.mark.asyncio
 async def test_the_final_url_is_reported() -> None:
     """The model needs to know what it actually read, especially after a redirect."""
     async with _serve(lambda req, w: _respond(w, b"hi")) as base:
@@ -134,7 +128,6 @@ async def test_the_final_url_is_reported() -> None:
     assert f"url: {base}/page" in out
 
 
-@pytest.mark.asyncio
 async def test_an_unknown_charset_is_not_a_fetch_failure() -> None:
     async with _serve(lambda req, w: _respond(w, b"hello", ctype="text/plain; charset=x-nonesuch")) as base:
         out = await _bound().execute({"url": base})
@@ -144,7 +137,6 @@ async def test_an_unknown_charset_is_not_a_fetch_failure() -> None:
 # --- bounds ---------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_body_over_the_cap_is_truncated_and_says_so() -> None:
     async with _serve(lambda req, w: _respond(w, b"x" * 5_000)) as base:
         out = await _bound(max_bytes=1_000).execute({"url": base})
@@ -152,7 +144,6 @@ async def test_body_over_the_cap_is_truncated_and_says_so() -> None:
     assert len(_body_of(out)) == 1_000
 
 
-@pytest.mark.asyncio
 async def test_a_body_exactly_at_the_cap_is_not_called_truncated() -> None:
     """`>` versus `>=` — off by one here mislabels a complete document as cut short."""
     async with _serve(lambda req, w: _respond(w, b"x" * 1_000)) as base:
@@ -161,7 +152,6 @@ async def test_a_body_exactly_at_the_cap_is_not_called_truncated() -> None:
     assert len(_body_of(out)) == 1_000
 
 
-@pytest.mark.asyncio
 async def test_an_endless_body_terminates_at_the_cap() -> None:
     """The far end chooses the length. Without streaming this hangs until the timeout."""
 
@@ -179,7 +169,6 @@ async def test_an_endless_body_terminates_at_the_cap() -> None:
     assert len(_body_of(out)) == 4_000
 
 
-@pytest.mark.asyncio
 async def test_a_compressed_bomb_is_capped_on_decoded_bytes() -> None:
     """The cap must count what the model would see, not what crossed the wire."""
     payload = gzip.compress(b"z" * 2_000_000)
@@ -196,7 +185,6 @@ async def test_a_compressed_bomb_is_capped_on_decoded_bytes() -> None:
     assert len(_body_of(out)) == 5_000
 
 
-@pytest.mark.asyncio
 async def test_a_dribbling_server_hits_the_declared_timeout() -> None:
     """`timeout_ms` must be a deadline, not a per-read timeout.
 
@@ -225,7 +213,6 @@ async def test_a_dribbling_server_hits_the_declared_timeout() -> None:
 # --- redirects --------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_redirect_cannot_leave_the_path_prefix() -> None:
     """One 302 used to walk the agent straight out of its only confinement.
 
@@ -246,7 +233,6 @@ async def test_a_redirect_cannot_leave_the_path_prefix() -> None:
     assert "must start with" in out
 
 
-@pytest.mark.asyncio
 async def test_a_redirect_inside_the_prefix_is_followed() -> None:
     """The confinement must not cost ordinary redirects, or nobody will use it."""
 
@@ -262,7 +248,6 @@ async def test_a_redirect_inside_the_prefix_is_followed() -> None:
     assert f"url: {base}/allowed/end" in out
 
 
-@pytest.mark.asyncio
 async def test_a_redirect_loop_is_bounded() -> None:
     """Count the hops, not the message.
 
@@ -283,7 +268,6 @@ async def test_a_redirect_loop_is_bounded() -> None:
     assert hops == MAX_REDIRECTS + 1, f"followed {hops} hops for a bound of {MAX_REDIRECTS}"
 
 
-@pytest.mark.asyncio
 async def test_an_interim_redirect_body_is_never_read() -> None:
     """httpx `aread()`s each hop's body before building the next request.
 
@@ -314,7 +298,6 @@ async def test_an_interim_redirect_body_is_never_read() -> None:
 # --- the destination is the model's, so it is checked ---------------------------
 
 
-@pytest.mark.asyncio
 async def test_path_prefix_confines_the_tool() -> None:
     out = await _bound(path_prefix="http://127.0.0.1:9/allowed/").execute(
         {"url": "http://127.0.0.1:9/elsewhere"}
@@ -322,7 +305,6 @@ async def test_path_prefix_confines_the_tool() -> None:
     assert out == "http_fetch_error: url must start with 'http://127.0.0.1:9/allowed/'"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "url",
     [
@@ -338,7 +320,6 @@ async def test_a_blocked_destination_returns_the_fixed_refusal(url: str) -> None
     assert await _bound().execute({"url": url}) == BLOCKED
 
 
-@pytest.mark.asyncio
 async def test_a_hostname_resolving_into_private_space_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -350,7 +331,6 @@ async def test_a_hostname_resolving_into_private_space_is_refused(
     assert await tool.executor.execute({"url": "https://rebind.example.com/"}) == BLOCKED
 
 
-@pytest.mark.asyncio
 async def test_a_redirect_into_private_space_is_refused_without_detail() -> None:
     """The per-hop guard raises a *detailed* `ValueError`, not `EgressBlocked`.
 
@@ -368,7 +348,6 @@ async def test_a_redirect_into_private_space_is_refused_without_detail() -> None
     assert "169.254" not in out
 
 
-@pytest.mark.asyncio
 async def test_empty_url_is_rejected_before_a_client_opens() -> None:
     assert await _bound().execute({"url": "  "}) == "http_fetch_error: url is required"
 
@@ -376,7 +355,6 @@ async def test_empty_url_is_rejected_before_a_client_opens() -> None:
 # --- the ref -> executor seam ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("ref_kwargs", "served", "check"),
     [
@@ -400,7 +378,6 @@ async def test_each_knob_survives_the_binder(
     assert check(out), out
 
 
-@pytest.mark.asyncio
 async def test_path_prefix_survives_the_binder() -> None:
     """The one that matters: otherwise the tool advertises a confinement it does not have."""
     (tool,) = tools_from_http_fetch_refs([_ref(path_prefix="https://docs.felix.run/")], allow_http=True)
@@ -588,7 +565,6 @@ def _request_context(settings: object) -> object:
         yield
 
 
-@pytest.mark.asyncio
 async def test_support_binds_fetch_docs_confined_to_the_docs_site() -> None:
     """`support` shipped with `tools: [calculator, list_skills]` — it could not look anything
     up. This pins that the production compile binds the tool and keeps its confinement."""
@@ -605,7 +581,6 @@ async def test_support_binds_fetch_docs_confined_to_the_docs_site() -> None:
     assert "must start with" in text, "the docs-site confinement did not survive the compile"
 
 
-@pytest.mark.asyncio
 async def test_content_screening_actually_wraps_a_fetch_tool() -> None:
     """The wrapper, invoked — not a negative assertion on a log line.
 

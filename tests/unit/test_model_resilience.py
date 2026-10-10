@@ -42,7 +42,6 @@ class _Client:
 # --- retry ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_rate_limit_is_retried_and_succeeds() -> None:
     c = _Client([429, 503, 200])
     resp = await _post_with_retry(c, "u", label="anthropic", json={}, headers={}, max_retries=2)
@@ -50,7 +49,6 @@ async def test_rate_limit_is_retried_and_succeeds() -> None:
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_non_retryable_status_is_not_retried() -> None:
     """A 400 will not succeed on a retry; retrying it only adds latency."""
     c = _Client([400])
@@ -59,7 +57,6 @@ async def test_non_retryable_status_is_not_retried() -> None:
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_retries_are_bounded() -> None:
     c = _Client([429, 429, 429, 429, 429])
     resp = await _post_with_retry(c, "u", label="anthropic", json={}, headers={}, max_retries=2)
@@ -67,7 +64,6 @@ async def test_retries_are_bounded() -> None:
     assert resp.status_code == 429, "the caller raises ModelGatewayError from this"
 
 
-@pytest.mark.asyncio
 async def test_connection_errors_are_retried() -> None:
     import httpx
 
@@ -87,7 +83,6 @@ async def test_connection_errors_are_retried() -> None:
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_read_timeout_is_not_retried() -> None:
     """A read timeout is a ceiling, not backpressure.
 
@@ -111,7 +106,6 @@ async def test_read_timeout_is_not_retried() -> None:
     assert c.calls == 1, "a read timeout must not be retried"
 
 
-@pytest.mark.asyncio
 async def test_write_timeout_is_not_retried() -> None:
     """Same argument for the sending half: a large body is as large on the second attempt."""
     import httpx
@@ -130,7 +124,6 @@ async def test_write_timeout_is_not_retried() -> None:
     assert c.calls == 1
 
 
-@pytest.mark.asyncio
 async def test_connect_timeout_is_still_retried() -> None:
     """The near miss that makes the boundary worth pinning.
 
@@ -205,7 +198,6 @@ def test_model_timeout_must_be_positive() -> None:
         Settings(model_timeout_seconds=0, database_url="memory://t")
 
 
-@pytest.mark.asyncio
 async def test_connection_error_finally_raises() -> None:
     import httpx
 
@@ -315,7 +307,6 @@ async def _assemble(agent, *, thread_id: str | None):
     )
 
 
-@pytest.mark.asyncio
 async def test_prelude_survives_a_threaded_session_render() -> None:
     """The regression: render replaces the list, so the prelude must be re-applied."""
     messages = await _assemble(
@@ -326,7 +317,6 @@ async def test_prelude_survives_a_threaded_session_render() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_prelude_reaches_the_model_without_a_thread_too() -> None:
     messages = await _assemble(
         _threaded_agent("<known_facts>- the sky is green</known_facts>"), thread_id=None
@@ -334,7 +324,6 @@ async def test_prelude_reaches_the_model_without_a_thread_too() -> None:
     assert any("the sky is green" in (m.content or "") for m in messages)
 
 
-@pytest.mark.asyncio
 async def test_prelude_sits_after_the_system_prompt_not_at_the_tail() -> None:
     """Framing, not the user's latest turn — and never inside the system block."""
     messages = await _assemble(
@@ -350,7 +339,6 @@ async def test_prelude_sits_after_the_system_prompt_not_at_the_tail() -> None:
     assert messages[-1].content == "hi", "the user's own turn stays last"
 
 
-@pytest.mark.asyncio
 async def test_no_phantom_prelude_message_when_memory_is_empty() -> None:
     messages = await _assemble(_threaded_agent(""), thread_id="t1")
     assert [m.role for m in messages] == ["system", "user"]
@@ -365,7 +353,6 @@ def test_backoff_does_not_block_the_loop() -> None:
     assert "time.sleep" not in src
 
 
-@pytest.mark.asyncio
 async def test_retry_is_actually_awaited() -> None:
     c = _Client([429, 200])
     task = asyncio.create_task(

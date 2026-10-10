@@ -150,7 +150,6 @@ def test_an_overlap_at_or_above_the_window_cannot_stall_the_cursor() -> None:
 # --- ingest and retrieval ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_document_is_ingested_and_retrievable() -> None:
     s = _settings()
     doc_id, chunks = await _ingest(s)
@@ -163,7 +162,6 @@ async def test_a_document_is_ingested_and_retrievable() -> None:
     assert hits[0].source == "https://docs.felix.run/internals"
 
 
-@pytest.mark.asyncio
 async def test_retrieval_reports_which_channel_surfaced_a_hit() -> None:
     """`channels` is the operator's answer to "why did it return this"."""
     s = _settings()
@@ -172,7 +170,6 @@ async def test_retrieval_reports_which_channel_surfaced_a_hit() -> None:
     assert hit.channels == ("lexical",), "with no embedder only the lexical channel may run"
 
 
-@pytest.mark.asyncio
 async def test_the_vector_channel_runs_when_an_embedder_is_supplied() -> None:
     """The default is lexical-only, so a fusion test that does not pass an embedder is
     asserting nothing about fusion."""
@@ -185,21 +182,18 @@ async def test_the_vector_channel_runs_when_an_embedder_is_supplied() -> None:
     assert any("vector" in h.channels for h in hits), [h.channels for h in hits]
 
 
-@pytest.mark.asyncio
 async def test_an_empty_query_returns_nothing_rather_than_everything() -> None:
     s = _settings()
     await _ingest(s)
     assert await search_documents(s, tenant_id="t", query="   ", limit=5) == []
 
 
-@pytest.mark.asyncio
 async def test_a_query_matching_nothing_returns_nothing() -> None:
     s = _settings()
     await _ingest(s)
     assert await search_documents(s, tenant_id="t", query="zzzqqqxxx", limit=5) == []
 
 
-@pytest.mark.asyncio
 async def test_the_limit_is_honoured() -> None:
     s = _settings()
     await _ingest(s, text=PROSE * 6)
@@ -210,7 +204,6 @@ async def test_the_limit_is_honoured() -> None:
 # --- identity, replacement, isolation ---------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_reingesting_the_same_source_replaces_rather_than_duplicates() -> None:
     """Re-syncing a corpus must be idempotent, or every sync doubles it."""
     s = _settings()
@@ -222,7 +215,6 @@ async def test_reingesting_the_same_source_replaces_rather_than_duplicates() -> 
     assert await doc_store.count_documents(s, "t") == 1
 
 
-@pytest.mark.asyncio
 async def test_replacement_removes_chunks_that_no_longer_exist() -> None:
     """Delete-then-insert, not upsert: a shortened document must not keep its old tail."""
     s = _settings()
@@ -236,7 +228,6 @@ async def test_replacement_removes_chunks_that_no_longer_exist() -> None:
     assert await search_documents(s, tenant_id="t", query="fibers lease scheduler", limit=50) == []
 
 
-@pytest.mark.asyncio
 async def test_a_different_title_is_a_different_document() -> None:
     s = _settings()
     a, _ = await _ingest(s, title="One")
@@ -245,7 +236,6 @@ async def test_a_different_title_is_a_different_document() -> None:
     assert len(await list_documents(s, "t")) == 2
 
 
-@pytest.mark.asyncio
 async def test_one_tenant_cannot_retrieve_anothers_corpus() -> None:
     s = _settings()
     await _ingest(s, tenant="alice")
@@ -254,7 +244,6 @@ async def test_one_tenant_cannot_retrieve_anothers_corpus() -> None:
     assert await search_documents(s, tenant_id="alice", query="egress guard", limit=5)
 
 
-@pytest.mark.asyncio
 async def test_deleting_removes_every_chunk() -> None:
     s = _settings()
     doc_id, chunks = await _ingest(s)
@@ -263,12 +252,10 @@ async def test_deleting_removes_every_chunk() -> None:
     assert await list_documents(s, "t") == []
 
 
-@pytest.mark.asyncio
 async def test_deleting_a_missing_document_reports_zero() -> None:
     assert await delete_document(_settings(), "t", "nope") == 0
 
 
-@pytest.mark.asyncio
 async def test_deleting_one_document_leaves_the_others() -> None:
     s = _settings()
     a, _ = await _ingest(s, title="One")
@@ -286,7 +273,6 @@ def test_document_identity_is_source_and_title() -> None:
 # --- degradation ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_failing_embedder_degrades_to_text_only_rather_than_losing_the_document() -> None:
     class _Broken:
         enabled = True
@@ -300,7 +286,6 @@ async def test_a_failing_embedder_degrades_to_text_only_rather_than_losing_the_d
     assert await search_documents(s, tenant_id="t", query="egress guard", limit=3)
 
 
-@pytest.mark.asyncio
 async def test_a_short_embedder_batch_is_refused_rather_than_misaligned() -> None:
     """Vectors are matched to chunks by position, so a partial batch would attach one
     chunk's meaning to another's text."""
@@ -319,14 +304,12 @@ async def test_a_short_embedder_batch_is_refused_rather_than_misaligned() -> Non
     assert "vector" not in hit.channels, "a misaligned batch was stored anyway"
 
 
-@pytest.mark.asyncio
 async def test_a_document_that_splits_past_the_ceiling_is_refused() -> None:
     s = _settings()
     with pytest.raises(ValueError, match=str(MAX_CHUNKS_PER_DOC)):
         await _ingest(s, text="word " * 400_000, max_chars=128, overlap_chars=0)
 
 
-@pytest.mark.asyncio
 async def test_an_empty_document_stores_no_chunks() -> None:
     s = _settings()
     _, chunks = await _ingest(s, text="   \n  ")
@@ -384,7 +367,6 @@ def _doc(**kw: object) -> dict[str, object]:
     return body
 
 
-@pytest.mark.asyncio
 async def test_routes_gate_reads_and_writes_by_scope() -> None:
     async with _client() as client:
         denied = await client.get("/documents", headers=_auth("sk-none"))
@@ -399,7 +381,6 @@ async def test_routes_gate_reads_and_writes_by_scope() -> None:
         assert (await client.get("/documents", headers=_auth("sk-write"))).status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_ingest_then_search_then_delete_over_the_api() -> None:
     async with _client() as client:
         created = await client.post("/documents", json=_doc(), headers=_auth("sk-write"))
@@ -425,7 +406,6 @@ async def test_ingest_then_search_then_delete_over_the_api() -> None:
         assert (await client.get("/documents", headers=_auth("sk-read"))).json()["items"] == []
 
 
-@pytest.mark.asyncio
 async def test_the_tenant_comes_from_the_principal_not_the_request() -> None:
     """One tenant ingesting must not be visible to another, however the request is shaped."""
     async with _client() as client:
@@ -439,14 +419,12 @@ async def test_the_tenant_comes_from_the_principal_not_the_request() -> None:
         assert other_search.json()["items"] == []
 
 
-@pytest.mark.asyncio
 async def test_deleting_a_missing_document_is_a_404() -> None:
     async with _client() as client:
         gone = await client.delete("/documents/nope", headers=_auth("sk-write"))
         assert gone.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_a_document_past_the_chunk_ceiling_is_a_400_not_a_500() -> None:
     """The caller sent something the corpus will not hold; the message names the limit.
 
@@ -463,7 +441,6 @@ async def test_a_document_past_the_chunk_ceiling_is_a_400_not_a_500() -> None:
         assert str(MAX_CHUNKS_PER_DOC) in huge.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_the_declared_text_ceiling_is_reachable_through_the_body_limit() -> None:
     """`MAX_DOCUMENT_CHARS` above the body limit would advertise a size no request can carry:
     the caller gets 413 and never learns the real document ceiling."""
@@ -473,7 +450,6 @@ async def test_the_declared_text_ceiling_is_reachable_through_the_body_limit() -
     assert MAX_DOCUMENT_CHARS < CORE_BODY_LIMIT_BYTES
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "body",
     [
@@ -490,7 +466,6 @@ async def test_malformed_ingest_bodies_are_refused(body: dict[str, object]) -> N
         assert (await client.post("/documents", json=body, headers=_auth("sk-write"))).status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_search_requires_a_query() -> None:
     async with _client() as client:
         assert (await client.get("/documents/search", headers=_auth("sk-read"))).status_code == 422
@@ -513,7 +488,6 @@ def test_an_overlapped_chunk_starts_at_a_word_boundary() -> None:
 # --- gaps the test-quality review found -------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_every_route_is_scope_gated_not_just_the_first_two() -> None:
     """`search` and `delete` had no coverage, and both survived deleting their gate:
     a `chat:write` principal could read the whole corpus, and a reader could delete."""
@@ -529,7 +503,6 @@ async def test_every_route_is_scope_gated_not_just_the_first_two() -> None:
         assert reader_delete.status_code == 403, "a documents:read principal deleted a document"
 
 
-@pytest.mark.asyncio
 async def test_tenant_isolation_is_symmetric_and_covers_delete() -> None:
     """The one-sided version — "the other tenant's corpus is empty" — is also true when the
     store is broken. Both tenants ingest, and each must see only its own."""
@@ -552,7 +525,6 @@ async def test_tenant_isolation_is_symmetric_and_covers_delete() -> None:
         assert (await client.get("/documents", headers=_auth("sk-read"))).json()["count"] == 1
 
 
-@pytest.mark.asyncio
 async def test_search_returns_the_best_chunk_first() -> None:
     """Ordering was unpinned in both channels and on both backends: reversing the sort, or
     ranking by *fewest* matching terms, left the suite green. The old assertion — a term
@@ -576,7 +548,6 @@ async def test_search_returns_the_best_chunk_first() -> None:
     assert "zarquon" in hits[0].content, f"best chunk was not first: {[h.content[:40] for h in hits]}"
 
 
-@pytest.mark.asyncio
 async def test_list_is_newest_first_with_a_stable_tiebreaker() -> None:
     """Ordering was unpinned, and the two arms disagreed: the twin sorted
     `(-created_at, doc_id)` while Postgres had no tiebreaker at all."""
@@ -591,7 +562,6 @@ async def test_list_is_newest_first_with_a_stable_tiebreaker() -> None:
     assert same_ms == sorted(same_ms), "no stable tiebreaker within one millisecond"
 
 
-@pytest.mark.asyncio
 async def test_list_honours_its_limit() -> None:
     s = _settings()
     for title in ("One", "Two", "Three"):
@@ -599,7 +569,6 @@ async def test_list_honours_its_limit() -> None:
     assert len(await list_documents(s, "t", limit=2)) == 2
 
 
-@pytest.mark.asyncio
 async def test_count_is_documents_not_chunks() -> None:
     """`func.count(doc_id)` instead of `count(distinct(doc_id))` survived — it counts chunks."""
     s = _settings()
@@ -609,7 +578,6 @@ async def test_count_is_documents_not_chunks() -> None:
     assert await doc_store.count_documents(s, "other-tenant") == 0
 
 
-@pytest.mark.asyncio
 async def test_the_production_defaults_are_exercised() -> None:
     """Every other test passes `max_chars`/`overlap_chars`, so `POST /documents` with no budget
     fields — the way the route actually calls this — went down a branch nothing covered."""
@@ -679,7 +647,6 @@ MARKED = (
 )
 
 
-@pytest.mark.asyncio
 async def test_a_chunk_only_the_vector_channel_can_find_is_returned() -> None:
     """Pins that fusion actually consults the vector channel.
 
@@ -707,7 +674,6 @@ async def test_a_chunk_only_the_vector_channel_can_find_is_returned() -> None:
     assert "vector" in hits[0].channels
 
 
-@pytest.mark.asyncio
 async def test_the_vector_channel_excludes_what_does_not_match() -> None:
     """`_cosine` returning a constant made every chunk a vector hit and still looked wired."""
     s = _settings()
@@ -729,7 +695,6 @@ async def test_the_vector_channel_excludes_what_does_not_match() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_more_relevant_chunk_ranks_first() -> None:
     """Ordering was unpinned in both directions: sorting worst-first, and ranking lexically by
     *fewest* matching terms, both survived. A single-match fixture cannot tell them apart —
@@ -756,7 +721,6 @@ async def test_the_more_relevant_chunk_ranks_first() -> None:
     assert hits[0].score > hits[1].score, "scores are tied, so ordering proves nothing"
 
 
-@pytest.mark.asyncio
 async def test_metadata_is_written_only_to_the_first_chunk() -> None:
     """Copied onto every row it was a 1,700x amplifier. Asserting only that `list_documents`
     returns it cannot see the copies — chunk 0 has it either way."""
@@ -772,7 +736,6 @@ async def test_metadata_is_written_only_to_the_first_chunk() -> None:
     assert all(r["metadata"] == {} for r in rows[1:]), "metadata was copied onto later chunks"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["title", "source"])
 async def test_single_line_fields_refuse_newlines(field: str) -> None:
     """`source` is logged on an embedding failure and both are rendered per hit, so a newline
@@ -783,7 +746,6 @@ async def test_single_line_fields_refuse_newlines(field: str) -> None:
         assert (await client.post("/documents", json=body, headers=_auth("sk-write"))).status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_document_text_may_contain_newlines() -> None:
     """Prose is the one field that obviously needs them; refusing them there would be absurd."""
     async with _client() as client:
@@ -793,7 +755,6 @@ async def test_document_text_may_contain_newlines() -> None:
         assert created.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_the_wire_row_is_a_literal_a_guard_can_read() -> None:
     """The corpus's row shape lives in the store, and says exactly what it sends.
 

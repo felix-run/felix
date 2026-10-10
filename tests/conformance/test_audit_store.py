@@ -61,7 +61,6 @@ async def _record_many(settings: Any, events: list[dict[str, Any]]) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_event_round_trips_with_every_field(store_settings: Any) -> None:
     """Field by field, because a column the twin keeps and the write drops reads as empty.
 
@@ -94,7 +93,6 @@ async def test_an_event_round_trips_with_every_field(store_settings: Any) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_flush_reports_what_it_wrote_and_leaves_nothing_behind(store_settings: Any) -> None:
     """The worker's cron reports this number, and a buffer that keeps its batch double-writes."""
     await _record_many(
@@ -110,7 +108,6 @@ async def test_flush_reports_what_it_wrote_and_leaves_nothing_behind(store_setti
 # Postgres only: the twin has no bind-parameter limit, so its arm could not fail.
 # `tests/unit/test_flush_bind_parameters.py` guards the same rule without a database.
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_buffer_past_the_bind_parameter_limit_flushes_whole(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -130,7 +127,6 @@ async def test_a_buffer_past_the_bind_parameter_limit_flushes_whole(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_one_tenants_events_are_invisible_to_another(store_settings: Any) -> None:
     await _record_many(
         store_settings,
@@ -151,7 +147,6 @@ async def test_one_tenants_events_are_invisible_to_another(store_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_events_come_back_newest_first(store_settings: Any) -> None:
     await _record_many(
         store_settings,
@@ -164,7 +159,6 @@ async def test_events_come_back_newest_first(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_paging_yields_every_event_exactly_once(store_settings: Any) -> None:
     """The property the `/audit` route's cursor actually promises.
 
@@ -191,7 +185,6 @@ async def test_paging_yields_every_event_exactly_once(store_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_last_page_reports_no_cursor(store_settings: Any) -> None:
     """A cursor on the final page makes a caller ask for a page that is always empty."""
     await _record_many(store_settings, [{"ts": 10 + i} for i in range(3)])
@@ -206,7 +199,6 @@ async def test_the_last_page_reports_no_cursor(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_filters_select_and_compose(store_settings: Any) -> None:
     """`event_type` and `status` are the two the route exposes, and they must intersect.
 
@@ -235,7 +227,6 @@ async def test_filters_select_and_compose(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_time_range_is_half_open_and_pages_within_itself(store_settings: Any) -> None:
     """`since <= ts < until`, on both arms, applied before the page rather than after it.
 
@@ -263,7 +254,6 @@ async def test_a_time_range_is_half_open_and_pages_within_itself(store_settings:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_time_range_composes_with_the_other_filters(store_settings: Any) -> None:
     """The range is one more clause, not a replacement for the ones before it.
 
@@ -288,7 +278,6 @@ async def test_a_time_range_composes_with_the_other_filters(store_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_filter_still_applies_on_the_second_page(store_settings: Any) -> None:
     """The cursor and the `WHERE` have to survive together.
 
@@ -312,7 +301,6 @@ async def test_a_filter_still_applies_on_the_second_page(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_tenant_scope_is_not_defeated_by_another_tenants_cursor(store_settings: Any) -> None:
     """Handing one tenant's cursor to another must page that tenant's own history.
 
@@ -345,7 +333,6 @@ async def test_the_tenant_scope_is_not_defeated_by_another_tenants_cursor(store_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_paging_survives_events_sharing_a_timestamp(store_settings: Any) -> None:
     """`ts` is milliseconds and the cursor is a `ts`, so ties are the paging boundary case.
 
@@ -377,7 +364,6 @@ async def test_paging_survives_events_sharing_a_timestamp(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_filter_and_a_tie_together(store_settings: Any) -> None:
     """The two paging hazards at once, which neither other test reaches.
 
@@ -409,7 +395,6 @@ async def test_a_filter_and_a_tie_together(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_failed_flush_keeps_the_batch(store_settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """The store's strongest claim, and nothing asserted it.
 
@@ -443,7 +428,6 @@ async def test_a_failed_flush_keeps_the_batch(store_settings: Any, monkeypatch: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_zero_limit_is_an_empty_page_on_both_arms(store_settings: Any) -> None:
     """Both routes bound `limit` at one, but `query` is a public function others call directly.
 
@@ -457,7 +441,6 @@ async def test_a_zero_limit_is_an_empty_page_on_both_arms(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_payload_postgres_would_refuse_is_stored_anyway(store_settings: Any) -> None:
     """The JSONB-hostile payload, which the twin cannot fail on and so could not warn about.
 
@@ -486,7 +469,6 @@ async def test_a_payload_postgres_would_refuse_is_stored_anyway(store_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_retried_flush_does_not_duplicate_or_block(store_settings: Any) -> None:
     """A flush commits one transaction per tenant, so one that fails on a later tenant has
     already written the earlier ones — and its requeued retry re-inserts them. That insert must
@@ -504,7 +486,6 @@ async def test_a_retried_flush_does_not_duplicate_or_block(store_settings: Any) 
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_an_event_postgres_refuses_is_quarantined_and_the_rest_land(store_settings: Any) -> None:
     """One unwritable event used to block every later one: the batch was requeued whole, and
     retried whole, until the buffer's ceiling dropped the oldest. Postgres only — the twin
@@ -534,7 +515,6 @@ async def test_an_event_postgres_refuses_is_quarantined_and_the_rest_land(store_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_ids_sharing_a_millisecond_page_in_byte_order_on_both_arms(store_settings: Any) -> None:
     """The cursor's tiebreak is the id, and ids are text: Postgres compared them under the
     database collation while the twin compared code points, so two rows in one millisecond

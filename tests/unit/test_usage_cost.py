@@ -113,7 +113,6 @@ def test_a_row_with_no_cost_writes_zero_not_nothing() -> None:
 # --- record_usage is the one pricer ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_record_usage_prices_by_the_wire_id_and_a_manifest_override_wins() -> None:
     """The catalog rate for the wire model, or the manifest's `spec.model.price` when it
     sets one — never the logical route name, which the price table does not know."""
@@ -133,7 +132,6 @@ async def test_record_usage_prices_by_the_wire_id_and_a_manifest_override_wins()
     assert by_override["cost_usd"] == pytest.approx(2.0)
 
 
-@pytest.mark.asyncio
 async def test_the_row_and_the_budget_carry_the_same_cost() -> None:
     ctx = _ctx()
     async with async_run_with_context(ctx):
@@ -149,7 +147,6 @@ async def test_the_row_and_the_budget_carry_the_same_cost() -> None:
     assert ctx.limit_state.cost_usd == pytest.approx(4.0)
 
 
-@pytest.mark.asyncio
 async def test_an_unpriced_turn_raises_the_unpriced_counter_and_an_override_silences_it() -> None:
     """`felix_model_unpriced` is the signal that `limits.max_cost_usd` is failing open."""
     from felix.observability.metrics import REGISTRY
@@ -223,7 +220,6 @@ def test_build_model_carries_the_override_on_every_client_shape() -> None:
     assert getattr(model_mod.build_model(settings, _Spec()), "price_override", "unset") is None
 
 
-@pytest.mark.asyncio
 async def test_a_turn_through_the_loop_is_priced_by_the_clients_override() -> None:
     """The override has to travel from the built client to the metering site: a client
     whose wire model has no catalog rate, with an override, produces a priced row."""
@@ -286,7 +282,6 @@ async def _seed(settings: Settings) -> None:
     await usage_store.flush_pending(settings)
 
 
-@pytest.mark.asyncio
 async def test_summary_groups_by_manifest_and_model_within_the_tenant() -> None:
     settings = _settings()
     await _seed(settings)
@@ -302,7 +297,6 @@ async def test_summary_groups_by_manifest_and_model_within_the_tenant() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_summary_buckets_by_utc_day(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every seeded row lands in the same millisecond, so without moving the clock the
     day bucket is shape-only and a constant date would pass."""
@@ -325,7 +319,6 @@ async def test_summary_buckets_by_utc_day(monkeypatch: pytest.MonkeyPatch) -> No
     assert out["items"][0]["day"] == _utc_day(t0), "newest day first"
 
 
-@pytest.mark.asyncio
 async def test_summary_filters_by_manifest_and_window() -> None:
     settings = _settings()
     await _seed(settings)
@@ -336,7 +329,6 @@ async def test_summary_filters_by_manifest_and_window() -> None:
     assert nothing["totals"]["cost_usd"] == 0
 
 
-@pytest.mark.asyncio
 async def test_the_summary_route_reports_the_callers_tenant_only() -> None:
     """Two keys, two tenants: each sees its own rows and totals, never the other's."""
     from felix_api.app import create_app

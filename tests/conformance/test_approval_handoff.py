@@ -47,7 +47,6 @@ async def waiters_against_redis(monkeypatch: pytest.MonkeyPatch):
     await waiters._conn.aclose()
 
 
-@pytest.mark.asyncio
 async def test_a_decision_after_the_socket_timeout_still_reaches_the_run(waiters_against_redis) -> None:
     """The regression. A human takes longer than two seconds to read the prompt."""
     from felix.approvals.interrupt import signal_decision, wait_for_decision
@@ -62,7 +61,6 @@ async def test_a_decision_after_the_socket_timeout_still_reaches_the_run(waiters
     )
 
 
-@pytest.mark.asyncio
 async def test_a_decision_made_on_another_replica_reaches_the_run(waiters_against_redis) -> None:
     """The two-replica assertion approvals never had.
 
@@ -98,7 +96,6 @@ async def test_a_decision_made_on_another_replica_reaches_the_run(waiters_agains
     )
 
 
-@pytest.mark.asyncio
 async def test_a_decision_that_arrives_before_the_wait_is_not_lost(waiters_against_redis) -> None:
     """Why this is a list and not a pub/sub channel.
 
@@ -116,7 +113,6 @@ async def test_a_decision_that_arrives_before_the_wait_is_not_lost(waiters_again
     assert decision.note == "not this time"
 
 
-@pytest.mark.asyncio
 async def test_an_undecided_approval_still_times_out(waiters_against_redis) -> None:
     """The slicing loop must not turn a bounded wait into an unbounded one: nobody
     decides, and the run has to stop waiting and deny."""

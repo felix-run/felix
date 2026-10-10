@@ -49,7 +49,6 @@ async def _slow_fiber(settings: Settings) -> str:
 # --- the claim ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_claimed_fiber_is_not_picked_up_again(settings: Settings) -> None:
     """The regression: an in-flight step must be invisible to the next tick."""
     await create_fiber(
@@ -85,7 +84,6 @@ async def test_a_claimed_fiber_is_not_picked_up_again(settings: Settings) -> Non
     assert seen.count(seen[0]) == 1, "the step ran more than once"
 
 
-@pytest.mark.asyncio
 async def test_claim_is_released_after_the_step(settings: Settings) -> None:
     """A still-runnable fiber must be claimable again on the next tick."""
     await create_fiber(
@@ -98,7 +96,6 @@ async def test_claim_is_released_after_the_step(settings: Settings) -> None:
     assert await resume_due_fibers(settings) >= 1
 
 
-@pytest.mark.asyncio
 async def test_expired_claim_is_reclaimed(settings: Settings) -> None:
     """A worker killed mid-step must not strand the fiber forever."""
     row = await create_fiber(
@@ -114,7 +111,6 @@ async def test_expired_claim_is_reclaimed(settings: Settings) -> None:
     assert await resume_due_fibers(settings) >= 1
 
 
-@pytest.mark.asyncio
 async def test_live_claim_from_another_worker_is_respected(settings: Settings) -> None:
     row = await create_fiber(
         settings,
@@ -129,7 +125,6 @@ async def test_live_claim_from_another_worker_is_respected(settings: Settings) -
     assert await resume_due_fibers(settings) == 0
 
 
-@pytest.mark.asyncio
 async def test_sweep_is_bounded(settings: Settings) -> None:
     """An unbounded SELECT loaded the whole backlog into memory every minute."""
     for _ in range(FIBER_BATCH + 10):
@@ -145,7 +140,6 @@ async def test_sweep_is_bounded(settings: Settings) -> None:
 # --- version CAS ----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_stale_write_is_discarded(settings: Settings) -> None:
     """A lost update can rewind `cursor` and replay a step that already ran."""
     row = await create_fiber(
@@ -170,7 +164,6 @@ async def test_stale_write_is_discarded(settings: Settings) -> None:
     assert fibers._memory_fibers[key]["state_json"]["cursor"] == 5, "stale write rewound the cursor"
 
 
-@pytest.mark.asyncio
 async def test_failed_step_releases_the_claim(settings: Settings) -> None:
     await create_fiber(
         settings,

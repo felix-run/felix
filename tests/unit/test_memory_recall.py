@@ -58,7 +58,6 @@ def test_rrf_position_decays() -> None:
 # --- channels -------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_recall_finds_by_content_not_recency() -> None:
     """The regression: recall used to be `ORDER BY created_at`."""
     await _put("The deployment runbook lives in the ops repository.")
@@ -69,7 +68,6 @@ async def test_recall_finds_by_content_not_recency() -> None:
     assert "runbook" in hits[0].content
 
 
-@pytest.mark.asyncio
 async def test_topic_key_channel_finds_a_dotted_identifier() -> None:
     """ "what timezone" has no literal overlap with the content, only the topic key."""
     await _put("CET.", topic_key="user.timezone")
@@ -79,7 +77,6 @@ async def test_topic_key_channel_finds_a_dotted_identifier() -> None:
     assert "topic" in hits[0].channels
 
 
-@pytest.mark.asyncio
 async def test_superseded_memories_are_not_recalled() -> None:
     await _put("Timezone is UTC.", topic_key="user.timezone", origin_seq=1)
     # An operator's write: only that rank retires a row by its topic_key.
@@ -91,14 +88,12 @@ async def test_superseded_memories_are_not_recalled() -> None:
     assert [h.content for h in hits] == ["Timezone is CET."]
 
 
-@pytest.mark.asyncio
 async def test_forgotten_memories_are_not_recalled() -> None:
     row = await _put("Please forget the staging password hint.")
     await memory_store.forget(_settings(), TENANT, row["id"])
     assert await recall(_settings(), TENANT, "staging password", manifest_id=MANIFEST) == []
 
 
-@pytest.mark.asyncio
 async def test_recall_is_scoped_to_the_manifest() -> None:
     await memory_store.put_memory(
         _settings(), TENANT, content="Agent A knows the runbook.", manifest_id="agent-a"
@@ -107,7 +102,6 @@ async def test_recall_is_scoped_to_the_manifest() -> None:
     assert hits == []
 
 
-@pytest.mark.asyncio
 async def test_kind_filter() -> None:
     await _put("A stable fact about the runbook.", kind="fact")
     await _put("A procedure about the runbook.", kind="procedure")
@@ -116,13 +110,11 @@ async def test_kind_filter() -> None:
     assert [h.kind for h in hits] == ["procedure"]
 
 
-@pytest.mark.asyncio
 async def test_empty_query_returns_nothing() -> None:
     await _put("Something.")
     assert await recall(_settings(), TENANT, "   ", manifest_id=MANIFEST) == []
 
 
-@pytest.mark.asyncio
 async def test_limit_is_respected() -> None:
     for i in range(10):
         await _put(f"Runbook note number {i}.")
@@ -130,7 +122,6 @@ async def test_limit_is_respected() -> None:
     assert len(hits) == 3
 
 
-@pytest.mark.asyncio
 async def test_hits_report_which_channels_found_them() -> None:
     await _put("CET is the timezone.", topic_key="user.timezone")
     hits = await recall(_settings(), TENANT, "timezone", manifest_id=MANIFEST)
@@ -140,7 +131,6 @@ async def test_hits_report_which_channels_found_them() -> None:
 # --- weighting ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_kind_weighting_breaks_a_tie_toward_facts() -> None:
     await _put("The runbook matters.", kind="event")
     await _put("The runbook matters too.", kind="fact")
@@ -148,7 +138,6 @@ async def test_kind_weighting_breaks_a_tie_toward_facts() -> None:
     assert hits[0].kind == "fact"
 
 
-@pytest.mark.asyncio
 async def test_importance_lifts_an_otherwise_equal_memory() -> None:
     await _put("The runbook is here.", importance=0.1)
     await _put("The runbook is there.", importance=1.0)
@@ -159,7 +148,6 @@ async def test_importance_lifts_an_otherwise_equal_memory() -> None:
 # --- degradation ----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_recall_works_with_no_embedder_at_all() -> None:
     """The lean install: no extras, no key, no model — and recall still returns."""
     embedder = build_embedder(_settings())
@@ -172,7 +160,6 @@ async def test_recall_works_with_no_embedder_at_all() -> None:
     assert "vector" not in hits[0].channels
 
 
-@pytest.mark.asyncio
 async def test_vector_channel_finds_a_paraphrase_full_text_cannot() -> None:
     """The reason the vector channel exists: no shared tokens at all."""
 
@@ -202,7 +189,6 @@ async def test_vector_channel_finds_a_paraphrase_full_text_cannot() -> None:
     assert "vector" in hits[0].channels
 
 
-@pytest.mark.asyncio
 async def test_a_failing_embedder_loses_a_channel_not_the_turn() -> None:
     class _Broken:
         enabled = True
@@ -217,7 +203,6 @@ async def test_a_failing_embedder_loses_a_channel_not_the_turn() -> None:
     assert "vector" not in hits[0].channels
 
 
-@pytest.mark.asyncio
 async def test_recall_embedding_degrades_on_time_not_just_on_error() -> None:
     """Recall is best-effort and runs inline in a turn, so it needs its own budget.
 

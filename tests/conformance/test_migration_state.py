@@ -11,7 +11,6 @@ from felix.db.session import dispose_engine
 from tests.support.backends import downgrade_to_base, drop_everything, migrate_to_head, postgres_url_or_skip
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("empty_database")
 async def test_state_tracks_the_schema() -> None:
     url = postgres_url_or_skip("the migration-state contract")
@@ -30,7 +29,6 @@ async def test_state_tracks_the_schema() -> None:
         await drop_everything(url)
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("empty_database")
 async def test_a_revision_the_database_has_passed_is_named() -> None:
     """`felix migrate <older>` asks this before upgrading, because `command.upgrade` to a

@@ -71,7 +71,6 @@ def test_the_worker_configures_logging_and_tracing_at_startup() -> None:
     assert "shutdown_observability()" in source, "the last span batch would be lost on shutdown"
 
 
-@pytest.mark.asyncio
 async def test_a_sweep_records_a_counter_and_a_duration() -> None:
     import felix_worker.tasks as tasks
 
@@ -94,7 +93,6 @@ async def test_a_sweep_records_a_counter_and_a_duration() -> None:
     assert ("felix_worker_task_seconds", {"task": "demo_sweep", "status": "ok"}) in seen
 
 
-@pytest.mark.asyncio
 async def test_a_failing_sweep_is_counted_as_error_and_still_raises() -> None:
     """Swallowing the exception would make a permanently broken sweep look healthy."""
     import felix_worker.tasks as tasks

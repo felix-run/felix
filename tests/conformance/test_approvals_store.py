@@ -48,7 +48,6 @@ async def _approve(settings: Any, approval_id: str, *, by: str = "operator") -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_pending_approval_round_trips(store_settings: Any) -> None:
     created = await _pending(store_settings, args={"expression": "2+2"}, principal_subj="alice")
 
@@ -64,7 +63,6 @@ async def test_a_pending_approval_round_trips(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_creating_the_same_pending_twice_reuses_the_first(store_settings: Any) -> None:
     """Two identical calls arriving together must not queue two approvals for one decision."""
     first = await _pending(store_settings)
@@ -76,7 +74,6 @@ async def test_creating_the_same_pending_twice_reuses_the_first(store_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_decision_is_recorded_with_its_decider(store_settings: Any) -> None:
     created = await _pending(store_settings, reason="why the gate fired", tool_call_id="call_1")
 
@@ -102,7 +99,6 @@ async def test_a_decision_is_recorded_with_its_decider(store_settings: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deciding_an_unknown_approval_returns_none(store_settings: Any) -> None:
     """Not an exception and not a fabricated row: the caller has to see that it was absent."""
     assert (
@@ -116,7 +112,6 @@ async def test_deciding_an_unknown_approval_returns_none(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_listing_filters_by_status(store_settings: Any) -> None:
     pending = await _pending(store_settings, call_signature="a")
     approved = await _pending(store_settings, call_signature="b")
@@ -131,7 +126,6 @@ async def test_listing_filters_by_status(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_listing_narrows_to_one_thread(store_settings: Any) -> None:
     """The filter a durable run needs to find what it, and only it, is blocked on."""
     mine = await _pending(store_settings, call_signature="mine", thread_id="t:one")
@@ -152,7 +146,6 @@ async def test_listing_narrows_to_one_thread(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_filter_is_applied_before_the_limit(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -188,7 +181,6 @@ async def test_the_filter_is_applied_before_the_limit(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_gate_with_no_ttl_stores_a_null_deadline_not_a_missing_one(store_settings: Any) -> None:
     """`ApprovalRule.ttl_seconds` defaults to `None`, so this is the *common* manifest shape.
 
@@ -219,7 +211,6 @@ async def test_a_gate_with_no_ttl_stores_a_null_deadline_not_a_missing_one(store
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_reused_row_keeps_the_call_that_opened_it(store_settings: Any) -> None:
     """Attribution, not ownership — pinned, because a comment is where this gets lost.
 
@@ -251,7 +242,6 @@ async def test_a_reused_row_keeps_the_call_that_opened_it(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_why_a_gate_fired_and_what_it_blocks_survive_the_round_trip(store_settings: Any) -> None:
     """`reason` and `tool_call_id` are what the polled channel was missing.
 
@@ -287,7 +277,6 @@ async def test_why_a_gate_fired_and_what_it_blocks_survive_the_round_trip(store_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_approvals_do_not_cross_the_tenant_boundary(store_settings: Any) -> None:
     mine = await _pending(store_settings)
     theirs = await _pending(store_settings, tenant_id="other", call_signature="theirs")
@@ -305,7 +294,6 @@ async def test_approvals_do_not_cross_the_tenant_boundary(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_approved_grant_authorises_the_matching_call(store_settings: Any) -> None:
     created = await _pending(store_settings)
     await _approve(store_settings, created["id"])
@@ -317,7 +305,6 @@ async def test_an_approved_grant_authorises_the_matching_call(store_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_pending_or_denied_approval_authorises_nothing(store_settings: Any) -> None:
     """The gate is `status == approved`; anything else must not open it."""
     pending = await _pending(store_settings)
@@ -338,7 +325,6 @@ async def test_a_pending_or_denied_approval_authorises_nothing(store_settings: A
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_different_signature_or_tool_is_not_authorised(store_settings: Any) -> None:
     """The signature is what makes a grant specific to one call rather than to a tool."""
     created = await _pending(store_settings)
@@ -365,7 +351,6 @@ async def test_a_different_signature_or_tool_is_not_authorised(store_settings: A
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_expired_grant_authorises_nothing(store_settings: Any) -> None:
     """`ttl_seconds` is the operator's statement that consent goes stale."""
     created = await _pending(store_settings, ttl_seconds=-1)
@@ -380,7 +365,6 @@ async def test_an_expired_grant_authorises_nothing(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_grant_bound_to_a_principal_does_not_authorise_another(store_settings: Any) -> None:
     """`ApprovalRule.bind_principal`. Without it, one caller's consent covers everyone's."""
     created = await _pending(store_settings, principal_subj="alice")
@@ -399,7 +383,6 @@ async def test_a_grant_bound_to_a_principal_does_not_authorise_another(store_set
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_one_shot_grant_stops_authorising_once_consumed(store_settings: Any) -> None:
     """`ApprovalRule.one_shot`. Without it a single grant replays until it expires."""
     created = await _pending(store_settings)
@@ -433,7 +416,6 @@ async def test_a_one_shot_grant_stops_authorising_once_consumed(store_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_grant_can_only_be_consumed_once(store_settings: Any) -> None:
     """The check-and-set that stops two concurrent identical calls both spending one grant."""
     created = await _pending(store_settings)
@@ -444,13 +426,11 @@ async def test_a_grant_can_only_be_consumed_once(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_consuming_an_unknown_grant_is_false_not_an_error(store_settings: Any) -> None:
     assert await approvals.consume_approval(store_settings, TENANT, "no-such-id") is False
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_most_recent_decision_is_the_one_that_authorises(store_settings: Any) -> None:
     """Two live grants for one call, and both backends must return the same one.
 
@@ -489,7 +469,6 @@ async def test_the_most_recent_decision_is_the_one_that_authorises(store_setting
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_expired_grant_does_not_hide_a_live_one(store_settings: Any) -> None:
     """The divergence a conformance suite exists to find, and it was live in production.
 
@@ -520,7 +499,6 @@ async def test_an_expired_grant_does_not_hide_a_live_one(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_thread_round_trips_and_survives_a_decision(store_settings: Any) -> None:
     """`thread_id` is what makes `GET /approvals` able to name the blocked conversation.
 
@@ -544,7 +522,6 @@ async def test_the_thread_round_trips_and_survives_a_decision(store_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_row_with_no_thread_reads_as_empty_not_null(store_settings: Any) -> None:
     """A gated tool called outside a chat context is a real state, not a missing value —
     and a client that has to branch on `None` versus `""` per backend has two contracts."""
@@ -555,7 +532,6 @@ async def test_a_row_with_no_thread_reads_as_empty_not_null(store_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_reused_pending_row_keeps_the_thread_that_opened_it(store_settings: Any) -> None:
     """Attribution, not ownership, and both backends must agree on which.
 
@@ -572,7 +548,6 @@ async def test_a_reused_pending_row_keeps_the_thread_that_opened_it(store_settin
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_approvals_created_in_one_millisecond_page_the_same_on_both_arms(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -588,7 +563,6 @@ async def test_approvals_created_in_one_millisecond_page_the_same_on_both_arms(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_interrupted_calls_close_their_own_pending_rows_and_nothing_else(store_settings: Any) -> None:
     """felix-run/felix#531: a resumed run closes the gates its interrupted calls left open."""
     mine = await _pending(store_settings, call_signature="sig-a", thread_id="t:1", tool_call_id="call_a")
@@ -609,7 +583,6 @@ async def test_interrupted_calls_close_their_own_pending_rows_and_nothing_else(s
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_pending_row_past_its_deadline_is_not_listed_as_pending(store_settings: Any) -> None:
     """felix-run/felix#532. A wait whose process died never writes its row closed, and the row
     listed as `pending` forever; every client offered a decision nobody was waiting for."""

@@ -26,7 +26,6 @@ async def wakes(tenant_id: str, thread: str, write: Callable[[], Awaitable[Any]]
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_approval_opened_and_answered_wakes_its_thread(store_settings: Any) -> None:
     from felix.approvals.store import create_pending, decide
 
@@ -53,7 +52,6 @@ async def test_an_approval_opened_and_answered_wakes_its_thread(store_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_fiber_status_save_wakes_its_thread(store_settings: Any) -> None:
     from felix.durability import fibers
 
@@ -63,7 +61,6 @@ async def test_a_fiber_status_save_wakes_its_thread(store_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_stale_fiber_write_wakes_nobody(store_settings: Any) -> None:
     """A save that lost the version race wrote nothing, so there is nothing to announce."""
     from felix.durability import fibers
@@ -77,7 +74,6 @@ async def test_a_stale_fiber_write_wakes_nobody(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_claim_and_the_fallback_status_write_wake_the_thread(store_settings: Any) -> None:
     """The two other status writes: the claim that sets `running`, and `_record_attempt`, which
     lands `dead` when the versioned save itself failed."""

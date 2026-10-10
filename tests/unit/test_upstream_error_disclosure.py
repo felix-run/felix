@@ -47,7 +47,6 @@ def test_empty_body_is_safe() -> None:
     assert ModelGatewayError("openai", 502, "").body == ""
 
 
-@pytest.mark.asyncio
 async def test_v1_response_does_not_leak_upstream_body(caplog: pytest.LogCaptureFixture) -> None:
     """End to end: the 502 payload carries no provider detail, but the log does."""
     import felix_api.routes.openai_compat as oc

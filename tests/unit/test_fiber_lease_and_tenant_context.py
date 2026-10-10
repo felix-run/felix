@@ -7,7 +7,6 @@ hand-rolled scheduler has to get right itself, and the two it got wrong.
 
 from __future__ import annotations
 
-import pytest
 from felix.config import Settings
 from felix.durability import fibers as F
 
@@ -41,7 +40,6 @@ def test_the_lease_is_longer_than_the_interval_it_is_renewed_on() -> None:
     assert F.FIBER_LEASE_MS // F.FIBER_LEASE_RENEW_MS >= 3
 
 
-@pytest.mark.asyncio
 async def test_a_step_still_running_keeps_its_claim_past_the_original_horizon(monkeypatch) -> None:
     """The collision, in the shape that caused it.
 
@@ -70,7 +68,6 @@ async def test_a_step_still_running_keeps_its_claim_past_the_original_horizon(mo
     assert stored["lease_until"] > t0 + F.FIBER_LEASE_MS
 
 
-@pytest.mark.asyncio
 async def test_a_worker_that_stops_renewing_releases_the_fiber() -> None:
     """The other direction. A lease that only ever extends is a fiber stranded by a crash."""
     settings = _settings()
@@ -85,7 +82,6 @@ async def test_a_worker_that_stops_renewing_releases_the_fiber() -> None:
     assert reclaimed[0]["id"] == row["id"]
 
 
-@pytest.mark.asyncio
 async def test_a_lease_already_lost_is_not_stolen_back(monkeypatch) -> None:
     """A worker whose lease lapsed and was taken must not renew its way back in mid-step."""
     settings = _settings()
@@ -150,7 +146,6 @@ def test_the_manifest_is_resolved_inside_the_tenant_context() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_resume_renews_the_lease_while_a_step_is_actually_running(monkeypatch) -> None:
     """The wiring, not the helper.
 

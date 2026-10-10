@@ -148,7 +148,6 @@ async def _create_pending(settings: Settings, **kw: Any) -> dict[str, Any]:
 # --- routes ---
 
 
-@pytest.mark.asyncio
 async def test_routes_say_push_is_off_until_a_key_is_set() -> None:
     # Leaving is the exception: `test_a_browser_can_leave_after_push_is_turned_off`.
     async with await _client(push_vapid_private_key="", push_vapid_subject="") as client:
@@ -161,7 +160,6 @@ async def test_routes_say_push_is_off_until_a_key_is_set() -> None:
             assert res.json()["detail"] == "push_not_configured"
 
 
-@pytest.mark.asyncio
 async def test_subscribing_needs_the_scope_the_approval_frame_needs() -> None:
     async with await _client() as client:
         res = await client.post(
@@ -171,7 +169,6 @@ async def test_subscribing_needs_the_scope_the_approval_frame_needs() -> None:
         assert "approvals:read" in res.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_serves_the_public_half_of_the_configured_key() -> None:
     raw = _vapid_key()
     async with await _client(push_vapid_private_key=raw) as client:
@@ -184,7 +181,6 @@ async def test_serves_the_public_half_of_the_configured_key() -> None:
     assert b64url_decode(res.json()["public_key"]) == expected
 
 
-@pytest.mark.asyncio
 async def test_subscribing_is_idempotent_and_never_echoes_the_endpoint() -> None:
     browser = Browser()
     async with await _client() as client:
@@ -196,7 +192,6 @@ async def test_subscribing_is_idempotent_and_never_echoes_the_endpoint() -> None
     assert len(await push_store.list_for_tenant(_settings(), "acme")) == 1
 
 
-@pytest.mark.asyncio
 async def test_refuses_an_endpoint_off_the_push_service_list() -> None:
     # The endpoint is a URL a browser hands over; without the list, anyone allowed to
     # subscribe could aim the harness's POSTs anywhere the egress guard lets through.
@@ -220,7 +215,6 @@ async def test_refuses_an_endpoint_off_the_push_service_list() -> None:
             assert res.json()["detail"] == "push_endpoint_not_allowed"
 
 
-@pytest.mark.asyncio
 async def test_refuses_keys_nothing_could_be_encrypted_to() -> None:
     async with await _client() as client:
         sub = Browser().subscription()
@@ -237,7 +231,6 @@ async def test_refuses_keys_nothing_could_be_encrypted_to() -> None:
             assert res.json()["detail"] == "push_keys_malformed"
 
 
-@pytest.mark.asyncio
 async def test_one_tenant_cannot_unsubscribe_another() -> None:
     browser = Browser()
     async with await _client() as client:
@@ -252,7 +245,6 @@ async def test_one_tenant_cannot_unsubscribe_another() -> None:
         assert own.json() == {"removed": True}
 
 
-@pytest.mark.asyncio
 async def test_a_browser_can_leave_after_push_is_turned_off() -> None:
     browser = Browser()
     sub = browser.subscription()
@@ -269,7 +261,6 @@ async def test_a_browser_can_leave_after_push_is_turned_off() -> None:
 # --- sends ---
 
 
-@pytest.mark.asyncio
 async def test_a_new_approval_wakes_each_browser_once_without_its_arguments(sent: Sent) -> None:
     settings = _settings()
     phone, laptop = Browser(), Browser("https://fcm.googleapis.com/fcm/send/laptop")
@@ -298,7 +289,6 @@ async def test_a_new_approval_wakes_each_browser_once_without_its_arguments(sent
     assert push["headers"]["Authorization"].startswith("vapid t=")
 
 
-@pytest.mark.asyncio
 async def test_a_reused_approval_row_does_not_push_again(sent: Sent) -> None:
     settings = _settings()
     b = Browser()
@@ -315,7 +305,6 @@ async def test_a_reused_approval_row_does_not_push_again(sent: Sent) -> None:
     assert len(sent) == 1
 
 
-@pytest.mark.asyncio
 async def test_a_browser_the_push_service_says_is_gone_is_forgotten(sent: Sent) -> None:
     settings = _settings()
     b = Browser()
@@ -331,7 +320,6 @@ async def test_a_browser_the_push_service_says_is_gone_is_forgotten(sent: Sent) 
     assert await push_store.list_for_tenant(settings, "acme") == []
 
 
-@pytest.mark.asyncio
 async def test_a_host_dropped_from_the_list_is_not_pushed_to(sent: Sent) -> None:
     b = Browser()
     sub = b.subscription()
@@ -347,7 +335,6 @@ async def test_a_host_dropped_from_the_list_is_not_pushed_to(sent: Sent) -> None
     assert await push_store.list_for_tenant(narrowed, "acme") == []
 
 
-@pytest.mark.asyncio
 async def test_nothing_is_sent_while_push_is_off(sent: Sent) -> None:
     off = _settings(push_vapid_private_key="", push_vapid_subject="")
     b = Browser()
@@ -364,7 +351,6 @@ async def test_nothing_is_sent_while_push_is_off(sent: Sent) -> None:
     assert sent == []
 
 
-@pytest.mark.asyncio
 async def test_a_question_says_one_is_waiting_without_the_question(sent: Sent) -> None:
     # Driven through `request_ui` under a request context, as the agent loop calls it: the
     # tenant and the settings have to come from that context, not from the environment.
@@ -392,7 +378,6 @@ async def test_a_question_says_one_is_waiting_without_the_question(sent: Sent) -
     assert message == {"kind": "question", "thread_id": "acme:thread-7"}
 
 
-@pytest.mark.asyncio
 async def test_a_subscription_that_keeps_failing_is_dropped_and_one_failure_is_not(sent: Sent) -> None:
     settings = _settings()
     b = Browser()
@@ -411,7 +396,6 @@ async def test_a_subscription_that_keeps_failing_is_dropped_and_one_failure_is_n
     assert await push_store.list_for_tenant(settings, "acme") == []
 
 
-@pytest.mark.asyncio
 async def test_an_approval_reaches_only_its_own_tenant(sent: Sent) -> None:
     settings = _settings()
     ours, theirs = Browser(), Browser("https://fcm.googleapis.com/fcm/send/globex-laptop")
@@ -425,7 +409,6 @@ async def test_an_approval_reaches_only_its_own_tenant(sent: Sent) -> None:
 
 
 @pytest.mark.parametrize(("ttl_seconds", "expected"), [(90, "90"), (5, "30"), (None, "300")])
-@pytest.mark.asyncio
 async def test_a_push_is_held_for_the_approval_s_own_deadline(
     sent: Sent, ttl_seconds: int | None, expected: str
 ) -> None:
@@ -442,7 +425,6 @@ async def test_a_push_is_held_for_the_approval_s_own_deadline(
     assert push["headers"]["TTL"] == expected
 
 
-@pytest.mark.asyncio
 async def test_a_question_asked_outside_a_request_pushes_nothing(sent: Sent) -> None:
     # No context means no tenant to tell -- a worker-side caller with nothing bound.
     from felix.ui.prompts import request_ui

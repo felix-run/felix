@@ -38,7 +38,6 @@ def test_a_long_message_is_cut_with_an_ellipsis_and_a_short_one_is_not() -> None
     assert not cut[:-1].endswith(" "), "the cut leaves no trailing space before the ellipsis"
 
 
-@pytest.mark.asyncio
 async def test_a_secret_in_the_first_message_is_masked_in_the_preview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -52,7 +51,6 @@ async def test_a_secret_in_the_first_message_is_masked_in_the_preview(
     assert meta["preview"] == "the key is [REDACTED]"
 
 
-@pytest.mark.asyncio
 async def test_the_pin_records_the_manifest_a_thread_moves_to() -> None:
     """Without `pin_compile` a thread may change manifests; the index follows the newest."""
     thread = "t:moves"

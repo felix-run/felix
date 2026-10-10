@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, TokenUsage
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -96,7 +95,6 @@ def _agent(tool: Tool) -> _ReactAgent:
     return agent
 
 
-@pytest.mark.asyncio
 async def test_approval_frame_arrives_before_the_tool_is_released() -> None:
     executor = _BlockingExecutor()
     tool = Tool(name="gated", description="gated", args_schema=None, executor=executor)
@@ -124,7 +122,6 @@ async def test_approval_frame_arrives_before_the_tool_is_released() -> None:
     assert executor.released.is_set()
 
 
-@pytest.mark.asyncio
 async def test_a_batch_that_never_blocks_still_delivers_its_side_events() -> None:
     """The fast path must not lose what the slow path gained."""
 

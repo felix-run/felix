@@ -68,7 +68,6 @@ ASK = [ChatMessage(role="user", content="What is 2+2?")]
 # --- escalation -------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_short_right_answer_is_kept_when_the_decider_says_it_answers() -> None:
     """The heuristic escalates "4" for being under 40 characters; the decider is asked."""
     primary, target = _Model("weak", "4"), _Model("strong", "Four.")
@@ -80,7 +79,6 @@ async def test_a_short_right_answer_is_kept_when_the_decider_says_it_answers() -
     assert state == {"request": "What is 2+2?", "reply": "4"} and purpose == "escalation"
 
 
-@pytest.mark.asyncio
 async def test_a_fluent_non_answer_escalates_when_the_decider_says_so() -> None:
     fluent = "That is a fascinating question about arithmetic that people have long debated."
     primary, target = _Model("weak", fluent), _Model("strong", "4")
@@ -89,21 +87,18 @@ async def test_a_fluent_non_answer_escalates_when_the_decider_says_so() -> None:
     assert target.calls == 1
 
 
-@pytest.mark.asyncio
 async def test_the_threshold_is_the_manifests_min_confidence() -> None:
     primary, target = _Model("weak", "4"), _Model("strong", "Four.")
     strict = _Decider(NoulAnswer(0.7), min_confidence=0.8)
     assert (await _escalating(primary, target, strict).chat(ASK, [])).message.content == "Four."
 
 
-@pytest.mark.asyncio
 async def test_a_decider_error_falls_back_to_the_heuristic_not_to_never() -> None:
     primary, target = _Model("weak", "4"), _Model("strong", "Four.")
     result = await _escalating(primary, target, _Decider(fail=True)).chat(ASK, [])
     assert result.message.content == "Four.", "a 1-character reply still escalates by the heuristic"
 
 
-@pytest.mark.asyncio
 async def test_no_request_text_means_the_heuristic_decides() -> None:
     decider = _Decider(NoulAnswer(0.95))
     primary, target = _Model("weak", "4"), _Model("strong", "Four.")
@@ -133,7 +128,6 @@ def test_build_model_hands_escalation_the_decider_only_when_asked() -> None:
 # --- router -----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_confident_decider_picks_the_child_without_a_model_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -164,7 +158,6 @@ async def test_a_confident_decider_picks_the_child_without_a_model_call(
     ],
     ids=["unsure", "error"],
 )
-@pytest.mark.asyncio
 async def test_an_unsure_or_failed_decider_leaves_the_choice_to_the_classifier(
     decider: _Decider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -180,7 +173,6 @@ async def test_an_unsure_or_failed_decider_leaves_the_choice_to_the_classifier(
     assert classifier.calls == 1
 
 
-@pytest.mark.asyncio
 async def test_a_classifier_that_names_no_child_is_counted_not_silent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -242,7 +234,6 @@ def test_escalation_by_decider_needs_a_decider_and_an_escalation() -> None:
     ],
     ids=["no-confidence", "manifest-threshold", "not-a-child"],
 )
-@pytest.mark.asyncio
 async def test_when_the_routers_decider_is_taken(
     decider: _Decider, expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -260,7 +251,6 @@ async def test_when_the_routers_decider_is_taken(
     assert classifier.calls == (0 if expected == "b" else 1)
 
 
-@pytest.mark.asyncio
 async def test_a_tool_step_does_not_ask_the_decider() -> None:
     from felix_ai.types import ToolCall
 
@@ -275,7 +265,6 @@ async def test_a_tool_step_does_not_ask_the_decider() -> None:
     assert decider.calls == []
 
 
-@pytest.mark.asyncio
 async def test_a_side_request_is_judged_by_the_heuristic_not_the_decider() -> None:
     """A compaction summary is not an answer to its "request" (the transcript), so asking
     would escalate every compaction to the expensive model and ship the transcript out."""

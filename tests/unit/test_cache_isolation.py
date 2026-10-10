@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pytest
 from felix.patterns.model import (
     ModelChatOptions,
     apply_anthropic_thinking_cache,
@@ -139,7 +138,6 @@ def _client(monkeypatch: Any):
     )
 
 
-@pytest.mark.asyncio
 async def test_a_normal_turn_still_asks_for_caching(monkeypatch: Any) -> None:
     from felix.patterns.types import ChatMessage
 
@@ -148,7 +146,6 @@ async def test_a_normal_turn_still_asks_for_caching(monkeypatch: Any) -> None:
     assert "cache_control" in json.dumps(_FakeClient.sent)
 
 
-@pytest.mark.asyncio
 async def test_an_isolated_request_reaches_the_wire_uncached(monkeypatch: Any) -> None:
     from felix.patterns.types import ChatMessage
 

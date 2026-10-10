@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, TokenUsage
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput, ToolCall
@@ -100,7 +99,6 @@ def _stream_messages(events: list[Event]) -> str:
 # --- the answer -----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_both_paths_produce_the_same_answer() -> None:
     out = await _run_invoke(_agent(_Model()))
     events = await _run_stream(_agent(_Model()))
@@ -108,7 +106,6 @@ async def test_both_paths_produce_the_same_answer() -> None:
     assert _stream_messages(events) == "final answer"
 
 
-@pytest.mark.asyncio
 async def test_both_paths_run_tools_with_the_same_arguments() -> None:
     seen_invoke: list[str] = []
     await _run_invoke(_agent(_Model(with_tool=True), [_tool(seen_invoke)]))
@@ -117,7 +114,6 @@ async def test_both_paths_run_tools_with_the_same_arguments() -> None:
     assert seen_invoke == seen_stream == ["x"]
 
 
-@pytest.mark.asyncio
 async def test_both_paths_keep_the_tool_result_in_history() -> None:
     out = await _run_invoke(_agent(_Model(with_tool=True), [_tool([])]))
     roles = [m.role for m in out.messages]
@@ -127,7 +123,6 @@ async def test_both_paths_keep_the_tool_result_in_history() -> None:
 # --- system prompt and prelude --------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_both_paths_send_the_same_first_request() -> None:
     """Message assembly — system prompt, prelude, incoming — must not differ."""
     seen: dict[str, list[ChatMessage]] = {}
@@ -170,7 +165,6 @@ class _Truncating(_Model):
         )
 
 
-@pytest.mark.asyncio
 async def test_both_paths_stop_on_a_truncated_turn() -> None:
     out = await _run_invoke(_agent(_Truncating()))
     assert out.final.content == "cut off"
@@ -197,7 +191,6 @@ class _TruncatedToolCall(_Model):
         yield self._cut()
 
 
-@pytest.mark.asyncio
 async def test_neither_path_runs_a_truncated_tool_call() -> None:
     """The quarantine had to be written twice. It must stay true on both."""
     seen_invoke: list[str] = []
@@ -210,7 +203,6 @@ async def test_neither_path_runs_a_truncated_tool_call() -> None:
 # --- the drift this exists to catch ---------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_audit_events_are_emitted_on_both_paths(monkeypatch: Any) -> None:
     """Streaming emitted no turn-level audit record at all.
 

@@ -22,7 +22,6 @@ def memory_settings() -> Settings:
     )
 
 
-@pytest.mark.asyncio
 async def test_usage_record_and_flush(memory_settings: Settings) -> None:
     from felix.usage import store as usage_store
 
@@ -45,7 +44,6 @@ async def test_usage_record_and_flush(memory_settings: Settings) -> None:
     assert items[0]["manifest_id"] == "quick"
 
 
-@pytest.mark.asyncio
 async def test_mock_eval_fixture(memory_settings: Settings) -> None:
     from felix.eval import store as eval_store
     from felix.eval.runner import start_run

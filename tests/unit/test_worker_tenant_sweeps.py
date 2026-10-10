@@ -38,14 +38,12 @@ async def _flush(tenants: list[str]) -> None:
     await flush_pending(SETTINGS)
 
 
-@pytest.mark.asyncio
 async def test_every_tenant_with_audit_events_is_enumerated() -> None:
     await _flush(["acme", "beta", "default"])
 
     assert await list_tenants_with_events(SETTINGS) == ["acme", "beta", "default"]
 
 
-@pytest.mark.asyncio
 async def test_the_anomaly_sweep_visits_every_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     """The regression: the cron scanned `default` and nothing else."""
     await _flush(["acme", "beta", "default"])
@@ -62,7 +60,6 @@ async def test_the_anomaly_sweep_visits_every_tenant(monkeypatch: pytest.MonkeyP
     assert sorted(seen) == ["acme", "beta", "default"]
 
 
-@pytest.mark.asyncio
 async def test_one_tenants_failure_does_not_stop_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Otherwise a single bad tenant silently disables detection for the rest."""
     await _flush(["acme", "beta", "default"])
@@ -82,7 +79,6 @@ async def test_one_tenants_failure_does_not_stop_the_sweep(monkeypatch: pytest.M
     assert len(findings) == 2
 
 
-@pytest.mark.asyncio
 async def test_the_continuous_eval_sweep_visits_every_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.jobs.continuous_eval import run_continuous_eval_all_tenants
 
@@ -104,7 +100,6 @@ async def test_the_continuous_eval_sweep_visits_every_tenant(monkeypatch: pytest
     assert result == {"runs": 2, "tenants": 2}
 
 
-@pytest.mark.asyncio
 async def test_manifest_tenant_enumeration_is_distinct() -> None:
     from felix.manifests import store as manifest_store
 
@@ -124,7 +119,6 @@ async def test_manifest_tenant_enumeration_is_distinct() -> None:
 # worker tasks to the single-tenant functions left the rest of this file green.
 
 
-@pytest.mark.asyncio
 async def test_the_anomaly_cron_sweeps_every_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix_worker import tasks as worker_tasks
 
@@ -140,7 +134,6 @@ async def test_the_anomaly_cron_sweeps_every_tenant(monkeypatch: pytest.MonkeyPa
     assert called == ["all_tenants"], "cron must call the all-tenants sweep"
 
 
-@pytest.mark.asyncio
 async def test_the_continuous_eval_cron_sweeps_every_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix_worker import tasks as worker_tasks
 

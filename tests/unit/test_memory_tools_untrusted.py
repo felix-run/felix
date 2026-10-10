@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.config import Settings
 from felix.manifests.builder import _is_untrusted_tool, apply_content_screening
 from felix.manifests.schema import ContentScreening
@@ -31,7 +30,6 @@ def test_every_memory_tool_counts_as_untrusted() -> None:
     assert all(_is_untrusted_tool(t) for t in tools)
 
 
-@pytest.mark.asyncio
 async def test_a_recalled_payload_is_quarantined_without_naming_the_tool() -> None:
     """`tools: []` — the configuration `governed.yaml` ships — used to leave recall unscreened."""
     await memory_store.put_memory(SETTINGS, "t", content=PAYLOAD, kind="fact", manifest_id="m")

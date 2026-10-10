@@ -24,7 +24,6 @@ def _record(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
     return seen
 
 
-@pytest.mark.asyncio
 async def test_a_page_request_carries_its_limit_and_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = _record(monkeypatch)
 
@@ -35,7 +34,6 @@ async def test_a_page_request_carries_its_limit_and_cursor(monkeypatch: pytest.M
     assert dict(request.url.params) == {"limit": "2", "cursor": "20:acme:b"}
 
 
-@pytest.mark.asyncio
 async def test_no_arguments_leave_the_page_to_the_harness(monkeypatch: pytest.MonkeyPatch) -> None:
     """The route owns the default; a client default would disagree with it the day either moved."""
     seen = _record(monkeypatch)

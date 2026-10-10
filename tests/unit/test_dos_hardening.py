@@ -120,14 +120,12 @@ def test_metrics_is_no_longer_public() -> None:
 # --- limiter behaviour ------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_limit_is_enforced() -> None:
     rl = InMemoryRateLimiter()
     allowed = [await rl.hit("k", limit=3, window_seconds=60) for _ in range(5)]
     assert allowed == [True, True, True, False, False]
 
 
-@pytest.mark.asyncio
 async def test_keys_are_independent() -> None:
     rl = InMemoryRateLimiter()
     for _ in range(3):
@@ -135,7 +133,6 @@ async def test_keys_are_independent() -> None:
     assert await rl.hit("b", limit=3, window_seconds=60) is True
 
 
-@pytest.mark.asyncio
 async def test_stale_keys_are_evicted() -> None:
     """`_windows` was a defaultdict with no eviction — a per-IP key spray grew it
     forever, a memory-exhaustion DoS in the component meant to prevent DoS."""
@@ -147,7 +144,6 @@ async def test_stale_keys_are_evicted() -> None:
     assert len(rl._windows) < 50
 
 
-@pytest.mark.asyncio
 async def test_redis_failure_degrades_rather_than_failing_requests() -> None:
     """Failing the request would turn a cache blip into a full outage; skipping the
     limit would remove the control exactly when a dependency is struggling."""
@@ -252,7 +248,6 @@ def test_pii_card_detection_is_unchanged_by_the_rewrite() -> None:
 # --- middleware ordering ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_failed_auth_is_rate_limited() -> None:
     """Starlette's add_middleware inserts at index 0, so auth was registered last and
     ran first — a 401 returned before the limiter was ever consulted, making credential
@@ -283,7 +278,6 @@ async def test_failed_auth_is_rate_limited() -> None:
     assert codes.index(429) >= 5, "the limit should apply after `rate_limit` attempts"
 
 
-@pytest.mark.asyncio
 async def test_oversized_declared_body_is_rejected() -> None:
     from felix_api.app import create_app
     from httpx import ASGITransport, AsyncClient

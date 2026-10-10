@@ -106,7 +106,6 @@ def test_abandoned_events_after_common_ancestor() -> None:
     assert ids == ["c"]
 
 
-@pytest.mark.asyncio
 async def test_summarize_abandoned_branch_fallback() -> None:
     from felix.session.branch import summarize_abandoned_branch
     from felix.session.store import InMemorySessionStore
@@ -174,7 +173,6 @@ def test_serialize_conversation_shapes() -> None:
     assert "[Tool result]" in text
 
 
-@pytest.mark.asyncio
 async def test_search_sessions_memory() -> None:
     from felix.config import Settings
     from felix.session.search import (
@@ -249,7 +247,6 @@ def test_react_batch_mode_parallel_vs_sequential() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_steer_abort_and_drain_modes() -> None:
     from felix.steer import (
         clear_abort,
@@ -301,7 +298,6 @@ def test_expand_template_placeholders() -> None:
     assert expand_template("$2-$1", ["a", "b"]) == "b-a"
 
 
-@pytest.mark.asyncio
 async def test_expand_named_prompt_from_manifest() -> None:
     from felix.manifests.schema import Manifest, Metadata, PromptTemplateSpec, Spec
     from felix.prompts import expand_named_prompt
@@ -349,7 +345,6 @@ def test_model_catalog_entry_shape() -> None:
     assert listed["id"] == "quick"
 
 
-@pytest.mark.asyncio
 async def test_session_lease_exclusive() -> None:
     from felix.session.lease import acquire_lease, release_lease, reset_leases_for_tests
 
@@ -402,7 +397,6 @@ def test_multimodal_chat_message_parse() -> None:
     assert oai[0]["content"][1]["type"] == "image_url"
 
 
-@pytest.mark.asyncio
 async def test_ui_resolve_smoke() -> None:
     from felix.ui import resolve_ui_response
 

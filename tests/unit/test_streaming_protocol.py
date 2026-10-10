@@ -109,7 +109,6 @@ def test_nothing_probes_stream_turn_by_hand_any_more() -> None:
     assert not offenders, f"hand-rolled stream_turn probes: {offenders} — use supports_stream_turn"
 
 
-@pytest.mark.asyncio
 async def test_a_fallback_chain_that_cannot_stream_still_answers() -> None:
     """The composite is the one wrapper `supports_stream_turn` cannot judge.
 

@@ -126,7 +126,6 @@ async def _drain(agent: Any, *, streaming: bool) -> None:
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["invoke", "stream"])
-@pytest.mark.asyncio
 async def test_parallel_meters_its_synthesis_call(monkeypatch: pytest.MonkeyPatch, streaming: bool) -> None:
     """The aggregator inference is billed on both halves.
 
@@ -149,7 +148,6 @@ async def test_parallel_meters_its_synthesis_call(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["invoke", "stream"])
-@pytest.mark.asyncio
 async def test_plan_execute_meters_plan_and_synthesis(
     monkeypatch: pytest.MonkeyPatch, streaming: bool
 ) -> None:
@@ -173,7 +171,6 @@ async def test_plan_execute_meters_plan_and_synthesis(
     assert ctx.limit_state.tokens_output == 12
 
 
-@pytest.mark.asyncio
 async def test_streaming_meters_a_provider_that_cannot_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,7 +202,6 @@ async def test_streaming_meters_a_provider_that_cannot_stream(
     assert [e.text for e in events if e.event == "text_delta"] == ["combined"]
 
 
-@pytest.mark.asyncio
 async def test_reflect_verifier_is_metered(monkeypatch: pytest.MonkeyPatch) -> None:
     """`_score` calls the verifier on every iteration and never recorded it."""
     from felix.patterns import delegating
@@ -222,7 +218,6 @@ async def test_reflect_verifier_is_metered(monkeypatch: pytest.MonkeyPatch) -> N
     assert ctx.limit_state.tokens_input == 10
 
 
-@pytest.mark.asyncio
 async def test_streamed_usage_reaches_the_usage_store(monkeypatch: pytest.MonkeyPatch) -> None:
     """Metering is not only a limit concern — the billing row must exist too."""
     from felix.patterns import delegating
@@ -253,7 +248,6 @@ class _ThinkingModel(_MeteredModel):
 
 
 @pytest.mark.parametrize("pattern", ["parallel", "plan_execute"])
-@pytest.mark.asyncio
 async def test_invoke_keeps_the_thinking_on_the_synthesized_answer(
     monkeypatch: pytest.MonkeyPatch, pattern: str
 ) -> None:
@@ -283,7 +277,6 @@ async def test_invoke_keeps_the_thinking_on_the_synthesized_answer(
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["invoke", "stream"])
-@pytest.mark.asyncio
 async def test_router_meters_its_routing_call(monkeypatch: pytest.MonkeyPatch, streaming: bool) -> None:
     """`_choose_child` is an inference too, on both halves.
 
@@ -336,7 +329,6 @@ class _CountingChild(_Child):
         return await super().invoke(input)
 
 
-@pytest.mark.asyncio
 async def test_a_low_score_drives_another_pass_with_a_critique(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -365,7 +357,6 @@ async def test_a_low_score_drives_another_pass_with_a_critique(
     assert verifier.calls == 2
 
 
-@pytest.mark.asyncio
 async def test_an_unparseable_reply_is_still_billed(monkeypatch: pytest.MonkeyPatch) -> None:
     """ "The verifier is billed whether or not its reply parses" — asserted, not asserted-to."""
     from felix.patterns import delegating
@@ -381,7 +372,6 @@ async def test_an_unparseable_reply_is_still_billed(monkeypatch: pytest.MonkeyPa
     assert ctx.limit_state.tokens_input == 10, "and the call is billed anyway"
 
 
-@pytest.mark.asyncio
 async def test_cached_prompt_tokens_are_counted_on_the_limit_state() -> None:
     """`tokens_cached` feeds `usage.prompt_tokens_details.cached_tokens` on the OpenAI wire;
     it is the part of `tokens_input` the provider served from its prompt cache."""

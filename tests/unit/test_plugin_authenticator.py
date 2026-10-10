@@ -60,7 +60,6 @@ def _install(monkeypatch: pytest.MonkeyPatch, mode: str, builder: Any) -> None:
     monkeypatch.setattr("felix.plugins._registry", registry)
 
 
-@pytest.mark.asyncio
 async def test_plugin_auth_mode_authenticates(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, "acme-sso", _sso_builder)
     settings = Settings(auth_mode="acme-sso", host="127.0.0.1")
@@ -81,7 +80,6 @@ def test_unknown_auth_mode_is_refused_at_startup(monkeypatch: pytest.MonkeyPatch
         Settings(auth_mode="apikey", host="127.0.0.1").validate_runtime()
 
 
-@pytest.mark.asyncio
 async def test_unknown_auth_mode_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """If one slips past startup validation it must 401, never fall through as anonymous."""
     _install(monkeypatch, "acme-sso", _sso_builder)
@@ -92,7 +90,6 @@ async def test_unknown_auth_mode_fails_closed(monkeypatch: pytest.MonkeyPatch) -
     assert result is not ANONYMOUS
 
 
-@pytest.mark.asyncio
 async def test_a_plugin_cannot_hijack_a_builtin_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """Otherwise installing a package could silently weaken `api_key` auth.
 
@@ -137,7 +134,6 @@ async def test_a_plugin_cannot_hijack_a_builtin_mode(monkeypatch: pytest.MonkeyP
     assert called == []
 
 
-@pytest.mark.asyncio
 async def test_a_raising_authenticator_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     def _explodes(settings: Settings) -> Any:
         raise RuntimeError("misconfigured IdP")
@@ -149,7 +145,6 @@ async def test_a_raising_authenticator_fails_closed(monkeypatch: pytest.MonkeyPa
     assert result.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_a_bad_return_type_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A plugin returning something else must not be coerced into a principal."""
 

@@ -83,7 +83,6 @@ def test_the_wrapper_forwards_unknown_attributes() -> None:
     assert wrapped.some_provider_extra == "kept"
 
 
-@pytest.mark.asyncio
 async def test_a_model_call_carries_gen_ai_attributes() -> None:
     """The attribute names are the contract: an OTLP backend keys generations off them."""
     wrapped = _traced(_NoStream())
@@ -102,7 +101,6 @@ async def test_a_model_call_carries_gen_ai_attributes() -> None:
     assert attrs["felix.model.route"] == "sonnet"
 
 
-@pytest.mark.asyncio
 async def test_an_unmetered_turn_is_visible_on_the_span() -> None:
     """A turn with no usage cannot be capped by limits. That belongs in the trace."""
     inner = _NoStream(ModelChatResult(message=ChatMessage(role="assistant", content="x"), usage=None))
@@ -112,7 +110,6 @@ async def test_an_unmetered_turn_is_visible_on_the_span() -> None:
     assert "gen_ai.usage.input_tokens" not in spans[0].attributes
 
 
-@pytest.mark.asyncio
 async def test_a_failing_model_call_marks_the_span_and_propagates() -> None:
     class _Boom(_NoStream):
         async def chat(self, messages: Any, tools: Any, opts: Any = None) -> ModelChatResult:
@@ -124,7 +121,6 @@ async def test_a_failing_model_call_marks_the_span_and_propagates() -> None:
     assert spans[0].attributes["error"] is True
 
 
-@pytest.mark.asyncio
 async def test_a_streamed_turn_records_usage_from_the_terminal_result() -> None:
     """Usage rides on the final ModelChatResult, not on the deltas."""
     spans: list[Any] = []

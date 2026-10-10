@@ -490,7 +490,6 @@ def _spec(pattern: str) -> dict[str, Any]:
     }
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("pattern", ["react", "deep"])
 async def test_a_pattern_that_honours_the_schema_compiles(pattern: str) -> None:
     """`react` reads `ctx["output_schema"]` outright; `deep` has no branch in
@@ -503,7 +502,6 @@ async def test_a_pattern_that_honours_the_schema_compiles(pattern: str) -> None:
     assert agent is not None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("pattern", ["groupchat"])
 async def test_a_pattern_that_cannot_honour_the_schema_is_refused(pattern: str) -> None:
     """Refused at compile, not dropped at runtime.

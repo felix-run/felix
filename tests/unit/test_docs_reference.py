@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 
-import pytest
 from fastapi import FastAPI
 from felix.config import Settings
 from felix_api.app import create_app
@@ -40,7 +39,6 @@ def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
 
-@pytest.mark.asyncio
 async def test_docs_serves_scalar_not_swagger_ui() -> None:
     app = create_app(settings=_settings("docs-scalar"), plugins=[])
     async with _client(app) as client:
@@ -61,7 +59,6 @@ async def test_docs_serves_scalar_not_swagger_ui() -> None:
     assert config["defaultHttpClient"] == {"targetKey": "shell", "clientKey": "curl"}
 
 
-@pytest.mark.asyncio
 async def test_openapi_is_untouched_and_redoc_is_gone() -> None:
     """One reference surface: ReDoc was HTML with an inline script and a CDN bundle and
     no CSP — gated like `/docs` but not protected like it."""
@@ -98,7 +95,6 @@ def _server_expr(page: str) -> str:
     return match.group(1)
 
 
-@pytest.mark.asyncio
 async def test_page_follows_a_relocated_spec_path() -> None:
     """Two sources for the spec path is how /docs ends up rendering a 404."""
     app = FastAPI(title="Felix", openapi_url="/v1/openapi.json", docs_url=None)
@@ -112,7 +108,6 @@ async def test_page_follows_a_relocated_spec_path() -> None:
     assert spec.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_page_follows_the_request_s_root_path() -> None:
     """Behind a proxy prefix, a precomputed spec path is a 404.
 
@@ -131,7 +126,6 @@ async def test_page_follows_the_request_s_root_path() -> None:
     assert _server_expr(page.text) == "/felix"
 
 
-@pytest.mark.asyncio
 async def test_docs_takes_the_api_credential_under_api_key_auth() -> None:
     """The reference is a map of every route, management ones included, so under real
     auth it takes the same credential as the API. An operator who wants it anonymous on

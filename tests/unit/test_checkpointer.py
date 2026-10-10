@@ -113,7 +113,6 @@ def test_a_plugin_cannot_replace_a_builtin(restore_checkpointers: Any) -> None:
         register_checkpointer("postgres", lambda settings, tenant: None)
 
 
-@pytest.mark.asyncio
 async def test_checkpointer_none_builds_a_stateless_agent() -> None:
     """End to end: the manifest field must reach the agent, not just the factory."""
     from felix.runtime import build_tenant_agent
@@ -190,7 +189,6 @@ def test_none_with_nothing_stateful_is_fine() -> None:
 # sites could be deleted with the suite still green. These pin the callers.
 
 
-@pytest.mark.asyncio
 async def test_runtime_enforces_the_cross_check() -> None:
     """`build_tenant_agent` must refuse, not just the validator in isolation."""
     from felix.manifests.schema import Manifest
@@ -215,7 +213,6 @@ async def test_runtime_enforces_the_cross_check() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_runtime_rejects_an_unknown_checkpointer() -> None:
     from felix.manifests.schema import Manifest
     from felix.runtime import build_tenant_agent
@@ -282,7 +279,6 @@ async def _put_manifest(checkpointer: str, *, strategy: str = "full_replay") -> 
         return resp.status_code, resp.text
 
 
-@pytest.mark.asyncio
 async def test_put_manifest_rejects_a_bad_checkpointer_at_write_time() -> None:
     """Stored, it would raise inside every build — a 500 per request instead."""
     status, body = await _put_manifest("do")
@@ -290,20 +286,17 @@ async def test_put_manifest_rejects_a_bad_checkpointer_at_write_time() -> None:
     assert "unknown checkpointer" in body
 
 
-@pytest.mark.asyncio
 async def test_put_manifest_rejects_a_silently_dropped_combination() -> None:
     status, body = await _put_manifest("none", strategy="compacting")
     assert status == 400
     assert "silently drops" in body
 
 
-@pytest.mark.asyncio
 async def test_put_manifest_accepts_a_valid_checkpointer() -> None:
     status, _ = await _put_manifest("none")
     assert status == 200
 
 
-@pytest.mark.asyncio
 async def test_none_is_stateless_across_turns_and_postgres_is_not() -> None:
     """The behavioural claim, not the structural one.
 

@@ -110,7 +110,6 @@ async def _run(agent: Any, *, streaming: bool) -> None:
 STREAMING = [pytest.param(False, id="invoke"), pytest.param(True, id="stream")]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_parallel_shapes_the_synthesis_and_not_the_specialists(streaming: bool) -> None:
     """The specialists' answers are raw material for the synthesis prompt.
@@ -136,7 +135,6 @@ async def test_parallel_shapes_the_synthesis_and_not_the_specialists(streaming: 
         assert child.schemas == [None], f"specialist {name} was shaped"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_plan_execute_shapes_the_synthesis_and_not_the_plan(streaming: bool) -> None:
     """A plan shaped like the answer schema is not a plan.
@@ -167,7 +165,6 @@ async def test_plan_execute_shapes_the_synthesis_and_not_the_plan(streaming: boo
     assert executor.schemas == [None] * len(executor.schemas), "an executor step was shaped"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_router_shapes_the_child_and_not_the_classifier(streaming: bool) -> None:
     """The router's own turn picks a name; the child writes the answer.
@@ -193,7 +190,6 @@ async def test_router_shapes_the_child_and_not_the_classifier(streaming: bool) -
     assert child.schemas == [SCHEMA], "the child that answers did not receive the contract"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_reflect_shapes_every_draft_because_any_can_be_the_answer(streaming: bool) -> None:
     """The loop exits as soon as a draft clears the threshold.
@@ -213,7 +209,6 @@ async def test_reflect_shapes_every_draft_because_any_can_be_the_answer(streamin
     assert all(s == SCHEMA for s in inner.schemas), f"a draft went unshaped: {inner.schemas}"
 
 
-@pytest.mark.asyncio
 async def test_a_caller_s_own_schema_wins_over_the_manifest_s() -> None:
     """`/v1` `response_format` is a per-request override, and react already works this way.
 
@@ -245,7 +240,6 @@ async def test_a_caller_s_own_schema_wins_over_the_manifest_s() -> None:
     assert child.schemas == [SCHEMA], "a request overrode the manifest's published contract"
 
 
-@pytest.mark.asyncio
 async def test_a_composite_without_a_schema_passes_no_options_at_all() -> None:
     """The overwhelmingly common case must not start sending an empty options object.
 
@@ -307,7 +301,6 @@ def _inner_schema(agent: Any) -> Any:
     return getattr(agent, "output_schema", None)
 
 
-@pytest.mark.asyncio
 async def test_the_plan_execute_executor_is_built_without_the_answer_contract() -> None:
     """Subtask answers become `notes` for the synthesis prompt, so they must stay prose.
 
@@ -324,7 +317,6 @@ async def test_the_plan_execute_executor_is_built_without_the_answer_contract() 
     assert agent.output_schema == SCHEMA, "the composite lost the contract for its synthesis"
 
 
-@pytest.mark.asyncio
 async def test_the_reflect_inner_agent_is_built_with_the_answer_contract() -> None:
     """The mirror decision, made deliberately rather than by accident.
 
@@ -338,7 +330,6 @@ async def test_the_reflect_inner_agent_is_built_with_the_answer_contract() -> No
     assert _inner_schema(agent.inner) == SCHEMA, "a reflect draft would have gone unshaped"
 
 
-@pytest.mark.asyncio
 async def test_the_manifest_contract_outranks_a_caller_s_on_every_pattern() -> None:
     """`react` resolves `self.output_schema or opts.output_schema`, and the composites must
     agree: an agent published with an answer contract keeps answering to it rather than to
@@ -364,7 +355,6 @@ async def test_the_manifest_contract_outranks_a_caller_s_on_every_pattern() -> N
         assert resolved.output_schema == SCHEMA, f"{build.__name__}: the caller overrode the manifest"
 
 
-@pytest.mark.asyncio
 async def test_a_caller_s_contract_is_used_when_the_manifest_declares_none() -> None:
     """The other half, and the reason `_child_input` stopped dropping `model_options`:
     a `/v1` `response_format` could not reach a composite's answering turn at all before."""
@@ -382,7 +372,6 @@ async def test_a_caller_s_contract_is_used_when_the_manifest_declares_none() -> 
     assert resolved is not None and resolved.output_schema == caller
 
 
-@pytest.mark.asyncio
 async def test_caller_options_alone_do_not_reach_a_synthesis_turn() -> None:
     """A composite with no contract must behave exactly as it did, and this is not pedantry.
 

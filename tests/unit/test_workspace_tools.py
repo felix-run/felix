@@ -26,7 +26,6 @@ def test_resolve_under_root_rejects_escape(tmp_path: Path) -> None:
         resolve_under_root(root, str(tmp_path / "abs.txt"))
 
 
-@pytest.mark.asyncio
 async def test_workspace_read_write_list_search(tmp_path: Path) -> None:
     ws = tmp_path / "workspace"
     ws.mkdir()

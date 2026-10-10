@@ -148,7 +148,6 @@ def _searx_payload(n: int = 3, **overrides: object) -> bytes:
     return json.dumps({"results": rows, **overrides}).encode()
 
 
-@pytest.mark.asyncio
 async def test_searxng_parses_results() -> None:
     async with serve(lambda req, w: respond(w, _searx_payload(), ctype="application/json")) as base:
         results = await SearxngBackend(url=base, allow_http=True).search("felix harness", limit=5)
@@ -158,7 +157,6 @@ async def test_searxng_parses_results() -> None:
     assert results[0].snippet == "snippet 1"
 
 
-@pytest.mark.asyncio
 async def test_searxng_sends_the_query_and_asks_for_json() -> None:
     seen: list[str] = []
 
@@ -177,14 +175,12 @@ async def test_searxng_sends_the_query_and_asks_for_json() -> None:
     assert parse_qs(parsed.query) == {"q": ["felix harness"], "format": ["json"]}
 
 
-@pytest.mark.asyncio
 async def test_searxng_honours_the_limit() -> None:
     async with serve(lambda req, w: respond(w, _searx_payload(10), ctype="application/json")) as base:
         results = await SearxngBackend(url=base, allow_http=True).search("q", limit=3)
     assert len(results) == 3
 
 
-@pytest.mark.asyncio
 async def test_a_result_with_no_url_is_dropped() -> None:
     """It cannot be fetched, so it is context-window noise rather than a partial answer."""
     payload = json.dumps(
@@ -195,13 +191,11 @@ async def test_a_result_with_no_url_is_dropped() -> None:
     assert [r.title for r in results] == ["ok"]
 
 
-@pytest.mark.asyncio
 async def test_a_malformed_payload_yields_no_results_rather_than_raising() -> None:
     async with serve(lambda req, w: respond(w, b'{"unexpected": 1}', ctype="application/json")) as base:
         assert await SearxngBackend(url=base, allow_http=True).search("q", limit=5) == []
 
 
-@pytest.mark.asyncio
 async def test_the_backend_url_goes_through_the_egress_guard() -> None:
     """Operator-supplied, but still not allowed to point into private space.
 
@@ -218,7 +212,6 @@ async def test_the_backend_url_goes_through_the_egress_guard() -> None:
 # --- the tool -------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_results_are_rendered_with_the_url_on_its_own_line() -> None:
     """The next thing an agent does is fetch one, so the URL has to be easy to lift."""
     backend = _FakeBackend([SearchResult(title="T", url="https://e.com/a", snippet="S")])
@@ -226,21 +219,18 @@ async def test_results_are_rendered_with_the_url_on_its_own_line() -> None:
     assert out == "1. T\n   https://e.com/a\n   S"
 
 
-@pytest.mark.asyncio
 async def test_no_results_is_reported_distinctly_from_no_backend() -> None:
     """A model told 'nothing matched' rephrases; told 'unconfigured' it stops."""
     assert await _bound(_FakeBackend([])).executor.execute({"query": "x"}) == "(no results)"
     assert await _bound(NullSearchBackend()).executor.execute({"query": "x"}) == NOT_CONFIGURED
 
 
-@pytest.mark.asyncio
 async def test_an_empty_query_is_refused_before_the_backend_is_called() -> None:
     backend = _FakeBackend()
     assert await _bound(backend).executor.execute({"query": "   "}) == "search_error: query is required"
     assert backend.calls == []
 
 
-@pytest.mark.asyncio
 async def test_a_backend_failure_does_not_leak_the_endpoint() -> None:
     """The URL is deployment topology; naming it in a tool result puts it in the transcript."""
     backend = _FakeBackend(raises=RuntimeError("connect to searx.internal.corp:8888 failed"))
@@ -249,7 +239,6 @@ async def test_a_backend_failure_does_not_leak_the_endpoint() -> None:
     assert "searx.internal.corp" not in out
 
 
-@pytest.mark.asyncio
 async def test_a_long_snippet_is_truncated() -> None:
     backend = _FakeBackend([SearchResult(title="T", url="https://e.com/", snippet="z" * 5_000)])
     out = await _bound(backend).executor.execute({"query": "x"})
@@ -265,7 +254,6 @@ def test_render_handles_a_result_with_no_title_or_snippet() -> None:
 # --- the ref -> executor seam ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_max_results_survives_the_binder() -> None:
     """Dropped at the seam, every behavioural assertion still passes — the documented shape."""
     backend = _FakeBackend([SearchResult(title=str(i), url=f"https://e.com/{i}") for i in range(20)])
@@ -315,7 +303,6 @@ def test_a_query_is_replay_safe() -> None:
     assert _bound(_FakeBackend()).replay_safe is True
 
 
-@pytest.mark.asyncio
 async def test_binding_without_a_backend_warns_but_still_binds(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -355,7 +342,6 @@ def test_max_results_is_bounded_by_the_schema(bad: int) -> None:
 # --- the bundled manifest that needed this ---------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_deep_can_search_and_fetch() -> None:
     """`deep` declared `pattern: deep` and could only do arithmetic.
 
@@ -386,7 +372,6 @@ def _request_context(settings: Settings):
         yield
 
 
-@pytest.mark.asyncio
 async def test_deep_screens_the_results_it_retrieves() -> None:
     """A hostile snippet must come back quarantined, not merely wrapped.
 
@@ -482,7 +467,6 @@ def test_control_characters_are_stripped() -> None:
 # --- bounds on the backend call ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_dribbling_backend_hits_the_declared_deadline() -> None:
     """`httpx.Timeout` bounds each read, not the call — the same defect `http_fetch` fixed
     and this did not inherit. Nothing upstream catches it: `check_budgets` never runs during
@@ -505,7 +489,6 @@ async def test_a_dribbling_backend_hits_the_declared_deadline() -> None:
     assert elapsed < 10, f"the declared 0.7s deadline did not bound the call ({elapsed:.1f}s)"
 
 
-@pytest.mark.asyncio
 async def test_an_oversized_backend_response_is_refused() -> None:
     """ "Operator configured it" is not "operator controls what it returns" — a metasearch
     instance returns whatever its upstreams do."""
@@ -560,7 +543,6 @@ def test_the_api_key_can_come_from_the_secrets_backend_and_is_masked() -> None:
 # --- the bundled manifest's posture -----------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_deep_is_not_anonymous_now_that_it_can_reach_the_internet() -> None:
     """Anonymous access used to buy a calculator; with `fetch` bound unconfined it buys a
     general-purpose egress primitive, and content screening does not cover that direction —
@@ -590,7 +572,6 @@ def _prod(**kw: object) -> Settings:
     return Settings(**base)  # type: ignore[arg-type]
 
 
-@pytest.mark.asyncio
 async def test_production_does_not_get_the_plaintext_exemption() -> None:
     """`allow_http=True` would hand production both plaintext transport for its API key and
     reachability to loopback, via `egress.py`'s `allow_http and ip.is_loopback` exemption."""
@@ -609,7 +590,6 @@ def test_the_bound_tool_carries_the_capped_args_model() -> None:
     assert _bound(_FakeBackend()).args_schema is WebSearchArgs
 
 
-@pytest.mark.asyncio
 async def test_an_over_long_query_is_truncated_before_it_reaches_the_backend() -> None:
     """The executor half. Nothing validates tool arguments against `args_schema` at runtime —
     `tool_runner` hands `call.args` straight to the executor — so the pydantic `max_length` is
@@ -621,7 +601,6 @@ async def test_an_over_long_query_is_truncated_before_it_reaches_the_backend() -
     assert backend.calls == [("a" * MAX_QUERY_CHARS, DEFAULT_MAX_RESULTS)]
 
 
-@pytest.mark.asyncio
 async def test_the_api_key_is_sent_as_a_bearer_header() -> None:
     seen: list[dict[str, str]] = []
 
@@ -634,7 +613,6 @@ async def test_the_api_key_is_sent_as_a_bearer_header() -> None:
     assert seen[0].get("authorization") == "Bearer sk-secret"
 
 
-@pytest.mark.asyncio
 async def test_no_authorization_header_is_sent_when_no_key_is_set() -> None:
     """A stray empty `Bearer` would be a credential-shaped header on every request."""
     seen: list[dict[str, str]] = []
@@ -648,7 +626,6 @@ async def test_no_authorization_header_is_sent_when_no_key_is_set() -> None:
     assert "authorization" not in seen[0]
 
 
-@pytest.mark.asyncio
 async def test_a_non_2xx_backend_response_is_an_error_not_an_empty_result() -> None:
     """A 429 rendering as "(no results)" is the exact confusion `NOT_CONFIGURED` exists to
     prevent: the model reads "nothing matched" and rephrases forever."""
@@ -661,7 +638,6 @@ async def test_a_non_2xx_backend_response_is_an_error_not_an_empty_result() -> N
         assert await _bound(backend).executor.execute({"query": "q"}) == ("search_error: HTTPStatusError")
 
 
-@pytest.mark.asyncio
 async def test_a_non_object_row_is_skipped_rather_than_crashing() -> None:
     """A plausible shape from a proxy or a version bump."""
     payload = json.dumps({"results": ["a string", {"title": "ok", "url": "https://e.com/"}]}).encode()
@@ -670,7 +646,6 @@ async def test_a_non_object_row_is_skipped_rather_than_crashing() -> None:
     assert [r.title for r in results] == ["ok"]
 
 
-@pytest.mark.asyncio
 async def test_a_trailing_slash_on_the_configured_url_still_works() -> None:
     """`FELIX_SEARCH_URL=https://searx.example.com/` is the shape most likely to be typed,
     and `serve()` never produces one, so `rstrip("/")` was removable with a green suite."""
@@ -692,7 +667,6 @@ def test_the_configured_timeout_reaches_the_backend() -> None:
     assert backend._timeout_s == 3.5
 
 
-@pytest.mark.asyncio
 async def test_the_default_result_count_applies_when_a_ref_says_nothing() -> None:
     """The per-call context-window cost of the tool; raising the default to 50 was green."""
     backend = _FakeBackend([SearchResult(title=str(i), url=f"https://e.com/{i}") for i in range(20)])
@@ -713,7 +687,6 @@ def test_the_fake_backend_satisfies_the_protocol() -> None:
     assert isinstance(_FakeBackend(), SearchBackend)
 
 
-@pytest.mark.asyncio
 async def test_deeps_fetch_is_unconfined_and_screened_together() -> None:
     """The manifest's claim is a *conditional* — unconfined is acceptable because screening is
     on — so asserting only the search half left the fetch half unpinned."""

@@ -39,7 +39,6 @@ def unreachable(monkeypatch: pytest.MonkeyPatch):
     return attempts
 
 
-@pytest.mark.asyncio
 async def test_a_failed_connection_is_retried_rather_than_latched(unreachable) -> None:
     """A blip must not put a process on its fallback for good.
 
@@ -67,7 +66,6 @@ async def test_a_failed_connection_is_retried_rather_than_latched(unreachable) -
     assert conn._failed_until > time.monotonic(), "the retry did not re-arm the cooldown"
 
 
-@pytest.mark.asyncio
 async def test_the_cooldown_is_a_cooldown() -> None:
     """The test above patches the interval, so it stays green if the shipped value were
     zero — the opposite failure, a connection attempt on every call against a Redis that
@@ -75,7 +73,6 @@ async def test_the_cooldown_is_a_cooldown() -> None:
     assert RedisConnection("test")._retry_after > 0
 
 
-@pytest.mark.asyncio
 async def test_an_unconfigured_redis_backs_off_much_longer(monkeypatch: pytest.MonkeyPatch) -> None:
     """No URL is configuration, not a blip. Re-reading settings every call to discover
     the same absence is pure overhead on the path this is supposed to keep cheap."""
@@ -88,7 +85,6 @@ async def test_an_unconfigured_redis_backs_off_much_longer(monkeypatch: pytest.M
     assert conn._failed_until > time.monotonic() + 60, "backed off as if it were a blip"
 
 
-@pytest.mark.asyncio
 async def test_an_abandoned_connect_does_not_latch_the_connection_off(unreachable) -> None:
     """`_connecting` is a single-flight guard, and a guard that outlives its flight is a
     latch. The `finally` that clears it does not run if the loop closes with the connect
@@ -104,7 +100,6 @@ async def test_an_abandoned_connect_does_not_latch_the_connection_off(unreachabl
     assert len(unreachable) == 1, "the stale guard short-circuited the connect entirely"
 
 
-@pytest.mark.asyncio
 async def test_closing_drops_the_in_flight_guard_too(unreachable) -> None:
     """`aclose` is what a subsystem calls to drop everything. Leaving the guard behind
     leaves the one piece of state that can latch."""
@@ -116,7 +111,6 @@ async def test_closing_drops_the_in_flight_guard_too(unreachable) -> None:
     assert conn._connecting is None
 
 
-@pytest.mark.asyncio
 async def test_closing_runs_the_reset_hook_first(unreachable) -> None:
     """Callers hold state derived from the client — a pub/sub connection and its reader
     task — that this class cannot clean up for them. The hook has to run *before* the
@@ -133,7 +127,6 @@ async def test_closing_runs_the_reset_hook_first(unreachable) -> None:
     assert order == ["hook"]
 
 
-@pytest.mark.asyncio
 async def test_a_dead_loop_never_compares_equal_to_a_live_one() -> None:
     """`id(loop)` was the identity here, and CPython reuses freed addresses: a new loop
     allocated where a closed one lived compared equal, the teardown was skipped, and the
@@ -154,7 +147,6 @@ async def test_a_dead_loop_never_compares_equal_to_a_live_one() -> None:
     assert conn._loop() is None, "a collected loop should dereference to None"
 
 
-@pytest.mark.asyncio
 async def test_a_configured_redis_that_is_down_warns_once_with_the_callers_consequence(
     unreachable, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -173,7 +165,6 @@ async def test_a_configured_redis_that_is_down_warns_once_with_the_callers_conse
     assert "does not cross processes" in warnings[0] and "a stop went nowhere" in warnings[0]
 
 
-@pytest.mark.asyncio
 async def test_a_command_failure_drops_the_client_so_the_next_get_reconnects(unreachable) -> None:
     """A Redis that dies after the client connected was never noticed: `get()` handed back
     the cached client forever and every command failed into the caller's fallback."""

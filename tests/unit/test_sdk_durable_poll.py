@@ -78,7 +78,6 @@ def _client() -> FelixClient:
     return FelixClient(base_url="http://felix.test")
 
 
-@pytest.mark.asyncio
 async def test_a_durable_prompt_returns_the_answer_not_the_receipt(server: dict[str, Any]) -> None:
     server["script"](["running", "completed"])
 
@@ -88,7 +87,6 @@ async def test_a_durable_prompt_returns_the_answer_not_the_receipt(server: dict[
     assert result["final"]["content"] == "the answer"
 
 
-@pytest.mark.asyncio
 async def test_progress_reaches_subscribers(server: dict[str, Any]) -> None:
     """A caller waiting minutes for a run should not wait blind."""
     server["script"](["pending", "running", "completed"])
@@ -103,7 +101,6 @@ async def test_progress_reaches_subscribers(server: dict[str, Any]) -> None:
     assert seen[-1] == "prompt_result", seen
 
 
-@pytest.mark.asyncio
 async def test_wait_s_zero_returns_the_receipt_without_polling(server: dict[str, Any]) -> None:
     server["script"](["completed"])
 
@@ -114,7 +111,6 @@ async def test_wait_s_zero_returns_the_receipt_without_polling(server: dict[str,
     assert not any("/chat/runs/" in c for c in server["calls"]), server["calls"]
 
 
-@pytest.mark.asyncio
 async def test_running_out_of_patience_is_not_a_failure(server: dict[str, Any]) -> None:
     """`wait_s` elapsing means the caller stopped waiting, not that the run broke.
 
@@ -132,7 +128,6 @@ async def test_running_out_of_patience_is_not_a_failure(server: dict[str, Any]) 
     assert elapsed < 5.0, f"waited {elapsed:.1f}s against a 1s budget"
 
 
-@pytest.mark.asyncio
 async def test_a_failed_run_surfaces_its_error(server: dict[str, Any]) -> None:
     server["script"](["failed"])
 
@@ -142,7 +137,6 @@ async def test_a_failed_run_surfaces_its_error(server: dict[str, Any]) -> None:
     assert result["error"] == "model_unavailable"
 
 
-@pytest.mark.asyncio
 async def test_an_expired_run_stops_rather_than_polling_forever(server: dict[str, Any]) -> None:
     """The run's own TTL bounds the wait. Past it the result cannot arrive, so polling
     on would hold the caller for nothing."""
@@ -153,7 +147,6 @@ async def test_an_expired_run_stops_rather_than_polling_forever(server: dict[str
     assert result["status"] == "expired", result
 
 
-@pytest.mark.asyncio
 async def test_a_missing_run_is_reported_not_retried(server: dict[str, Any]) -> None:
     server["script"]([], run_status_code=404)
 
@@ -163,7 +156,6 @@ async def test_a_missing_run_is_reported_not_retried(server: dict[str, Any]) -> 
     assert "run_not_found" in result["error"]
 
 
-@pytest.mark.asyncio
 async def test_a_transient_prompt_is_untouched(server: dict[str, Any]) -> None:
     """The default path must not have moved: a 200 is the answer, with no polling."""
     server["script"]([], durable=False)

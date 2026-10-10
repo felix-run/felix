@@ -61,7 +61,6 @@ async def _ticks_to_finish(
     raise AssertionError(f"{steps} never finished in {limit} sweeps")
 
 
-@pytest.mark.asyncio
 async def test_a_durable_chat_finishes_in_one_sweep(settings: Settings) -> None:
     """The shape that matters, spelled out on its own.
 
@@ -75,14 +74,12 @@ async def test_a_durable_chat_finishes_in_one_sweep(settings: Settings) -> None:
     assert (ticks, status) == (1, "completed")
 
 
-@pytest.mark.asyncio
 async def test_bookkeeping_steps_do_not_each_cost_a_tick(settings: Settings) -> None:
     """Three stashes took four sweeps: one per op, plus one to notice it was done."""
     ticks, status = await _ticks_to_finish(settings, [{"op": "stash", "data": {"i": i}} for i in range(3)])
     assert (ticks, status) == (1, "completed")
 
 
-@pytest.mark.asyncio
 async def test_a_second_invoke_waits_for_the_next_sweep(settings: Settings) -> None:
     """The bound that keeps this from being a fairness regression.
 
@@ -98,7 +95,6 @@ async def test_a_second_invoke_waits_for_the_next_sweep(settings: Settings) -> N
     assert await _ticks_to_finish(settings, trailing) == (1, "completed")
 
 
-@pytest.mark.asyncio
 async def test_a_sleep_still_suspends_the_claim(settings: Settings) -> None:
     """`sleep` is a suspension, so it ends the claim — the loop runs *to* suspension.
 
@@ -125,7 +121,6 @@ async def test_a_sleep_still_suspends_the_claim(settings: Settings) -> None:
     assert await resume_due_fibers(settings) == 0, "a sleeping fiber was claimed before it was due"
 
 
-@pytest.mark.asyncio
 async def test_the_claim_is_released_once_the_sweep_is_done(settings: Settings) -> None:
     """Every save inside the loop holds the claim, so exactly one release has to close it.
 
@@ -146,7 +141,6 @@ async def test_the_claim_is_released_once_the_sweep_is_done(settings: Settings) 
     assert (row["lease_owner"], row["lease_until"]) == ("", None), "the claim outlived the sweep"
 
 
-@pytest.mark.asyncio
 async def test_a_steps_list_longer_than_the_budget_yields_rather_than_hogs(settings: Settings) -> None:
     """The backstop. A `steps` list long enough to hold the worker off its batch has to give
     the claim back and finish on a later sweep, not run to the end regardless."""
@@ -171,7 +165,6 @@ async def test_a_steps_list_longer_than_the_budget_yields_rather_than_hogs(setti
     assert row["status"] == "completed", "the rest did not finish on the next sweep"
 
 
-@pytest.mark.asyncio
 async def test_a_discarded_write_ends_the_claim(settings: Settings) -> None:
     """A lost compare-and-set has to stop the loop, not be stepped over.
 
@@ -219,7 +212,6 @@ async def test_a_discarded_write_ends_the_claim(settings: Settings) -> None:
     # artifact rather than the behaviour, and pass for the wrong reason on the CI path.
 
 
-@pytest.mark.asyncio
 async def test_a_failed_step_is_parked_before_its_claim_is_dropped(settings: Settings) -> None:
     """The row must never be `running` with no lease: that is what the claim query selects.
 
@@ -263,7 +255,6 @@ async def test_a_failed_step_is_parked_before_its_claim_is_dropped(settings: Set
     assert row["lease_until"] is None, "the failure path kept its claim past the park"
 
 
-@pytest.mark.asyncio
 async def test_the_version_bump_is_what_a_landed_write_means(settings: Settings) -> None:
     """The invariant the test two above infers from.
 

@@ -14,7 +14,6 @@ def settings() -> Settings:
     return make_settings()
 
 
-@pytest.mark.asyncio
 async def test_health_and_metrics(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -30,7 +29,6 @@ async def test_health_and_metrics(settings: Settings) -> None:
         assert "text/plain" in metrics.headers.get("content-type", "")
 
 
-@pytest.mark.asyncio
 async def test_mcp_tools_list_http(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -47,7 +45,6 @@ async def test_mcp_tools_list_http(settings: Settings) -> None:
         assert "calculator" in names
 
 
-@pytest.mark.asyncio
 async def test_manifests_list_http(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -64,7 +61,6 @@ async def test_manifests_list_http(settings: Settings) -> None:
         assert "quick" in ids
 
 
-@pytest.mark.asyncio
 async def test_a2a_task_get_after_failed_send(settings: Settings) -> None:
     """message/send without model keys fails but still persists a failed task."""
     from felix.a2a import tasks as task_store
@@ -105,7 +101,6 @@ async def test_a2a_task_get_after_failed_send(settings: Settings) -> None:
         assert got.json()["result"]["id"] == "t-http-1"
 
 
-@pytest.mark.asyncio
 async def test_jwks_not_configured(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -119,7 +114,6 @@ async def test_jwks_not_configured(settings: Settings) -> None:
         assert body.get("keys") == []
 
 
-@pytest.mark.asyncio
 async def test_jwks_from_json(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -132,7 +126,6 @@ async def test_jwks_from_json(settings: Settings) -> None:
         assert resp.json()["keys"][0]["kid"] == "t1"
 
 
-@pytest.mark.asyncio
 async def test_plans_crud_http(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -157,7 +150,6 @@ async def test_plans_crud_http(settings: Settings) -> None:
         assert any(p["id"] == "p-http" for p in listed.json()["items"])
 
 
-@pytest.mark.asyncio
 async def test_plans_list_narrows_to_a_thread_by_its_suffix(settings: Settings) -> None:
     from felix.plans import store as plans_store
     from felix_api.app import create_app
@@ -185,7 +177,6 @@ async def test_plans_list_narrows_to_a_thread_by_its_suffix(settings: Settings) 
         assert bad.json()["detail"] == "invalid_thread_id"
 
 
-@pytest.mark.asyncio
 async def test_plan_put_is_conditional_and_keeps_what_it_was_not_sent(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -215,7 +206,6 @@ async def test_plan_put_is_conditional_and_keeps_what_it_was_not_sent(settings: 
         assert cleared.json()["expires_at"] is None
 
 
-@pytest.mark.asyncio
 async def test_agent_card_http(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -228,7 +218,6 @@ async def test_agent_card_http(settings: Settings) -> None:
         assert "error" not in body or "name" in body
 
 
-@pytest.mark.asyncio
 async def test_bundled_posture_does_not_mount_the_write_routes() -> None:
     """Absent, not refused — which is what the docs claim and what an operator can verify.
 
@@ -268,7 +257,6 @@ async def test_bundled_posture_does_not_mount_the_write_routes() -> None:
         assert (await c.get("/manifests/quick?version=1")).status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_store_posture_mounts_them(settings: Settings) -> None:
     """The contrast that gives the assertions above their meaning."""
     from felix_api.app import create_app
@@ -296,7 +284,6 @@ def test_create_app_boots_without_being_handed_settings() -> None:
     assert any(getattr(r, "path", "") == "/health" for r in app.routes)
 
 
-@pytest.mark.asyncio
 async def test_store_posture_accepts_a_real_write(settings: Settings) -> None:
     """The end-to-end contrast to the 405s, which was previously untestable.
 

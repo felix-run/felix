@@ -56,7 +56,6 @@ async def _audit_of(
     return recorded
 
 
-@pytest.mark.asyncio
 async def test_a_failed_call_records_its_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = "token=sk-live-do-not-audit"
     recorded = await _audit_of(
@@ -69,7 +68,6 @@ async def test_a_failed_call_records_its_error_code(monkeypatch: pytest.MonkeyPa
     assert secret not in repr(payload)
 
 
-@pytest.mark.asyncio
 async def test_a_successful_call_records_no_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
     recorded = await _audit_of(monkeypatch, "ran")
     assert [(k, s) for k, s, _ in recorded] == [("tool_call", "ok")]

@@ -57,7 +57,6 @@ def test_equal_settings_objects_share_a_store() -> None:
     assert get_object_store(_settings()) is get_object_store(_settings())
 
 
-@pytest.mark.asyncio
 async def test_close_releases_and_clears() -> None:
     closed: list[str] = []
 
@@ -73,7 +72,6 @@ async def test_close_releases_and_clears() -> None:
     assert not _STORE_CACHE
 
 
-@pytest.mark.asyncio
 async def test_close_survives_a_failing_store() -> None:
     """One store that cannot close must not strand the others."""
     closed: list[str] = []
@@ -94,7 +92,6 @@ async def test_close_survives_a_failing_store() -> None:
     assert closed == ["good"]
 
 
-@pytest.mark.asyncio
 async def test_store_without_close_is_skipped() -> None:
     from felix.storage import _STORE_CACHE
 
@@ -105,7 +102,6 @@ async def test_store_without_close_is_skipped() -> None:
 # --- S3 client construction ------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_concurrent_first_requests_create_one_client() -> None:
     """Both callers saw `_client is None` and both built one; the loser was orphaned
     with no reference left to close it."""
@@ -142,7 +138,6 @@ async def test_concurrent_first_requests_create_one_client() -> None:
     assert created == 1, f"created {created} clients for one store"
 
 
-@pytest.mark.asyncio
 async def test_close_is_idempotent() -> None:
     from felix.storage.s3 import S3ObjectStore
 
@@ -154,7 +149,6 @@ async def test_close_is_idempotent() -> None:
 # --- engine disposal --------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_dispose_engine_actually_disposes() -> None:
     """It was `cache_clear()` plus a comment plus `pass`, so connections were never
     returned and lingered across worker recycles."""
@@ -172,7 +166,6 @@ async def test_dispose_engine_actually_disposes() -> None:
     assert dbs._ENGINES == []
 
 
-@pytest.mark.asyncio
 async def test_dispose_survives_a_failing_engine() -> None:
     import felix.db.session as dbs
 

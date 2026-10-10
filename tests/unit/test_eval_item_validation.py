@@ -248,7 +248,6 @@ def test_the_smoke_fixture_is_clean_and_the_negative_one_warns_where_it_means_to
 # --------------------------------------------------------------------------- the write paths
 
 
-@pytest.mark.asyncio
 async def test_the_put_route_refuses_and_writes_nothing() -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -271,7 +270,6 @@ async def test_the_put_route_refuses_and_writes_nothing() -> None:
     assert await eval_store.get_dataset(_settings(), "default", "mistyped") is None
 
 
-@pytest.mark.asyncio
 async def test_the_put_route_returns_warnings_with_the_stored_dataset() -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

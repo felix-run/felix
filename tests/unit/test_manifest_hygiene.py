@@ -112,7 +112,6 @@ def test_ordinary_values_do_not(value: str) -> None:
 # --- write time -------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_credential_is_refused_at_write_and_the_detail_names_the_field(app: Any) -> None:
     cases = [
         (_mcp(auth=TOKEN), "mcp_servers.svc.auth"),
@@ -157,7 +156,6 @@ def test_the_strict_env_rule_applies_under_frameworks_or_production() -> None:
         validate_for_write(strict, _settings())
 
 
-@pytest.mark.asyncio
 async def test_a_disallowed_sandbox_image_is_refused_at_write(app: Any) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         bad = await _put(client, _doc(sandboxes=[{"name": "box", "binding": "evil/image:latest"}]))
@@ -167,7 +165,6 @@ async def test_a_disallowed_sandbox_image_is_refused_at_write(app: Any) -> None:
         assert ok.status_code == 200, ok.text
 
 
-@pytest.mark.asyncio
 async def test_an_unknown_checkpointer_is_refused_at_write_by_the_same_validator(app: Any) -> None:
     """The last write-time rule that lived in the route and the CLI separately."""
     with pytest.raises(GovernanceError, match="checkpointer"):
@@ -224,7 +221,6 @@ def test_redaction_keeps_refs_and_replaces_every_literal() -> None:
     assert redact_manifest_secrets({"spec": "not a dict"}) == {"spec": "not a dict"}
 
 
-@pytest.mark.asyncio
 async def test_a_stored_credential_never_reaches_a_reader_or_the_writer(app: Any) -> None:
     """Written through the store, as a manifest from before the write-time check was."""
     from felix.manifests import store as manifest_store

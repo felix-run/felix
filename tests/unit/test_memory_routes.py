@@ -46,7 +46,6 @@ def _auth(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-@pytest.mark.asyncio
 async def test_scopes_gate_reads_and_writes() -> None:
     async with _client() as client:
         denied = await client.get("/memory", headers=_auth("sk-none"))
@@ -61,14 +60,12 @@ async def test_scopes_gate_reads_and_writes() -> None:
         assert "memory:write" in wrote.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_write_scope_implies_read() -> None:
     """`x:write` satisfies `x:read` — the existing rule, applied to a new pair."""
     async with _client() as client:
         assert (await client.get("/memory", headers=_auth("sk-write"))).status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_round_trip_write_list_search_forget() -> None:
     async with _client() as client:
         created = await client.post(
@@ -99,14 +96,12 @@ async def test_round_trip_write_list_search_forget() -> None:
         assert after.json()["items"] == []
 
 
-@pytest.mark.asyncio
 async def test_forgetting_something_that_is_not_there_is_a_404() -> None:
     async with _client() as client:
         resp = await client.delete("/memory/nope", headers=_auth("sk-write"))
         assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_one_tenant_cannot_see_anothers_memory() -> None:
     """The tenant comes from the principal, never from the request."""
     async with _client() as client:
@@ -119,7 +114,6 @@ async def test_one_tenant_cannot_see_anothers_memory() -> None:
         assert searched.json()["items"] == []
 
 
-@pytest.mark.asyncio
 async def test_as_of_is_read_only_and_shows_the_earlier_belief() -> None:
     settings = _settings()
     for content, seq in (("Timezone is UTC.", 4), ("Timezone is CET.", 7)):
@@ -146,7 +140,6 @@ async def test_as_of_is_read_only_and_shows_the_earlier_belief() -> None:
         assert (await client.post("/memory/as-of/5", headers=_auth("sk-write"))).status_code == 405
 
 
-@pytest.mark.asyncio
 async def test_oversized_content_is_rejected() -> None:
     """Written content is text the model will later read, so it is bounded."""
     async with _client() as client:
@@ -162,7 +155,6 @@ async def _two_threads_at_turn_four() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_as_of_narrows_to_one_thread() -> None:
     """A turn number is an ordinal into one thread's log; "turn 4" across threads is two
     unrelated conversations' fourth turns."""
@@ -180,7 +172,6 @@ async def test_as_of_narrows_to_one_thread() -> None:
         assert bad.json()["detail"] == "invalid_thread_id"
 
 
-@pytest.mark.asyncio
 async def test_list_narrows_to_one_thread_and_empty_means_no_thread() -> None:
     await _two_threads_at_turn_four()
     async with _client() as client:
@@ -194,7 +185,6 @@ async def test_list_narrows_to_one_thread_and_empty_means_no_thread() -> None:
         assert [i["content"] for i in outside.json()["items"]] == ["Operator note."]
 
 
-@pytest.mark.asyncio
 async def test_search_hits_carry_where_they_came_from() -> None:
     await _two_threads_at_turn_four()
     async with _client() as client:
@@ -208,7 +198,6 @@ async def test_search_hits_carry_where_they_came_from() -> None:
         assert "last_used_at" in hit
 
 
-@pytest.mark.asyncio
 async def test_forget_can_be_seen_and_undone() -> None:
     async with _client() as client:
         mem_id = (
@@ -242,7 +231,6 @@ async def test_forget_can_be_seen_and_undone() -> None:
         assert (await client.post(f"/memory/{mem_id}/restore", headers=_auth("sk-other"))).status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_an_agent_cannot_restore_what_an_operator_forgot() -> None:
     """Restore is gated on whoever forgot the row, like a re-store is."""
     settings = _settings()

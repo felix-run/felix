@@ -82,7 +82,6 @@ async def _recall(settings: Any, query: str, **kw: Any) -> list[Any]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_answer_does_not_depend_on_the_order_facts_were_written(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -109,7 +108,6 @@ async def test_the_answer_does_not_depend_on_the_order_facts_were_written(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_truncation_keeps_the_same_facts_every_time(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -131,7 +129,6 @@ async def test_the_truncation_keeps_the_same_facts_every_time(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_tie_inside_one_channel_resolves_the_same_way(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -153,7 +150,6 @@ async def test_a_tie_inside_one_channel_resolves_the_same_way(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_kind_filter_applies_before_the_channel_cut(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -179,7 +175,6 @@ async def test_the_kind_filter_applies_before_the_channel_cut(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_recall_is_scoped_to_one_manifest_and_can_span_them(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -204,7 +199,6 @@ async def test_recall_is_scoped_to_one_manifest_and_can_span_them(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_one_tenants_memories_are_not_recalled_for_another(memory_settings: Any) -> None:
     await _put(memory_settings, "alpha beta mine")
     await memory_store.put_memory(
@@ -217,7 +211,6 @@ async def test_one_tenants_memories_are_not_recalled_for_another(memory_settings
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_superseded_memory_is_not_recalled(memory_settings: Any) -> None:
     """`recall` filters on active status in the channel *and* again in `_rank`."""
     await _put(memory_settings, "timezone is utc", topic_key="user.timezone", origin_seq=1)
@@ -236,7 +229,6 @@ async def test_a_superseded_memory_is_not_recalled(memory_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_empty_query_recalls_nothing(memory_settings: Any) -> None:
     await _put(memory_settings, "alpha beta gamma")
 
@@ -245,7 +237,6 @@ async def test_an_empty_query_recalls_nothing(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_two_candidates_from_different_channels_resolve_by_id(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -269,7 +260,6 @@ async def test_two_candidates_from_different_channels_resolve_by_id(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_vector_channel_truncates_by_the_same_total_order(
     memory_settings: Any, one_millisecond: None
 ) -> None:

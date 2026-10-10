@@ -64,7 +64,6 @@ def _caller(*scopes: str) -> AuthContext:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_run_records_exactly_the_callers_scopes() -> None:
     state = await _enqueue(_settings(), auth=_caller("tools:calc", "chat:write"))
 
@@ -72,7 +71,6 @@ async def test_the_run_records_exactly_the_callers_scopes() -> None:
     assert state["auth"]["principal_sub"] == "alice"
 
 
-@pytest.mark.asyncio
 async def test_a_run_started_without_a_request_context_records_nothing() -> None:
     """Fail closed on the way in, not only on the way out. A fiber with no recorded caller
     resumes as principal `fiber` with no scopes, which is what every fiber did before."""
@@ -81,7 +79,6 @@ async def test_a_run_started_without_a_request_context_records_nothing() -> None
     assert "auth" not in state
 
 
-@pytest.mark.asyncio
 async def test_an_anonymous_caller_confers_nothing() -> None:
     """`auth_mode=none` makes every caller anonymous with an empty scope set. Recording that
     faithfully must not become a way to gain authority a caller never had."""
@@ -92,7 +89,6 @@ async def test_an_anonymous_caller_confers_nothing() -> None:
     assert state["auth"]["anonymous"] is True
 
 
-@pytest.mark.asyncio
 async def test_the_recorded_authority_expires_with_the_run() -> None:
     """The bound that makes this defensible.
 
@@ -109,7 +105,6 @@ async def test_the_recorded_authority_expires_with_the_run() -> None:
     assert 0 < horizon_seconds <= 60, f"the recorded scopes outlive the run by {horizon_seconds}s"
 
 
-@pytest.mark.asyncio
 async def test_the_default_horizon_is_the_hibernate_window_not_unbounded() -> None:
     state = await _enqueue(_settings(hibernate_after_seconds=120), auth=_caller("tools:calc"))
 
@@ -119,7 +114,6 @@ async def test_the_default_horizon_is_the_hibernate_window_not_unbounded() -> No
     assert 0 < horizon_seconds <= 120
 
 
-@pytest.mark.asyncio
 async def test_the_recorded_scopes_are_not_returned_by_the_run_status_api() -> None:
     """Authority in a row is one thing; authority in a polled response is another. The resume
     token is the only credential a caller needs to read run status."""
@@ -194,7 +188,6 @@ def _invoke_state(**extra) -> dict:
     return state
 
 
-@pytest.mark.asyncio
 async def test_a_resumed_fiber_runs_with_the_recorded_scopes(captured_auth) -> None:
     settings = _settings()
     await _seed_and_resume(
@@ -210,7 +203,6 @@ async def test_a_resumed_fiber_runs_with_the_recorded_scopes(captured_auth) -> N
     assert captured_auth[0].on_behalf_of == "alice"
 
 
-@pytest.mark.asyncio
 async def test_a_resumed_fiber_with_no_recorded_auth_runs_with_none(captured_auth) -> None:
     """A row enqueued before this existed. It must keep denying, not inherit something."""
     settings = _settings()
@@ -221,7 +213,6 @@ async def test_a_resumed_fiber_with_no_recorded_auth_runs_with_none(captured_aut
     assert captured_auth[0].principal_sub == "fiber"
 
 
-@pytest.mark.asyncio
 async def test_an_expired_fiber_does_not_run_at_all(captured_auth) -> None:
     """The claim the whole design rests on, asserted against behaviour rather than a number.
 
@@ -260,7 +251,6 @@ def test_an_approval_bound_to_the_caller_still_matches_their_resumed_run() -> No
     assert bound_subject(other_person) == "mallory", "the binding still separates principals"
 
 
-@pytest.mark.asyncio
 async def test_a_run_records_nothing_when_the_caller_is_a_different_tenant() -> None:
     """`start_durable_chat` takes `tenant_id` *and* reads the principal from ambient context.
 
@@ -288,7 +278,6 @@ async def test_a_run_records_nothing_when_the_caller_is_a_different_tenant() -> 
     assert "auth" not in (row or {}).get("state_json", {}), "recorded another tenant's authority"
 
 
-@pytest.mark.asyncio
 async def test_the_horizon_never_outlives_the_token_that_started_the_run() -> None:
     """There is no revocation anywhere in `felix/auth/` — `exp` is the sole and complete bound
     on a compromised credential. Without this clamp a 60-second token starting a 300-second run

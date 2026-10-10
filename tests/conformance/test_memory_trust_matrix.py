@@ -81,7 +81,6 @@ async def _seed(settings: Any, writer: str, forgetter: str | None) -> str:
 
 @parametrized
 @pytest.mark.parametrize(("writer", "forgetter", "incoming"), sorted(EXPECTED, key=str))
-@pytest.mark.asyncio
 async def test_write_against_an_existing_row(
     memory_settings: Any, writer: str, forgetter: str | None, incoming: str
 ) -> None:
@@ -101,7 +100,6 @@ async def test_write_against_an_existing_row(
 
 @parametrized
 @pytest.mark.parametrize(("writer", "forgetter", "incoming"), sorted(EXPECTED, key=str))
-@pytest.mark.asyncio
 async def test_the_rule_is_stable_under_repetition(
     memory_settings: Any, writer: str, forgetter: str | None, incoming: str
 ) -> None:
@@ -132,7 +130,6 @@ async def test_the_rule_is_stable_under_repetition(
 
 @parametrized
 @pytest.mark.parametrize(("writer", "forgetter"), sorted({(w, f) for w, f, _ in EXPECTED}, key=str))
-@pytest.mark.asyncio
 async def test_a_refused_write_preserves_the_whole_row(
     memory_settings: Any, writer: str, forgetter: str | None
 ) -> None:
@@ -169,7 +166,6 @@ async def test_a_refused_write_preserves_the_whole_row(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_supersede_is_guarded_like_the_other_routes(memory_settings: Any) -> None:
     """The route nobody was calling, and therefore nobody guarded.
 
@@ -193,7 +189,6 @@ async def test_supersede_is_guarded_like_the_other_routes(memory_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_refused_forget_reports_refusal_on_both_arms(memory_settings: Any) -> None:
     """The twins answered differently for the same call.
 
@@ -218,7 +213,6 @@ async def test_a_refused_forget_reports_refusal_on_both_arms(memory_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_correction_by_topic_key_is_not_undone_by_an_injected_turn(
     memory_settings: Any,
 ) -> None:
@@ -257,7 +251,6 @@ async def test_a_correction_by_topic_key_is_not_undone_by_an_injected_turn(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_agent_correction_is_still_reversible(memory_settings: Any) -> None:
     """Equal rank still supersedes and still un-supersedes — the rule protects the
     operator's decision, not every decision."""
@@ -288,7 +281,6 @@ async def test_an_agent_correction_is_still_reversible(memory_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_supersede_cannot_launder_an_operator_forget(memory_settings: Any) -> None:
     """`supersede` tested the row's *writer*, so an agent could move a row the
     operator had forgotten into a state that used to permit reactivation."""
@@ -313,7 +305,6 @@ async def test_supersede_cannot_launder_an_operator_forget(memory_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 @pytest.mark.parametrize("incoming", [AGENT, TOOL, OPERATOR])
 async def test_a_merged_duplicate_comes_back_for_any_writer(memory_settings: Any, incoming: str) -> None:
     keep = await memory_store.put_memory(
@@ -345,7 +336,6 @@ async def test_a_merged_duplicate_comes_back_for_any_writer(memory_settings: Any
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_consolidation_cannot_launder_an_operator_forget(memory_settings: Any) -> None:
     """A forgotten row is not active, so it is never a merge member — and so never moves to
     a SUPERSEDED-by-consolidation state that would rank its retirer as the agent."""

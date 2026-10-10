@@ -114,7 +114,6 @@ async def _store_manifest(settings: Settings, name: str, skills: list[str]) -> N
     )
 
 
-@pytest.mark.asyncio
 async def test_listing_names_every_skill_the_manifest_can_reach(skills_dir: Path) -> None:
     client, settings = await _client(skills_dir)
     async with client:
@@ -126,7 +125,6 @@ async def test_listing_names_every_skill_the_manifest_can_reach(skills_dir: Path
     assert "invoice-triage" in names
 
 
-@pytest.mark.asyncio
 async def test_listing_says_which_skills_the_model_is_never_offered(skills_dir: Path) -> None:
     """`disable_model_invocation` is invisible from the model's side by construction —
     `catalog.list_public()` filters it out before the tool ever sees it — so "why does this
@@ -141,7 +139,6 @@ async def test_listing_says_which_skills_the_model_is_never_offered(skills_dir: 
     assert by_name["invoice-triage"]["model_invocable"] is True
 
 
-@pytest.mark.asyncio
 async def test_listing_withholds_the_bodies(skills_dir: Path) -> None:
     """Progressive disclosure is the design: the model pays for instructions only on
     activation. Returning every body here would answer a question nobody asked with the
@@ -157,7 +154,6 @@ async def test_listing_withholds_the_bodies(skills_dir: Path) -> None:
     assert "duplicate" not in resp.text
 
 
-@pytest.mark.asyncio
 async def test_one_skill_returns_the_instructions_activation_would_hand_the_model(
     skills_dir: Path,
 ) -> None:
@@ -175,7 +171,6 @@ async def test_one_skill_returns_the_instructions_activation_would_hand_the_mode
     assert body["description"] == "Sort an invoice into a category."
 
 
-@pytest.mark.asyncio
 async def test_a_skill_the_manifest_never_declared_is_still_reachable(skills_dir: Path) -> None:
     """`spec.skills` adds to a deployment-wide library rather than restricting one.
 
@@ -198,7 +193,6 @@ async def test_a_skill_the_manifest_never_declared_is_still_reachable(skills_dir
     assert resp.json()["declared"] is False
 
 
-@pytest.mark.asyncio
 async def test_declared_separates_what_the_manifest_asked_for(skills_dir: Path) -> None:
     """The one field an operator needs to tell "we chose this" from "it was lying around"."""
     client, settings = await _client(skills_dir)
@@ -211,7 +205,6 @@ async def test_declared_separates_what_the_manifest_asked_for(skills_dir: Path) 
     assert by_name["internal-only"]["declared"] is False
 
 
-@pytest.mark.asyncio
 async def test_a_name_no_skill_anywhere_defines_is_not_found(skills_dir: Path) -> None:
     client, settings = await _client(skills_dir)
     async with client:
@@ -221,7 +214,6 @@ async def test_a_name_no_skill_anywhere_defines_is_not_found(skills_dir: Path) -
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_a_declared_skill_with_no_body_still_lists(skills_dir: Path) -> None:
     """The loader substitutes a placeholder rather than failing the compile, so the manifest
     works and the ref is visible. Reporting it as an error here would hide the useful fact:
@@ -235,7 +227,6 @@ async def test_a_declared_skill_with_no_body_still_lists(skills_dir: Path) -> No
     assert resp.json()["body"] == ""
 
 
-@pytest.mark.asyncio
 async def test_active_state_is_reported_from_the_store_a_turn_writes(skills_dir: Path) -> None:
     """Otherwise the route reports a default rather than the truth, and the one question it
     exists to answer is the one it gets wrong."""
@@ -255,7 +246,6 @@ async def test_active_state_is_reported_from_the_store_a_turn_writes(skills_dir:
     assert resp.json()["active"] == ["invoice-triage"]
 
 
-@pytest.mark.asyncio
 async def test_another_tenants_activation_is_not_reported_as_ours(skills_dir: Path) -> None:
     """The store is keyed by `(tenant, manifest)` and the tenant comes from the credential,
     never the path — so a manifest name shared between tenants must not leak either way."""
@@ -270,7 +260,6 @@ async def test_another_tenants_activation_is_not_reported_as_ours(skills_dir: Pa
     assert resp.json()["active"] == []
 
 
-@pytest.mark.asyncio
 async def test_reading_skills_needs_the_scope(skills_dir: Path) -> None:
     client, settings = await _client(skills_dir)
     async with client:
@@ -285,7 +274,6 @@ async def test_reading_skills_needs_the_scope(skills_dir: Path) -> None:
     assert "skills:read" in denied.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_an_unknown_manifest_is_not_found(skills_dir: Path) -> None:
     client, _ = await _client(skills_dir)
     async with client:
@@ -294,7 +282,6 @@ async def test_an_unknown_manifest_is_not_found(skills_dir: Path) -> None:
     assert resp.status_code == 404
 
 
-@pytest.mark.asyncio
 async def test_recent_activations_name_the_skill_not_just_the_tool(skills_dir: Path) -> None:
     """The gap that made this route possible.
 
@@ -343,7 +330,6 @@ async def test_recent_activations_name_the_skill_not_just_the_tool(skills_dir: P
     assert items[0]["thread_id"] == "acme:t1"
 
 
-@pytest.mark.asyncio
 async def test_recent_activations_are_scoped_to_the_manifest_asked_about(skills_dir: Path) -> None:
     """One tenant's busy manifest must not push another manifest's activations out of view,
     which is what an unfiltered scan over a shared audit trail would do."""
@@ -368,7 +354,6 @@ async def test_recent_activations_are_scoped_to_the_manifest_asked_about(skills_
     assert [i["skill"] for i in resp.json()["items"]] == ["triage-skill"]
 
 
-@pytest.mark.asyncio
 async def test_activations_do_not_cross_tenants(skills_dir: Path) -> None:
     from felix.audit import store as audit_store
 
@@ -415,7 +400,6 @@ async def _drive_skill_tool(settings: Settings, tool_name: str, skill_name: str)
     await audit_store.flush_pending(settings)
 
 
-@pytest.mark.asyncio
 async def test_a_model_naming_a_skill_that_does_not_exist_is_recorded_as_such(
     skills_dir: Path,
 ) -> None:
@@ -433,7 +417,6 @@ async def test_a_model_naming_a_skill_that_does_not_exist_is_recorded_as_such(
     assert item["skill"] == "no-such-skill"
 
 
-@pytest.mark.asyncio
 async def test_a_deactivation_is_not_reported_as_an_activation(skills_dir: Path) -> None:
     """`action` says which happened, and every test until now supplied `activate` -- so a
     route reporting one as the other had nothing to catch it."""
@@ -449,7 +432,6 @@ async def test_a_deactivation_is_not_reported_as_an_activation(skills_dir: Path)
     assert item["skill"] == "invoice-triage"
 
 
-@pytest.mark.asyncio
 async def test_deactivating_something_that_is_not_a_skill_is_not_reported_as_ok(
     skills_dir: Path,
 ) -> None:
@@ -468,7 +450,6 @@ async def test_deactivating_something_that_is_not_a_skill_is_not_reported_as_ok(
     assert item["status"] == "unknown_skill", "model text was recorded as a real deactivation"
 
 
-@pytest.mark.asyncio
 async def test_an_activation_carries_the_id_that_ties_it_to_its_tool_call(
     skills_dir: Path,
 ) -> None:
@@ -484,7 +465,6 @@ async def test_an_activation_carries_the_id_that_ties_it_to_its_tool_call(
     assert resp.json()["items"][0]["tool_call_id"] == "call_7"
 
 
-@pytest.mark.asyncio
 async def test_a_skill_body_is_redacted_before_it_leaves_on_the_read_scope(
     skills_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -511,7 +491,6 @@ async def test_a_skill_body_is_redacted_before_it_leaves_on_the_read_scope(
     assert "Use" in resp.json()["body"], "the body was dropped rather than redacted"
 
 
-@pytest.mark.asyncio
 async def test_a_malformed_manifest_name_is_a_404_not_a_500(skills_dir: Path) -> None:
     """`assert_valid_manifest_name` raises `ValueError`, which is not a `LookupError` -- so
     this was a 500 with the caller's path segment reflected into the server log.
@@ -527,7 +506,6 @@ async def test_a_malformed_manifest_name_is_a_404_not_a_500(skills_dir: Path) ->
     assert resp.status_code == 404, resp.text
 
 
-@pytest.mark.asyncio
 async def test_the_absolute_install_path_is_not_handed_to_a_tenant(skills_dir: Path) -> None:
     """`Skill.path` is absolute and derived from the install prefix, so returning it tells a
     tenant-scoped caller the container's filesystem layout."""
@@ -567,7 +545,6 @@ async def _store_manifest_only(settings: Settings, name: str, skills: list[str])
     )
 
 
-@pytest.mark.asyncio
 async def test_declared_only_keeps_the_host_library_out_of_the_catalogue(
     skills_dir: Path,
 ) -> None:
@@ -588,7 +565,6 @@ async def test_declared_only_keeps_the_host_library_out_of_the_catalogue(
     assert all(i["declared"] for i in body["items"])
 
 
-@pytest.mark.asyncio
 async def test_declared_only_still_finds_the_body_of_what_it_declares(
     skills_dir: Path,
 ) -> None:
@@ -607,7 +583,6 @@ async def test_declared_only_still_finds_the_body_of_what_it_declares(
     assert "Read the invoice" in resp.json()["body"]
 
 
-@pytest.mark.asyncio
 async def test_a_host_skill_is_not_reachable_under_declared_only(skills_dir: Path) -> None:
     client, settings = await _client(skills_dir)
     async with client:
@@ -617,7 +592,6 @@ async def test_a_host_skill_is_not_reachable_under_declared_only(skills_dir: Pat
     assert resp.status_code == 404, resp.text
 
 
-@pytest.mark.asyncio
 async def test_the_default_is_unchanged(skills_dir: Path) -> None:
     """Opt-in, because narrowing silently would be a behaviour change to every manifest
     already in Postgres -- which this repo's own rule says needs a migration rather than a
@@ -684,7 +658,6 @@ async def _catalogue_in_the_system_prompt(skills_dir: Path, *, declared_only: bo
 BUNDLED_SKILL = "felix-architecture"
 
 
-@pytest.mark.asyncio
 async def test_the_compile_shows_the_model_only_what_the_manifest_declared(
     skills_dir: Path,
 ) -> None:
@@ -695,7 +668,6 @@ async def test_the_compile_shows_the_model_only_what_the_manifest_declared(
     assert BUNDLED_SKILL not in prompt, "a skill the manifest never named reached the prompt"
 
 
-@pytest.mark.asyncio
 async def test_the_compile_shows_the_host_library_by_default(skills_dir: Path) -> None:
     """The other half, and the behaviour this whole flag was written to make optional: a
     manifest naming one skill has the repo's own bundled skills in its prompt.
@@ -708,7 +680,6 @@ async def test_the_compile_shows_the_host_library_by_default(skills_dir: Path) -
     assert BUNDLED_SKILL in prompt, "the host library was not seeded"
 
 
-@pytest.mark.asyncio
 async def test_skills_is_bounded_like_every_other_ref_list() -> None:
     """`spec.skills` was the one ref list with no `max_length`, and each ref can cost an
     object-store lookup at compile -- so an unbounded list is an unbounded fan-out."""

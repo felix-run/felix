@@ -97,14 +97,12 @@ def _clean() -> None:
     jobs_store._memory_runs.clear()
 
 
-@pytest.mark.asyncio
 async def test_put_job_refuses_a_schedule_it_cannot_read(settings: Settings) -> None:
     with pytest.raises(ScheduleError):
         await jobs_store.put_job(settings, "default", "j", schedule="every tuesday")
     assert await jobs_store.get_job(settings, "default", "j") is None
 
 
-@pytest.mark.asyncio
 async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -133,7 +131,6 @@ async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
     assert await jobs_store.list_runs(settings, "default", "j") == []
 
 
-@pytest.mark.asyncio
 async def test_changing_a_schedule_moves_its_due_time(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

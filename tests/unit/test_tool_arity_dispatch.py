@@ -30,7 +30,6 @@ class _Inner:
         return "inner"
 
 
-@pytest.mark.asyncio
 async def test_a_three_parameter_execute_runs_once_when_its_body_raises_type_error() -> None:
     """The `apply_artifact_spill` shape: three parameters, so the first call dispatches."""
     calls: list[int] = []
@@ -47,7 +46,6 @@ async def test_a_three_parameter_execute_runs_once_when_its_body_raises_type_err
     assert len(calls) == 1, f"one model tool call executed the tool {len(calls)} times"
 
 
-@pytest.mark.asyncio
 async def test_a_handler_runs_once_when_its_body_raises_type_error() -> None:
     """The `define_tool` shape: `handler(parsed, ctx)` fell back to `handler(parsed)`."""
     calls: list[int] = []
@@ -64,7 +62,6 @@ async def test_a_handler_runs_once_when_its_body_raises_type_error() -> None:
     assert len(calls) == 1, f"one model tool call executed the handler {len(calls)} times"
 
 
-@pytest.mark.asyncio
 async def test_both_signatures_still_dispatch_correctly() -> None:
     """A guard that broke dispatch would be worse than the bug it fixed."""
 
@@ -128,7 +125,6 @@ def test_an_unintrospectable_callable_selects_the_narrow_call() -> None:
     assert accepts_positional(object(), 2) is False  # not callable at all
 
 
-@pytest.mark.asyncio
 async def test_the_real_artifact_spill_wrapper_runs_its_inner_chain_once() -> None:
     """The coupling, not a hand-written mimic of it.
 

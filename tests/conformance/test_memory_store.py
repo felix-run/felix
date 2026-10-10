@@ -47,7 +47,6 @@ async def _put(settings: Any, content: str, **kw: Any) -> dict[str, Any]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_same_content_collapses_to_one_row(memory_settings: Any) -> None:
     a = await _put(memory_settings, "The user prefers dark mode.")
     b = await _put(memory_settings, "the   user prefers DARK mode.")
@@ -57,7 +56,6 @@ async def test_same_content_collapses_to_one_row(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_topic_key_supersedes_the_previous_value(memory_settings: Any) -> None:
     old = await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
     new = await _put(
@@ -75,7 +73,6 @@ async def test_topic_key_supersedes_the_previous_value(memory_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_supersession_is_scoped_to_one_manifest(memory_settings: Any) -> None:
     """Two agents sharing a topic key must not overwrite each other's memory."""
     mine = await memory_store.put_memory(
@@ -89,7 +86,6 @@ async def test_supersession_is_scoped_to_one_manifest(memory_settings: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_as_of_reconstructs_the_earlier_belief(memory_settings: Any) -> None:
     await _put(memory_settings, "Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
     await _put(
@@ -103,7 +99,6 @@ async def test_as_of_reconstructs_the_earlier_belief(memory_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_re_remembering_keeps_the_original_provenance(memory_settings: Any) -> None:
     first = await _put(memory_settings, "Stable fact.", origin_seq=2)
     await memory_store.forget(memory_settings, TENANT, first["id"])
@@ -115,7 +110,6 @@ async def test_re_remembering_keeps_the_original_provenance(memory_settings: Any
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_forget_hides_without_deleting(memory_settings: Any) -> None:
     row = await _put(memory_settings, "Regrettable fact.", origin_seq=3)
     assert await memory_store.forget(memory_settings, TENANT, row["id"]) is True
@@ -127,13 +121,11 @@ async def test_forget_hides_without_deleting(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_forget_reports_whether_it_found_anything(memory_settings: Any) -> None:
     assert await memory_store.forget(memory_settings, TENANT, "no-such-id") is False
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_get_many_resolves_in_one_call(memory_settings: Any) -> None:
     ids = [(await _put(memory_settings, f"fact {i}"))["id"] for i in range(3)]
     rows = await memory_store.get_many(memory_settings, TENANT, [*ids, "missing"])
@@ -142,7 +134,6 @@ async def test_get_many_resolves_in_one_call(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_kind_and_manifest_filters(memory_settings: Any) -> None:
     await _put(memory_settings, "a fact", kind="fact")
     await _put(memory_settings, "a procedure", kind="procedure")
@@ -155,7 +146,6 @@ async def test_kind_and_manifest_filters(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_current_turn_seq_tracks_the_highest_ordinal(memory_settings: Any) -> None:
     assert await memory_store.current_turn_seq(memory_settings, TENANT, manifest_id=MANIFEST) == 0
     await _put(memory_settings, "a", origin_seq=3)
@@ -164,7 +154,6 @@ async def test_current_turn_seq_tracks_the_highest_ordinal(memory_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_importance_is_clamped(memory_settings: Any) -> None:
     """It multiplies a ranking score, so an out-of-range value would distort recall."""
     high = await _put(memory_settings, "very important", importance=9.0)
@@ -175,7 +164,6 @@ async def test_importance_is_clamped(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_memory_without_an_embedding_can_be_stored(memory_settings: Any) -> None:
     """The regression that made this table unusable on Postgres.
 
@@ -218,7 +206,6 @@ class _AxisEmbedder:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_recall_finds_by_content_not_recency(memory_settings: Any) -> None:
     from felix.memory.recall import recall
 
@@ -231,7 +218,6 @@ async def test_recall_finds_by_content_not_recency(memory_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_topic_channel_finds_a_dotted_identifier(memory_settings: Any) -> None:
     from felix.memory.recall import recall
 
@@ -243,7 +229,6 @@ async def test_topic_channel_finds_a_dotted_identifier(memory_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_vector_channel_finds_a_paraphrase(memory_settings: Any) -> None:
     """No token overlap at all, so only the vector channel can find this."""
     from felix.memory.recall import recall
@@ -260,7 +245,6 @@ async def test_vector_channel_finds_a_paraphrase(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_superseded_and_forgotten_are_not_recalled(memory_settings: Any) -> None:
     from felix.memory.recall import recall
 
@@ -276,7 +260,6 @@ async def test_superseded_and_forgotten_are_not_recalled(memory_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_recall_survives_a_query_full_of_punctuation(memory_settings: Any) -> None:
     """User text goes straight into the query; it must not break the SQL."""
     from felix.memory.recall import recall
@@ -289,7 +272,6 @@ async def test_recall_survives_a_query_full_of_punctuation(memory_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_stored_vector_round_trips(memory_settings: Any) -> None:
     """`embedding_dim` records what was actually stored, on both backends."""
     emb = _AxisEmbedder()
@@ -309,7 +291,6 @@ async def test_a_stored_vector_round_trips(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_automatic_writer_cannot_retire_a_curated_row(memory_settings: Any) -> None:
     """A topic_key is chosen by the extractor from the transcript, so an injected
     payload can name the key of an operator-curated memory."""
@@ -330,7 +311,6 @@ async def test_an_automatic_writer_cannot_retire_a_curated_row(memory_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_curated_writer_still_supersedes_an_automatic_row(memory_settings: Any) -> None:
     """The rule refuses only a lower-ranked writer — an operator correcting what
     capture stored is the point of the management API."""
@@ -351,7 +331,6 @@ async def test_a_curated_writer_still_supersedes_an_automatic_row(memory_setting
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_agent_write_on_a_topic_is_stored_alongside_not_retiring(memory_settings: Any) -> None:
     """Only an operator retires by topic_key. The key is chosen from the transcript — by the
     extractor, through no governance wrapper, or by whoever steers `remember` — so an agent
@@ -378,7 +357,6 @@ async def test_an_agent_write_on_a_topic_is_stored_alongside_not_retiring(memory
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_re_remembering_cannot_demote_a_curated_row(memory_settings: Any) -> None:
     """The id is a content hash, so writing a curated row's exact text used to rewrite
     its kind and provenance to the new writer's."""
@@ -393,7 +371,6 @@ async def test_re_remembering_cannot_demote_a_curated_row(memory_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_content_is_bounded_for_every_writer(memory_settings: Any) -> None:
     """The management route capped content; the capture path wrote past it, and
     capture is the writer whose content is model-authored from an untrusted turn."""
@@ -404,7 +381,6 @@ async def test_content_is_bounded_for_every_writer(memory_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_over_long_memory_stays_idempotent(memory_settings: Any) -> None:
     """The id derives from the bounded text, so re-storing must not accumulate rows."""
     a = await _put(memory_settings, "y" * 10_000, metadata={"source": "assistant"})
@@ -413,7 +389,6 @@ async def test_an_over_long_memory_stays_idempotent(memory_settings: Any) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_agent_cannot_forget_a_curated_row(memory_settings: Any) -> None:
     """The third retirement route, and the one that had no trust predicate.
 
@@ -432,7 +407,6 @@ async def test_the_agent_cannot_forget_a_curated_row(memory_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_operator_can_still_forget_and_undo_it(memory_settings: Any) -> None:
     """Equal rank passes, which is also how a forget is undone — there is no other
     route back, so an absolute rule would make forgetting a one-way door."""
@@ -446,7 +420,6 @@ async def test_an_operator_can_still_forget_and_undo_it(memory_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_low_trust_write_cannot_resurrect_a_forgotten_curated_row(memory_settings: Any) -> None:
     """The first version of the write guard covered only kind and metadata, which was
     worse than no guard: the resurrected row kept the curated `kind` and `source`
@@ -468,7 +441,6 @@ async def test_a_low_trust_write_cannot_resurrect_a_forgotten_curated_row(memory
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_agent_cannot_resurrect_a_row_the_operator_forgot(memory_settings: Any) -> None:
     """The common case, and the one the first version of this guard missed.
 
@@ -487,7 +459,6 @@ async def test_the_agent_cannot_resurrect_a_row_the_operator_forgot(memory_setti
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_agent_can_undo_its_own_forget(memory_settings: Any) -> None:
     """Gating on the forgetter keeps every undo path that makes sense: whoever forgot
     a row, or anyone above them, can bring it back."""
@@ -500,7 +471,6 @@ async def test_the_agent_can_undo_its_own_forget(memory_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_curated_row_outside_the_window_is_still_recalled(memory_settings: Any) -> None:
     """Ranking has to happen where the limit applies.
 
@@ -525,7 +495,6 @@ async def test_a_curated_row_outside_the_window_is_still_recalled(memory_setting
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_repeated_writes_cannot_erase_the_forgetter_stamp(memory_settings: Any) -> None:
     """Writes it **twice**, which is the whole point.
 
@@ -546,7 +515,6 @@ async def test_repeated_writes_cannot_erase_the_forgetter_stamp(memory_settings:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_agent_cannot_downgrade_the_forgetter_stamp(memory_settings: Any) -> None:
     """`forget` gates on the *writer's* rank, which is 1 for nearly every row — so an
     agent could forget an already-forgotten row and overwrite `retired_by` with its
@@ -562,7 +530,6 @@ async def test_the_agent_cannot_downgrade_the_forgetter_stamp(memory_settings: A
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_caller_cannot_supply_the_forgetter_stamp(memory_settings: Any) -> None:
     """No writer sets it today; the invariant should not depend on that staying true."""
     row = await _put(
@@ -575,7 +542,6 @@ async def test_a_caller_cannot_supply_the_forgetter_stamp(memory_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     memory_settings: Any, one_millisecond: None
 ) -> None:
@@ -630,7 +596,6 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_millisecond: None) -> None:
     """The branch the compiled prompt actually uses, which is a separate sort.
 
@@ -677,7 +642,6 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_mill
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_as_of_truncates_by_the_same_total_order(memory_settings: Any, one_millisecond: None) -> None:
     """`as_of` got the same tiebreak and nothing asserted it.
 
@@ -725,7 +689,6 @@ async def _make_duplicates(settings: Any, rows: list[dict[str, Any]], *, content
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_consolidation_keeps_the_same_duplicate_on_both_arms(memory_settings: Any) -> None:
     """The first duplicate scanned survives, so a tie on `created_at` decided the survivor —
     differently on each arm. It breaks on tenant, then id, in byte order, now."""
@@ -746,7 +709,6 @@ async def test_consolidation_keeps_the_same_duplicate_on_both_arms(memory_settin
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_as_of_and_list_narrow_to_one_thread(memory_settings: Any) -> None:
     """A turn number orders one thread's log; the filter keeps two threads' turn 4 apart."""
     await _put(memory_settings, "Ships on Fridays.", origin_seq=4, thread_id=f"{TENANT}:a")
@@ -766,7 +728,6 @@ async def test_as_of_and_list_narrow_to_one_thread(memory_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_restore_undoes_a_forget_on_both_arms(memory_settings: Any) -> None:
     row = await _put(memory_settings, "Restore me.")
     assert (
@@ -792,7 +753,6 @@ async def test_restore_undoes_a_forget_on_both_arms(memory_settings: Any) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_superseded_row_is_not_restorable(memory_settings: Any) -> None:
     """Superseded has a place in turn time; reactivating it would give it two intervals."""
     old = await _put(memory_settings, "Timezone is UTC.", topic_key="tz", origin_seq=1)

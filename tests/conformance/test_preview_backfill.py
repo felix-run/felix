@@ -81,7 +81,6 @@ async def _run(settings: Any, **kwargs: Any) -> dict[str, Any]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_without_a_preview_gets_its_first_user_message(store_settings: Any) -> None:
     from felix.session.thread_state import masked_preview
 
@@ -107,7 +106,6 @@ async def test_a_thread_without_a_preview_gets_its_first_user_message(store_sett
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_backfill_moves_neither_timestamp_and_creates_no_thread(store_settings: Any) -> None:
     from felix.session.thread_state import backfill_preview
 
@@ -134,7 +132,6 @@ async def test_the_backfill_moves_neither_timestamp_and_creates_no_thread(store_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_with_a_preview_keeps_it(store_settings: Any) -> None:
     thread = _thread()
     await _old_thread(store_settings, thread, preview="what the turn recorded")
@@ -147,7 +144,6 @@ async def test_a_thread_with_a_preview_keeps_it(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_preview_a_turn_records_after_the_listing_wins(store_settings: Any) -> None:
     """The write checks again under the lock: listed as missing, filled by a turn, then reached."""
     from felix.session.thread_state import backfill_preview, note_first_message, threads_missing_preview
@@ -164,7 +160,6 @@ async def test_a_preview_a_turn_records_after_the_listing_wins(store_settings: A
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_with_no_user_text_stays_null(store_settings: Any) -> None:
     empty, blank, other_kinds = _thread(), _thread(), _thread()
     for thread in (empty, blank, other_kinds):
@@ -185,7 +180,6 @@ async def test_a_thread_with_no_user_text_stays_null(store_settings: Any) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_blank_first_user_turn_is_passed_over_for_the_next(store_settings: Any) -> None:
     """What a turn does with an image-only message: leaves the slot for the next one."""
     thread = _thread()
@@ -204,7 +198,6 @@ async def test_a_blank_first_user_turn_is_passed_over_for_the_next(store_setting
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_secret_is_masked_even_when_the_log_predates_its_masking(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -226,7 +219,6 @@ async def test_a_secret_is_masked_even_when_the_log_predates_its_masking(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_running_it_again_changes_nothing(store_settings: Any) -> None:
     filled, textless = _thread(), _thread()
     await _old_thread(store_settings, filled)
@@ -243,7 +235,6 @@ async def test_running_it_again_changes_nothing(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_dry_run_counts_and_writes_nothing(store_settings: Any) -> None:
     thread = _thread()
     await _old_thread(store_settings, thread)
@@ -256,7 +247,6 @@ async def test_a_dry_run_counts_and_writes_nothing(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_pages_cover_every_thread(store_settings: Any) -> None:
     threads = [_thread(suffix=f"page-{n}") for n in range(7)]
     for n, thread in enumerate(threads):
@@ -273,7 +263,6 @@ async def test_pages_cover_every_thread(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_each_tenant_is_filled_from_its_own_log_and_only_when_asked(store_settings: Any) -> None:
     mine, theirs = _thread(TENANT, "same-suffix"), _thread(OTHER, "same-suffix")
     await _old_thread(store_settings, mine)
@@ -293,7 +282,6 @@ async def test_each_tenant_is_filled_from_its_own_log_and_only_when_asked(store_
     assert (await _meta(store_settings, mine))["preview"] == "ours"
 
 
-@pytest.mark.asyncio
 async def test_under_an_enforced_policy_every_tenant_is_still_reached(rls_settings: Any) -> None:
     """A role RLS applies to: the tenant list is read across tenants, each tenant's rows under it."""
     mine, theirs = _thread(TENANT), _thread(OTHER)

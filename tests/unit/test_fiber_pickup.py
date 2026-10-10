@@ -78,7 +78,6 @@ def blocking(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 # --- the loop: pickup latency -----------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_run_submitted_while_the_loop_runs_starts_within_a_poll() -> None:
     settings = _settings()
     stop = asyncio.Event()
@@ -95,7 +94,6 @@ async def test_a_run_submitted_while_the_loop_runs_starts_within_a_poll() -> Non
 # --- the loop: one parked run holds up nothing else -------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_run_waiting_on_a_person_does_not_hold_up_the_next(blocking: dict[str, Any]) -> None:
     settings = _settings()
     parked = await _fiber(settings)
@@ -114,7 +112,6 @@ async def test_a_run_waiting_on_a_person_does_not_hold_up_the_next(blocking: dic
     assert _status(parked) == "completed"
 
 
-@pytest.mark.asyncio
 async def test_the_loop_claims_no_more_than_it_has_slots_for(blocking: dict[str, Any]) -> None:
     """A full worker leaves the next run unclaimed, so another worker can take it."""
     settings = _settings(fiber_concurrency=1)
@@ -136,7 +133,6 @@ async def test_the_loop_claims_no_more_than_it_has_slots_for(blocking: dict[str,
         await loop
 
 
-@pytest.mark.asyncio
 async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """A store that is down is retried with backoff, not a crashed loop."""
     settings = _settings()
@@ -161,7 +157,6 @@ async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPa
     assert calls["n"] >= 2
 
 
-@pytest.mark.asyncio
 async def test_stopping_lets_a_running_fiber_finish(blocking: dict[str, Any]) -> None:
     settings = _settings()
     parked = await _fiber(settings)
@@ -180,7 +175,6 @@ async def test_stopping_lets_a_running_fiber_finish(blocking: dict[str, Any]) ->
 # --- the cron sweep: the backstop, now concurrent ---------------------------------
 
 
-@pytest.mark.asyncio
 async def test_the_sweep_advances_its_batch_concurrently(blocking: dict[str, Any]) -> None:
     settings = _settings()
     parked = await _fiber(settings)

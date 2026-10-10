@@ -57,13 +57,11 @@ async def _fire_twice(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) 
     return rec.threads
 
 
-@pytest.mark.asyncio
 async def test_a_job_shares_one_thread_across_firings_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     threads = await _fire_twice(monkeypatch, {"prompt": "digest"})
     assert threads == ["acme:job:triage", "acme:job:triage"]
 
 
-@pytest.mark.asyncio
 async def test_fresh_thread_gives_each_firing_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     threads = await _fire_twice(monkeypatch, {"prompt": "take the next ticket", "fresh_thread": True})
     assert len(threads) == 2 and threads[0] != threads[1], "two firings in one millisecond must still differ"

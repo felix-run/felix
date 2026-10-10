@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 from felix.config import Settings
 from felix_api.app import create_app
 from httpx import ASGITransport, AsyncClient
 
 
-@pytest.mark.asyncio
 async def test_health() -> None:
     # Neither the import nor the call is guarded. `felix-api` is a workspace member, so
     # it is installed wherever this suite runs, and `create_app` has no optional
@@ -31,7 +29,6 @@ async def test_health() -> None:
         assert "env" in body
 
 
-@pytest.mark.asyncio
 async def test_openapi_contact_and_license() -> None:
     from felix_api.app import create_app
 

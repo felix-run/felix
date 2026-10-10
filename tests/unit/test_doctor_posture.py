@@ -67,7 +67,6 @@ def test_the_alembic_config_does_not_depend_on_the_working_directory(
     assert "." not in sys.path and str(tmp_path) not in sys.path, "the working directory was put on sys.path"
 
 
-@pytest.mark.asyncio
 async def test_memory_has_no_schema_to_be_behind() -> None:
     state = await migrations.migration_state(Settings(database_url="memory://m"))
     assert state.at_head and state.current == state.head

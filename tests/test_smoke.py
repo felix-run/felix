@@ -30,7 +30,6 @@ def test_object_store_memory() -> None:
     assert isinstance(store, MemoryObjectStore)
 
 
-@pytest.mark.asyncio
 async def test_memory_object_store_roundtrip() -> None:
     store = MemoryObjectStore()
     await store.put("a/b", b"hello")
@@ -40,7 +39,6 @@ async def test_memory_object_store_roundtrip() -> None:
     assert await store.get("a/b") is None
 
 
-@pytest.mark.asyncio
 async def test_fs_object_store_roundtrip(tmp_path) -> None:
     settings = Settings(object_store="fs", data_dir=str(tmp_path))
     store = FilesystemObjectStore(settings)
@@ -51,7 +49,6 @@ async def test_fs_object_store_roundtrip(tmp_path) -> None:
     assert await store.get("a/b") is None
 
 
-@pytest.mark.asyncio
 async def test_build_object_store_fs(tmp_path) -> None:
     settings = Settings(object_store="fs", data_dir=str(tmp_path))
     store = build_object_store(settings)
@@ -59,7 +56,6 @@ async def test_build_object_store_fs(tmp_path) -> None:
     assert await store.get("x") == b"1"
 
 
-@pytest.mark.asyncio
 async def test_build_react_agent_calculator() -> None:
     from felix.manifests.builder import build_agent
     from felix.patterns.types import ChatMessage, InvokeInput

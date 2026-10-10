@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.hooks import get_agent_hooks, reset_agent_hooks
@@ -118,7 +117,6 @@ async def _run(agent: _ReactAgent, thread: str, *follow_ups: str, stream: bool =
         await release_run_queue(TENANT, thread)
 
 
-@pytest.mark.asyncio
 async def test_a_tool_call_in_a_follow_ups_reply_runs() -> None:
     tool = _Counter()
     model = _Script(
@@ -133,7 +131,6 @@ async def test_a_tool_call_in_a_follow_ups_reply_runs() -> None:
     assert [m.role for m in out.messages[-4:]] == ["user", "assistant", "tool", "assistant"]
 
 
-@pytest.mark.asyncio
 async def test_a_streamed_follow_up_turn_streams() -> None:
     model = _StreamingScript(_reply("first answer"), _reply("three word reply"))
     out, events = await _run(_agent(model), "default:fu-stream", "and then?", stream=True)
@@ -145,7 +142,6 @@ async def test_a_streamed_follow_up_turn_streams() -> None:
     assert out.final.content == "three word reply"
 
 
-@pytest.mark.asyncio
 async def test_the_run_reports_the_follow_up_turns_stop_reason() -> None:
     model = _Script(_reply("first answer"), _reply("cut off mid", stop="max_tokens"))
     out, _ = await _run(_agent(model), "default:fu-stop", "go on")
@@ -153,7 +149,6 @@ async def test_the_run_reports_the_follow_up_turns_stop_reason() -> None:
     assert out.stop_reason == "max_tokens", "the run reported the first turn's end_turn"
 
 
-@pytest.mark.asyncio
 async def test_all_mode_answers_every_queued_follow_up_in_one_turn() -> None:
     model = _Script(_reply("first answer"), _reply("both handled"))
     out, _ = await _run(_agent(model, follow_up_mode="all"), "default:fu-all", "one", "two")
@@ -163,7 +158,6 @@ async def test_all_mode_answers_every_queued_follow_up_in_one_turn() -> None:
     assert out.final.content == "both handled"
 
 
-@pytest.mark.asyncio
 async def test_one_at_a_time_mode_answers_each_in_its_own_turn() -> None:
     model = _Script(_reply("first answer"), _reply("handled one"), _reply("handled two"))
     out, _ = await _run(_agent(model, follow_up_mode="one-at-a-time"), "default:fu-one", "one", "two")
@@ -172,7 +166,6 @@ async def test_one_at_a_time_mode_answers_each_in_its_own_turn() -> None:
     assert out.final.content == "handled two"
 
 
-@pytest.mark.asyncio
 async def test_a_run_with_no_step_left_leaves_the_follow_up_queued() -> None:
     thread = "default:fu-no-step"
     model = _Script(_reply("first answer"), _reply("should not be asked"))
@@ -193,7 +186,6 @@ async def test_a_run_with_no_step_left_leaves_the_follow_up_queued() -> None:
     assert [m.text for m in left] == ["later"], "the follow-up was dropped instead of kept for the next run"
 
 
-@pytest.mark.asyncio
 async def test_a_follow_up_is_answered_after_a_terminal_tool_too() -> None:
     """A terminal tool is the loop's other idle exit; a follow-up queued for it is still answered."""
     reset_agent_hooks()

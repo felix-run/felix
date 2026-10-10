@@ -32,7 +32,6 @@ def _settings() -> Settings:
     return make_settings()
 
 
-@pytest.mark.asyncio
 async def test_browser_missing_playwright(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.tools.browser as browser_mod
 
@@ -47,7 +46,6 @@ async def test_browser_missing_playwright(monkeypatch: pytest.MonkeyPatch) -> No
     assert "Playwright is not installed" in text
 
 
-@pytest.mark.asyncio
 async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.tools.browser as browser_mod
 
@@ -138,7 +136,6 @@ def test_browser_screening_transport() -> None:
     assert wrapped[0].executor.transport == "browser"
 
 
-@pytest.mark.asyncio
 async def test_sandbox_tool_runs_via_executor(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.tools.sandboxes as sand_mod
 
@@ -174,7 +171,6 @@ async def test_sandbox_tool_runs_via_executor(monkeypatch: pytest.MonkeyPatch) -
     assert seen["image"] == "python:3.14-slim"
 
 
-@pytest.mark.asyncio
 async def test_container_gateway_post(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.tools.sandboxes as sand_mod
 
@@ -232,7 +228,6 @@ def test_rank_procedures_prefers_overlap() -> None:
     assert picked[0]["content"].startswith("how to rotate")
 
 
-@pytest.mark.asyncio
 async def test_procedural_remember_and_retrieve() -> None:
     settings = _settings()
     tool = make_remember_procedure_tool(settings=settings, tenant_id="t-proc", manifest_id="wired")
@@ -252,7 +247,6 @@ async def test_procedural_remember_and_retrieve() -> None:
     assert "rotate" in block.lower()
 
 
-@pytest.mark.asyncio
 async def test_build_agent_binds_browser_sandbox_container_procedural() -> None:
     from felix.tools.provider import InMemoryToolProvider
 
@@ -308,7 +302,6 @@ async def test_build_agent_binds_browser_sandbox_container_procedural() -> None:
     assert by_name["run_job"].executor.transport == "container"
 
 
-@pytest.mark.asyncio
 async def test_react_injects_procedures() -> None:
     settings = _settings()
     await put_memory(

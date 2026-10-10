@@ -133,7 +133,6 @@ async def _run_fixture(name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]
     return result, list(payload["items"])
 
 
-@pytest.mark.asyncio
 async def test_the_smoke_fixture_passes_every_item() -> None:
     """One half of the pair, and the half CI already had."""
     result, items = await _run_fixture("smoke")
@@ -142,7 +141,6 @@ async def test_the_smoke_fixture_passes_every_item() -> None:
     assert result["pass_count"] == len(items), result
 
 
-@pytest.mark.asyncio
 async def test_the_negative_fixture_fails_every_item() -> None:
     """The other half: a scorer that always passes turns this red and the smoke run green."""
     result, items = await _run_fixture("negative")
@@ -151,7 +149,6 @@ async def test_the_negative_fixture_fails_every_item() -> None:
     assert result["fail_count"] == len(items), result
 
 
-@pytest.mark.asyncio
 async def test_the_negative_items_are_scored_down_rather_than_erroring() -> None:
     """`fail_count` alone cannot tell a rejection from a crash.
 

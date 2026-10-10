@@ -31,7 +31,6 @@ def _settings() -> Settings:
     return make_settings()
 
 
-@pytest.mark.asyncio
 async def test_the_job_sweep_binds_each_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.jobs import scheduler
     from felix.jobs import store as jobs_store
@@ -53,7 +52,6 @@ async def test_the_job_sweep_binds_each_tenant(monkeypatch: pytest.MonkeyPatch) 
     assert all(bound == tenant for tenant, bound in seen), seen
 
 
-@pytest.mark.asyncio
 async def test_the_anomaly_sweep_binds_each_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.audit import store as audit_store
     from felix.jobs import anomaly
@@ -78,7 +76,6 @@ async def test_the_anomaly_sweep_binds_each_tenant(monkeypatch: pytest.MonkeyPat
     assert all(bound == tenant for tenant, bound in seen), seen
 
 
-@pytest.mark.asyncio
 async def test_the_continuous_eval_sweep_binds_each_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.jobs import continuous_eval
     from felix.manifests import store as manifest_store
@@ -109,7 +106,6 @@ async def test_the_continuous_eval_sweep_binds_each_tenant(monkeypatch: pytest.M
     assert all(bound == tenant for tenant, bound in seen), seen
 
 
-@pytest.mark.asyncio
 async def test_the_binding_does_not_leak_past_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each tenant's binding is unwound before the next, and none survives the loop.
 

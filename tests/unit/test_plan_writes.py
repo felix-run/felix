@@ -30,7 +30,6 @@ def _id() -> str:
     return f"p-{uuid.uuid4().hex[:8]}"
 
 
-@pytest.mark.asyncio
 async def test_a_write_that_names_neither_field_keeps_both(settings: Settings) -> None:
     pid = _id()
     await plans_store.put_plan(settings, "t1", pid, plan={"v": 1}, manifest_id="deep", expires_at=123)
@@ -38,7 +37,6 @@ async def test_a_write_that_names_neither_field_keeps_both(settings: Settings) -
     assert (row["manifest_id"], row["expires_at"], row["plan"]) == ("deep", 123, {"v": 2})
 
 
-@pytest.mark.asyncio
 async def test_a_write_that_names_them_still_sets_them(settings: Settings) -> None:
     pid = _id()
     await plans_store.put_plan(settings, "t1", pid, plan={}, manifest_id="deep", expires_at=123)
@@ -46,13 +44,11 @@ async def test_a_write_that_names_them_still_sets_them(settings: Settings) -> No
     assert (row["manifest_id"], row["expires_at"]) == ("", None)
 
 
-@pytest.mark.asyncio
 async def test_a_new_plan_gets_the_column_defaults(settings: Settings) -> None:
     row = await plans_store.put_plan(settings, "t1", _id(), plan={})
     assert (row["manifest_id"], row["expires_at"]) == ("", None)
 
 
-@pytest.mark.asyncio
 async def test_a_stale_write_is_refused_and_told_what_is_there(settings: Settings) -> None:
     pid = _id()
     first = await plans_store.put_plan(settings, "t1", pid, plan={"v": 1})
@@ -65,7 +61,6 @@ async def test_a_stale_write_is_refused_and_told_what_is_there(settings: Setting
     assert (await plans_store.get_plan(settings, "t1", pid))["plan"] == {"v": 2}
 
 
-@pytest.mark.asyncio
 async def test_a_current_write_goes_through(settings: Settings) -> None:
     pid = _id()
     first = await plans_store.put_plan(settings, "t1", pid, plan={"v": 1})
@@ -75,14 +70,12 @@ async def test_a_current_write_goes_through(settings: Settings) -> None:
     assert row["plan"] == {"v": 2}
 
 
-@pytest.mark.asyncio
 async def test_a_conditional_write_to_a_missing_plan_conflicts(settings: Settings) -> None:
     with pytest.raises(plans_store.PlanConflict) as caught:
         await plans_store.put_plan(settings, "t1", _id(), plan={}, expected_updated_at=1)
     assert caught.value.current is None
 
 
-@pytest.mark.asyncio
 async def test_every_write_moves_updated_at_even_within_a_millisecond(settings: Settings) -> None:
     # Otherwise two writes in one tick share a version and a stale edit passes.
     pid = _id()
@@ -90,7 +83,6 @@ async def test_every_write_moves_updated_at_even_within_a_millisecond(settings: 
     assert seen == sorted(set(seen))
 
 
-@pytest.mark.asyncio
 async def test_the_agent_step_update_keeps_an_operator_edit_made_under_it(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -124,7 +116,6 @@ async def test_the_agent_step_update_keeps_an_operator_edit_made_under_it(
     assert body["plan"]["steps"][0]["status"] == "done"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("key", ["title", "text", "description", "name"])
 async def test_plan_create_keeps_a_step_title_under_any_key_a_model_uses(
     settings: Settings, key: str

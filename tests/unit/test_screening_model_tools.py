@@ -52,7 +52,6 @@ async def _run(screening: ContentScreening, outputs: dict[str, str]) -> tuple[di
     return results, decider.seen
 
 
-@pytest.mark.asyncio
 async def test_only_the_named_tools_pay_for_the_decider() -> None:
     screening = ContentScreening(
         enabled=True, tools=["search", "notes"], decider=True, model_tools=["search"]
@@ -62,7 +61,6 @@ async def test_only_the_named_tools_pay_for_the_decider() -> None:
     assert results == {"search": "search result", "notes": "a note"}
 
 
-@pytest.mark.asyncio
 async def test_the_markers_still_screen_a_tool_that_does_not_pay() -> None:
     screening = ContentScreening(
         enabled=True, tools=["search", "notes"], decider=True, model_tools=["search"]
@@ -72,7 +70,6 @@ async def test_the_markers_still_screen_a_tool_that_does_not_pay() -> None:
     assert seen == []
 
 
-@pytest.mark.asyncio
 async def test_empty_means_every_screened_tool_pays_as_before() -> None:
     screening = ContentScreening(enabled=True, tools=["search", "notes"], decider=True)
     _results, seen = await _run(screening, {"search": "search result", "notes": "a note"})

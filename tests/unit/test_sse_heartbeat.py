@@ -24,17 +24,14 @@ async def _counter(n: int):
         yield i
 
 
-@pytest.mark.asyncio
 async def test_events_pass_through_in_order() -> None:
     assert await _drain(_counter(50)) == list(range(50))
 
 
-@pytest.mark.asyncio
 async def test_empty_stream_terminates() -> None:
     assert await _drain(_counter(0)) == []
 
 
-@pytest.mark.asyncio
 async def test_stream_ending_on_a_full_queue_still_terminates() -> None:
     """The sentinel must not be dropped when the last event filled the queue.
 
@@ -48,7 +45,6 @@ async def test_stream_ending_on_a_full_queue_still_terminates() -> None:
         assert got == list(range(n)), f"stream of {n} events did not terminate cleanly"
 
 
-@pytest.mark.asyncio
 async def test_upstream_exception_reaches_the_consumer() -> None:
     """chat.py turns this into an `event: error` frame; swallowing it ends the
     response under a 200 with no way to tell success from failure."""
@@ -64,7 +60,6 @@ async def test_upstream_exception_reaches_the_consumer() -> None:
     assert seen == ["a"], "events before the failure should still be delivered"
 
 
-@pytest.mark.asyncio
 async def test_consumer_break_cancels_the_upstream_run() -> None:
     """A hung-up client must not leave the agent loop burning tokens."""
     cancelled = asyncio.Event()
@@ -87,7 +82,6 @@ async def test_consumer_break_cancels_the_upstream_run() -> None:
     await asyncio.wait_for(cancelled.wait(), timeout=5.0)
 
 
-@pytest.mark.asyncio
 async def test_quiet_stream_still_emits_heartbeats() -> None:
     """The whole point of the wrapper: a long tool call emits nothing, and a proxy
     idle timeout would close a perfectly healthy run."""
@@ -101,14 +95,12 @@ async def test_quiet_stream_still_emits_heartbeats() -> None:
     assert got.count(HEARTBEAT) >= 2, f"expected heartbeats during the silence, got {got}"
 
 
-@pytest.mark.asyncio
 async def test_busy_stream_emits_no_heartbeats() -> None:
     """A stream delivering events faster than the interval should never look idle."""
     got = await _drain(_counter(200), interval=5.0)
     assert HEARTBEAT not in got
 
 
-@pytest.mark.asyncio
 async def test_the_queue_bound_actually_applies_backpressure() -> None:
     """The bound is the design claim, so it needs pinning on its own.
 

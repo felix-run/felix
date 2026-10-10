@@ -44,7 +44,6 @@ def _threads_on_each_side(tenant: str, name: str, weight: int) -> tuple[str, str
     raise AssertionError("no thread pair spanning both sides")
 
 
-@pytest.mark.asyncio
 async def test_variant_follows_the_thread(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -73,7 +72,6 @@ async def test_variant_follows_the_thread(settings: Settings) -> None:
         assert again.json()["variant"] == "canary"
 
 
-@pytest.mark.asyncio
 async def test_thread_suffix_cannot_escape_the_tenant(settings: Settings) -> None:
     from felix_api.app import create_app
 
@@ -115,7 +113,6 @@ def test_bundled_loader_contains_the_name_within_its_directory(tmp_path) -> None
         load_bundled("..", bundled_dir=tmp_path)
 
 
-@pytest.mark.asyncio
 async def test_bundled_posture_never_constructs_a_manifest_store(monkeypatch, tmp_path) -> None:
     """The posture is expressed by not supplying the store, not by a branch below it.
 

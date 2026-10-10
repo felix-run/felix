@@ -36,7 +36,6 @@ async def _claim(settings: Any, ts: int | None = None) -> list[dict[str, Any]]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_pending_fiber_is_claimed_and_marked_running(fiber_settings: Any) -> None:
     created = await fibers.create_fiber(fiber_settings, TENANT, kind="step", status="pending")
 
@@ -49,7 +48,6 @@ async def test_a_pending_fiber_is_claimed_and_marked_running(fiber_settings: Any
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_sleeping_fiber_is_not_due_until_its_timer_fires(fiber_settings: Any) -> None:
     """A sleeping fiber claimed early runs before the delay the caller asked for."""
     now = fibers.now_ms()
@@ -63,7 +61,6 @@ async def test_a_sleeping_fiber_is_not_due_until_its_timer_fires(fiber_settings:
 
 
 @parametrized
-@pytest.mark.asyncio
 @pytest.mark.parametrize("terminal", sorted(fibers.FIBER_TERMINAL_STATUSES))
 async def test_a_terminal_fiber_is_never_claimed(fiber_settings: Any, terminal: str) -> None:
     """Parametrized over the real terminal set rather than one arbitrary string.
@@ -83,7 +80,6 @@ async def test_a_terminal_fiber_is_never_claimed(fiber_settings: Any, terminal: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_claiming_takes_a_lease_that_blocks_a_second_claim(fiber_settings: Any) -> None:
     """The lease is what stops two replicas running one step twice."""
     created = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
@@ -96,7 +92,6 @@ async def test_claiming_takes_a_lease_that_blocks_a_second_claim(fiber_settings:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_expired_lease_is_reclaimable(fiber_settings: Any) -> None:
     """A worker that crashed mid-step must not strand its fiber forever."""
     created = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
@@ -108,7 +103,6 @@ async def test_an_expired_lease_is_reclaimable(fiber_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_claim_records_who_holds_it(fiber_settings: Any) -> None:
     """`lease_owner` is how an operator tells a stuck fiber from a busy one."""
     await fibers.create_fiber(fiber_settings, TENANT, status="pending")
@@ -118,7 +112,6 @@ async def test_the_claim_records_who_holds_it(fiber_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_renewal_says_whether_the_claim_is_still_held(fiber_settings: Any) -> None:
     """felix-run/felix#531. The heartbeat stops its step on `False`; on Postgres that answer is
     the update's rowcount, which the memory twin cannot stand in for. A renewal that matched
@@ -140,7 +133,6 @@ async def test_a_renewal_says_whether_the_claim_is_still_held(fiber_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_fiber_an_earlier_version_gave_to_temporal_is_claimed(fiber_settings: Any) -> None:
     """The Temporal backend is gone, so nothing else will ever drive a row it was given.
 
@@ -160,7 +152,6 @@ async def test_a_fiber_an_earlier_version_gave_to_temporal_is_claimed(fiber_sett
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_claim_is_bounded_by_the_batch_size(fiber_settings: Any) -> None:
     """An unbounded claim leases every fiber in the tenant to one tick."""
     for _ in range(fibers.FIBER_BATCH + 5):
@@ -171,7 +162,6 @@ async def test_a_claim_is_bounded_by_the_batch_size(fiber_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_oldest_fiber_is_claimed_first(fiber_settings: Any) -> None:
     """Postgres orders by `updated_at`; the twin scans insertion order.
 
@@ -194,7 +184,6 @@ async def test_the_oldest_fiber_is_claimed_first(fiber_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_sweep_claims_across_tenants(fiber_settings: Any) -> None:
     """Deliberately not tenant-scoped: this is cross-tenant maintenance like retention.
 
@@ -216,7 +205,6 @@ async def test_the_sweep_claims_across_tenants(fiber_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_claiming_advances_the_field_the_queue_is_ordered_by(fiber_settings: Any) -> None:
     """Fairness, and the reason `updated_at` is not just bookkeeping.
 

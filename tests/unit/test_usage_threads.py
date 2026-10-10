@@ -56,7 +56,6 @@ def _rows() -> list[dict[str, Any]]:
 # --- the write path ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_record_usage_records_the_runs_thread() -> None:
     ctx = RequestContext(
         settings=_settings(),
@@ -70,7 +69,6 @@ async def test_record_usage_records_the_runs_thread() -> None:
     assert row["thread_id"] == "acme:t-1", "the stored form, the one the audit payload carries"
 
 
-@pytest.mark.asyncio
 async def test_a_call_with_no_thread_records_empty() -> None:
     ctx = RequestContext(
         settings=_settings(),
@@ -110,7 +108,6 @@ class _ThreadSink:
         self.calls.append(kwargs)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("sink_cls", [_OldSink, _ThreadSink])
 async def test_the_plugin_sink_gets_the_thread_only_if_it_takes_one(
     sink_cls: type, monkeypatch: pytest.MonkeyPatch
@@ -165,7 +162,6 @@ def _auth(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-@pytest.mark.asyncio
 async def test_the_listing_filters_by_the_threads_suffix_within_the_tenant() -> None:
     from felix_api.app import create_app
     from httpx import ASGITransport, AsyncClient
@@ -194,7 +190,6 @@ async def test_the_listing_filters_by_the_threads_suffix_within_the_tenant() -> 
         assert bad.json()["detail"] == "invalid_thread_id"
 
 
-@pytest.mark.asyncio
 async def test_the_threads_route_groups_the_callers_tenant_under_usage_read() -> None:
     from felix_api.app import create_app
     from httpx import ASGITransport, AsyncClient

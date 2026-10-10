@@ -16,7 +16,6 @@ def settings() -> Settings:
     return make_settings()
 
 
-@pytest.mark.asyncio
 async def test_fiber_stash_then_complete(settings: Settings) -> None:
     await create_fiber(
         settings,
@@ -41,7 +40,6 @@ async def test_fiber_stash_then_complete(settings: Settings) -> None:
     assert await resume_due_fibers(settings) == 0, "a finished fiber was claimed again"
 
 
-@pytest.mark.asyncio
 async def test_fiber_sleep_wake(settings: Settings) -> None:
     await create_fiber(
         settings,
@@ -60,7 +58,6 @@ async def test_fiber_sleep_wake(settings: Settings) -> None:
     assert n >= 1
 
 
-@pytest.mark.asyncio
 async def test_a2a_task_store_roundtrip(settings: Settings) -> None:
     task_store.clear_tasks()
     await task_store.put_task(

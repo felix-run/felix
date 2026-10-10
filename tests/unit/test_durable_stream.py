@@ -80,7 +80,6 @@ async def _post_stream(client: AsyncClient, manifest: str = "quick") -> str:
     return body
 
 
-@pytest.mark.asyncio
 async def test_a_durable_manifest_streams_the_run_instead_of_running_inline(
     durable: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -102,7 +101,6 @@ async def test_a_durable_manifest_streams_the_run_instead_of_running_inline(
     assert body.rstrip().endswith("[DONE]")
 
 
-@pytest.mark.asyncio
 async def test_the_first_frame_carries_the_resume_token(
     durable: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -120,7 +118,6 @@ async def test_the_first_frame_carries_the_resume_token(
     assert first["data"]["resume_token"] == "token-1"
 
 
-@pytest.mark.asyncio
 async def test_a_failed_run_reports_the_failure_rather_than_closing_quietly(
     durable: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -136,7 +133,6 @@ async def test_a_failed_run_reports_the_failure_rather_than_closing_quietly(
     assert "model_unavailable" in body
 
 
-@pytest.mark.asyncio
 async def test_a_transient_manifest_is_untouched() -> None:
     """The default path must not have moved: `quick` is transient, and it should still
     stream the agent rather than a run."""

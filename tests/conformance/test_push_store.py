@@ -26,7 +26,6 @@ async def _subscribe(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_resubscribing_replaces_the_browser_s_own_row(store_settings: Any) -> None:
     first = await _subscribe(store_settings, key="k1")
     again = await _subscribe(store_settings, key="k2")
@@ -38,7 +37,6 @@ async def test_resubscribing_replaces_the_browser_s_own_row(store_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_resubscribing_clears_failures_and_keeps_the_last_delivery(store_settings: Any) -> None:
     row = await _subscribe(store_settings, key="k1")
     await push.record_outcomes(store_settings, "acme", delivered=[row["id"]], failed=[], gone=[])
@@ -53,7 +51,6 @@ async def test_resubscribing_clears_failures_and_keeps_the_last_delivery(store_s
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_reused_approval_announces_once_on_either_backend(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -72,7 +69,6 @@ async def test_a_reused_approval_announces_once_on_either_backend(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_same_endpoint_under_two_tenants_is_two_rows(store_settings: Any) -> None:
     await _subscribe(store_settings, "acme")
     await _subscribe(store_settings, "globex")
@@ -84,7 +80,6 @@ async def test_the_same_endpoint_under_two_tenants_is_two_rows(store_settings: A
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_outcomes_clear_count_and_drop(store_settings: Any) -> None:
     ok = await _subscribe(store_settings, endpoint=f"{ENDPOINT}/ok")
     flaky = await _subscribe(store_settings, endpoint=f"{ENDPOINT}/flaky")
@@ -105,7 +100,6 @@ async def test_outcomes_clear_count_and_drop(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_delivery_resets_the_failure_count(store_settings: Any) -> None:
     row = await _subscribe(store_settings)
     for _ in range(push.MAX_CONSECUTIVE_FAILURES - 1):
@@ -117,7 +111,6 @@ async def test_a_delivery_resets_the_failure_count(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_cap_refuses_a_new_browser_but_not_a_known_one(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

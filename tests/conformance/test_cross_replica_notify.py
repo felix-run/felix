@@ -46,7 +46,6 @@ async def notify_against_redis(monkeypatch: pytest.MonkeyPatch):
     await notify.reset_notifications()
 
 
-@pytest.mark.asyncio
 async def test_a_publish_from_outside_this_process_wakes_a_reader(notify_against_redis) -> None:
     """The receiving half, with `_wake_local` taken out of the picture.
 
@@ -79,7 +78,6 @@ async def test_a_publish_from_outside_this_process_wakes_a_reader(notify_against
     assert wake.by_notification is True
 
 
-@pytest.mark.asyncio
 async def test_an_append_on_another_replica_wakes_this_one(notify_against_redis) -> None:
     """The claim itself: two processes sharing nothing but Redis.
 
@@ -127,7 +125,6 @@ async def test_an_append_on_another_replica_wakes_this_one(notify_against_redis)
     assert wake.by_notification is True
 
 
-@pytest.mark.asyncio
 async def test_a_steer_enqueued_on_another_replica_reaches_the_run(notify_against_redis) -> None:
     """Steer had no two-replica assertion, and it is the one where falling back is not a
     degradation but a wrong answer.
@@ -170,7 +167,6 @@ async def test_a_steer_enqueued_on_another_replica_reaches_the_run(notify_agains
         await steer._conn.aclose()
 
 
-@pytest.mark.asyncio
 async def test_a_blip_does_not_make_steer_permanently_process_local(
     notify_against_redis,  # taken for its side effects: it points get_settings at the conformance Redis
 ) -> None:

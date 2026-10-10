@@ -48,7 +48,6 @@ def _write_skill(root: Path, name: str, description: str = "d") -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_directory_is_walked_once_not_once_per_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -68,7 +67,6 @@ async def test_the_directory_is_walked_once_not_once_per_request(
     assert len(walks) == 1, f"walked the skills directory {len(walks)} times for 10 requests"
 
 
-@pytest.mark.asyncio
 async def test_adding_a_skill_is_picked_up_without_waiting(tmp_path: Path) -> None:
     """The root's mtime moves when an entry is added, so this needs no TTL wait."""
     _write_skill(tmp_path, "alpha")
@@ -80,7 +78,6 @@ async def test_adding_a_skill_is_picked_up_without_waiting(tmp_path: Path) -> No
     assert set(second.skills) == {"alpha", "beta"}, "a new skill directory was not noticed"
 
 
-@pytest.mark.asyncio
 async def test_an_edit_to_an_existing_skill_lands_once_the_ttl_expires(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -98,7 +95,6 @@ async def test_an_edit_to_an_existing_skill_lands_once_the_ttl_expires(
     assert again.skills["alpha"].description == "after"
 
 
-@pytest.mark.asyncio
 async def test_the_walk_happens_off_the_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Blocking filesystem work on the loop stalls every other request on the worker.
 
@@ -119,7 +115,6 @@ async def test_the_walk_happens_off_the_event_loop(tmp_path: Path, monkeypatch: 
     assert skills_loader.load_skills_from_dir in threaded, "the walk ran on the event loop"
 
 
-@pytest.mark.asyncio
 async def test_a_caller_cannot_corrupt_the_cached_catalog(tmp_path: Path) -> None:
     """The returned catalog is per-request; the cached one is shared by every request
     that follows. Placeholder entries for unresolved refs are written into the former."""
@@ -133,7 +128,6 @@ async def test_a_caller_cannot_corrupt_the_cached_catalog(tmp_path: Path) -> Non
     assert set(second.skills) == {"alpha"}, "a placeholder leaked into the shared catalog"
 
 
-@pytest.mark.asyncio
 async def test_the_bundled_directory_is_probed_once_per_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

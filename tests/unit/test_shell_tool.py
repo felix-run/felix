@@ -131,7 +131,6 @@ def test_the_manifest_is_refused_at_write_when_the_host_does_not_allow_it(tmp_pa
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_an_unlisted_command_is_refused_before_it_runs(tmp_path: Path) -> None:
     marker = tmp_path / "touched"
     tool = _tool(tmp_path, commands=["git status"])
@@ -140,14 +139,12 @@ async def test_an_unlisted_command_is_refused_before_it_runs(tmp_path: Path) -> 
     assert not marker.exists()
 
 
-@pytest.mark.asyncio
 async def test_an_option_before_the_subcommand_is_refused(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=["git status"])
     out = await _run(tool, tmp_path, {"argv": ["git", "-c", "core.pager=cat", "status"]})
     _refused(out)
 
 
-@pytest.mark.asyncio
 async def test_the_operator_allowlist_is_checked_per_call_too(tmp_path: Path) -> None:
     """A manifest bound when the host allowed `git` is still refused if the host no longer does."""
     tool = _tool(tmp_path, commands=["git status"], allowed="git")
@@ -155,7 +152,6 @@ async def test_the_operator_allowlist_is_checked_per_call_too(tmp_path: Path) ->
     assert "FELIX_SHELL_ALLOWED_COMMANDS" in _refused(out)
 
 
-@pytest.mark.asyncio
 async def test_shell_metacharacters_are_arguments_not_syntax(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=["echo"])
     res = _result(await _run(tool, tmp_path, {"argv": ["echo", "a", "&&", "id", ";", "whoami", "|", "cat"]}))
@@ -163,7 +159,6 @@ async def test_shell_metacharacters_are_arguments_not_syntax(tmp_path: Path) -> 
     assert res["stdout"].strip() == "a && id ; whoami | cat"
 
 
-@pytest.mark.asyncio
 async def test_cwd_cannot_leave_the_workspace(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=["pwd"])
     out = await _run(tool, tmp_path, {"argv": ["pwd"], "cwd": ".."})
@@ -176,7 +171,6 @@ async def test_cwd_cannot_leave_the_workspace(tmp_path: Path) -> None:
     assert Path(res["stdout"].strip()).resolve() == (tmp_path / "sub").resolve()
 
 
-@pytest.mark.asyncio
 async def test_the_child_does_not_see_the_api_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -201,7 +195,6 @@ async def test_the_child_does_not_see_the_api_environment(
     assert set(env) - injected <= {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}, sorted(env)
 
 
-@pytest.mark.asyncio
 async def test_a_run_is_killed_at_its_timeout(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=[PY], timeout_ms=1000)
     res = _result(await _run(tool, tmp_path, {"argv": [PY, "-c", "import time; time.sleep(30)"]}))
@@ -209,7 +202,6 @@ async def test_a_run_is_killed_at_its_timeout(tmp_path: Path) -> None:
     assert res["duration_ms"] < 10_000
 
 
-@pytest.mark.asyncio
 async def test_a_timed_out_command_takes_its_children_with_it(tmp_path: Path) -> None:
     """The documented use — a test script that spawns pytest — is a process *tree*.
 
@@ -228,7 +220,6 @@ async def test_a_timed_out_command_takes_its_children_with_it(tmp_path: Path) ->
     assert _heartbeat_stopped(beat), "the grandchild outlived the timeout"
 
 
-@pytest.mark.asyncio
 async def test_output_past_the_budget_kills_the_command(tmp_path: Path) -> None:
     """`MAX_OUTPUT_BYTES` bounds what the model sees; `MAX_TOTAL_OUTPUT_BYTES` bounds the API."""
     tool = _tool(tmp_path, commands=[PY], timeout_ms=60_000)
@@ -242,7 +233,6 @@ async def test_output_past_the_budget_kills_the_command(tmp_path: Path) -> None:
     assert MAX_TOTAL_OUTPUT_BYTES > MAX_OUTPUT_BYTES
 
 
-@pytest.mark.asyncio
 async def test_cancelling_the_call_kills_the_command(tmp_path: Path) -> None:
     """A client that disconnects cancels the task; nothing it spawned may survive that."""
     beat = tmp_path / "beat"
@@ -256,7 +246,6 @@ async def test_cancelling_the_call_kills_the_command(tmp_path: Path) -> None:
     assert _heartbeat_stopped(beat), "the child outlived the cancelled call"
 
 
-@pytest.mark.asyncio
 async def test_a_refusal_is_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     counted: list[tuple[str, dict[str, str]]] = []
     monkeypatch.setattr(
@@ -271,7 +260,6 @@ async def test_a_refusal_is_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     ]
 
 
-@pytest.mark.asyncio
 async def test_relative_path_entries_do_not_reach_the_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -316,7 +304,6 @@ def test_a_shell_tool_may_not_be_reached_anonymously_outside_development(tmp_pat
     validate_for_write(manifest, dev)
 
 
-@pytest.mark.asyncio
 async def test_output_is_capped_and_marked(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=[PY])
     code = f"print('x' * {MAX_OUTPUT_BYTES * 3})"
@@ -325,7 +312,6 @@ async def test_output_is_capped_and_marked(tmp_path: Path) -> None:
     assert len(res["stdout"].encode()) <= MAX_OUTPUT_BYTES
 
 
-@pytest.mark.asyncio
 async def test_exit_code_stderr_and_stdin_are_reported(tmp_path: Path) -> None:
     tool = _tool(tmp_path, commands=[PY])
     code = (
@@ -349,7 +335,6 @@ def test_shell_is_an_execution_transport_and_not_a_trusted_one() -> None:
     assert "shell" not in builder._TRUSTED_TRANSPORTS
 
 
-@pytest.mark.asyncio
 async def test_command_screening_sees_argv(tmp_path: Path) -> None:
     """A destructive rm reaches the default screening rules through argv, not a `command` key."""
     from felix.manifests.schema import CommandScreening
@@ -363,7 +348,6 @@ async def test_command_screening_sees_argv(tmp_path: Path) -> None:
     assert out.metadata.get("source") == "command"  # type: ignore[union-attr]
 
 
-@pytest.mark.asyncio
 async def test_target_tools_that_miss_the_shell_tool_still_screen_it(tmp_path: Path) -> None:
     """`command_screening.target_tools` narrows screening for ordinary tools. An execution
     transport is screened regardless — the literal set that decided this was updated for
@@ -384,7 +368,6 @@ def test_the_bound_tool_carries_the_shell_transport(tmp_path: Path) -> None:
     assert "git status" in tool.description and "./scripts/test.sh" in tool.description
 
 
-@pytest.mark.asyncio
 async def test_a_compile_the_host_does_not_allow_is_refused_not_stripped(tmp_path: Path) -> None:
     """Found in a real run: production has no FELIX_SHELL_ALLOWED_COMMANDS, and `contributor`
     compiled without `run` — the refusal was a logged warning, so the agent told the caller it

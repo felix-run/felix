@@ -82,7 +82,6 @@ async def _store(settings: Settings, tenant_id: str, raw: bytes = PNG_BYTES) -> 
     return stored.file_id
 
 
-@pytest.mark.asyncio
 async def test_an_upload_over_the_ceiling_is_refused_with_409() -> None:
     """409 rather than 413: the request is a fine size and the account is full.
 
@@ -102,7 +101,6 @@ async def test_an_upload_over_the_ceiling_is_refused_with_409() -> None:
         assert "FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT" in second.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_the_refused_upload_stored_nothing() -> None:
     """Checked before the object is written, so a refusal leaves no bytes behind — the
     ceiling would otherwise be the thing that filled the disk it exists to protect."""
@@ -114,7 +112,6 @@ async def test_the_refused_upload_stored_nothing() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == len(PNG_BYTES)
 
 
-@pytest.mark.asyncio
 async def test_the_ceiling_is_per_tenant_not_per_deployment() -> None:
     """Otherwise the first tenant to fill it denies service to every other one."""
     client, settings = await _client(attachments_max_bytes_per_tenant=len(PNG_BYTES) + 1)
@@ -131,7 +128,6 @@ async def test_the_ceiling_is_per_tenant_not_per_deployment() -> None:
     assert await tenant_attachment_bytes(settings, "globex") == len(PNG_BYTES)
 
 
-@pytest.mark.asyncio
 async def test_deleting_an_upload_returns_its_bytes_to_the_tenant() -> None:
     """The ledger has to shrink, or a tenant that deletes everything stays locked out."""
     settings = _settings(attachments_max_bytes_per_tenant=len(PNG_BYTES) + 1)
@@ -144,7 +140,6 @@ async def test_deleting_an_upload_returns_its_bytes_to_the_tenant() -> None:
     await _store(settings, "acme")  # room again; raises QuotaExceeded if the row survived
 
 
-@pytest.mark.asyncio
 async def test_a_zero_ceiling_is_no_ceiling() -> None:
     """`0` disables it, which is what a deployment that has not thought about this gets."""
     settings = _settings(attachments_max_bytes_per_tenant=0)
@@ -153,7 +148,6 @@ async def test_a_zero_ceiling_is_no_ceiling() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == 4 * len(PNG_BYTES)
 
 
-@pytest.mark.asyncio
 async def test_the_ceiling_counts_decoded_bytes_not_the_base64_that_carried_them() -> None:
     """base64 inflates by a third, and that is a property of the request rather than of the
     object on disk. Counting the wire form would bill a tenant for transport."""
@@ -163,7 +157,6 @@ async def test_the_ceiling_counts_decoded_bytes_not_the_base64_that_carried_them
     assert len(PNG) > len(PNG_BYTES)
 
 
-@pytest.mark.asyncio
 async def test_storing_without_settings_is_not_possible() -> None:
     """`settings` is required, and that is the whole of the quota's integrity.
 
@@ -180,7 +173,6 @@ async def test_storing_without_settings_is_not_possible() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == 0
 
 
-@pytest.mark.asyncio
 async def test_put_attachment_raises_quota_exceeded_rather_than_a_bare_error() -> None:
     """The route branches on the type to answer 409, so the distinction is load-bearing."""
     settings = _settings(attachments_max_bytes_per_tenant=len(PNG_BYTES))
@@ -189,7 +181,6 @@ async def test_put_attachment_raises_quota_exceeded_rather_than_a_bare_error() -
         await _store(settings, "acme")
 
 
-@pytest.mark.asyncio
 async def test_one_upload_can_never_exceed_a_ceiling_it_is_allowed_to_reach() -> None:
     """A ceiling below `MAX_ATTACHMENT_BYTES` would refuse a first upload that the per-file
     cap admits, so the two limits have to be read together rather than separately."""
@@ -198,7 +189,6 @@ async def test_one_upload_can_never_exceed_a_ceiling_it_is_allowed_to_reach() ->
     assert await tenant_attachment_bytes(settings, "acme") == MAX_ATTACHMENT_BYTES
 
 
-@pytest.mark.asyncio
 async def test_the_sweep_collects_the_bytes_and_the_row_together() -> None:
     """`attachments/` was an object-store prefix nothing ever collected.
 
@@ -223,7 +213,6 @@ async def test_the_sweep_collects_the_bytes_and_the_row_together() -> None:
     assert await store.get(key) is None, "the row went and the bytes stayed"
 
 
-@pytest.mark.asyncio
 async def test_the_sweep_keeps_everything_when_retention_is_off() -> None:
     """`0` days is the default, and deleting caller data on a timer is an operator's
     decision rather than ours."""
@@ -239,7 +228,6 @@ async def test_the_sweep_keeps_everything_when_retention_is_off() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == len(PNG_BYTES)
 
 
-@pytest.mark.asyncio
 async def test_the_sweep_leaves_an_upload_that_is_young_enough() -> None:
     settings = _settings(attachment_retention_days=1)
     await _store(settings, "acme")
@@ -250,7 +238,6 @@ async def test_the_sweep_leaves_an_upload_that_is_young_enough() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == len(PNG_BYTES)
 
 
-@pytest.mark.asyncio
 async def test_expired_attachments_crosses_tenants_because_the_sweep_does() -> None:
     """It runs in the worker with no request and no principal, so a per-tenant read would
     return nothing and the sweep would silently collect nothing."""
@@ -267,7 +254,6 @@ async def test_expired_attachments_crosses_tenants_because_the_sweep_does() -> N
     assert {tenant for tenant, _ in found} == {"acme", "globex"}
 
 
-@pytest.mark.asyncio
 async def test_a_failed_object_write_does_not_leave_the_tenant_billed() -> None:
     """The row goes in first, so an ordinary store failure has to take it back out.
 
@@ -292,7 +278,6 @@ async def test_a_failed_object_write_does_not_leave_the_tenant_billed() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == 0
 
 
-@pytest.mark.asyncio
 async def test_a_failed_object_delete_keeps_the_row() -> None:
     """Bytes first, row second.
 
@@ -319,7 +304,6 @@ async def test_a_failed_object_delete_keeps_the_row() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_sweep_drains_more_than_one_batch() -> None:
     """One batch per nightly run never catches up with a backlog bigger than it, and the
     count it returns looks like an ordinary number, so nothing would say so."""
@@ -343,7 +327,6 @@ async def test_the_sweep_drains_more_than_one_batch() -> None:
     assert await tenant_attachment_bytes(settings, "acme") == 0
 
 
-@pytest.mark.asyncio
 async def test_a_failed_ledger_write_stores_no_bytes_at_all() -> None:
     """The row goes in *before* the object, and this is the only way to see that from outside.
 

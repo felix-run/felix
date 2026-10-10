@@ -55,7 +55,6 @@ def _fast_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client_bridge, "ABORT_CHECK_SECONDS", 0.02)
 
 
-@pytest.mark.asyncio
 async def test_a_decision_whose_signal_never_arrives_is_read_from_the_row() -> None:
     settings = _settings()
     row = await _row(settings)
@@ -74,7 +73,6 @@ async def test_a_decision_whose_signal_never_arrives_is_read_from_the_row() -> N
     assert (decision.decision, decision.edited_args) == ("approved", {"path": "b.md"})
 
 
-@pytest.mark.asyncio
 async def test_a_stop_ends_an_approval_wait_instead_of_its_deadline() -> None:
     settings = _settings()
     row = await _row(settings)
@@ -92,7 +90,6 @@ async def test_a_stop_ends_an_approval_wait_instead_of_its_deadline() -> None:
     assert (decision.decision, decision.note) == ("denied", "aborted")
 
 
-@pytest.mark.asyncio
 async def test_a_stop_ends_a_client_tools_wait_instead_of_its_timeout() -> None:
     try:
         waiting = asyncio.create_task(
@@ -106,7 +103,6 @@ async def test_a_stop_ends_a_client_tools_wait_instead_of_its_timeout() -> None:
     assert result.error and "user_aborted" in result.content
 
 
-@pytest.mark.asyncio
 async def test_a_failure_the_client_reports_reaches_the_run_as_a_failure() -> None:
     from felix.manifests.schema import ClientToolRef
 

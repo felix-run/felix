@@ -17,7 +17,6 @@ def settings() -> Settings:
     )
 
 
-@pytest.mark.asyncio
 async def test_a2a_agent_card(settings: Settings) -> None:
     tools = InMemoryToolProvider()
     resp = await handle_rpc(
@@ -32,7 +31,6 @@ async def test_a2a_agent_card(settings: Settings) -> None:
     assert resp["result"]["capabilities"]["streaming"] is True
 
 
-@pytest.mark.asyncio
 async def test_a2a_message_send_requires_text(settings: Settings) -> None:
     tools = InMemoryToolProvider()
     resp = await handle_rpc(
@@ -46,7 +44,6 @@ async def test_a2a_message_send_requires_text(settings: Settings) -> None:
     assert resp["error"]["code"] == -32602
 
 
-@pytest.mark.asyncio
 async def test_eval_empty_dataset_completes(settings: Settings) -> None:
     from felix.eval import store as eval_store
     from felix.eval.runner import start_run
@@ -62,7 +59,6 @@ async def test_eval_empty_dataset_completes(settings: Settings) -> None:
     assert run.get("fail_count", 0) == 0
 
 
-@pytest.mark.asyncio
 async def test_eval_scores_the_version_it_reports(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -103,7 +99,6 @@ async def test_eval_scores_the_version_it_reports(
     assert seen == [7], f"the recorded version never reached resolution: {seen}"
 
 
-@pytest.mark.asyncio
 async def test_eval_fails_loudly_when_the_pinned_version_is_gone(settings: Settings) -> None:
     """A canary that cannot be resolved must fail its run, not fall back to active.
 
@@ -134,7 +129,6 @@ async def test_eval_fails_loudly_when_the_pinned_version_is_gone(settings: Setti
     assert scores and "error" in scores[0], f"the failure was not recorded: {scores}"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("label", "task_id"),
     [
@@ -166,7 +160,6 @@ async def test_a2a_refuses_a_task_id_it_cannot_make_a_thread_of(
     assert await task_store.get_task(settings, "default", task_id) is None, "a row was written anyway"
 
 
-@pytest.mark.asyncio
 async def test_eval_fails_one_item_rather_than_the_run_on_an_unusable_item_id(
     settings: Settings,
 ) -> None:
@@ -203,7 +196,6 @@ async def test_eval_fails_one_item_rather_than_the_run_on_an_unusable_item_id(
     assert "error" not in scores["fine"], f"the good item lost its score too: {scores['fine']}"
 
 
-@pytest.mark.asyncio
 async def test_a2a_refuses_a_task_id_that_is_not_a_string(settings: Settings) -> None:
     """`params` is `dict[str, Any]`, so the guard has to see the caller's value.
 
@@ -224,7 +216,6 @@ async def test_a2a_refuses_a_task_id_that_is_not_a_string(settings: Settings) ->
     assert "string" in resp["error"]["message"]
 
 
-@pytest.mark.asyncio
 async def test_an_unlabelled_item_still_reaches_the_runner_with_an_id(settings: Settings) -> None:
     """Why `eval_thread_id` needs no stand-in for a missing `item_id`.
 

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.session.store import _lock_thread
 
 
@@ -41,7 +40,6 @@ class _FakeDb:
         self.calls.append((str(stmt), params or {}))
 
 
-@pytest.mark.asyncio
 async def test_lock_is_taken_on_postgres() -> None:
     db = _FakeDb("postgresql")
     await _lock_thread(db, "t1", "thread-a")
@@ -51,7 +49,6 @@ async def test_lock_is_taken_on_postgres() -> None:
     assert params["k"] == "felix:session:t1:thread-a"
 
 
-@pytest.mark.asyncio
 async def test_lock_key_is_per_thread() -> None:
     """Two threads must not serialize against each other."""
     a, b = _FakeDb(), _FakeDb()
@@ -60,7 +57,6 @@ async def test_lock_key_is_per_thread() -> None:
     assert a.calls[0][1]["k"] != b.calls[0][1]["k"]
 
 
-@pytest.mark.asyncio
 async def test_lock_key_is_per_tenant() -> None:
     a, b = _FakeDb(), _FakeDb()
     await _lock_thread(a, "t1", "same")
@@ -68,14 +64,12 @@ async def test_lock_key_is_per_tenant() -> None:
     assert a.calls[0][1]["k"] != b.calls[0][1]["k"]
 
 
-@pytest.mark.asyncio
 async def test_lock_is_skipped_on_other_backends() -> None:
     db = _FakeDb("sqlite")
     await _lock_thread(db, "t1", "thread-a")
     assert db.calls == []
 
 
-@pytest.mark.asyncio
 async def test_lock_failure_does_not_fail_the_append() -> None:
     """The unique PK still protects correctness; the lock only avoids the conflict."""
     db = _FakeDb("postgresql", raises=True)
