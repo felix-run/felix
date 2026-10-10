@@ -286,7 +286,9 @@ cron labels). `felix-scheduler` must run alongside `felix-worker` or nothing fir
   `governance-pipeline`, `api-surface`, `postgres-migrations`, `plugin-seam`, `security-review`,
   `docs-sync`, `deploy-runbook`, `python-conventions`, `branch-pr-workflow`, `code-quality`,
   `dead-code-audit`, `test-quality`, `model-layer` (providers, routes, the catalog, and decision
-  models). Most subagents preload the skill they depend on.
+  models), `tools-runtime`, `durable-execution`, `skill-library`. Most subagents preload the skill
+  they depend on. Each skill's `metadata.covers` names the code it describes, and every package
+  must have one (`scripts/validate-toolkit.py`).
 - **Subagents** for delegated work: `felix-engineer`, `felix-postgres`, `felix-devops`,
   `felix-code-reviewer`, `felix-security-reviewer`, `felix-manifest-architect`,
   `felix-test-engineer`, `felix-dx-maintainer`, `felix-docs-syncer`, `felix-quality-reviewer`,

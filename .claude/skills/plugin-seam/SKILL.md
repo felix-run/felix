@@ -2,6 +2,8 @@
 name: plugin-seam
 description: How optional features attach to Felix without polluting core — the plugin registry, felix.plugins entry points, the composition wiring root, and the lean-default rule for heavy dependencies and extras. Use when adding an optional feature, an extra, a new tool provider, an authenticator, a cron task, or when the plugin-boundary test fails.
 allowed-tools: Read Grep Glob Bash(uv:*) Bash(./scripts/test.sh:*)
+metadata:
+  covers: felix/plugins.py, felix/hooks.py, felix/storage/, felix/secrets.py, felix/warehouse.py
 ---
 
 # The plugin seam

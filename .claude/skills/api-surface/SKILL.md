@@ -2,6 +2,8 @@
 name: api-surface
 description: Add or change a Felix HTTP surface — REST/SSE chat routes, the OpenAI-compatible /v1 endpoints, A2A JSON-RPC, MCP, the agent card, and the scoped management APIs — including middleware order, auth scopes, streaming events, and the client contract. Use when editing anything under apps/api/src/felix_api/routes/, adding an endpoint, or changing an SSE event or response shape.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*) Bash(curl:*)
+metadata:
+  covers: felix_api/, felix_client/, felix/a2a/
 ---
 
 # Adding an API surface
@@ -77,3 +79,46 @@ curl -s localhost:8080/openapi.json | jq '.paths | keys'
 
 Document the surface: `guide/rest-api.mdx` (public) or `guide/management-api.mdx` (scoped) in the
 felix-web docs repo, plus the protocol table in this repo's README. See the docs-sync skill.
+
+## The Python client (`packages/client`)
+
+`felix-client` (`felix_client`) is the experimental Python client. Its only dependency is httpx, and it
+may not import any `felix*` package, so installing it never installs the server.
+`tests/unit/test_invariants.py:test_the_model_layer_and_the_client_import_nothing_of_felix` walks every
+import node in the package, lazy ones included; `tests/unit/test_felix_client_package.py` imports it
+in a fresh interpreter and fails if FastAPI, SQLAlchemy, pydantic or any Felix package loads.
+
+| Module | Holds |
+|---|---|
+| `packages/client/src/felix_client/client.py` | `FelixClient`: chat (prompt, stream, steer, follow-up, fork, rewind, abort, continue, compact, thinking), sessions, leases, tool results, approvals, documents, skill import; `RUN_TERMINAL` and the durable-run poll pacing |
+| `packages/client/src/felix_client/login.py` | GitHub device and Actions login, and the per-server token file (`token_path`, `save_token`, `bearer_for`) behind `felix login` and `FelixClient.from_login` |
+| `packages/client/src/felix_client/docs_sync.py` | Markdown/MDX to the `/documents` corpus, with an opt-in prune; behind `felix ingest-docs` |
+| `packages/client/src/felix_client/__init__.py` | the public names: `FelixClient`, the `RUN_*` constants and the login API |
+
+`packages/harness/src/felix/sdk.py` keeps `from felix.sdk import FelixClient` working by re-exporting
+`FelixClient` and the `RUN_*` constants — not the login API. New code imports `felix_client`.
+
+### When a route changes
+
+The client builds each URL and body by hand from `base_url`, and no test compares its paths or
+bodies with `schemas/openapi.json`. So a route change has up to three places to land:
+
+1. The route and its response model, then `make contract` and read the diff (rules above).
+2. The `FelixClient` method that wraps it: path, body keys, query parameters. Most request models
+   in `routes/chat.py` are `extra: forbid`, so a field the client still sends after a rename is a
+   422 at runtime, and nothing in CI says so.
+3. A run status: `RUN_TERMINAL` must hold every status in `durability/fibers.py:FIBER_TERMINAL_STATUSES`,
+   which `tests/unit/test_invariants.py:test_every_consumer_of_run_status_agrees_on_what_is_terminal`
+   enforces; a missing one is a run the client polls until its own deadline.
+
+`FelixClient.stream` reads only `data:` lines and stops at `[DONE]`, so it relies on the envelope
+`routes/_sse.py` defines; a frame must stay inside it.
+
+### Tests
+
+Unit tests drive the client through `httpx.MockTransport` and assert on the requests it sends:
+`tests/unit/test_sdk_interrupts.py`, `tests/unit/test_sdk_session_list.py`,
+`tests/unit/test_sdk_durable_poll.py` and `tests/unit/test_client_login.py`;
+`tests/unit/test_docs_sync.py` covers the MDX reduction and page URLs. The e2e tests hand it the booted app's own client, so its requests
+cross the real middleware and routes: `tests/e2e/test_github_login_client.py`,
+`tests/e2e/test_github_actions_login_client.py` and `tests/e2e/test_docs_sync.py`.

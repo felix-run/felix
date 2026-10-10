@@ -3,6 +3,8 @@ name: manifest-authoring
 description: Author, extend, and debug felix/v1 agent manifests and the schema-to-builder wiring behind them — patterns, tools, skills, session strategies, memory, governance blocks, MCP/A2A/sandbox/queue integrations, and durable execution. Use when writing or editing anything under manifests/, adding a field to the manifest schema, or investigating why a manifest field appears to have no effect.
 compatibility: Requires the Felix repo checkout with uv and the felix CLI available.
 allowed-tools: Bash(uv run felix:*) Read Grep Glob
+metadata:
+  covers: felix/manifests/, felix/patterns/, felix/session/, felix/memory/, felix/plans/, felix/prompts/
 ---
 
 # Authoring felix/v1 manifests
@@ -143,3 +145,10 @@ unregistered `spec.pattern` fails here, listing the registered names), and — u
 **What validation does not catch:** that an MCP server or peer actually answers. An unreachable
 one binds zero tools at compile time with only a logged warning. Smoke the manifest against a
 running API (`POST /chat` with `"manifest": "<name>"`) before calling it done.
+
+## Session and memory internals
+
+What a thread's event log appends and what it derives, which `spec.session` / `spec.memory` field
+drives which module, and where the Postgres and `memory://` arms must agree:
+[references/session-memory.md](references/session-memory.md). Read it before changing anything under
+`felix/session/` or `felix/memory/`.

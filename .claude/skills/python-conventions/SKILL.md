@@ -2,6 +2,8 @@
 name: python-conventions
 description: The Python style and architecture conventions that make Felix code look like Felix code — settings, Protocols, lazy optional imports, async patterns, dataclasses, error handling, logging, and the ruff/ty configuration and its deliberate exemptions. Use when writing or reviewing Python in this repo, or when a lint or type check disagrees with an edit.
 allowed-tools: Read Grep Glob Bash(uv run ruff:*) Bash(uv run ty:*)
+metadata:
+  covers: felix/config.py, felix/logging_setup.py
 ---
 
 # Felix Python conventions

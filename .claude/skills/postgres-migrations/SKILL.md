@@ -3,6 +3,8 @@ name: postgres-migrations
 description: Author and apply Alembic migrations for Felix, including SQLAlchemy model changes, tenant RLS policies, pgvector columns, and Postgres FTS indexes, plus the in-memory store twin every new store needs. Use when changing db/models.py, adding a table, column, index, or RLS policy, when a migration fails, or when asked about the database schema.
 compatibility: Requires uv; a running Postgres (make up) only for the live migrate/rollback check.
 allowed-tools: Read Grep Glob Bash(uv run felix migrate:*) Bash(uv run alembic:*) Bash(./scripts/test.sh:*)
+metadata:
+  covers: felix/db/
 ---
 
 # Postgres migrations
