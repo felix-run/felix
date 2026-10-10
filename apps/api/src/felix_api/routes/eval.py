@@ -161,9 +161,15 @@ async def run_dataset(name: str, body: EvalRunRequest, request: Request, respons
     anything counting call sites (#247). This one stays for a release, says so in `Deprecation`
     and `Link`, and takes the dataset from the path over any in the body, as it always has.
     """
-    response.headers["Deprecation"] = _RUN_ALIAS_DEPRECATED
-    response.headers["Link"] = '</eval/runs>; rel="successor-version"'
-    return await start_eval_run(body.model_copy(update={"dataset_name": name}), request)
+    # On a refusal too (a missing scope, an unknown manifest), so a caller learns of the move
+    # from whichever answer it gets. A body that fails validation is refused before this runs.
+    deprecation = {"Deprecation": _RUN_ALIAS_DEPRECATED, "Link": '</eval/runs>; rel="successor-version"'}
+    response.headers.update(deprecation)
+    try:
+        return await start_eval_run(body.model_copy(update={"dataset_name": name}), request)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **deprecation}
+        raise
 
 
 @router.get("/runs")
