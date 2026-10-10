@@ -834,9 +834,17 @@ manifest author's:
 
 ## Shell tools
 
-`spec.shell_tools` execs an argv in the `FELIX_WORKSPACE_ROOT` checkout — as a child of the API
-process by default, or in a separate `felix-shell-runner` when `FELIX_SHELL_RUNNER_URL` is set
-(below). There is no shell interpreter: `&&`, `|` and `;` are literal arguments. The
+`spec.shell_tools` execs an argv in the `FELIX_WORKSPACE_ROOT` checkout, in a separate
+`felix-shell-runner` when `FELIX_SHELL_RUNNER_URL` is set (below), or in the scope's sandbox under
+`FELIX_WORKSPACE_BACKEND=hosted`. **Anywhere but a development box it must be one of the two**:
+a deployment with `FELIX_SHELL_ALLOWED_COMMANDS` set and neither refuses to boot, a manifest
+binding a shell tool there is refused at write and at compile, and the call itself refuses rather
+than exec in the API. The hosted backend serves `workspace.scope: deployment` from this host, so
+for that scope only the runner counts — at write, at compile and per call. A development box is
+`FELIX_ENVIRONMENT=development` *with* `FELIX_AUTH_MODE=none` (`make dev`), for the reason skill
+import's token gives below: Compose defaults `FELIX_ENVIRONMENT` to development, so it alone says
+nothing. Only there does a command run as a child of the API process, where the code it runs can
+read the API's environment — a laptop's trade, never a deployment's. There is no shell interpreter: `&&`, `|` and `;` are literal arguments. The
 manifest's `commands` are argv prefixes (`git status` covers `git status --short`, not
 `git push` and not `git -c … status`), and every one must be covered by a prefix in
 `FELIX_SHELL_ALLOWED_COMMANDS` — checked at manifest write, at compile, and per call.

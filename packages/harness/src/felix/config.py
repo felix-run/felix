@@ -195,10 +195,14 @@ class Settings(BaseSettings):
     sandbox_allowed_images: str = ""
     # argv prefixes `spec.shell_tools` may exec on this host (comma-separated, e.g.
     # `uv run ruff,./scripts/test.sh,git status`). Empty (default) disables shell tools —
-    # a manifest's prefixes must each be covered by one listed here.
+    # a manifest's prefixes must each be covered by one listed here. Off a development box
+    # (development with auth_mode=none) a shell tool also needs somewhere isolated to exec —
+    # FELIX_SHELL_RUNNER_URL or the hosted workspace backend — and setting this without one
+    # refuses to boot (`isolation_refusal`).
     shell_allowed_commands: str = ""
     # Where `spec.shell_tools` exec. Empty (default): a child of this process, as this
-    # process's user — which can read this process's environment through /proc. Set: every
+    # process's user — which can read this process's environment through /proc, and which
+    # only a development box (`environment=development`, `auth_mode=none`) permits. Set: every
     # check still runs here, and the argv is sent to `felix-shell-runner` at this URL (on the
     # builder stack, `http://shell:8080`, a container holding no secrets). An unreachable
     # runner fails the call; there is no fallback to a local exec. Operator config only — no
@@ -990,6 +994,16 @@ class Settings(BaseSettings):
                 f"FELIX_SKILL_IMPORT_GITHUB_TOKEN is set: that is every owner the token reads. {fix}"
             )
 
+    def _validate_shell_isolation(self) -> None:
+        """Shell tools enabled on a deployment must exec somewhere other than this process."""
+        if not self.shell_allowed_commands.strip():
+            return
+        from felix.security.shell_policy import isolation_refusal
+
+        refusal = isolation_refusal(self)
+        if refusal is not None:
+            raise RuntimeError(f"FELIX_SHELL_ALLOWED_COMMANDS is set, but {refusal}")
+
     def _validate_manifests_dir(self) -> None:
         """A configured directory that is not there would leave its manifests unserved, quietly."""
         raw = self.manifests_dir.strip()
@@ -1073,6 +1087,7 @@ class Settings(BaseSettings):
         self._validate_skill_import()
         self._validate_shell_runner()
         self._validate_manifests_dir()
+        self._validate_shell_isolation()
         self._validate_workspace_gateway()
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()
