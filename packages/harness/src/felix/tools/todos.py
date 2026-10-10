@@ -130,6 +130,9 @@ def make_todo_tool() -> Tool:
         ),
         args=TodoArgs,
         handler=_todo_write,
+        # The run's own checklist: it changes nothing outside the conversation, and planning is
+        # exactly when it is wanted.
+        read_only=True,
     )
 
 

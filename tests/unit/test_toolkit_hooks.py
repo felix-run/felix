@@ -672,7 +672,7 @@ def _marker_files(key: str) -> set[str]:
             "approvals → judges",
             "where the code has 'judges'",
         ),
-        ("CLAUDE.md", " → workspace scope", "", "has 9 elements; the code has 10"),
+        ("CLAUDE.md", " → workspace scope", "", "has 10 elements; the code has 11"),
         (
             ".claude/hooks/compact-reminder.sh",
             "judges -> approvals",
@@ -683,7 +683,7 @@ def _marker_files(key: str) -> set[str]:
             ".claude/skills/governance-pipeline/SKILL.md",
             "→ workspace scope\n",
             "→ workspace scope\n → tool budget\n",
-            "has 11 elements; the code has 10",
+            "has 12 elements; the code has 11",
         ),
         (
             ".claude/skills/api-surface/SKILL.md",
@@ -782,7 +782,7 @@ _CODE_PLANTS: dict[str, tuple[Callable[[pathlib.Path], None], str, str]] = {
             'EXPECTED_WRAPPER_ORDER = [\n    "apply_tool_budget",\n',
         ),
         "wrapper-order",
-        "the code has 11",
+        "the code has 12",
     ),
     "adds-a-middleware": (
         lambda tree: _append(tree, "apps/api/src/felix_api/app.py", "\napp.add_middleware(GzipMiddleware)\n"),

@@ -777,6 +777,7 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="list_dir",
             replay_safe=True,
+            read_only=True,
             description="List files and directories under the workspace root.",
             args=PathArgs,
             handler=_list_dir,
@@ -787,6 +788,7 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="read_file",
             replay_safe=True,
+            read_only=True,
             description="Read a UTF-8 text file from the workspace.",
             args=ReadFileArgs,
             handler=_read_file,
@@ -841,6 +843,7 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="search_files",
             replay_safe=True,
+            read_only=True,
             description="Search workspace files for a literal string or regex.",
             args=SearchFilesArgs,
             handler=_search_files,

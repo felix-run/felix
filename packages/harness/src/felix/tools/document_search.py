@@ -174,6 +174,7 @@ def tools_from_document_refs(
                 # A query against the operator's own corpus has no side effect and names no
                 # destination, so replaying it is safe in the sense `http_fetch` is not.
                 replay_safe=True,
+                read_only=True,
             )
         )
     return out

@@ -171,6 +171,10 @@ def make_task_tool(
         is_peer=True,
         source="agent:task",
         transport=TASK_TRANSPORT,
+        # A foreground child shares this run, and with it the permission mode: in plan mode the
+        # child is held to read-only tools as well. A background start is refused in plan mode
+        # (`_start_in_background`), since a worker run would not inherit it.
+        read_only=True,
     )
 
 
@@ -190,6 +194,13 @@ async def _start_in_background(
     from felix.session.thread_state import claim_thread
 
     settings, tenant_id, parent = req.settings, req.auth.tenant_id, req.thread_id
+    from felix.governance.permission_mode import in_plan_mode
+
+    if await in_plan_mode(req):
+        return tool_error_output(
+            "permission_denied",
+            "[task] plan mode: a background task would run outside it; delegate in the foreground",
+        )
     if req.extras.get(BACKGROUND_CHILD_EXTRA):
         # Each background run starts on fresh counters, so one that could start more would let
         # a single instruction fan out level by level. A foreground child shares live ones.
@@ -318,6 +329,7 @@ def make_task_result_tool() -> Tool:
         # The answer is a child's, as untrusted as `task`'s own.
         source="agent:task_result",
         transport=TASK_TRANSPORT,
+        read_only=True,
     )
 
 

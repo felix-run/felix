@@ -1684,6 +1684,43 @@ takes the replica out of rotation — and is logged at warning once per subsyste
 again when a command fails on a client that had connected, rather than silently degraded.
 The same channel carries UI prompts and client-tool answers.
 
+## Permission modes
+
+A thread is in one of four modes, set with `POST /chat/mode` (or by an approved plan) and kept in
+thread metadata. The change applies from the next run: a run reads the stored mode once.
+
+| Mode | Effect |
+|------|--------|
+| `default` | Every control runs as the manifest says. |
+| `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
+| `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass`, and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
+
+`allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
+wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
+falls back to its `default_mode`.
+
+**The plan approval.** `exit_plan_mode(plan)` is gated by the built-in `plan-approval` rule —
+`one_shot`, `bind_principal`, a 30-minute TTL — and its grant is bound to the thread as well as the
+plan text, so an approved plan is never a standing key out of plan mode for another thread, person
+or later turn. No mode waives it. Approval returns the thread to `default_mode`. The approval
+constrains the **model**, not the person driving the thread: a lease-holding driver can leave plan
+mode with `POST /chat/mode` at any time, without approving anything.
+
+**Enforcement.** The `permission mode` wrapper sits just outside approvals, so plan mode refuses
+before anyone is asked; approvals asks `waives_approval` itself. A run caches only the stored mode
+and the caller's bypass verdict, and each agent — a router's children, a `task` child — resolves
+its own mode from them on every call, so a child that does not offer plan mode cannot take the
+run out of it, and a waiver needs the child's own manifest to allow the mode. An unreadable stored
+mode is read as `plan` (fail closed).
+
+**Audit.** Every mode change is `permission_mode_change` (`payload.via`: `route` or
+`exit_plan_mode`), and every approval a mode waived is `approval_waived` with the tool and the mode,
+plus the `felix_approval_waived` counter.
+
+`deep`'s `plan_create` / `plan_update_step` are added by the pattern after the wrapper stack and
+write only the plans store; they are not governed by plan mode.
+
 ## Session leases
 
 A lease keeps two clients from driving one thread at once. It holds **one exclusive hold**
@@ -2043,6 +2080,7 @@ implies the matching `*:read`.
 | `manifests:read` / `manifests:write` | `/manifests`; `GET /manifests/{name}/versions` lists stored versions (metadata only) under `manifests:read` |
 | `audit:read` | `/audit` |
 | `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model. Spill is kept for `FELIX_ARTIFACT_RETENTION_DAYS` (30; `0` keeps forever) and then swept, objects and ledger row together — so evidence meant to outlive that belongs in the audit log, not in an artifact |
+| `approvals:bypass` | Setting a thread's permission mode to `bypass` (`POST /chat/mode`), and having a run honour it — see [Permission modes](#permission-modes) |
 | `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream`, and every `/push` route — a push subscription is a standing request to be told about approvals |
 | `jobs:read` / `jobs:write` | `/jobs`. `POST /jobs/{name}/run` runs a job now and needs `jobs:write`: whoever may rewrite a job's prompt may already make it run. The job runs as itself — principal `cron`, no scopes — not as the caller, whose subject is recorded on the run as `requested_by` |
 | `plans:read` / `plans:write` | `/plans` |

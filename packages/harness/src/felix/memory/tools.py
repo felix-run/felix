@@ -188,6 +188,7 @@ def _recall_tool(b: _Binding) -> Tool:
         ),
         args=RecallArgs,
         handler=handler,
+        read_only=True,
         source="memory",
     )
 
@@ -231,6 +232,7 @@ def _list_tool(b: _Binding) -> Tool:
         args=ListMemoriesArgs,
         handler=handler,
         source="memory",
+        read_only=True,
     )
 
 

@@ -62,6 +62,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="calculator",
             replay_safe=True,
+            read_only=True,
             description=("Evaluate a basic arithmetic expression (supports + - * / and parentheses)."),
             args=CalculatorArgs,
             handler=_calculator_handler,
@@ -82,6 +83,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
             ),
             args=AskUserArgs,
             handler=ask_user_handler,
+            read_only=True,
         ),
     )
     from felix.tools.todos import TODO_TOOL_NAME, make_todo_tool
@@ -92,6 +94,7 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
         lambda: define_tool(
             name="list_skills",
             replay_safe=True,
+            read_only=True,
             description="List available skills for this agent.",
             handler=_list_skills_stub,
         ),

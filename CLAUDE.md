@@ -186,7 +186,7 @@ bundled YAML), enforces inbound auth and the compile pin, then compiles:
    <!-- toolkit:enum wrapper-order -->
 4. **Wrap every tool in the governance stack, in a fixed order** — secret masking →
    policies → command screening → content screening → limits → guardrails → judges →
-   approvals → artifact spill → workspace scope. The comment `order matters` is load-bearing; each wrapper
+   approvals → permission mode → artifact spill → workspace scope. The comment `order matters` is load-bearing; each wrapper
    clones the tool with a new executor, so order defines precedence.
 5. Hand the result to a pattern builder from the open registry
    (`patterns/registry.py`; `patterns/react.py:build_react_agent` is the main one) via a

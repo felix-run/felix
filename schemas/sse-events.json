@@ -9,6 +9,7 @@
     "max_turns",
     "on_chain_end",
     "on_chat_model_stream",
+    "permission_mode_changed",
     "run_accepted",
     "run_status",
     "session_event",

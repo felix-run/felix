@@ -356,6 +356,7 @@ def make_skill_tools(
             args=_ReadFileArgs,
             handler=_read_file,
             replay_safe=True,
+            read_only=True,
             relays_untrusted=True,
         ),
     ]

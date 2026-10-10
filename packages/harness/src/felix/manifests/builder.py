@@ -16,6 +16,14 @@ from felix.governance.content_screening import _INJECTION
 from felix.governance.image_screening import ImageScreener, screen_session_strategy
 from felix.governance.inbound import replay_screener, tool_image_screener
 from felix.governance.judges import judge_calls_out, judge_score
+from felix.governance.permission_mode import (
+    EXIT_PLAN_TOOL_NAME,
+    apply_permission_mode,
+    make_exit_plan_tool,
+    plan_approval_rule,
+    record_waiver,
+    waives_approval,
+)
 from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
 from felix.manifests.loader import load_bundled, parse_manifest
@@ -27,6 +35,7 @@ from felix.manifests.schema import (
     Guardrails,
     Limits,
     Manifest,
+    PermissionsSpec,
     Policy,
     child_agent_names,
     guardrails_enabled,
@@ -1057,7 +1066,13 @@ def _without_preview(tool: Tool, args: ToolInput) -> ToolInput:
     return {k: v for k, v in args.items() if k != PREVIEW_ARG}
 
 
-def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: str) -> list[Tool]:
+def apply_approvals(
+    tools: list[Tool],
+    rules: list[ApprovalRule],
+    manifest_id: str,
+    *,
+    permissions: PermissionsSpec | None = None,
+) -> list[Tool]:
     if not any(r.tools for r in rules):
         return tools
     from felix.manifests.approval_args import warn_unknown_when_args
@@ -1106,7 +1121,12 @@ def apply_approvals(tools: list[Tool], rules: list[ApprovalRule], manifest_id: s
                 return await inner.execute(args, ctx)
 
             req = try_get_context()
-            granted = bool((req.extras if req else {}).get(f"approval:{tool.name}"))
+            # The thread's permission mode may waive this approval (`accept_edits` for an edit
+            # tool, `bypass` for any) -- resolved by the permission-mode wrapper outside this one.
+            waived_by = await waives_approval(tool.name, permissions, req)
+            if waived_by is not None and req is not None:
+                record_waiver(req, tool.name, waived_by, manifest_id)
+            granted = waived_by is not None
             pending_row: dict[str, object] | None = None
             preview_failure: str | None = None
             # What the row and the frame show. Equal to `args` unless the tool computes a
@@ -2131,6 +2151,16 @@ async def build_agent(
             if m.spec.delegation.background:
                 resolved.append(make_task_result_tool())
 
+        # Plan mode's way out: bound wherever plan mode is allowed, gated by the approval rule
+        # added below. A tool already of that name would silently stand in for it.
+        if "plan" in m.spec.permissions.allowed_modes:
+            if any(t.name == EXIT_PLAN_TOOL_NAME for t in resolved):
+                raise ValueError(
+                    f"permissions allow plan mode, which binds '{EXIT_PLAN_TOOL_NAME}', and "
+                    f"'{m.metadata.name}' already has a tool of that name."
+                )
+            resolved.append(make_exit_plan_tool(m.spec.permissions))
+
         # A pattern that matches no bound tool gates nothing — a typo, a renamed MCP server,
         # or a glob written before its target existed. Logged rather than refused: the bound
         # set legitimately varies (an MCP server whose discovery failed binds no tools), so
@@ -2145,6 +2175,7 @@ async def build_agent(
 
         # Governance pipeline (order matters — matches TS builder). The workspace scope binds
         # last, outermost: not a control, but the directory every control and preview runs over.
+        # Permission mode sits just outside approvals: see `governance/permission_mode.py`.
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
         if m.spec.policies:
             resolved = apply_policies(resolved, m.spec.policies, m.metadata.name)
@@ -2169,8 +2200,18 @@ async def build_agent(
             resolved = apply_guardrails(resolved, m.spec.guardrails, m.metadata.name)
         if judges_enabled(m.spec.guardrails):
             resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name, decider=decider)
-        if m.spec.approvals:
-            resolved = apply_approvals(resolved, m.spec.approvals, m.metadata.name)
+        approval_rules = list(m.spec.approvals)
+        if "plan" in m.spec.permissions.allowed_modes:
+            # The plan is approved through the same flow as any gated call -- the row, the
+            # `approval_required` frame, `GET /approvals` -- and no mode waives it.
+            approval_rules.append(plan_approval_rule())
+        if approval_rules:
+            resolved = apply_approvals(
+                resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions
+            )
+        # Outside approvals, so plan mode refuses a change before anyone is asked to approve it,
+        # and so the mode it resolves is there when approvals asks whether it waives a call.
+        resolved = apply_permission_mode(resolved, m.spec.permissions, m.metadata.name)
 
         if m.spec.artifacts.enabled:
             from felix.artifacts import apply_artifact_spill

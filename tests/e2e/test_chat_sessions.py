@@ -497,9 +497,35 @@ def _driving_requests(thread: str) -> list[tuple[str, str, dict[str, Any] | None
         ("POST", "/chat/sessions/name", {"thread_id": thread, "name": "taken over"}),
         ("POST", "/chat/sessions/label", {"thread_id": thread, "event_id": "e", "label": "x"}),
         ("POST", "/chat/thinking", {"thread_id": thread, "thinking_level": "high"}),
+        ("POST", "/chat/mode", {"thread_id": thread, "mode": "plan"}),
         ("POST", "/chat/compact", {"thread_id": thread, "manifest": "quick"}),
         ("DELETE", f"/chat/history/{thread}", None),
     ]
+
+
+def test_every_route_that_declares_lease_refusals_is_driven_by_the_lease_tests() -> None:
+    """The list above is kept by hand, so a new driving route could be missed and its lease check
+    deleted with nothing failing. Every operation the reviewed wire contract documents as
+    answering `lease_read_only` must be on it."""
+    import json
+    from pathlib import Path
+
+    spec = json.loads((Path(__file__).resolve().parents[2] / "schemas" / "openapi.json").read_text())
+    declared = {
+        # `/chat/` is `/chat`'s trailing-slash alias: the same route.
+        (method.upper(), path.rstrip("/") or "/")
+        for path, ops in spec["paths"].items()
+        for method, op in ops.items()
+        if "lease_read_only" in str((op.get("responses") or {}).get("409", {}).get("description", ""))
+    }
+    assert len(declared) >= 15, f"matched too few routes to mean anything: {sorted(declared)}"
+    listed = {
+        (method, "/chat/history/{thread_id}" if path.startswith("/chat/history/") else path)
+        for method, path, _ in _driving_requests("t")
+    }
+    assert declared - listed == set(), (
+        f"driving routes missing from _driving_requests: {sorted(declared - listed)}"
+    )
 
 
 async def test_a_second_tab_observes_a_thread_another_drives_and_cannot_drive_it(boot: Any) -> None:

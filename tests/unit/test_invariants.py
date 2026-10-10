@@ -217,6 +217,7 @@ EXPECTED_WRAPPER_ORDER = [
     "apply_guardrails",
     "apply_judges",
     "apply_approvals",
+    "apply_permission_mode",
     "apply_artifact_spill",
     "apply_workspace_scope",
 ]
@@ -924,15 +925,23 @@ GOVERNANCE_WRAPPERS = set(EXPECTED_WRAPPER_ORDER) | {"apply_reply_controls"}
 _NON_CONFIG_PARAMS = {"self", "tools", "agent", "manifest_id"}
 
 
+# Where the wrappers are defined. `apply_permission_mode` lives beside the mode logic it
+# enforces rather than in builder.py, and is scanned there rather than exempted -- an exemption
+# is how a wrapper stops being covered by the checks below.
+_WRAPPER_MODULES = (HARNESS / "manifests" / "builder.py", HARNESS / "governance" / "permission_mode.py")
+
+
 def _builder_wrappers() -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    """The governance wrappers actually defined in builder.py."""
-    builder = HARNESS / "manifests" / "builder.py"
-    tree = ast.parse(builder.read_text(encoding="utf-8"), str(builder))
-    return [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in GOVERNANCE_WRAPPERS
-    ]
+    """The governance wrappers actually defined in builder.py and `_WRAPPER_MODULES`."""
+    found: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for module in _WRAPPER_MODULES:
+        tree = ast.parse(module.read_text(encoding="utf-8"), str(module))
+        found += [
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in GOVERNANCE_WRAPPERS
+        ]
+    return found
 
 
 def test_governance_wrappers_all_resolve() -> None:
@@ -940,7 +949,7 @@ def test_governance_wrappers_all_resolve() -> None:
     found = {n.name for n in _builder_wrappers()}
     missing = sorted(GOVERNANCE_WRAPPERS - found - {"apply_artifact_spill"})
     assert missing == [], (
-        f"GOVERNANCE_WRAPPERS names functions not defined in builder.py: {missing}. "
+        f"GOVERNANCE_WRAPPERS names functions not defined in {[m.name for m in _WRAPPER_MODULES]}: {missing}. "
         "Renamed or moved? Update the set, or the checks below stop covering them."
     )
     assert len(found) >= 8, f"expected the full wrapper stack, found only {sorted(found)}"
