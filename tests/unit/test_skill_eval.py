@@ -21,7 +21,7 @@ from felix.skills.eval_store import get_skill_eval_store
 from felix.skills.library_keys import ORG_OWNER
 from felix.skills.quality_store import CLAIM_LEASE_MS
 
-from tests.skill_quality import (
+from tests.support.skill_quality import (
     ANSWERER,
     DESCRIPTION,
     JUDGE,
@@ -561,7 +561,7 @@ async def test_one_sweep_lands_each_tenants_jobs_in_that_tenant(
     from felix.skills.library_store import get_skill_library_store
     from felix.usage import store as usage_store
 
-    from tests.skill_quality import IMPROVER, skill_md
+    from tests.support.skill_quality import IMPROVER, skill_md
 
     files = bundle(**{"evals/scenarios.json": json.dumps(TWO[:1])})
     ids = {}

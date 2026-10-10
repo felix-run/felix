@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.e2e.conftest import Booted
+from tests.support.e2e import Booted
 
 
 async def _seed(app: Booted, thread: str, text: str = "hello") -> None:

@@ -28,7 +28,7 @@ from felix.auth.jwt import parse_verifiers, verify_jwt
 from felix.config import Settings
 from joserfc import jwk
 
-from tests.github_fake import (
+from tests.support.github_fake import (
     ACTIONS_AUDIENCE,
     ACTIONS_KEY,
     DEPLOY_REPO_ID,

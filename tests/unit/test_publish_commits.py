@@ -53,8 +53,8 @@ from felix.tools.errors import read_tool_error_code
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool, is_wrapper_deny, tool_output_content
 from pydantic import ValidationError
 
-from tests.git_fixture import git as fixture_git
-from tests.loopback_http import Request, respond, serve
+from tests.support.git_fixture import git as fixture_git
+from tests.support.loopback_http import Request, respond, serve
 
 REPO = "felix-run/felix"
 TOKEN = "t0k"
@@ -74,7 +74,7 @@ _IDENTITY = {
 
 
 def git(ws: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    """`tests/git_fixture.py:git` with a commit identity; never an ambient git environment."""
+    """`tests/support/git_fixture.py:git` with a commit identity; never an ambient git environment."""
     return fixture_git(ws, *args, extra={**_IDENTITY, **(env or {})})
 
 
@@ -317,8 +317,8 @@ async def test_a_repository_in_a_hosted_sandbox_is_published_through_the_gateway
 
     from felix.tools import workspace_hosted
 
-    from tests.workspace_gateway_fake import TOKEN as GATEWAY_TOKEN
-    from tests.workspace_gateway_fake import URL, FakeGateway
+    from tests.support.workspace_gateway_fake import TOKEN as GATEWAY_TOKEN
+    from tests.support.workspace_gateway_fake import URL, FakeGateway
 
     base = git(ws, "rev-parse", "HEAD").strip()
     head = feature_commit(ws)

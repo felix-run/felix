@@ -15,8 +15,8 @@ from felix.flush import flush_all
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
-from tests.e2e.conftest import Booted
-from tests.e2e.test_mgmt_routes import ADMIN, READER, WRITER, _as, _keys
+from tests.support.e2e import Booted
+from tests.support.mgmt_keys import ADMIN, READER, WRITER, bearer, scoped_keys
 
 THREAD = "e2e-ask"
 
@@ -40,7 +40,7 @@ async def _ask(app: Booted, question: str = "what should I remember?", **kw: Any
 
 async def _store(app: Booted, name: str, spec: dict[str, Any]) -> None:
     body = {"manifest": {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": name}, "spec": spec}}
-    put = await app.client.put(f"/manifests/{name}", json=body, headers=_as(ADMIN))
+    put = await app.client.put(f"/manifests/{name}", json=body, headers=bearer(ADMIN))
     assert put.status_code == 200, put.text
 
 
@@ -131,10 +131,10 @@ async def test_an_ask_is_metered_and_audited_under_the_threads_manifest(boot: An
 async def test_a_caller_the_manifests_inbound_auth_refuses_cannot_ask(boot: Any) -> None:
     spec = {"system_prompt": {"inline": "hi"}, "auth": {"inbound": {"required_scopes": ["chat:special"]}}}
     script = [ScriptedTurn(content="noted"), ScriptedTurn(content="never sent")]
-    async with boot(script, env=_keys(reader=[], writer=["chat:special"])) as app:
+    async with boot(script, env=scoped_keys(reader=[], writer=["chat:special"])) as app:
         await _store(app, "e2e-gated", spec)
-        await _seed(app, "e2e-gated", headers=_as(WRITER))
-        refused = await _ask(app, headers=_as(READER))
+        await _seed(app, "e2e-gated", headers=bearer(WRITER))
+        refused = await _ask(app, headers=bearer(READER))
 
     assert refused.status_code == 403, refused.text
     assert len(app.spy.prompts) == 1, "no model call for a refused ask"
@@ -146,10 +146,10 @@ async def test_the_answer_passes_the_manifests_reply_controls(boot: Any) -> None
         "guardrails": {"providers": ["pii"], "targets": ["final_response"]},
     }
     script = [ScriptedTurn(content="noted"), ScriptedTurn(content="Write to alice@example.com.")]
-    async with boot(script, env=_keys(reader=[])) as app:
+    async with boot(script, env=scoped_keys(reader=[])) as app:
         await _store(app, "e2e-pii", spec)
-        await _seed(app, "e2e-pii", headers=_as(ADMIN))
-        resp = await _ask(app, headers=_as(ADMIN))
+        await _seed(app, "e2e-pii", headers=bearer(ADMIN))
+        resp = await _ask(app, headers=bearer(ADMIN))
 
     assert resp.status_code == 200, resp.text
     assert "alice@example.com" not in resp.json()["answer"], resp.json()
@@ -194,10 +194,10 @@ async def test_a_pii_block_on_the_answer_reads_withheld(boot: Any) -> None:
         "guardrails": {"providers": ["pii"], "targets": ["final_response"], "block_on_match": True},
     }
     script = [ScriptedTurn(content="noted"), ScriptedTurn(content="Write to alice@example.com.")]
-    async with boot(script, env=_keys(reader=[])) as app:
+    async with boot(script, env=scoped_keys(reader=[])) as app:
         await _store(app, "e2e-pii-block", spec)
-        await _seed(app, "e2e-pii-block", headers=_as(ADMIN))
-        resp = await _ask(app, headers=_as(ADMIN))
+        await _seed(app, "e2e-pii-block", headers=bearer(ADMIN))
+        resp = await _ask(app, headers=bearer(ADMIN))
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "withheld", resp.json()

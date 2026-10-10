@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from tests.support.git_fixture import GIT_REDIRECTS
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -27,24 +29,12 @@ if TYPE_CHECKING:
 #
 # Scrubbing them from the parent process, once, is what makes the hazard impossible rather
 # than merely detected: every subprocess inherits the clean environment however it spells its
-# git call. `tests/git_fixture.py` still scrubs per-call as belt-and-braces, and an invariant
+# git call. `tests/support/git_fixture.py` still scrubs per-call as belt-and-braces, and an invariant
 # still requires tests to use it — but neither is the load-bearing defense any more.
 #
 # An allowlist would be better still, and is not available: git has no "ignore all ambient
 # configuration" switch, so this enumerates. Erring wide is cheap here — the suite never wants
-# any of these.
-GIT_REDIRECTS = frozenset(
-    (
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_NAMESPACE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-    )
-)
+# any of these. The list itself is `tests/support/git_fixture.py:GIT_REDIRECTS`.
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -64,7 +54,7 @@ def _repository_config() -> Path | None:
     """This checkout's shared `.git/config`, found without running git.
 
     Read off the filesystem because every git subprocess in `tests/` must go through
-    `tests/git_fixture.py`, and that helper runs against a *fixture* repo by design. In a
+    `tests/support/git_fixture.py`, and that helper runs against a *fixture* repo by design. In a
     linked worktree `.git` is a file naming the worktree's git dir, whose `commondir` names
     the repository's own — where `config` lives.
     """
@@ -122,7 +112,7 @@ def _real_repository_identity_is_untouched(request: pytest.FixtureRequest):
         pytest.fail(
             f"{request.node.nodeid} changed the git identity of this repository "
             f"({_REPO_CONFIG}): {before} -> {after}. A fixture's `git config` reached the real "
-            "repo — route it through tests/git_fixture.py:git. Undo with "
+            "repo — route it through tests/support/git_fixture.py:git. Undo with "
             "`git config --local --unset user.name; git config --local --unset user.email`.",
             pytrace=False,
         )
@@ -236,6 +226,12 @@ def _isolate_process_global_stores():
         from felix.governance.screening import clear_screening_verdicts
 
         clear_screening_verdicts()
+        # Agent hooks are one more process global, filled by tests and by plugin discovery
+        # alike. `_reset_app_globals` swaps the plugin registry but not the hooks a plugin
+        # already registered, so a hook from one test would run inside the next one's turn.
+        from felix.hooks import reset_agent_hooks
+
+        reset_agent_hooks()
 
     _clear()
     yield
@@ -263,8 +259,8 @@ def _reset_app_globals():
 
 @pytest.fixture
 def git_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
-    """A bare `acme/widgets.git` served over dumb HTTP for the checkout tests (`tests/git_server.py`)."""
-    from tests.git_server import serve
+    """A bare `acme/widgets.git` served over dumb HTTP for the checkout tests (`tests/support/git_server.py`)."""
+    from tests.support.git_server import serve
 
     yield from serve(tmp_path, monkeypatch)
 

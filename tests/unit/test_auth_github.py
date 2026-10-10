@@ -19,8 +19,8 @@ from felix.auth.jwt import mint_token, parse_verifiers, verify_jwt
 from felix.config import Settings
 from joserfc import jwk
 
-from tests.github_fake import FakeGitHub
-from tests.github_fake import org as _org
+from tests.support.github_fake import FakeGitHub
+from tests.support.github_fake import org as _org
 
 _KEY = jwk.RSAKey.generate_key(2048)
 _PRIVATE = _KEY.as_pem(private=True).decode()

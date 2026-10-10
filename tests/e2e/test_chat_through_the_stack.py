@@ -14,17 +14,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import TokenUsage, ToolCall
 
-from tests.e2e.conftest import WIRE_MODEL
+from tests.support.e2e import WIRE_MODEL
+from tests.support.screening import EMAIL, PII, audit_rows, governed_manifest
 
 # Assertions live inside the `async with` throughout: the HTTP client is only usable there,
 # and the process globals the audit and usage checks read are reset on the way out.
-EMAIL = "alice@example.com"
-PII = f"Reach me at {EMAIL} any time."
-
 CALC = ToolCall(id="call-1", name="calculator", args={"expression": "2+2"})
 
 
@@ -41,26 +38,6 @@ def _answer(text: str = "The answer is 4") -> ScriptedTurn:
     return ScriptedTurn(content=text, usage=TURN_USAGE)
 
 
-def _manifest(name: str, **spec: Any) -> Any:
-    """A minimal governed manifest. Anonymous is allowed because the schema default is not,
-    and these tests are about what happens *after* the door — a caller with no scopes at all,
-    which is what makes the policy denial below a real refusal rather than a 401."""
-    base: dict[str, Any] = {
-        "pattern": "react",
-        "tools": ["calculator"],
-        "auth": {"inbound": {"allow_anonymous": True}},
-    }
-    base.update(spec)
-    return parse_manifest(
-        {
-            "apiVersion": "felix/v1",
-            "kind": "Agent",
-            "metadata": {"name": name},
-            "spec": base,
-        }
-    )
-
-
 def _frames(body: str) -> list[dict[str, Any]]:
     """Parse an SSE body into `{event, data}` payloads, dropping the terminator."""
     out: list[dict[str, Any]] = []
@@ -68,23 +45,6 @@ def _frames(body: str) -> list[dict[str, Any]]:
         if line.startswith("data: ") and line != "data: [DONE]":
             out.append(json.loads(line[len("data: ") :]))
     return out
-
-
-async def _audit(settings: Any) -> list[tuple[str, str, str]]:
-    """Flush and read back `(event_type, status, tool)` — the write path, not the buffer.
-
-    The tool name is part of the tuple because `("tool_call", "ok")` alone is satisfied by an
-    audit row for any tool at all.
-    """
-    from felix.audit import store as audit_store
-    from felix.flush import flush_all
-
-    await flush_all(settings)
-    rows, _ = await audit_store.query(settings, "default", limit=200)
-    return [
-        (row["event_type"], row.get("status") or "", (row.get("payload_json") or {}).get("tool") or "")
-        for row in rows
-    ]
 
 
 async def _audit_controls(settings: Any) -> list[tuple[str, str, str]]:
@@ -152,7 +112,7 @@ async def test_a_policy_denies_the_tool_for_a_caller_without_the_scope(boot: Any
     silently absent, and the wrapper stack is what this whole file exists to keep honest.
     Anonymous callers hold no scopes, so the rule must refuse.
     """
-    policed = _manifest(
+    policed = governed_manifest(
         "e2e-policed",
         policies=[
             {
@@ -177,7 +137,7 @@ async def test_a_policy_denies_the_tool_for_a_caller_without_the_scope(boot: Any
         assert "policy denied" in tool_messages[0]["content"]
         assert "4" not in tool_messages[0]["content"], "the calculator must not have run"
 
-        assert ("policy_deny", "denied", "calculator") in await _audit(app.settings)
+        assert ("policy_deny", "denied", "calculator") in await audit_rows(app.settings)
         # The documented read side: the row a `GET /audit` consumer sees names the control,
         # after redaction, the buffer and the store — not only the payload the loop built.
         assert ("policy_deny", "calculator", "policy") in await _audit_controls(app.settings)
@@ -185,7 +145,7 @@ async def test_a_policy_denies_the_tool_for_a_caller_without_the_scope(boot: Any
 
 async def test_the_reply_is_screened_on_the_way_out(boot: Any) -> None:
     """Reply controls wrap the pattern, so PII in a model's answer never reaches the client."""
-    screened = _manifest("e2e-screened", guardrails={"providers": ["pii"], "targets": ["output"]})
+    screened = governed_manifest("e2e-screened", guardrails={"providers": ["pii"], "targets": ["output"]})
     async with boot([_answer(PII)], manifests={"e2e-screened": screened}) as app:
         resp = await app.client.post(
             "/chat",
@@ -196,7 +156,7 @@ async def test_the_reply_is_screened_on_the_way_out(boot: Any) -> None:
         assert EMAIL not in content
         assert "[REDACTED" in content, "the reply must be redacted, not deleted"
 
-        assert ("guardrails_reply", "redacted", "") in await _audit(app.settings)
+        assert ("guardrails_reply", "redacted", "") in await audit_rows(app.settings)
 
 
 # --- what the turn leaves behind -----------------------------------------------------------
@@ -237,7 +197,7 @@ async def test_the_turn_is_audited_from_input_to_answer(boot: Any) -> None:
         )
         assert resp.status_code == 200, resp.text
 
-        events = await _audit(app.settings)
+        events = await audit_rows(app.settings)
         assert ("user_input", "ok", "") in events
         assert ("tool_call", "ok", "calculator") in events
         assert ("final_response", "ok", "") in events
@@ -279,7 +239,7 @@ async def test_the_stream_screens_the_reply_before_a_token_ships(boot: Any) -> N
     `invoke` a leak is recoverable; on a stream it is already on the wire, which makes this the
     more important of the two paths and the one nothing covered end to end.
     """
-    screened = _manifest("e2e-screened", guardrails={"providers": ["pii"], "targets": ["output"]})
+    screened = governed_manifest("e2e-screened", guardrails={"providers": ["pii"], "targets": ["output"]})
     async with boot([_answer(PII)], manifests={"e2e-screened": screened}) as app:
         resp = await app.client.post(
             "/chat/stream",
@@ -294,7 +254,7 @@ async def test_the_stream_screens_the_reply_before_a_token_ships(boot: Any) -> N
         assert EMAIL not in resp.text
         assert "[REDACTED" in resp.text, "the reply must be redacted, not dropped"
 
-        assert ("guardrails_reply", "redacted", "") in await _audit(app.settings)
+        assert ("guardrails_reply", "redacted", "") in await audit_rows(app.settings)
 
 
 # --- the middleware stack is real ----------------------------------------------------------

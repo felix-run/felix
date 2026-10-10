@@ -19,7 +19,7 @@ from felix.auth import github, github_actions
 from felix_client import LoginError, github_actions_login
 from joserfc import jwk
 
-from tests.github_fake import ACTIONS_AUDIENCE, DEPLOY_REPO_ID, ORG_IDS, FakeGitHub, actions_id_token
+from tests.support.github_fake import ACTIONS_AUDIENCE, DEPLOY_REPO_ID, ORG_IDS, FakeGitHub, actions_id_token
 
 _KEY = jwk.RSAKey.generate_key(2048)
 _BASE = "http://felix.test"

@@ -11,7 +11,7 @@ from felix.config import Settings
 from felix.context import AuthContext, RequestContext, run_with_context
 from felix.logging_setup import LogIdsFilter, _build_formatter, loggable
 
-from tests.optional_deps import require_optional
+from tests.support.optional_deps import require_optional
 
 
 def _record(msg: str = "hello") -> logging.LogRecord:

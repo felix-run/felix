@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from tests.emitted_metrics import emitted_metric_names
+from tests.support.emitted_metrics import emitted_metric_names
 
 ROOT = Path(__file__).resolve().parents[2]
 DOC = ROOT / "docs/OBSERVABILITY.md"

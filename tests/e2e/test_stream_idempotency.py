@@ -15,7 +15,7 @@ from typing import Any
 
 from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 
-from tests.e2e.conftest import Booted
+from tests.support.e2e import Booted
 
 KEY = "idempotency-key"
 

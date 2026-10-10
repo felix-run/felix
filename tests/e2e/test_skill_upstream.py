@@ -5,7 +5,7 @@ The chain no unit test holds end to end: `GET /skill-library/{name}/-/upstream` 
 importer, pinned to one commit → a new draft in the stores the API booted with → the publish gate,
 stricter for an import; and `GET /-/upstream`, mounted ahead of `/{name}`.
 
-GitHub is `tests/skill_import_fake.py`, served to the production path's client factory
+GitHub is `tests/support/skill_import_fake.py`, served to the production path's client factory
 (`github.github_client`) and nothing else; every other hop is the real one.
 """
 
@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from felix.skills.library_keys import ORG_OWNER
 
-from tests.skill_import_fake import FakeRepos, skill_md
+from tests.support.skill_import_fake import FakeRepos, skill_md
 
 NAME = "invoice-triage"
 SOURCE = f"github:acme/skills/skills/{NAME}"

@@ -22,24 +22,13 @@ suite exists to remove.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import textwrap
 import time
 
 import pytest
 
-REDIS_URL_ENV = "FELIX_CONFORMANCE_REDIS_URL"
-REQUIRE_REDIS_ENV = "FELIX_CONFORMANCE_REQUIRE_REDIS"
-
-
-def _redis_url() -> str:
-    url = os.environ.get(REDIS_URL_ENV)
-    if not url:
-        if os.environ.get(REQUIRE_REDIS_ENV):
-            pytest.fail(f"{REQUIRE_REDIS_ENV} is set but {REDIS_URL_ENV} is not")
-        pytest.skip(f"{REDIS_URL_ENV} unset — the cross-replica arm did not run")
-    return url
+from tests.support.backends import redis_url_or_skip
 
 
 @pytest.fixture
@@ -48,7 +37,7 @@ async def notify_against_redis(monkeypatch: pytest.MonkeyPatch):
     from felix.config import Settings
     from felix.session import notify
 
-    url = _redis_url()
+    url = redis_url_or_skip()
     settings = Settings(database_url="memory://xrep", redis_url=url)
     monkeypatch.setattr("felix.config.get_settings", lambda: settings)
 

@@ -13,7 +13,7 @@ from typing import Any
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.e2e.conftest import DEFAULT_ROUTE, WIRE_MODEL, _scripted_routes
+from tests.support.e2e import DEFAULT_ROUTE, WIRE_MODEL, scripted_model_routes
 
 PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
 
@@ -85,7 +85,7 @@ async def test_a_file_part_that_is_not_an_image_is_refused(boot: Any) -> None:
 
 
 async def test_a_text_only_route_refuses_an_a2a_image_before_the_model(boot: Any) -> None:
-    routes = dict(_scripted_routes())
+    routes = dict(scripted_model_routes())
     routes[DEFAULT_ROUTE] = {"provider": "scripted", "model": WIRE_MODEL, "modalities": ["text"]}
     env = {"FELIX_MODEL_ROUTES": json.dumps(routes), "FELIX_DEFAULT_VISION_MODEL_ID": ""}
     async with boot([ScriptedTurn(content="unseen")], env=env, manifests={"seer": _manifest()}) as app:

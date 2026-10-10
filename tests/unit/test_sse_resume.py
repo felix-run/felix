@@ -23,7 +23,9 @@ from felix.patterns.types import Event
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 from felix.thread_ids import effective_thread_id
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
+
+from tests.support.factories import app_client
 
 
 @pytest.fixture
@@ -52,13 +54,6 @@ def _settings() -> Settings:
         stream_resume_idle_seconds=0.4,
         stream_resume_poll_seconds=0.1,
     )
-
-
-def _client(settings: Settings) -> AsyncClient:
-    from felix_api.app import create_app
-
-    app = create_app(settings=settings, plugins=[])
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30.0)
 
 
 async def _seed(settings: Settings, thread: str, *texts: str) -> None:
@@ -142,7 +137,7 @@ async def test_cold_reconnect_returns_the_transcript(thread: str) -> None:
     settings = _settings()
     await _seed(settings, thread, "first", "second")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _read(client, f"/chat/stream/{thread}")
 
     frames = _data_frames(body)
@@ -160,7 +155,7 @@ async def test_warm_reconnect_replays_only_what_was_missed(thread: str) -> None:
     settings = _settings()
     await _seed(settings, thread, "one", "two", "three")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _read(client, f"/chat/stream/{thread}", headers={"Last-Event-ID": "2"})
 
     frames = _data_frames(body)
@@ -177,7 +172,7 @@ async def test_the_cursor_a_reconnect_returns_is_usable_again(thread: str) -> No
     settings = _settings()
     await _seed(settings, thread, "one", "two")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         cursor = _data_frames(await _read(client, f"/chat/stream/{thread}"))[0]["id"]
         await _seed(settings, thread, "three")
         body = await _read(client, f"/chat/stream/{thread}", headers={"Last-Event-ID": str(cursor)})
@@ -191,7 +186,7 @@ async def test_last_event_id_also_accepted_as_a_query_parameter(thread: str) -> 
     settings = _settings()
     await _seed(settings, thread, "one", "two")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         frames = _data_frames(await _read(client, f"/chat/stream/{thread}?last_event_id=1"))
 
     assert not any(f["payload"]["event"] == "snapshot" for f in frames)
@@ -204,7 +199,7 @@ async def test_a_garbage_cursor_degrades_to_a_snapshot(thread: str) -> None:
     settings = _settings()
     await _seed(settings, thread, "one")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _read(client, f"/chat/stream/{thread}", headers={"Last-Event-ID": "not-a-number"})
 
     assert _data_frames(body)[0]["payload"]["event"] == "snapshot"
@@ -216,7 +211,7 @@ async def test_the_stream_terminates_cleanly(thread: str) -> None:
     settings = _settings()
     await _seed(settings, thread, "one")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _read(client, f"/chat/stream/{thread}")
 
     assert _frames(body)[-1]["done"], "the stream ended without [DONE]"
@@ -225,7 +220,7 @@ async def test_the_stream_terminates_cleanly(thread: str) -> None:
 @pytest.mark.asyncio
 async def test_an_unknown_thread_returns_an_empty_snapshot(thread: str) -> None:
     """Deliberately not a 404: that would answer whether someone else's thread exists."""
-    async with _client(_settings()) as client:
+    async with app_client(_settings()) as client:
         frames = _data_frames(await _read(client, f"/chat/stream/{thread}-never-existed"))
 
     assert frames[0]["payload"]["event"] == "snapshot"
@@ -241,7 +236,7 @@ async def test_a_thread_id_carrying_a_tenant_delimiter_is_rejected(thread: str) 
     string, which Starlette's router rejects before the route runs — so it never
     reached the branch it claimed to cover.
     """
-    async with _client(_settings()) as client:
+    async with app_client(_settings()) as client:
         resp = await client.get("/chat/stream/other%3Athread")
 
     assert resp.status_code == 400
@@ -258,7 +253,7 @@ async def test_a_reconnect_cannot_read_another_tenants_thread(thread: str) -> No
     await session.append(AppendableEvent(kind="message", role="user", content="acme secret"))
 
     # auth_mode=none pins the caller to the `default` tenant.
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _read(client, f"/chat/stream/{thread}")
 
     assert "acme secret" not in body
@@ -299,7 +294,7 @@ async def test_post_stream_stamps_structural_frames_only(
 
     monkeypatch.setattr(chat_mod, "build_tenant_agent", _fake_build)
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         resp = await client.post(
             "/chat/stream",
             json={

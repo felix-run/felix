@@ -13,18 +13,11 @@ import logging
 from typing import Any
 
 import pytest
-from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.hooks import get_agent_hooks
 from felix.patterns import tool_runner as runner_mod
 from felix.patterns.tool_runner import ToolRunner
 from felix.patterns.types import ToolCall
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput
-
-
-@pytest.fixture(autouse=True)
-def _clean_hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 class _Counts:

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._scripts import load_script
+from tests.support.scripts_loader import load_script
 
 board = load_script("self-scoreboard")
 ROOT = Path(__file__).resolve().parents[2]

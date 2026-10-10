@@ -25,7 +25,7 @@ import textwrap
 
 import pytest
 
-from tests.conformance.test_cross_replica_notify import _redis_url
+from tests.support.backends import redis_url_or_skip
 
 # Comfortably past `RedisConnection`'s 2 s socket timeout. A wait shorter than that
 # proves nothing: it returns before the socket read can time out.
@@ -38,7 +38,7 @@ async def waiters_against_redis(monkeypatch: pytest.MonkeyPatch):
     from felix import waiters
     from felix.config import Settings
 
-    url = _redis_url()
+    url = redis_url_or_skip()
     monkeypatch.setattr(
         "felix.config.get_settings", lambda: Settings(database_url="memory://appr", redis_url=url)
     )

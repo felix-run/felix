@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.compose_yaml import load_compose
+from tests.support.compose_yaml import load_compose
 
 SELF = Path(__file__).resolve().parents[2] / "deploy" / "docker" / "compose.self.yml"
 

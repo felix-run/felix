@@ -39,19 +39,10 @@ from felix.manifests.schema import ExecutionSpec
 from felix.patterns.types import ChatMessage
 from felix_ai.types import ToolCall
 
+from tests.support.factories import make_settings
+
 TENANT = "t"
 ROUTE = "durable-scripted"
-
-
-def _settings() -> Settings:
-    return Settings(
-        database_url="memory://ci",
-        object_store="memory",
-        auth_mode="none",
-        allow_insecure=True,
-        host="127.0.0.1",
-        model_routes=f'{{"{ROUTE}":{{"provider":"scripted","model":"scripted-1"}}}}',
-    )
 
 
 @pytest.fixture
@@ -110,7 +101,9 @@ async def test_a_durable_run_writes_its_fiber_thread_onto_the_approval(scripted_
     from felix.approvals.interrupt import signal_decision
     from felix.durability.fibers import resume_due_fibers
 
-    settings = _settings()
+    settings = make_settings(
+        host="127.0.0.1", model_routes=f'{{"{ROUTE}":{{"provider":"scripted","model":"scripted-1"}}}}'
+    )
     await _gated_manifest(settings)
 
     ctx = RequestContext(

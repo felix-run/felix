@@ -16,7 +16,7 @@ from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
-from tests.optional_deps import require_optional
+from tests.support.optional_deps import require_optional
 
 
 def _png(size: tuple[int, int]) -> str:

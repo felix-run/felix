@@ -346,7 +346,7 @@ async def test_an_unknown_thread_has_no_leaf_and_is_not_created(store_settings: 
     from felix.session.store import get_session_store
     from felix.session.tree import sync_leaf
 
-    from tests.session_listing import every_listed
+    from tests.support.session_listing import every_listed
 
     thread = _thread()
     assert await sync_leaf(get_session_store(store_settings, tenant_id=TENANT).open(thread)) is None

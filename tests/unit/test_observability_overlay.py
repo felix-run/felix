@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.compose_yaml import load_compose as _load
+from tests.support.compose_yaml import load_compose as _load
 
 ROOT = Path(__file__).resolve().parents[2]
 OVERLAY = ROOT / "deploy/docker/compose.observability.yml"

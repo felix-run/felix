@@ -18,7 +18,7 @@ from felix.tools.types import ToolOutputDict, define_tool
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ImageAttachment, ToolCall
 
-from tests.e2e.conftest import DEFAULT_ROUTE, WIRE_MODEL, _scripted_routes
+from tests.support.e2e import DEFAULT_ROUTE, WIRE_MODEL, scripted_model_routes
 
 PNG = "data:image/png;base64,iVBORw0KGgo="
 
@@ -87,7 +87,7 @@ async def test_the_log_keeps_a_reference_not_the_bytes(boot: Any) -> None:
 
 
 async def test_a_text_only_route_is_told_the_image_was_omitted(boot: Any) -> None:
-    routes = dict(_scripted_routes())
+    routes = dict(scripted_model_routes())
     routes[DEFAULT_ROUTE] = {"provider": "scripted", "model": WIRE_MODEL, "modalities": ["text"]}
     env = {"FELIX_MODEL_ROUTES": json.dumps(routes), "FELIX_DEFAULT_VISION_MODEL_ID": ""}
     async with boot(_script(), env=env, manifests={"snapper": _manifest()}) as app:

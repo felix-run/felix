@@ -9,9 +9,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from tests.compose_yaml import load_compose
-from tests.emitted_metrics import emitted_metric_names
-from tests.helm import helm_or_skip, render
+from tests.support.compose_yaml import load_compose
+from tests.support.emitted_metrics import emitted_metric_names
+from tests.support.helm import helm_or_skip, render
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES = ROOT / "deploy/helm/felix/files/prometheus-rules.yml"

@@ -9,14 +9,11 @@ on the in-memory store, which is the write path the API and CLI read.
 from __future__ import annotations
 
 import pytest
-from felix.config import Settings
 from felix.eval import store as eval_store
 from felix.eval.runner import Trajectory, _score_answer, start_run, trajectory_of
 from felix.patterns.types import ChatMessage, ToolCall
 
-
-def _settings() -> Settings:
-    return Settings(database_url="memory://x", object_store="memory", auth_mode="none", allow_insecure=True)
+from tests.support.factories import make_settings
 
 
 def _tool_messages(*contents: str) -> list[ChatMessage]:
@@ -157,7 +154,7 @@ def test_no_trajectory_means_no_tools_ran() -> None:
 
 @pytest.mark.asyncio
 async def test_error_count_is_the_subset_of_failures_that_never_reached_the_scorer() -> None:
-    settings = _settings()
+    settings = make_settings()
     await eval_store.put_dataset(
         settings,
         "default",
@@ -192,7 +189,7 @@ async def test_a_run_whose_manifest_cannot_resolve_counts_every_item_as_an_error
         raise RuntimeError("no such manifest")
 
     monkeypatch.setattr(runner_mod, "resolve_tenant_manifest", _boom)
-    settings = _settings()
+    settings = make_settings()
     await eval_store.put_dataset(
         settings,
         "default",

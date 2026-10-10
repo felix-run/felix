@@ -21,7 +21,7 @@ import os
 import pytest
 from sqlalchemy import text
 
-from tests.conformance.conftest import PG_URL_ENV, REQUIRE_ENV, postgres_url
+from tests.support.backends import PG_URL_ENV, REQUIRE_ENV, postgres_url
 
 # One more than psycopg3's default `prepare_threshold` of 5, so the run crosses the
 # point where preparation kicks in rather than stopping just short of it.

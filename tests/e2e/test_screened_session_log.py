@@ -14,10 +14,7 @@ from typing import Any
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
-from tests.e2e.test_chat_through_the_stack import EMAIL, PII, _audit, _manifest
-from tests.e2e.test_decider_judges import ENV as DECIDER_ENV
-from tests.e2e.test_decider_judges import _manifest as _judged_manifest
-from tests.e2e.test_decider_judges import verdict  # noqa: F401  (fixture)
+from tests.support.screening import DECIDER_ENV, EMAIL, PII, audit_rows, governed_manifest, judged_manifest
 
 PII_GUARDRAILS = {"providers": ["pii"], "targets": ["output"]}
 
@@ -33,7 +30,7 @@ def _assistant_text(events: list[dict[str, Any]]) -> list[str]:
 
 
 async def test_a_redacted_reply_is_redacted_in_the_log(boot: Any) -> None:
-    screened = _manifest("e2e-screened", guardrails=PII_GUARDRAILS)
+    screened = governed_manifest("e2e-screened", guardrails=PII_GUARDRAILS)
     async with boot([ScriptedTurn(content=PII)], manifests={"e2e-screened": screened}) as app:
         resp = await app.client.post(
             "/chat",
@@ -46,7 +43,7 @@ async def test_a_redacted_reply_is_redacted_in_the_log(boot: Any) -> None:
         assert resp.status_code == 200, resp.text
         events = await _export(app, "logged")
         history = (await app.client.get("/chat/history/logged")).text
-        audit = await _audit(app.settings)
+        audit = await audit_rows(app.settings)
 
     [reply] = _assistant_text(events)
     assert EMAIL not in reply and "[REDACTED" in reply
@@ -56,7 +53,7 @@ async def test_a_redacted_reply_is_redacted_in_the_log(boot: Any) -> None:
 
 
 async def test_a_streamed_reply_is_redacted_in_the_log(boot: Any) -> None:
-    screened = _manifest("e2e-screened", guardrails=PII_GUARDRAILS)
+    screened = governed_manifest("e2e-screened", guardrails=PII_GUARDRAILS)
     async with boot([ScriptedTurn(content=PII)], manifests={"e2e-screened": screened}) as app:
         resp = await app.client.post(
             "/chat/stream",
@@ -78,7 +75,7 @@ async def test_a_preamble_before_tool_calls_is_redacted_in_the_log(boot: Any) ->
         ScriptedTurn(content=PII, tool_calls=[call], stop_reason="tool_use"),
         ScriptedTurn(content="4"),
     ]
-    screened = _manifest("e2e-screened", guardrails=PII_GUARDRAILS)
+    screened = governed_manifest("e2e-screened", guardrails=PII_GUARDRAILS)
     async with boot(script, manifests={"e2e-screened": screened}) as app:
         resp = await app.client.post(
             "/chat",
@@ -94,8 +91,8 @@ async def test_a_preamble_before_tool_calls_is_redacted_in_the_log(boot: Any) ->
     assert len(texts) == 2 and all(EMAIL not in t for t in texts)
 
 
-async def test_a_denied_reply_is_stored_as_its_denial(boot: Any, verdict: Any) -> None:  # noqa: F811
-    m = _judged_manifest(final_response=True)
+async def test_a_denied_reply_is_stored_as_its_denial(boot: Any, verdict: Any) -> None:
+    m = judged_manifest(final_response=True)
     async with boot(
         [ScriptedTurn(content="Let me tell you about cats.")], env=DECIDER_ENV, manifests={"e2e-judged": m}
     ) as app:
@@ -149,7 +146,7 @@ async def test_a_routers_child_logs_through_the_routers_screen(boot: Any) -> Non
     assert texts and all(EMAIL not in t for t in texts), texts
 
 
-async def test_reflect_quotes_its_draft_redacted(boot: Any, verdict: Any) -> None:  # noqa: F811
+async def test_reflect_quotes_its_draft_redacted(boot: Any, verdict: Any) -> None:
     """Reflect hands the draft back as a user turn, which the log keeps and the assistant-only
     screen would not reach."""
     from felix.manifests.loader import parse_manifest
@@ -188,7 +185,7 @@ CAPTURE = {"enabled": True, "min_chars": 0}
 async def test_memory_is_captured_from_the_redacted_reply(boot: Any) -> None:
     """Capture runs inside the reply controls, on the pattern's own output: extracting from it
     stored a fact the controls redacted, and recall put it back into every later prompt."""
-    screened = _manifest("e2e-screened", guardrails=PII_GUARDRAILS, memory={"capture": CAPTURE})
+    screened = governed_manifest("e2e-screened", guardrails=PII_GUARDRAILS, memory={"capture": CAPTURE})
     async with boot(
         [ScriptedTurn(content=PII), ScriptedTurn(content="[]")], manifests={"e2e-screened": screened}
     ) as app:
@@ -203,10 +200,10 @@ async def test_memory_is_captured_from_the_redacted_reply(boot: Any) -> None:
     assert "[REDACTED" in extraction and EMAIL not in extraction
 
 
-async def test_nothing_is_captured_from_a_denied_reply(boot: Any, verdict: Any) -> None:  # noqa: F811
+async def test_nothing_is_captured_from_a_denied_reply(boot: Any, verdict: Any) -> None:
     from felix.manifests.loader import parse_manifest
 
-    base = _judged_manifest(final_response=True)
+    base = judged_manifest(final_response=True)
     spec = {**base.spec.model_dump(exclude_defaults=True, mode="json"), "memory": {"capture": CAPTURE}}
     m = parse_manifest(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "e2e-judged"}, "spec": spec}
@@ -253,7 +250,7 @@ async def test_a_routers_child_captures_through_the_routers_screen(boot: Any) ->
     assert "[REDACTED" in extraction and EMAIL not in extraction
 
 
-async def test_a_child_with_its_own_controls_still_owes_its_routers(boot: Any, verdict: Any) -> None:  # noqa: F811
+async def test_a_child_with_its_own_controls_still_owes_its_routers(boot: Any, verdict: Any) -> None:
     """A child whose manifest has a judge of its own screens with that — and with the router's
     PII redaction above it, which the child's screen chains to rather than replaces."""
     from felix.manifests.loader import parse_manifest

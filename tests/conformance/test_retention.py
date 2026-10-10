@@ -28,7 +28,7 @@ from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 from felix.usage import store as usage_store
 
-from tests.session_listing import every_listed
+from tests.support.session_listing import every_listed
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("retention_settings", BACKENDS, indirect=True)

@@ -125,6 +125,6 @@ ls tests/unit | grep -E 'shell|workspace|http_fetch|web_search|browser|sandbox|c
    directly, so scope, checkout and the hosted backend all apply.
 6. Return failures with `tool_error_output`; keep refusals uninformative where they face the model.
 7. Optional dependency: import inside the function and gate the test with
-   `tests/optional_deps.py:require_optional`.
+   `tests/support/optional_deps.py:require_optional`.
 8. New settings: `felix/config.py`, `.env.example`, README; a behaviour change on a control path
    updates `deploy/GOVERNANCE.md` too. A new SSE frame needs `make contract`.

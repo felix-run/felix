@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from tests.session_listing import every_listed
+from tests.support.session_listing import every_listed
 
 BACKENDS = ["memory", "postgres"]
 TENANT = "conformance"

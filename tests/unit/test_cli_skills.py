@@ -1,7 +1,7 @@
 """`felix skills browse|add` against the real `/skill-library` routes.
 
 `FelixClient` opens its own `httpx.AsyncClient` per call, so the app's ASGI transport is bound in
-underneath it, as `tests/e2e/test_docs_sync.py` does; GitHub is `tests/skill_import_fake.py` at
+underneath it, as `tests/e2e/test_docs_sync.py` does; GitHub is `tests/support/skill_import_fake.py` at
 the production path's client factory. Synchronous: the command runs its own event loop.
 """
 
@@ -18,7 +18,7 @@ from felix.skills.library_keys import ORG_OWNER
 from felix_cli.main import app as cli
 from typer.testing import CliRunner
 
-from tests.skill_import_fake import FakeRepos, skill_md
+from tests.support.skill_import_fake import FakeRepos, skill_md
 
 SOURCE = "github:acme/skills/skills/invoice-triage"
 

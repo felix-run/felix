@@ -165,7 +165,7 @@ jobs:
         run: uv python install 3.14
       # Lean install plus only the extras that gate tests. `--all-extras` would drag in
       # playwright, boto3 and presidio for no coverage; these three are the ones whose
-      # absence silently deletes tests (see tests/optional_deps.py).
+      # absence silently deletes tests (see tests/support/optional_deps.py).
       - name: Install dependencies
         run: uv sync --locked --dev --extra warehouse --extra sandbox --extra otel --extra image
       - name: Bundle manifests

@@ -1,6 +1,6 @@
 """GitHub signup: who an invite admits, the personal tenant it opens, and who may claim one.
 
-GitHub is faked at the transport (`tests.github_fake`), as in `test_auth_github.py`, and a minted
+GitHub is faked at the transport (`tests.support.github_fake`), as in `test_auth_github.py`, and a minted
 token is checked with `verify_jwt` over the configured verifiers — the call the middleware makes.
 """
 
@@ -17,8 +17,8 @@ from felix.auth.jwt import mint_token, parse_verifiers, verify_jwt
 from felix.config import Settings
 from joserfc import jwk
 
-from tests.github_fake import FakeGitHub
-from tests.github_fake import org as _org
+from tests.support.github_fake import FakeGitHub
+from tests.support.github_fake import org as _org
 
 _KEY = jwk.RSAKey.generate_key(2048)
 _PRIVATE = _KEY.as_pem(private=True).decode()

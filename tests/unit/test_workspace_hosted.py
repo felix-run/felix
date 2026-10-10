@@ -3,7 +3,7 @@
 `FELIX_WORKSPACE_BACKEND=hosted` sends the workspace tools' file operations to the gateway Worker,
 which runs them in the scope's sandbox with the `felix-fs` helper. The conformance half runs the
 same tool calls against `local` and against `hosted` (a fake gateway serving the real helper,
-`tests/workspace_gateway_fake.py`) and requires the same answers, word for word: a model, and the
+`tests/support/workspace_gateway_fake.py`) and requires the same answers, word for word: a model, and the
 audit log, cannot tell which backend served a call. The rest pins what is hosted-only -- the
 scope-to-sandbox naming, the end-of-run checkpoint, the gateway failing, and the consumers that
 need a directory on the host being refused.
@@ -26,7 +26,7 @@ from felix.tools.builtins import default_tool_provider
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 from felix.tools.workspace_scope import SCOPES_DIR, bound_scope, thread_key
 
-from tests.workspace_gateway_fake import TOKEN, URL, FakeGateway
+from tests.support.workspace_gateway_fake import TOKEN, URL, FakeGateway
 
 TENANT = "acme"
 THREAD = "acme:t1"

@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tests.session_listing import listed_pages
+from tests.support.session_listing import listed_pages
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("store_settings", BACKENDS, indirect=True)

@@ -95,7 +95,7 @@ async def test_webhook_delivery_state_round_trips_and_is_claimed_once(fiber_sett
 
     from felix.durability import webhooks
 
-    from tests.unit.test_completion_webhooks import SECRET, receiver
+    from tests.support.webhook_receiver import SECRET, receiver
 
     finished = await fibers.create_fiber(
         fiber_settings, TENANT, state={"steps": [{"op": "complete"}], "cursor": 0}, webhooks=["ops"]

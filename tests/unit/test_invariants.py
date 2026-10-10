@@ -15,7 +15,7 @@ import os
 import re
 from pathlib import Path
 
-from tests._scripts import load_script
+from tests.support.scripts_loader import load_script
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "packages" / "harness" / "src" / "felix"
@@ -819,10 +819,68 @@ def test_the_coverage_floor_does_not_arm_partial_runs() -> None:
     )
 
 
+def test_tests_share_helpers_only_through_tests_support() -> None:
+    """A test module imports shared code from `tests.support`, never from a sibling test or a conftest.
+
+    Importing a test module runs its collection-time code a second time under another name, and
+    a fixture imported that way registers in the importer too (`verdict` was pulled in with a
+    `# noqa: F401`). It also hides the dependency: deleting or renaming a test helper broke a
+    file in another tier. `tests/support/` is where shared code lives.
+
+    An allowlist: any `tests.*` module outside `tests.support` is an offender, so a new tier is
+    covered without editing this. Relative imports are resolved against the importing file's
+    package, and `pytest_plugins` strings are read as the imports they are.
+    """
+
+    def absolute(path: Path, node: ast.ImportFrom) -> list[str]:
+        package = list(path.relative_to(ROOT).with_suffix("").parts[:-1])
+        base = package[: len(package) - (node.level - 1)] if node.level else []
+        head = ".".join([*base, *([node.module] if node.module else [])])
+        if node.module:
+            return [head]
+        return [f"{head}.{alias.name}" for alias in node.names]
+
+    def offends(module: str) -> bool:
+        parts = module.split(".")
+        return parts[0] == "tests" and len(parts) > 1 and parts[1] != "support"
+
+    offenders: list[str] = []
+    scanned = 0
+    through_support = 0
+    for path in (ROOT / "tests").rglob("*.py"):
+        if "support" in path.relative_to(ROOT / "tests").parts:
+            continue
+        scanned += 1
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                modules = absolute(path, node)
+                if node.module == "tests" and not node.level:
+                    modules = [f"tests.{alias.name}" for alias in node.names]
+            elif isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif (
+                isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "pytest_plugins" for t in node.targets)
+                and isinstance(node.value, (ast.List, ast.Tuple))
+            ):
+                modules = [e.value for e in node.value.elts if isinstance(e, ast.Constant)]
+            for module in modules:
+                through_support += module.startswith("tests.support")
+                if offends(module):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno} imports {module}")
+    assert scanned > 100, f"only {scanned} test files parsed; the scan is not reaching tests/"
+    # A positive control: if the matcher stopped recognising imports at all, `offenders` would be
+    # empty for the wrong reason. Dozens of files import from tests.support today.
+    assert through_support >= 50, f"only {through_support} tests.support imports seen; is the matcher broken?"
+    assert offenders == [], f"move what is shared into tests/support/ and import it from there: {offenders}"
+
+
 def test_optional_extras_are_gated_through_the_helper() -> None:
     """A bare `importorskip` bypasses the CI requirement flag, so it must not come back."""
-    helper = ROOT / "tests" / "optional_deps.py"  # where the one legitimate call lives
-    assert helper.is_file(), "tests/optional_deps.py is gone; the rule has no replacement to name"
+    helper = ROOT / "tests" / "support" / "optional_deps.py"  # where the one legitimate call lives
+    assert helper.is_file(), "tests/support/optional_deps.py is gone; the rule has no replacement to name"
     scanned = 0
     offenders = []
     for path in (ROOT / "tests").rglob("*.py"):
@@ -839,7 +897,7 @@ def test_optional_extras_are_gated_through_the_helper() -> None:
                 offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert scanned > 100, f"only {scanned} test files parsed; the scan is not reaching tests/"
     assert offenders == [], (
-        "use tests/optional_deps.py:require_optional(module, extra) instead of "
+        "use tests/support/optional_deps.py:require_optional(module, extra) instead of "
         f"pytest.importorskip so CI can require the extra: {offenders}"
     )
 
@@ -1401,7 +1459,7 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
     still a detector, and detectors have holes.
     """
     offenders: list[str] = []
-    helper = ROOT / "tests" / "git_fixture.py"
+    helper = ROOT / "tests" / "support" / "git_fixture.py"
     seen = 0
 
     # Only calls that actually start a process. Without this scope the check flagged
@@ -1473,7 +1531,7 @@ def test_every_git_call_in_tests_is_environment_scrubbed() -> None:
     assert seen >= 3, f"no subprocess spawn sites found in tests/ — has the scan broken? ({seen})"
     assert offenders == [], (
         "these invoke git directly, so an ambient GIT_DIR/GIT_WORK_TREE points them at a real "
-        f"repository — go through tests/git_fixture.py:git instead: {sorted(set(offenders))}"
+        f"repository — go through tests/support/git_fixture.py:git instead: {sorted(set(offenders))}"
     )
 
 
@@ -1482,7 +1540,7 @@ def test_the_suite_runs_without_an_ambient_git_redirect() -> None:
     that fixture pops these before any test runs, so this is true by construction."""
     import os
 
-    from tests.conftest import GIT_REDIRECTS
+    from tests.support.git_fixture import GIT_REDIRECTS
 
     assert sorted(GIT_REDIRECTS & set(os.environ)) == [], "ambient git redirect reached the suite"
 

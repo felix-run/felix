@@ -1,7 +1,7 @@
 """`skill.update_available`: queued when a recorded check finds a new upstream digest, sent by the
 worker's sweep to the endpoints bound to the skill's tenant.
 
-GitHub is `tests/skill_import_fake.py` at the transport and the stores are the `memory://` twins.
+GitHub is `tests/support/skill_import_fake.py` at the transport and the stores are the `memory://` twins.
 The receiving end is a real HTTP server on loopback (`test_completion_webhooks.receiver`), reached
 through the real egress guard, because what matters about a webhook is what arrives.
 """
@@ -24,8 +24,8 @@ from felix.skills.update_notify import deliver_due_notifications, event_id
 from felix.skills.upstream_store import get_upstream_store
 from felix.storage import MemoryObjectStore
 
-from tests.skill_import_fake import FakeRepos, skill_md
-from tests.unit.test_completion_webhooks import receiver
+from tests.support.skill_import_fake import FakeRepos, skill_md
+from tests.support.webhook_receiver import receiver
 
 REPO = "acme/skills"
 NAME = "invoice-triage"

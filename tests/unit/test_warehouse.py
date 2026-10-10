@@ -15,7 +15,7 @@ from felix.warehouse import (
     duckdb_path,
 )
 
-from tests.optional_deps import require_optional
+from tests.support.optional_deps import require_optional
 
 
 def test_build_none_by_default() -> None:

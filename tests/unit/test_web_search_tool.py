@@ -44,7 +44,7 @@ from felix.tools.web_search import (
     tools_from_search_refs,
 )
 
-from tests.loopback_http import Request, respond, serve
+from tests.support.loopback_http import Request, respond, serve
 
 
 def _ref(**kw: object) -> SearchToolRef:
