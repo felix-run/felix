@@ -21,7 +21,7 @@ from felix.observability.metrics import record_counter
 from felix.observability.tracing import timed_span
 from felix.patterns.types import ChatMessage, ImageAttachment, ToolCall
 from felix.steer import should_cancel_remaining_tools
-from felix.tools.errors import infer_error_code, read_tool_error_code, tool_output_content
+from felix.tools.errors import ToolErrorCode, infer_error_code, read_tool_error_code, tool_output_content
 from felix.tools.tool_images import ImageBudget, store_tool_images
 from felix.tools.types import (
     Tool,
@@ -33,6 +33,20 @@ from felix.tools.types import (
 )
 
 logger = logging.getLogger("felix.patterns.tool_runner")
+
+
+@dataclass(frozen=True, slots=True)
+class FatalCall:
+    """The call whose failure ended a run, for the run's `final_response` row."""
+
+    tool_call_id: str
+    error_code: ToolErrorCode
+
+
+def _call_row(call: ToolCall, thread_id: str | None, **extra: Any) -> dict[str, Any]:
+    """A `tool_call` or `policy_deny` row's payload. One builder for every path — a raise, a
+    returned failure, a refusal — so a field added to one cannot miss the others."""
+    return {"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id, **extra}
 
 
 def _applied_hook_content(replacement: Any, original: str, tool_name: str) -> str:
@@ -90,8 +104,13 @@ class ToolRunner:
                 return "sequential"
         return "parallel"
 
-    async def dispatch(self, call: ToolCall, thread_id: str | None) -> tuple[str, ChatMessage, bool, bool]:
-        """Return (kind, tool_message, terminate, denied)."""
+    async def dispatch(
+        self, call: ToolCall, thread_id: str | None
+    ) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
+        """Return (fatal, tool_message, terminate, denied).
+
+        `fatal` is the failure's code when a `fatal` tool raised, which ends the run; else None.
+        """
         preflight = await run_before_tool(
             {"id": call.id, "name": call.name, "args": call.args},
             context={"manifest_id": self.manifest_id, "thread_id": thread_id},
@@ -114,16 +133,10 @@ class ToolRunner:
                 "policy_deny",
                 status="denied",
                 manifest_id=self.manifest_id,
-                payload={
-                    "tool": call.name,
-                    "tool_call_id": call.id,
-                    "thread_id": thread_id,
-                    "control": "hook",
-                    "hook": str(preflight.get("hook") or "?"),
-                },
+                payload=_call_row(call, thread_id, control="hook", hook=str(preflight.get("hook") or "?")),
             )
             return (
-                "ok",
+                None,
                 ChatMessage(
                     role="tool",
                     tool_call_id=call.id,
@@ -134,7 +147,7 @@ class ToolRunner:
                 True,
             )
 
-        async def _run(span: Any) -> tuple[str, ChatMessage, bool, bool]:
+        async def _run(span: Any) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
             tool = self.tool_map.get(call.name)
             if tool is None:
                 span.set_attribute("status", "error")
@@ -147,7 +160,7 @@ class ToolRunner:
                     },
                 )
                 return (
-                    "ok",
+                    None,
                     ChatMessage(
                         role="tool",
                         tool_call_id=call.id,
@@ -190,6 +203,15 @@ class ToolRunner:
                         "manifest_id": self.manifest_id,
                     },
                 )
+                # The same row a failure the tool *returned* gets, code and no message. A raise
+                # wrote none, so the call that ended a run had no row for `final_response` to
+                # name — the one failure an operator most needs to find.
+                emit_agent_audit(
+                    "tool_call",
+                    status="error",
+                    manifest_id=self.manifest_id,
+                    payload=_call_row(call, thread_id, error_code=code.value),
+                )
                 if tool.fatal:
                     text = f"[fatal/{code.value}] {exc}"
                 else:
@@ -207,7 +229,7 @@ class ToolRunner:
                 if after and after.get("content") is not None:
                     text = _applied_hook_content(after["content"], text, call.name)
                 return (
-                    "fatal" if tool.fatal else "ok",
+                    code if tool.fatal else None,
                     ChatMessage(role="tool", tool_call_id=call.id, name=call.name, content=text),
                     terminate,
                     False,
@@ -223,7 +245,7 @@ class ToolRunner:
                 content, images = await self._stored_images(call.name, result, content)
 
             return (
-                "ok",
+                None,
                 ChatMessage(
                     role="tool",
                     tool_call_id=call.id,
@@ -312,7 +334,7 @@ class ToolRunner:
                     "manifest_id": self.manifest_id,
                 },
             )
-            payload: dict[str, Any] = {"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id}
+            payload = _call_row(call, thread_id)
             if status == "denied":
                 # Every wrapper deny used to land here as one undifferentiated `policy_deny`;
                 # which control refused existed only in the tool message. The source has been
@@ -357,8 +379,10 @@ class ToolRunner:
         *,
         thread_id: str | None,
         tenant_id: str,
-    ) -> tuple[list[ChatMessage], bool, bool, int]:
-        """Execute tool calls. Returns (tool_msgs, had_fatal, all_terminate, denied_calls).
+    ) -> tuple[list[ChatMessage], FatalCall | None, bool, int]:
+        """Execute tool calls. Returns (tool_msgs, fatal, all_terminate, denied_calls).
+
+        `fatal` names the call that ended the run, and is None when none did.
 
         `denied_calls` counts the calls a governance wrapper or a `before_tool` hook refused; it
         is truthy exactly when the batch had a refusal.
@@ -370,7 +394,7 @@ class ToolRunner:
         mode = self.batch_mode(calls)
         tool_msgs: list[ChatMessage] = []
         terminates: list[bool] = []
-        had_fatal = False
+        fatal: FatalCall | None = None
         denied_calls = 0
 
         if mode == "parallel" and len(calls) > 1:
@@ -390,11 +414,11 @@ class ToolRunner:
                     )
                     terminates.append(False)
                     continue
-                kind, tool_msg, terminate, denied = res
+                code, tool_msg, terminate, denied = res
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
-                if kind == "fatal":
-                    had_fatal = True
+                if code is not None and fatal is None:
+                    fatal = FatalCall(tool_call_id=call.id, error_code=code)
                 if denied:
                     denied_calls += 1
         else:
@@ -409,14 +433,14 @@ class ToolRunner:
                     tool_msgs.append(skipped)
                     terminates.append(True)
                     continue
-                kind, tool_msg, terminate, denied = await self.dispatch(call, thread_id)
+                code, tool_msg, terminate, denied = await self.dispatch(call, thread_id)
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
-                if kind == "fatal":
-                    had_fatal = True
+                if code is not None:
+                    fatal = FatalCall(tool_call_id=call.id, error_code=code)
                     break
                 if denied:
                     denied_calls += 1
 
         all_terminate = bool(terminates) and all(terminates)
-        return tool_msgs, had_fatal, all_terminate, denied_calls
+        return tool_msgs, fatal, all_terminate, denied_calls
