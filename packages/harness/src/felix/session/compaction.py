@@ -197,6 +197,12 @@ def serialize_conversation(events: list[SessionEvent], *, truncate_tool: int = 2
     return "\n".join(lines)
 
 
+# A tool whose name holds one of these changed the file it names (`write_file`, `edit_file`,
+# `delete_file`, `rename_file`, the `local_*` twins). A removed or moved file counted as *read*
+# would tell the summary the file is still there.
+_MODIFYING_TOOL_WORDS = ("write", "edit", "create", "patch", "delete", "rename")
+
+
 def extract_file_ops_from_events(events: list[SessionEvent]) -> dict[str, list[str]]:
     """Best-effort file tracking from tool names/args."""
     import re
@@ -222,7 +228,7 @@ def extract_file_ops_from_events(events: list[SessionEvent]) -> dict[str, list[s
         blob = f"{ev.content or ''} {ev.tool_calls or ''}"
         for m in path_re.finditer(blob):
             path = m.group(1) or m.group(2) or ""
-            if any(k in name for k in ("write", "edit", "create", "patch")):
+            if any(k in name for k in _MODIFYING_TOOL_WORDS):
                 _add(modified_files, seen_m, path)
             else:
                 _add(read_files, seen_r, path)
@@ -232,8 +238,12 @@ def extract_file_ops_from_events(events: list[SessionEvent]) -> dict[str, list[s
                 path = str(args.get("path") or args.get("file") or args.get("filename") or "")
                 tname = str(tc.get("name") or "").lower()
                 if path:
-                    if any(k in tname for k in ("write", "edit", "create", "patch")):
+                    if any(k in tname for k in _MODIFYING_TOOL_WORDS):
                         _add(modified_files, seen_m, path)
+                        # A move changes two paths: the one it left and the one it made.
+                        to_path = str(args.get("to_path") or "")
+                        if to_path:
+                            _add(modified_files, seen_m, to_path)
                     else:
                         _add(read_files, seen_r, path)
     return {"readFiles": read_files, "modifiedFiles": modified_files}

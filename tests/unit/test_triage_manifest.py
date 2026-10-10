@@ -77,7 +77,7 @@ def test_it_holds_no_way_to_change_a_file_or_run_anything(manifest: Manifest) ->
     # Every workspace tool that changes a file, not just the first one that existed. The
     # names are checked against the registry first, so a rename fails here rather than
     # quietly matching nothing.
-    mutating = {"write_file", "edit_file"}
+    mutating = {"write_file", "edit_file", "delete_file", "rename_file"}
     assert mutating <= set(default_tool_provider().list())
     assert not (mutating & set(spec.tools))
     assert spec.sandboxes == [] and spec.shell_tools == [] and spec.containers == []

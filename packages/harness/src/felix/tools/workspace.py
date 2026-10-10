@@ -1,11 +1,11 @@
 """The workspace file tools, and the path primitives every workspace consumer walks with.
 
-The five tools (`list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`) judge their
-arguments here -- size caps, the regex screen -- and hand the file I/O to a `WorkspaceBackend`
-(`felix.tools.workspace_backend`; on this host, `felix.tools.workspace_local`). The primitives
-below (`workspace_parts`, `open_workspace_parent`, `open_regular`, ...) are that backend's, and
-`shell`, the image tools and the context-file loader's, which work on the local filesystem by
-design. `workspace_root()` is the directory those local consumers work in for the current call.
+The seven tools (`list_dir`, `read_file`, `write_file`, `edit_file`, `delete_file`, `rename_file`,
+`search_files`) judge their arguments here -- size caps, the regex screen, reserved paths -- and
+hand the file I/O to a `WorkspaceBackend` (`felix.tools.workspace_backend`; on this host,
+`felix.tools.workspace_local`). The primitives below (`workspace_parts`, `open_workspace_parent`,
+`open_regular`, ...) are that backend's, and `shell`, the image tools and the context-file loader's,
+which work on the local filesystem by design. `workspace_root()` is the directory those local consumers work in for the current call.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from felix.context import try_get_context
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider
 from felix.tools.types import ToolOutput, ToolOutputDict, define_tool
-from felix.tools.workspace_backend import PANE_HIDDEN_PREFIX, EditRefused
+from felix.tools.workspace_backend import PANE_HIDDEN_PREFIX, EditRefused, pane_hides
 
 if TYPE_CHECKING:
     from felix.tools.workspace_backend import WorkspaceBackend, WorkspaceScope
@@ -99,6 +99,23 @@ class EditFileArgs(BaseModel):
     replace_all: bool = Field(
         default=False,
         description="Replace every occurrence instead of refusing an ambiguous match.",
+    )
+
+
+class DeleteFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, description="File path relative to the workspace root.")
+
+
+class RenameFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, description="The file to move, relative to the workspace root.")
+    to_path: str = Field(
+        min_length=1,
+        description="Where to move it, relative to the workspace root. Must not exist yet; "
+        "missing folders on the way are made.",
     )
 
 
@@ -589,6 +606,66 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
     )
 
 
+def _changeable_file(path: str) -> None:
+    """Refuse, as ValueError, a path a delete or a rename may not act on, before any backend does.
+
+    Beyond what every tool refuses (absolute, escaping, NUL, an over-long component): the root
+    itself, which is never a file, and anything inside `.git` or the scopes directory, or an edit's
+    temporary sibling (`pane_hides`) -- the same names the operator's file pane refuses as
+    `reserved_path`. Removing or moving a file there breaks the repository or another scope's
+    workspace, and neither is ever what a model asking for "the file" meant.
+    """
+    parts = workspace_parts(path)
+    if not parts:
+        raise NotAFileError(".")  # the root: a directory, and the one every other path is under
+    if any(pane_hides(part) for part in parts):
+        raise ValueError(f"reserved path: {path} (inside .git or .felix-scopes, or an edit's temporary file)")
+
+
+async def _delete_file(args: DeleteFileArgs) -> ToolOutput:
+    """Remove one regular file. Never a directory, never through a symlink; there is no undo."""
+    backend, scope = _seam()
+    try:
+        await backend.prepare(scope)
+        _changeable_file(args.path)
+        deleted = await backend.delete_file(scope, args.path)
+    except NotAFileError:
+        return _refuse(f"not a file: {args.path} (delete_file removes files only, never a directory)")
+    except ValueError as exc:
+        return _path_refused(exc)
+    except OSError as exc:
+        if _missing(exc):
+            return _refuse(f"no such file: {args.path}")
+        return _os_failed(exc)
+    return json.dumps({"path": deleted.path, "deleted": True})
+
+
+async def _rename_file(args: RenameFileArgs) -> ToolOutput:
+    """Move one regular file within the workspace. Never replaces anything at `to_path`."""
+    backend, scope = _seam()
+    try:
+        await backend.prepare(scope)
+        _changeable_file(args.path)
+        _changeable_file(args.to_path)
+        moved = await backend.rename_file(scope, args.path, args.to_path)
+    except NotAFileError as exc:
+        # The path refused, as the walk reports it: a source that is a directory (or a FIFO, a
+        # device), or either end naming the root.
+        return _refuse(f"not a file: {exc} (rename_file moves files only, never a directory)")
+    except FileExistsError:
+        return _refuse(
+            f"{args.to_path} already exists; rename_file never replaces anything -- "
+            "choose another to_path, or delete the file there first"
+        )
+    except ValueError as exc:
+        return _path_refused(exc)
+    except OSError as exc:
+        if _missing(exc):
+            return _refuse(f"no such file: {args.path}")
+        return _os_failed(exc)
+    return json.dumps({"path": moved.path, "to_path": moved.to_path, "bytes": moved.bytes})
+
+
 # A quantified group that itself contains a quantifier — (a+)+, (a*)*, (\d+)* — is the
 # construction that makes backtracking exponential. Python's `re` has no timeout and a
 # worker thread cannot be killed, so the deadline below unblocks the *request* while the
@@ -688,7 +765,9 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
 
 # The tools `register_workspace_tools` binds, by name: what a manifest's `spec.tools` lists to work
 # in the harness's workspace (`felix.usage.catalog.workspace_summary` reads it).
-WORKSPACE_TOOL_NAMES = frozenset({"list_dir", "read_file", "write_file", "edit_file", "search_files"})
+WORKSPACE_TOOL_NAMES = frozenset(
+    {"list_dir", "read_file", "write_file", "edit_file", "delete_file", "rename_file", "search_files"}
+)
 
 
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
@@ -734,6 +813,29 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
         ),
     )
     provider.register(
+        "delete_file",
+        lambda: define_tool(
+            name="delete_file",
+            description=(
+                "Delete one file from the workspace. Files only, never a directory; there is no undo."
+            ),
+            args=DeleteFileArgs,
+            handler=_delete_file,
+        ),
+    )
+    provider.register(
+        "rename_file",
+        lambda: define_tool(
+            name="rename_file",
+            description=(
+                "Move or rename one workspace file to to_path. Never overwrites: refused when "
+                "to_path exists. Missing folders on the way to to_path are created."
+            ),
+            args=RenameFileArgs,
+            handler=_rename_file,
+        ),
+    )
+    provider.register(
         "search_files",
         lambda: define_tool(
             name="search_files",
@@ -747,10 +849,12 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
 
 __all__ = [
     "WORKSPACE_TOOL_NAMES",
+    "DeleteFileArgs",
     "EditFileArgs",
     "NotAFileError",
     "PathArgs",
     "ReadFileArgs",
+    "RenameFileArgs",
     "SearchFilesArgs",
     "SymlinkRefusedError",
     "WriteFileArgs",
