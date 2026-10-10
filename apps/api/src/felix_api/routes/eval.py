@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from felix.auth.mgmt import (
     SCOPE_EVAL_READ,
     SCOPE_EVAL_WRITE,
@@ -149,23 +149,21 @@ async def start_eval_run(body: EvalRunRequest, request: Request) -> Any:
     )
 
 
-@router.post("/datasets/{name}/run")
-async def run_dataset(name: str, body: EvalRunRequest, request: Request) -> Any:
-    """Alias for chat-ui: POST /eval/datasets/{name}/run."""
-    from felix.eval.runner import start_run
+# When `POST /eval/datasets/{name}/run` was deprecated, as an RFC 9745 `@<epoch seconds>` date.
+_RUN_ALIAS_DEPRECATED = "@1791504000"  # 2026-10-09
 
-    require_mgmt_scopes(request, SCOPE_EVAL_WRITE)
-    return await start_run(
-        request.app.state.settings,
-        tools=request.app.state.tools,
-        tenant_id=tenant_id_from_request(request),
-        dataset_name=name,
-        candidate_manifest=body.candidate_manifest,
-        manifest_version=body.manifest_version,
-        mock=False,
-        deterministic_judge=body.deterministic_judge,
-        use_llm_judge=not body.deterministic_judge and bool(body.use_llm_judge),
-    )
+
+@router.post("/datasets/{name}/run", deprecated=True)
+async def run_dataset(name: str, body: EvalRunRequest, request: Request, response: Response) -> Any:
+    """Deprecated: `POST /eval/runs` with `dataset_name` in the body starts the same run.
+
+    Two routes started an eval run, which made `POST /eval/runs` read as an unbuilt feature to
+    anything counting call sites (#247). This one stays for a release, says so in `Deprecation`
+    and `Link`, and takes the dataset from the path over any in the body, as it always has.
+    """
+    response.headers["Deprecation"] = _RUN_ALIAS_DEPRECATED
+    response.headers["Link"] = '</eval/runs>; rel="successor-version"'
+    return await start_eval_run(body.model_copy(update={"dataset_name": name}), request)
 
 
 @router.get("/runs")
