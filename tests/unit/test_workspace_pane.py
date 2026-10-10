@@ -266,3 +266,76 @@ async def test_the_sdk_needs_a_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     _record(monkeypatch)
     with pytest.raises(ValueError, match="thread_id required"):
         await FelixClient(base_url="http://felix").workspace_tree()
+
+
+# --- path containment, stated so a static analyser can see it (CodeQL py/path-injection) -------
+
+
+@pytest.mark.parametrize(
+    ("raw", "parts"),
+    [
+        ("", []),
+        (".", []),
+        ("a//./b/", ["a", "b"]),
+        ("a/b/../c", ["a", "c"]),
+        ("a\\..\\b", ["a\\..\\b"]),  # a backslash is a name character on POSIX, not a separator
+        ("x" * 255, ["x" * 255]),
+    ],
+)
+def test_workspace_parts_keeps_plain_names(raw: str, parts: list[str]) -> None:
+    from felix.tools.workspace import workspace_parts
+
+    assert workspace_parts(raw) == parts
+
+
+@pytest.mark.parametrize(
+    ("raw", "why"),
+    [
+        ("..", "escapes"),
+        ("a/../../x", "escapes"),
+        ("/etc/passwd", "absolute"),
+        ("a/b\x00c", "NUL"),
+        ("x" * 256, "255 bytes"),
+        ("d/" + "é" * 128, "255 bytes"),  # 128 characters, 256 bytes
+    ],
+)
+def test_workspace_parts_refuses_what_could_leave_or_break_the_walk(raw: str, why: str) -> None:
+    from felix.tools.workspace import workspace_parts
+
+    with pytest.raises(ValueError, match=why):
+        workspace_parts(raw)
+
+
+@pytest.mark.parametrize("backend", ["local", "hosted"])
+async def test_a_backslash_path_is_a_name_inside_the_scope(
+    tmp_path: Path, gateway: FakeGateway, backend: str
+) -> None:
+    here = _scope_dir(tmp_path, backend)
+    written = await get_workspace_backend(_settings(tmp_path, backend)).write_file_checked(
+        SCOPE, "..\\escape.txt", b"inside", None
+    )
+    assert written.path == "..\\escape.txt"
+    assert (here / "..\\escape.txt").read_bytes() == b"inside"
+    assert not (here.parent / "escape.txt").exists()
+
+
+async def test_a_manifest_that_no_longer_resolves_is_not_written_to_the_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """py/log-injection: the recorded name came from a request once, so it stays out of the line."""
+    import logging
+
+    from felix.session.thread_state import LAST_MANIFEST_KEY, update_thread_meta
+    from felix.workspace_files import resolve_thread_workspace
+
+    settings = Settings(workspace_root="")
+    thread = "acme:pane-log"
+    forged = "gone\n2026-10-10 INFO forged line"
+    await update_thread_meta(
+        settings=settings, tenant_id=TENANT, thread_id=thread, **{LAST_MANIFEST_KEY: forged}
+    )
+    with caplog.at_level(logging.INFO, logger="felix.workspace_files"):
+        workspace = await resolve_thread_workspace(settings, TENANT, thread)
+    assert (workspace.scope.scope, workspace.manifest) == ("thread", None)
+    assert caplog.records, "the fallback was not logged at all"
+    assert all("forged" not in r.getMessage() and "gone" not in r.getMessage() for r in caplog.records)

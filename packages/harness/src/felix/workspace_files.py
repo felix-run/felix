@@ -101,7 +101,9 @@ async def _manifest_scope(
     except LookupError, ValueError:
         if strict:
             raise UnknownManifest(name) from None
-        logger.info("workspace pane: manifest %r no longer resolves; using thread scope", name)
+        # No caller-supplied value in the line: the name came from a request once, and a log
+        # line is no place for whatever it held. Which thread is in the request's own log context.
+        logger.info("workspace pane: the thread's manifest no longer resolves; using thread scope")
         return None
     return resolved.manifest.spec.workspace.scope
 

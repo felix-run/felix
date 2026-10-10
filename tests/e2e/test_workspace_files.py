@@ -553,3 +553,42 @@ async def test_the_catalog_says_where_each_agent_keeps_files(boot: Any, root: Pa
         assert listed["e2e-ws-both"] == {"tools": "both", "scope": "thread"}
         assert listed["e2e-ws-none"] == {"tools": "none", "scope": "thread"}
         assert listed["cowork"]["tools"] == "client"
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "detail"),
+    [
+        ("x" * 256, 400, "invalid_path"),
+        ("escape/secret.txt", 400, "invalid_path"),
+        ("escape", 400, "invalid_path"),
+        ("..\\..\\secret.txt", 404, "not_found"),
+    ],
+    ids=["segment-too-long", "through-a-root-symlink", "the-root-symlink", "backslashes-are-names"],
+)
+async def test_the_http_entry_cannot_reach_past_the_walk(
+    boot: Any, root: Path, tmp_path: Path, path: str, status: int, detail: str
+) -> None:
+    """What the route passes in is what a tool call could: a name past NAME_MAX is a bad path
+    (it was a 500), a symlink at the scope's root is refused whether named or walked through, and
+    a backslash is part of a name, never a separator."""
+    thread = "pane-walk"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not yours")
+        os.symlink(outside, here / "escape")
+
+        read = await app.client.get("/chat/workspace/file", params={"thread_id": thread, "path": path})
+        assert (read.status_code, read.json()) == (status, {"detail": detail}), read.text
+
+        write = await app.client.post(
+            "/chat/workspace/write", json={"thread_id": thread, "path": path, "content": "x"}
+        )
+        if path.startswith(".."):
+            assert write.status_code == 200, write.text
+            assert (here / path).read_text() == "x"
+        else:
+            assert (write.status_code, write.json()) == (400, {"detail": "invalid_path"}), write.text
+        assert (outside / "secret.txt").read_text() == "not yours"
+        assert sorted(p.name for p in outside.iterdir()) == ["secret.txt"]

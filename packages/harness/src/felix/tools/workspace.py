@@ -159,7 +159,14 @@ def workspace_parts(user_path: str) -> list[str]:
     """``user_path`` as plain components under the root, or ``ValueError``.
 
     `..` is applied lexically, which is exact here: with no symlink ever followed, the parent
-    of a component is the directory the walk came from.
+    of a component is the directory the walk came from. Each component is then a single name:
+    no separator, no NUL, nothing `.` or `..`, and at most 255 bytes (NAME_MAX on Linux and
+    macOS; past it the open fails with ENAMETOOLONG, which read as an internal error).
+
+    The containment that matters is the walk -- every component opened from its parent's
+    descriptor with `O_NOFOLLOW` (`open_workspace_parent`). The normalise-and-prefix check at the
+    end restates it in the form a static analyser recognises as a path barrier, and the
+    components returned are the ones that passed it.
     """
     raw = (user_path or ".").strip() or "."
     if Path(raw).is_absolute():
@@ -175,8 +182,18 @@ def workspace_parts(user_path: str) -> list[str]:
             continue
         if "\0" in seg:
             raise ValueError("path contains a NUL byte")
+        if os.altsep and os.altsep in seg:
+            raise ValueError("path contains a separator other than /")
+        if len(seg.encode("utf-8", "surrogateescape")) > 255:
+            raise ValueError("path component is longer than 255 bytes")
         parts.append(seg)
-    return parts
+    if not parts:
+        return []
+    anchor = "/workspace-root/"
+    checked = os.path.normpath(os.path.join(anchor, *parts))
+    if not checked.startswith(anchor):
+        raise ValueError("path escapes workspace root")
+    return checked[len(anchor) :].split("/")
 
 
 def open_at(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o600) -> int:
