@@ -122,12 +122,18 @@ class SummarizingSessionStrategy:
             return out
 
         older, newer = compactable[: -self.keep], compactable[-self.keep :]
-        if model is None:
+        # A render that must not summarise (`POST /chat/ask`) takes the no-model path: the stored
+        # summary and the kept window, never a new summariser call.
+        stored_only = isinstance(opts, dict) and bool(opts.get("stored_summary_only"))
+        if model is None or stored_only:
             # Honest fallback: windowed keep + explicit truncation notice.
+            reason = (
+                "showing the stored summary only" if stored_only else "summarizing unavailable (no model)"
+            )
             note = ChatMessage(
                 role="system",
                 content=(
-                    f"[session] summarizing unavailable (no model); "
+                    f"[session] {reason}; "
                     f"kept last {self.keep} of {len(compactable)} turns "
                     f"(dropped {len(older)} older turns)."
                 ),
