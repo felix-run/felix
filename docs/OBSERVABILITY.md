@@ -250,6 +250,10 @@ Real, documented rather than hidden:
   (`timeout`, `permission_denied`, `rate_limited`, …) on every row with `status: error`, and
   absent otherwise. It is the class only: the message is the tool's text, which can quote file
   contents or credentials, so it stays in the thread's transcript and out of the audit log.
+- **`side_question` rows record each `POST /chat/ask`.** `payload.thread_id`, `payload.status`
+  (`answered`, `not_in_context` or `withheld`) and `payload.chars`; never the question or the
+  answer. The row and the call's usage row are under the thread's own manifest. Nothing about the
+  ask is written to the thread's session log.
 - **`GET /audit/metrics` reports `avg_latency_ms: 0`.** It reads `payload.latency_ms` /
   `payload.duration_ms`, which the `tool_call` audit payload does not write. Use
   `felix_tool_call_seconds` instead.

@@ -370,6 +370,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Session lease | `POST /chat/sessions/lease`, `…/lease/release`, `GET /chat/sessions/{id}/lease` |
 | Session name / label / export | `POST /chat/sessions/name`, `…/label`, `GET …/export` |
 | Compact / UI prompt | `POST /chat/compact`, `POST /chat/ui` |
+| Side question (read-only) | `POST /chat/ask` |
 | Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
 | OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
 | A2A JSON-RPC | `POST /a2a` |

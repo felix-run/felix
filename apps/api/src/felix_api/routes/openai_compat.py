@@ -280,6 +280,7 @@ async def list_models(request: Request) -> dict[str, Any]:
         catalog_from_manifest(
             name,
             None if isinstance(item, BaseException) else getattr(item, "manifest", None),
+            settings,
         )
         for name, item in zip(names, resolved, strict=True)
     ]

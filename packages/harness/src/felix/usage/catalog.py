@@ -61,47 +61,91 @@ def model_catalog_entry(
     }
 
 
-def catalog_from_manifest(name: str, manifest: Any | None = None) -> dict[str, Any]:
-    """Enrich a manifest listing with model-spec metadata when available."""
-    model_id = name
-    context_window = None
-    price = None
-    starters: list[dict[str, str]] = []
-    greeting: dict[str, str | None] | None = None
-    if manifest is not None:
-        meta = getattr(manifest, "metadata", None)
-        starters = [{"title": s.title, "prompt": s.prompt} for s in (getattr(meta, "starters", None) or [])]
-        declared = getattr(meta, "greeting", None)
-        if declared is not None:
-            greeting = {"headline": declared.headline, "subtitle": declared.subtitle}
-        # The window compaction uses: the declared value, else the model's own — resolved
-        # through the route, or through the default route when the manifest names no model.
-        # Asked for every manifest, not only one with a `model` block: without one, the
-        # listing fell back to looking the window up by the *manifest's* name, i.e. 128K.
-        from felix.runtime import _context_window_for_manifest
+def _served_model(manifest: Any, settings: Any) -> tuple[str, str, Any]:
+    """The model a manifest runs on: its route name, the id the catalog knows it by, and the route.
 
-        session = getattr(getattr(manifest, "spec", None), "session", None)
-        context_window = _context_window_for_manifest(manifest, session)
-        spec = getattr(getattr(manifest, "spec", None), "model", None)
-        if spec is not None:
-            mid = getattr(spec, "id", None)
-            if mid:
-                model_id = str(mid)
-            raw_price = getattr(spec, "price", None)
-            if isinstance(raw_price, dict) and raw_price:
-                price = dict(raw_price)
+    A manifest without `spec.model.id` runs on `settings.default_model_id`, the fallback
+    `patterns.model` takes when it builds the client; a route name resolves through
+    `FELIX_MODEL_ROUTES` to the provider's model, which is what the catalog is keyed on.
+    """
+    from felix.patterns.model import parse_model_routes
+
+    spec = getattr(getattr(manifest, "spec", None), "model", None)
+    route_name = str(getattr(spec, "id", "") or "") or str(getattr(settings, "default_model_id", "") or "")
+    route = parse_model_routes(settings).get(route_name) if route_name else None
+    return route_name, (route.model if route is not None else route_name), route
+
+
+def _served_modalities(manifest: Any, settings: Any, catalog_id: str, route: Any) -> list[str]:
+    """What the manifest accepts, decided the way routing decides it.
+
+    The route's own `modalities` win over the catalog (`route_accepts_images`), and a manifest
+    whose primary cannot see images but has a vision route composed on (`vision_plan`) accepts
+    them all the same — the image goes to the vision model.
+    """
+    from felix.patterns.model_vision import route_accepts_images, vision_plan
+
+    declared = list(getattr(route, "modalities", None) or [])
+    modalities = declared or modalities_for(catalog_id)
+    sees = route_accepts_images(route)
+    spec = getattr(getattr(manifest, "spec", None), "model", None)
+    if "image" not in modalities and (sees or vision_plan(settings, spec).vision_id):
+        modalities = [*modalities, "image"]
+    return modalities
+
+
+def catalog_from_manifest(
+    name: str, manifest: Any | None = None, settings: Any | None = None
+) -> dict[str, Any]:
+    """An OpenAI model object for a manifest, described by the model it actually runs on.
+
+    The `id` stays the manifest's name (the Felix convention); everything about the model —
+    `providerModel`, window, price, modalities, thinking levels — comes from the model the
+    manifest resolves to. Each used to be looked up by the manifest's *name*, which the catalog
+    does not know, so a manifest on the default route listed no model and the fallback 128K
+    window, text-only input and no thinking, whatever it ran on (#342). With no manifest (it
+    failed to resolve) only the name is left to go on.
+    """
+    if manifest is None:
+        entry = model_catalog_entry(model_id=name)
+        entry["felix"].update(providerModel=None, description=None, starters=[], greeting=None)
+        return entry
+    if settings is None:
+        from felix.config import get_settings
+
+        settings = get_settings()
+    meta = getattr(manifest, "metadata", None)
+    declared = getattr(meta, "greeting", None)
+    # The window compaction uses: the declared value, else the served model's own.
+    from felix.runtime import _context_window_for_manifest
+
+    session = getattr(getattr(manifest, "spec", None), "session", None)
+    context_window = _context_window_for_manifest(manifest, session, settings)
+    route_name, catalog_id, route = _served_model(manifest, settings)
+    raw_price = getattr(getattr(getattr(manifest, "spec", None), "model", None), "price", None)
+    # Merged over the catalog's rates, as metering merges it: a manifest overriding only the
+    # input rate is billed at the catalog's output rate, and listed that way.
+    price = {**_lookup_price(catalog_id or name), **raw_price} if isinstance(raw_price, dict) else None
     entry = model_catalog_entry(
-        model_id=name,
+        model_id=catalog_id or name,
         context_window=context_window,
-        price=price or _lookup_price(model_id),
+        price=price,
+        modalities=_served_modalities(manifest, settings, catalog_id or name, route),
     )
-    # Keep OpenAI id as the manifest name (Felix convention); nest provider model under felix.
-    entry["felix"]["providerModel"] = model_id if model_id != name else None
-    # Always a list, empty when the manifest declares none or could not be resolved, so a
-    # client can tell "this harness lists starters" from an older one that has no key.
-    entry["felix"]["starters"] = starters
+    # Built under the served model's id so every lookup reads that model; the listing's id is
+    # still the manifest's name, which is what a client sends back as `model`.
+    entry["id"] = name
+    entry["felix"]["providerModel"] = route_name or None
+    entry["felix"]["description"] = getattr(meta, "description", "") or None
+    # Always a list, empty when the manifest declares none, so a client can tell "this
+    # harness lists starters" from an older one that has no key.
+    entry["felix"]["starters"] = [
+        {"title": s.title, "prompt": s.prompt} for s in (getattr(meta, "starters", None) or [])
+    ]
     # `null` when the manifest declares none: the client's own greeting stands.
-    entry["felix"]["greeting"] = greeting
+    entry["felix"]["greeting"] = (
+        {"headline": declared.headline, "subtitle": declared.subtitle} if declared is not None else None
+    )
     return entry
 
 

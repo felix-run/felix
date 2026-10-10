@@ -313,7 +313,8 @@ def model_hook_context(
 
     `purpose` says what the call is for, so a hook can act on one kind and leave the rest:
     `turn` (a react step), `router` (choosing a sub-agent), `reflect` (scoring a draft),
-    `plan` (planning or replanning), `synthesis` (composing a composite pattern's answer).
+    `plan` (planning or replanning), `synthesis` (composing a composite pattern's answer),
+    `ask` (a side question about a thread, `POST /chat/ask`).
     """
     return {
         "manifest_id": manifest_id,
