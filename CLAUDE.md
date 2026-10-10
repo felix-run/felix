@@ -61,7 +61,7 @@ Structural gates (fast, no infrastructure):
 ./scripts/test.sh tests/unit/test_invariants.py        # repo invariants, enforced
 ./scripts/test.sh tests/unit/test_entrypoint_wiring.py # every console script, factory and broker path
 uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
-python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills, and every path they cite
+python3 scripts/validate-toolkit.py               # .claude/ hooks, settings, skills, every path they cite, and every marked list vs the code
 uv run python scripts/gen-manifest-schema.py --check   # editor JSON Schema is current
 uv run python scripts/gen-wire-contract.py --check     # OpenAPI + SSE event snapshots are current
 ```
@@ -153,6 +153,7 @@ spends real money — it needs a model key and refuses to run without one.
   rule, so installing the client never installs the server. `felix.sdk` is a re-export of it.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
+  <!-- toolkit:enum cli-commands -->
 - `apps/cli` (`felix`) — `migrate | eval | mint-jwt | login | ingest-docs | skills | workspace | sessions | bundle-manifests | validate-manifest | doctor | version`.
 - `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus four
   underscore-prefixed modules that carry no route: `_skill_library_models.py` holds the
@@ -176,6 +177,7 @@ bundled YAML), enforces inbound auth and the compile pin, then compiles:
 2. Bind outbound tools from the spec: MCP servers → `server__tool`, A2A peers →
    `peer__name`, browser/sandbox/container/queue/client tools, procedural-memory writer.
 3. Wire Agent Skills (catalog XML appended to the prompt) and inject active memory facts.
+   <!-- toolkit:enum wrapper-order -->
 4. **Wrap every tool in the governance stack, in a fixed order** — secret masking →
    policies → command screening → content screening → limits → guardrails → judges →
    approvals → artifact spill → workspace scope. The comment `order matters` is load-bearing; each wrapper
@@ -231,6 +233,7 @@ New optional features belong behind that seam, not in `felix` core.
 
 ### Request path and state
 
+<!-- toolkit:enum middleware-order -->
 `create_app` (apps/api) stacks request-id → security-headers → body-limit → rate-limit →
 `AuthMiddleware` (outermost first; there is deliberately no CORS layer and no web UI, see the
 README), stores
@@ -238,8 +241,10 @@ README), stores
 Management endpoints gate on scopes via `auth/mgmt.py:require_mgmt_scopes` (skipped entirely
 when `auth_mode=none`; `admin`/`*` bypass; `x:write` implies `x:read`).
 
-Chat state is an append-only session event log (`session/store.py`) with strategies
-(`full_replay`, `compacting`, `windowed:N`, `semantic:N`) plus fork/rewind/lease/search/export.
+<!-- toolkit:enum session-strategies -->
+Chat state is an append-only session event log with strategies
+(`full_replay`, `compacting`, `windowed:N`, `summarizing:N`, `semantic:N`)<!-- /toolkit:enum --> plus
+fork/rewind/lease/search/export, in `session/store.py`.
 `spec.execution.mode: durable` enqueues a fiber (`durability/fibers.py`)
 and returns `202` + `resume_token`.
 

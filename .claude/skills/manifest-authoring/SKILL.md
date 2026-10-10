@@ -54,6 +54,7 @@ Copy `manifests/governed.yaml` when the agent needs governance — it is the ful
 
 ## Field → code map
 
+<!-- toolkit:enum spec-fields -->
 | Spec field | Consumed by |
 |---|---|
 | `pattern` | `patterns/registry.py:get_pattern` → e.g. `patterns/react.py` |

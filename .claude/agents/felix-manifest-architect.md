@@ -40,9 +40,10 @@ manifest that exercises it.
    (`peer__name`), `browser_tools`, `sandboxes`, `containers`, `queues`, `client_tools`.
 4. Secrets are `secret:NAME` references only — never inline. `governance.forbid_plaintext_secrets`
    makes that a compile error.
-5. Session strategy: `full_replay` (default), `compacting` (set `reserve_tokens`,
-   `keep_recent_tokens`, `context_window_tokens`), `windowed:N`, `semantic:N` (needs the
-   `embeddings` extra).
+   <!-- toolkit:enum session-strategies -->
+5. Session strategy: `full_replay` (default), `compacting`, `windowed:N`, `summarizing:N`,
+   `semantic:N`<!-- /toolkit:enum -->. `compacting` takes `reserve_tokens`, `keep_recent_tokens` and
+   `context_window_tokens`; `semantic:N` needs the `embeddings` extra.
 6. Governance blocks — `policies`, `limits`, `approvals`, `content_screening`,
    `command_screening`, `guardrails`, `anomaly`, `governance` — compile into the wrapper stack in a
    fixed order. Copy the shape from `manifests/governed.yaml`.
