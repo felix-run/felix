@@ -5,8 +5,8 @@ backend.** Built so far: phase 0 (the default volume), phase 1 (truthful failure
 (scopes on the `local` layout) and phase 2b (the `WorkspaceBackend` seam). This file is the design the workspace tools are to be moved onto;
 it is updated in place as each phase lands, like [SELF.md](SELF.md).
 
-The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files` — are how a
-model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
+The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`, and since
+2026-10-10 `delete_file` and `rename_file` — are how a model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
 directory. This proposal moves that I/O out of the process that holds the deployment's credentials,
 scopes it per tenant and per thread, and keeps the tool surface a manifest sees exactly as it is.
 
@@ -136,6 +136,21 @@ gateway runs a scope's changing operations one at a time, so -- unlike the hoste
 gateway call can land between them. The helper's copy is ported from `workspace_local.py` and held
 to it by `PortedCodeTests`; a gateway deployed before these operations answers them `404`, which the
 harness reports as `503 workspace_unavailable`.
+
+**The agent's delete and rename (2026-10-10).** The same two operations back two tools,
+`delete_file` (`{path}` → `{path, deleted: true}`) and `rename_file` (`{path, to_path}` →
+`{path, to_path, bytes}`), in `WORKSPACE_TOOL_NAMES` beside the other five. The model sends no
+digest: a tool call is not a pane that read the file earlier and may be stale, so both run
+unconditionally. Before any backend is asked they refuse what the pane's routes refuse as
+`reserved_path` -- a component inside `.git` or `.felix-scopes`, or an edit's temporary sibling --
+and the root; then a directory is `not a file`, a missing source `no such file`, a symlink refused
+as everywhere, and a rename onto anything that exists `already exists; rename_file never replaces
+anything`, all `invalid_arguments` the model can act on. Neither is replay-safe. A manifest that
+binds `write_file` binds these with it, and one that gates `write_file` gates these too
+(`tests/unit/test_workspace_delete_rename_tools.py` holds every bundled manifest to that, and the
+`local_delete` / `local_rename` client tools to the same rule against `local_write`): a delete
+has no undo, so it is never gated less than a write. On `hosted` a deployment whose gateway
+predates the operations answers these tools `transport_unavailable`, as it answers the pane `503`.
 
 ### Scope
 

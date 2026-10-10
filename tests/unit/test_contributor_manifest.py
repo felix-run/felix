@@ -128,7 +128,7 @@ def test_workspace_writes_are_not_gated_the_host_is(manifest: Manifest) -> None:
     """Deliberate: approvals sit at publication. A person approving every write_file stops
     reading them; the publish_commits approval carries the diff. deploy/GOVERNANCE.md 'Shell tools'
     is what makes the checkout safe to write to ungated."""
-    for tool in ("write_file", "edit_file"):
+    for tool in ("write_file", "edit_file", "delete_file", "rename_file"):
         assert tool in manifest.spec.tools
         assert tool not in _approval_gated_tools(manifest)
     assert "run" not in _approval_gated_tools(manifest)

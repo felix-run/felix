@@ -160,8 +160,9 @@ CLIENT_WORKSPACE_PREFIX = "local_"
 def workspace_summary(manifest: Any) -> dict[str, str]:
     """Where this manifest's agent keeps files, for a client deciding which file pane to show.
 
-    `tools`: `server` when it binds the harness's workspace tools (`list_dir`, `read_file`,
-    `write_file`, `edit_file`, `search_files`) or a `shell_tools` command, which runs in the same
+    `tools`: `server` when it binds the harness's workspace tools (`WORKSPACE_TOOL_NAMES`: `list_dir`,
+    `read_file`, `write_file`, `edit_file`, `delete_file`, `rename_file`, `search_files`) or a
+    `shell_tools` command, which runs in the same
     directory; `client` when it binds `local_*` client tools, which the connected client answers
     from the user's own folder; `both`; or `none`. `scope` is `spec.workspace.scope`, the directory
     the server-side half works in (`GET /chat/workspace/tree` lists it). Read from the manifest's own

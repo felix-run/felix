@@ -68,6 +68,8 @@ spec:
         file that already exists — read the lines around your edit first so old_string is
         unique. write_file replaces a whole file: it is for files you are creating. Losing an
         unrelated line is a real failure, not a nit.
+      - rename_file moves one file and never replaces one; delete_file removes one file. Neither
+        touches a directory. Both change only the checkout; record them in a commit like any edit.
       - A user-visible change's changelog entry goes in the pull request body under
         "## Changelog", never in CHANGELOG.md, which the release writes from merged bodies.
       - Follow the conventions already in the file you are editing over any general habit.
@@ -121,6 +123,8 @@ spec:
     - search_files
     - write_file
     - edit_file
+    - delete_file
+    - rename_file
     - list_skills
     - activate_skill
     - deactivate_skill
@@ -176,7 +180,8 @@ spec:
         # Read-only: what origin/main holds, and the sha an evidence line names.
         - git show
         - git rev-parse
-        # The only way to rename or remove a file: the workspace tools only write. Both stay inside
+        # Renames and removals that the index should record as such. `rename_file` and
+        # `delete_file` change the checkout too; `git add -A` or these record it. Both stay inside
         # the checkout, and a commit is what makes either matter.
         - git mv
         - git rm
@@ -239,7 +244,8 @@ spec:
 
   # Approvals pause the run; resume with POST /approvals/{id}/decide.
   #
-  # Gated at *publication*, not at every write: the workspace writes and run act inside the builder
+  # Gated at *publication*, not at every write: the workspace writes (deletes and renames
+  # included, all recoverable from git until a commit is published) and run act inside the builder
   # checkout, which is the boundary deploy/GOVERNANCE.md describes, and a person approving
   # forty file writes is a person who stops reading them. The approval row for publish_commits
   # carries a `preview` the harness computes from head_sha — `git diff --stat` and the unified

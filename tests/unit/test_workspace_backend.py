@@ -134,10 +134,12 @@ async def test_an_unusable_workspace_is_reported_before_anything_wrong_with_the_
         ("write_file", {"path": "a.txt", "content": too_big}),
         ("edit_file", {"path": "a.txt", "old_string": "x", "new_string": too_big}),
         ("search_files", {"query": "(a+)+", "regex": True}),
+        ("delete_file", {"path": ".git/config"}),
+        ("rename_file", {"path": "../outside.txt", "to_path": "a.txt"}),
     ):
         out = await _call(tool, args)
         assert out.startswith("[tool error/transport_unavailable] workspace_root"), (tool, out)
-    assert [name for name, _, _ in backend.calls] == ["prepare"] * 3
+    assert [name for name, _, _ in backend.calls] == ["prepare"] * 5
 
 
 async def test_the_tools_judge_their_arguments_before_the_backend_is_asked(recording: Recording) -> None:
@@ -168,7 +170,15 @@ def test_the_tool_handlers_do_no_file_io_of_their_own() -> None:
     """Structural, deliberately: a handler that opened a file itself would work on `local` and be
     wrong on every other backend, and no behavioural test against `local` could tell."""
     tree = ast.parse(Path(workspace.__file__).read_text(encoding="utf-8"))
-    handlers = {"_list_dir", "_read_file", "_write_file", "_edit_file", "_search_files"}
+    handlers = {
+        "_list_dir",
+        "_read_file",
+        "_write_file",
+        "_edit_file",
+        "_delete_file",
+        "_rename_file",
+        "_search_files",
+    }
     file_io = {
         "open_workspace_parent",
         "open_workspace_dir",
