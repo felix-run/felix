@@ -20,6 +20,10 @@ export const OPS = [
   'read',
   'write',
   'edit',
+  // The operator's file pane: remove a file, or move one without replacing anything, each after
+  // comparing the file's digest when the harness sends one.
+  'delete',
+  'rename',
   'search',
   // A `shell_tools` command, run in the sandbox by the shell tool's own exec path.
   'exec',
@@ -85,6 +89,8 @@ export type HelperRequest =
   | { op: 'read'; path: string; offset: number; limit: number }
   | { op: 'write'; path: string; data: string; append: boolean }
   | { op: 'edit'; path: string; old: string; new: string; replace_all: boolean }
+  | { op: 'delete'; path: string; expected_sha256: string | null }
+  | { op: 'rename'; path: string; to_path: string; expected_sha256: string | null }
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
   | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
   | { op: 'clone'; repo: string; branch: string; token: string }
@@ -108,12 +114,23 @@ export type ErrorCode =
   | 'misconfigured'
   | 'payload_too_large'
   | 'conflict'
+  | 'workspace_changed'
+  | 'target_exists'
   | 'clone_failed';
 
 /** What the sandbox's `felix-fs` helper prints, and what the Durable Object returns. */
 export type HelperAnswer =
   | { ok: true; result: Record<string, unknown> }
-  | { ok: false; error: ErrorCode; message: string; kind?: string };
+  | {
+      ok: false;
+      error: ErrorCode;
+      message: string;
+      kind?: string;
+      // `workspace_changed` only: the file's digest and size now, null when it is gone (or, for the
+      // digest, over the read cap).
+      sha256?: string | null;
+      bytes?: number | null;
+    };
 
 /** The HTTP status each answer travels under. The body carries the code; the status is for logs. */
 export const STATUS: Record<ErrorCode, number> = {
@@ -125,6 +142,8 @@ export const STATUS: Record<ErrorCode, number> = {
   not_a_file: 409,
   payload_too_large: 413,
   conflict: 409,
+  workspace_changed: 409,
+  target_exists: 409,
   clone_failed: 502,
   invalid_path: 422,
   edit_refused: 422,
@@ -146,6 +165,13 @@ function int(body: Body, field: string, fallback: number, min: number, max: numb
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
     ? value
     : null;
+}
+
+/** A lowercase hex SHA-256, absent (null), or not one (undefined). */
+function digest(body: Body, field: string): string | null | undefined {
+  const value = body[field] ?? null;
+  if (value === null) return null;
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
 }
 
 function bool(body: Body, field: string): boolean | null {
@@ -199,6 +225,22 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
       if (replacement === null) return '`new` must be a string';
       if (replaceAll === null) return '`replace_all` must be a boolean';
       return { op, path, old, new: replacement, replace_all: replaceAll };
+    }
+    case 'delete': {
+      const path = str(body, 'path');
+      const expected = digest(body, 'expected_sha256');
+      if (path === null) return '`path` must be a string';
+      if (expected === undefined) return '`expected_sha256` must be 64 lowercase hex characters';
+      return { op, path, expected_sha256: expected };
+    }
+    case 'rename': {
+      const path = str(body, 'path');
+      const toPath = str(body, 'to_path');
+      const expected = digest(body, 'expected_sha256');
+      if (path === null) return '`path` must be a string';
+      if (toPath === null) return '`to_path` must be a string';
+      if (expected === undefined) return '`expected_sha256` must be 64 lowercase hex characters';
+      return { op, path, to_path: toPath, expected_sha256: expected };
     }
     case 'exec': {
       const argv = body.argv;

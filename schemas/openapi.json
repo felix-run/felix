@@ -6174,6 +6174,93 @@
         "title": "WorkspaceChangedOut",
         "type": "object"
       },
+      "WorkspaceDeleteOut": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The note's session entry, when `recorded`.",
+            "title": "Event Id"
+          },
+          "path": {
+            "description": "The path deleted, normalised as the workspace tools report it.",
+            "title": "Path",
+            "type": "string"
+          },
+          "status": {
+            "description": "Where the delete note went: as `/workspace/edited`.",
+            "enum": [
+              "queued",
+              "recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "path"
+        ],
+        "title": "WorkspaceDeleteOut",
+        "type": "object"
+      },
+      "WorkspaceDeleteRequest": {
+        "additionalProperties": false,
+        "description": "Remove one workspace file, from the file pane.",
+        "properties": {
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The digest `GET /chat/workspace/file` returned. When set, the delete is refused (409 `workspace_changed`) unless the file still has it.",
+            "title": "Expected Sha256"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest a thread that has never run will run under. Ignored once it has.",
+            "title": "Manifest"
+          },
+          "path": {
+            "description": "Workspace path of the file to delete.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "path"
+        ],
+        "title": "WorkspaceDeleteRequest",
+        "type": "object"
+      },
       "WorkspaceEditedOut": {
         "properties": {
           "event_id": {
@@ -6319,6 +6406,120 @@
           "content"
         ],
         "title": "WorkspaceFileOut",
+        "type": "object"
+      },
+      "WorkspaceRenameOut": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The note's session entry, when `recorded`.",
+            "title": "Event Id"
+          },
+          "path": {
+            "description": "The path the file was at, normalised as the workspace tools report it.",
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of the file's bytes, which the move did not change: send it back as `expected_sha256` at the new path. Null for a file over the 512,000-byte read cap.",
+            "title": "Sha256"
+          },
+          "status": {
+            "description": "Where the rename note went: as `/workspace/edited`.",
+            "enum": [
+              "queued",
+              "recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "to_path": {
+            "description": "The path it is at now, normalised the same way.",
+            "title": "To Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "path",
+          "to_path",
+          "sha256"
+        ],
+        "title": "WorkspaceRenameOut",
+        "type": "object"
+      },
+      "WorkspaceRenameRequest": {
+        "additionalProperties": false,
+        "description": "Move one workspace file to another path in the same workspace, from the file pane.",
+        "properties": {
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The digest `GET /chat/workspace/file` returned. When set, the rename is refused (409 `workspace_changed`) unless the file still has it.",
+            "title": "Expected Sha256"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest a thread that has never run will run under. Ignored once it has.",
+            "title": "Manifest"
+          },
+          "path": {
+            "description": "Workspace path of the file to move.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "to_path": {
+            "description": "Where it goes. Must not exist; missing directories on the way are made.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "To Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "path",
+          "to_path"
+        ],
+        "title": "WorkspaceRenameRequest",
         "type": "object"
       },
       "WorkspaceTreeEntryOut": {
@@ -10004,6 +10205,108 @@
         ]
       }
     },
+    "/chat/workspace/delete": {
+      "post": {
+        "description": "Delete one workspace file, and tell the agent.\n\nThe workspace is the one `GET /chat/workspace/tree` lists. Files only: a directory is\n`400 not_a_file`, a symlink `400 invalid_path`, and a missing file `404 not_found`. With\n`expected_sha256` the delete is conditional, compared under the same per-path lock the agent's\nown writes take in this process, and refused with `409 workspace_changed` when the file is not\nwhat the caller read.\n\nThen the agent is told as `POST /chat/workspace/edited` would tell it (`op: delete`). Audited\nas `workspace_delete`. Lease-guarded like `/chat/steer`.",
+        "operationId": "chat_workspace_delete_chat_workspace_delete_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDeleteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceChangedOut"
+                }
+              }
+            },
+            "description": "`workspace_changed` (body carries the file's `sha256` and `bytes` now): `expected_sha256` no longer matches. Also `workspace_unavailable` as on the reads, and the lease refusals (`lease_read_only`, `lease_held`) as on `/chat/steer`. Nothing was deleted."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace Delete",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
     "/chat/workspace/edited": {
       "post": {
         "description": "Tell the agent the operator edited, deleted or renamed a workspace file directly.\n\nA run in flight reads it before its next model call, without cancelling any tool call\n(`status: queued`, and a `workspace_note` frame on that run's stream); otherwise it is\nappended to the thread for the next run (`status: recorded`). Either way it lands in the\nsession log once, as an in-context `custom` entry with `metadata.type: workspace_edit`.\nThe text the model reads is written by the server from these fields.",
@@ -10198,6 +10501,116 @@
           }
         },
         "summary": "Chat Workspace File",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/workspace/rename": {
+      "post": {
+        "description": "Move one workspace file to another path in the same workspace, and tell the agent.\n\nNever replaces anything: when `to_path` exists the move is refused with `409 target_exists`.\nDirectories `to_path` needs are made, as a write makes them. Files only, refused as\n`POST /chat/workspace/delete` refuses them; both paths are held to the same rules as a write's\n(`invalid_path`, `reserved_path`), and a directory on the way to `to_path` that is a file is\n`400 invalid_path`. With `expected_sha256` the move is conditional, compared under both paths'\nlocks.\n\nThen the agent is told as `POST /chat/workspace/edited` would tell it (`op: rename`, with\n`to_path`). Audited as `workspace_rename`. Lease-guarded like `/chat/steer`.",
+        "operationId": "chat_workspace_rename_chat_workspace_rename_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceRenameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceRenameOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/WorkspaceChangedOut"
+                    },
+                    {
+                      "$ref": "#/components/schemas/WorkspaceErrorOut"
+                    }
+                  ],
+                  "title": "Response 409 Chat Workspace Rename Chat Workspace Rename Post"
+                }
+              }
+            },
+            "description": "`target_exists`: something is already at `to_path` (the file itself included). `workspace_changed` (body carries the file's `sha256` and `bytes` now): `expected_sha256` no longer matches. Also `workspace_unavailable` as on the reads, and the lease refusals (`lease_read_only`, `lease_held`) as on `/chat/steer`. Nothing was moved."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace Rename",
         "tags": [
           "Threads"
         ]

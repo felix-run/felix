@@ -42,10 +42,12 @@ import httpx
 from felix.tools.workspace import NotAFileError
 from felix.tools.workspace_backend import (
     CheckedWriteResult,
+    DeleteResult,
     EditRefused,
     EditResult,
     ListResult,
     ReadResult,
+    RenameResult,
     SearchResult,
     TreeResult,
     WorkspaceChanged,
@@ -104,6 +106,8 @@ def _raise_for(code: str, message: str, kind: str = "") -> None:
             raise NotAFileError(message)
         case "edit_refused":
             raise EditRefused(message)
+        case "target_exists":
+            raise FileExistsError(message)
         case "permission_denied":
             raise PermissionError(message)
         case "io_error":
@@ -188,6 +192,13 @@ class HostedBackend:
             raise _unavailable(f"the gateway answered {resp.status_code} with no JSON object")
         if resp.status_code == 200 and isinstance(answer.get("result"), dict):
             return answer["result"]
+        if answer.get("error") == "workspace_changed":
+            # The helper compared the file in the sandbox and found it other than the caller read it:
+            # its digest and size now, or null for a file that is gone or over the read cap.
+            sha, size = answer.get("sha256"), answer.get("bytes")
+            raise WorkspaceChanged(
+                sha if isinstance(sha, str) else None, size if isinstance(size, int) else None
+            )
         _raise_for(str(answer.get("error", "")), str(answer.get("message", "")), str(answer.get("kind", "")))
         raise AssertionError("unreachable")
 
@@ -337,6 +348,41 @@ class HostedBackend:
             written = await self.write_file(scope, path, data, False)
         return CheckedWriteResult(
             path=written.path, bytes=written.bytes, sha256=hashlib.sha256(data).hexdigest()
+        )
+
+    async def delete_file(
+        self, scope: WorkspaceScope | None, path: str, *, expected_sha256: str | None = None
+    ) -> DeleteResult:
+        """One gateway call: the helper compares and unlinks in one process, and the gateway runs a
+        scope's changing operations one at a time, so nothing else sent to the sandbox lands between."""
+        if self._is_local(scope):
+            return await self._local().delete_file(scope, path, expected_sha256=expected_sha256)
+        assert scope is not None
+        out = await self._call(scope, "delete", {"path": path, "expected_sha256": expected_sha256})
+        self._written(scope)
+        return DeleteResult(path=str(out["path"]))
+
+    async def rename_file(
+        self,
+        scope: WorkspaceScope | None,
+        path: str,
+        to_path: str,
+        *,
+        expected_sha256: str | None = None,
+    ) -> RenameResult:
+        """One gateway call, compared and moved in the sandbox as `delete_file` is."""
+        if self._is_local(scope):
+            return await self._local().rename_file(scope, path, to_path, expected_sha256=expected_sha256)
+        assert scope is not None
+        body = {"path": path, "to_path": to_path, "expected_sha256": expected_sha256}
+        out = await self._call(scope, "rename", body)
+        self._written(scope)
+        sha = out.get("sha256")
+        return RenameResult(
+            path=str(out["path"]),
+            to_path=str(out["to_path"]),
+            bytes=int(out["bytes"]),
+            sha256=sha if isinstance(sha, str) else None,
         )
 
     async def exec(
