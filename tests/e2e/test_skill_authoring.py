@@ -18,6 +18,7 @@ from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
 from tests.support.skill_bodies import INVOICE_TRIAGE_ROUTED as BODY
+from tests.support.skill_bodies import ROUTING_STEP
 
 NAME = "invoice-triage"
 
@@ -100,7 +101,7 @@ async def test_a_skill_the_agent_drafts_is_used_only_after_it_is_published(boot:
         assert f'name="{NAME}"' in "\n".join(str(m.content) for m in app.spy.prompts[4])
         activated = json.loads(_tool_result(app.spy.prompts[6]))
         assert activated["activated"] == NAME
-        assert "Route amounts over 500 to the finance queue." in activated["instructions"]
+        assert ROUTING_STEP in activated["instructions"]
 
 
 async def test_publishing_over_http_needs_skills_write(boot: Any) -> None:

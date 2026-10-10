@@ -232,6 +232,19 @@ def _isolate_process_global_stores():
         from felix.hooks import reset_agent_hooks
 
         reset_agent_hooks()
+        # Plans, A2A tasks, the artifact and attachment ledgers and the object-store cache are
+        # the same shape again, and were cleared only by the few files that knew about them.
+        # Not leases: `reset_leases_for_tests` also pins the memory backend for the process.
+        from felix import artifacts, attachments
+        from felix.a2a.tasks import clear_tasks
+        from felix.plans.store import _memory_plans
+        from felix.storage import reset_object_store_cache_for_tests
+
+        clear_tasks()
+        _memory_plans.clear()
+        artifacts.clear_memory_ledger()
+        attachments.clear_memory_ledger()
+        reset_object_store_cache_for_tests()
 
     _clear()
     yield

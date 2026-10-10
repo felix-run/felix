@@ -22,7 +22,7 @@ TEXT_ONLY = "@cf/openai/gpt-oss-120b"  # vouched `text_only` in the catalog
 
 
 def _settings(**routes: dict[str, Any]) -> Settings:
-    return make_settings(  # type: ignore[arg-type]
+    return make_settings(
         model_routes=json.dumps(routes),
     )
 

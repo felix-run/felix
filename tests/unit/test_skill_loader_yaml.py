@@ -73,6 +73,7 @@ def test_every_shipped_and_fixture_skill_parses_as_it_did(skill_md: Path) -> Non
 def test_the_shipped_skills_are_found() -> None:
     """The parametrized case passes vacuously over an empty glob."""
     assert len(list((ROOT / "skills").glob("*/SKILL.md"))) >= 5
+    assert len(list((paths.FIXTURES / "skills").glob("*/SKILL.md"))) >= 5, "the fixture half moved"
 
 
 def test_a_colon_in_an_unquoted_description_falls_back_to_the_line_reader(

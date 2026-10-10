@@ -7,11 +7,17 @@ from typing import Any
 
 
 def sse_blocks(body: str) -> list[tuple[int | None, dict[str, Any]]]:
-    """Every data frame as `(id, payload)`, keeping the `id:` the frame carried."""
+    """Every data frame as `(id, payload)`, keeping the `id:` the frame carried.
+
+    The server writes one `data:` line per frame, so a block with two means two frames ran
+    together: that fails here, as a framing defect, rather than losing one of them.
+    """
     out: list[tuple[int | None, dict[str, Any]]] = []
     for block in body.split("\n\n"):
         event_id: int | None = None
         payload: dict[str, Any] | None = None
+        data_lines = [line for line in block.splitlines() if line.startswith("data: ")]
+        assert len(data_lines) <= 1, f"two SSE frames ran together in one block: {block!r}"
         for line in block.splitlines():
             if line.startswith("id: "):
                 event_id = int(line[4:])

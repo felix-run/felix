@@ -20,6 +20,7 @@ import json
 from typing import Any
 
 import pytest
+from felix.config import Settings
 from felix_ai.output_schema import (
     MAX_BYTES,
     MAX_DEPTH,
@@ -476,8 +477,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
 }
 
 
-def _settings() -> Any:
-
+def _settings() -> Settings:
     return make_settings()
 
 

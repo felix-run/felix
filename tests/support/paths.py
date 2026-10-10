@@ -1,4 +1,4 @@
-"""Where the repository and the test data live, so no test counts `parents[N]` by hand."""
+"""Where the repository and the test data live. New code uses these rather than counting `parents[N]`."""
 
 from __future__ import annotations
 

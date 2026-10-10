@@ -20,7 +20,7 @@ def make_settings(**overrides: Any) -> Settings:
     There is one database name because the name does nothing: every store checks only the
     `memory://` prefix and keeps one process-global twin, so `memory://a` and `memory://b`
     see the same rows. Tests are isolated by `tests/conftest.py:_isolate_process_global_stores`,
-    which clears every twin around each test — not by the URL.
+    which clears the twins it lists around each test — not by the URL.
     """
     base: dict[str, Any] = {
         "database_url": "memory://test",

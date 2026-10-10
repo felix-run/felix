@@ -1939,7 +1939,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
   - [x] `tests/fixtures/` (`fixtures/skills` moved there), `tests/README.md`, one SSE payload
         parser and shared SKILL.md bodies in `tests/support/`, 48 more helpers on `make_settings`,
         1746 redundant asyncio markers gone, `--strict-markers`/`--strict-config`, unraisable
-        exceptions as errors.
+        exceptions as errors, and the root reset now covers plans, A2A tasks and the ledgers.
+  - [ ] Test follow-ups: ~20 `**kw` settings helpers and ~170 inline `Settings(database_url=
+        "memory://…")` calls onto `make_settings` (then an invariant against new literals), 89
+        hand-built ASGI clients onto `app_client`, 66 `parents[N]` onto `tests/support/paths.py`.
   - [ ] Onboarding: `make bootstrap`, `make db` for the without-Compose path, a `make check` that
         works on a lean install, generated `make help`, and local targets for the CI-only lock,
         dependency-age, helm and compose checks.

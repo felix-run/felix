@@ -1,4 +1,8 @@
-"""SKILL.md bodies the skill tests share, so a wording change happens in one place."""
+"""SKILL.md bodies the skill tests share, rather than one copy per file.
+
+Two invoice bodies, because their second step differs: the e2e tests assert `ROUTING_STEP`
+reached the activated instructions; the unit tests assert on "Route amounts over the limit".
+"""
 
 from __future__ import annotations
 

@@ -11,6 +11,7 @@ tenant's identically-named thread alone.
 
 from __future__ import annotations
 
+from felix.config import Settings
 from felix.session.search import _memory_index, drop_thread_index, search_sessions
 from felix.session.store import InMemorySessionStore
 from felix.session.types import AppendableEvent
@@ -18,8 +19,7 @@ from felix.session.types import AppendableEvent
 from tests.support.factories import make_settings
 
 
-def _settings():
-
+def _settings() -> Settings:
     return make_settings()
 
 

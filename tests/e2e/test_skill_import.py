@@ -21,6 +21,7 @@ from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
 from tests.support.skill_bodies import INVOICE_TRIAGE_ROUTED as BODY
+from tests.support.skill_bodies import ROUTING_STEP
 from tests.support.skill_import_fake import FakeRepos, skill_md
 
 NAME = "invoice-triage"
@@ -119,7 +120,7 @@ async def test_an_imported_skill_is_browsed_reviewed_published_and_used(boot: An
         catalog = json.loads(_tool_result(app.spy.prompts[1]))
         assert next(s for s in catalog if s["name"] == NAME)["source"] == "library"
         activated = json.loads(_tool_result(app.spy.prompts[2]))
-        assert "Route amounts over 500 to the finance queue." in activated["instructions"]
+        assert ROUTING_STEP in activated["instructions"]
 
 
 async def test_an_advisory_import_saves_and_its_publish_is_refused(boot: Any, gh: FakeRepos) -> None:
