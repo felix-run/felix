@@ -14,8 +14,10 @@ bounds them at compile time.
 With `spec.delegation.background`, `task(..., background=true)` starts the child as a durable run
 instead and returns its id at once; `task_result` reads it. A background child runs in the
 worker on a thread of its own, linked to the parent's (`parent_session_id`), as the caller who
-started it, pinned to the manifest the parent compiled, and held to every cap above it -- the
-caps travel in the run's state. It has counters of its own: the parent's run may end first.
+started it, pinned to the manifest the parent compiled, no longer than the run or token that
+started it, and on what is *left* of every budget above it (`limits.residual`) -- the parent's
+run may end first, so the child cannot share live counters, and handing it whole caps let each
+child spend the budget again. A background child cannot start background children of its own.
 
 Either way the parent's stream carries `subagent_start` and, for a foreground child,
 `subagent_end`, so a client can tell a child's work from the parent's.
@@ -24,13 +26,12 @@ Either way the parent's stream carries `subagent_start` and, for a foreground ch
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from felix.context import try_get_context
+from felix.context import RequestContext, try_get_context
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.logging_setup import loggable
 from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
@@ -171,14 +172,21 @@ def make_task_tool(
 
 
 async def _start_in_background(
-    req: Any, name: str, manifest: Manifest, prompt: str, ceiling: EffectiveLimits
+    req: RequestContext, name: str, manifest: Manifest, prompt: str, ceiling: EffectiveLimits
 ) -> ToolOutput:
     """Enqueue the child as a durable run on a thread of its own, and say how to read it."""
-    from felix.durability.runs import start_durable_chat
+    from felix.durability.runs import BACKGROUND_CHILD_EXTRA, start_durable_chat
+    from felix.limits import residual
     from felix.manifests.pin import pin_fields_for
     from felix.session.thread_state import claim_thread
 
     settings, tenant_id, parent = req.settings, req.auth.tenant_id, req.thread_id
+    if req.extras.get(BACKGROUND_CHILD_EXTRA):
+        # Each background run starts on fresh counters, so one that could start more would let
+        # a single instruction fan out level by level. A foreground child shares live ones.
+        return tool_error_output(
+            "permission_denied", "[task] a background task cannot start background tasks of its own"
+        )
     if not parent:
         # `task_result` reads a run only from the thread that started it; with no thread there
         # is nothing to tell this caller's runs from another threadless caller's.
@@ -200,7 +208,7 @@ async def _start_in_background(
             # it: the run carries the caller's scopes, so the code they run under is pinned too.
             pin=await pin_fields_for(settings, tenant_id, manifest),
             parent_thread_id=parent,
-            ceilings=[dataclasses.asdict(c) for c in (*req.limit_state.ceilings, ceiling)],
+            ceilings=[residual(c, req.limit_state) for c in (*req.limit_state.ceilings, ceiling)],
         )
     except Exception:
         logger.warning("task_background_start_failed agent=%s", name, exc_info=True)
@@ -248,8 +256,8 @@ def make_task_result_tool() -> Tool:
         return {"task_id": task_id.strip(), "wait_seconds": wait}
 
     async def handler(args: Mapping[str, Any]) -> ToolOutput:
-        from felix.durability.fibers import FIBER_TERMINAL_STATUSES, get_fiber
-        from felix.durability.runs import run_view
+        from felix.durability.fibers import FIBER_TERMINAL_STATUSES
+        from felix.durability.runs import get_child_run
 
         req = try_get_context()
         if req is None:
@@ -258,18 +266,11 @@ def make_task_result_tool() -> Tool:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + int(args["wait_seconds"])
         while True:
-            row = await get_fiber(req.settings, req.auth.tenant_id, task_id)
-            state = dict((row or {}).get("state_json") or {})
-            if (
-                row is None
-                or row.get("kind") != "durable_chat"
-                or not req.thread_id
-                or state.get("parent_thread_id") != req.thread_id
-            ):
+            view = await get_child_run(req.settings, req.auth.tenant_id, task_id, req.thread_id or "")
+            if view is None:
                 return tool_error_output(
                     "invalid_arguments", f"[task_result] no background task {task_id!r} here"
                 )
-            view = run_view(row)
             if view["status"] in FIBER_TERMINAL_STATUSES or loop.time() >= deadline:
                 break
             await asyncio.sleep(_RESULT_POLL_SECONDS)
@@ -278,7 +279,12 @@ def make_task_result_tool() -> Tool:
             answer = str((view.get("final") or {}).get("content") or "")
             return answer or f"[task_result] task {task_id} finished with no answer"
         if status in FIBER_TERMINAL_STATUSES:
-            return tool_error_output("provider_error", f"[task_result] task {task_id} ended: {status}")
+            # `run_view`'s error is the one `GET /chat/runs` shows a caller: written for them.
+            reason = str(view.get("error") or "").strip()
+            return tool_error_output(
+                "provider_error",
+                f"[task_result] task {task_id} ended: {status}" + (f" ({reason})" if reason else ""),
+            )
         return f"[task_result] task {task_id} is still {status}"
 
     return define_tool(

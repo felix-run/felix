@@ -13,7 +13,7 @@ agent loop cannot drift apart on what "over budget" means.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from felix.context import LimitState
@@ -123,6 +123,25 @@ class EffectiveLimits:
     max_cost_usd: float
 
 
+def residual(limits: EffectiveLimits, state: LimitState) -> EffectiveLimits:
+    """What is left of `limits` after what `state` has spent: the budget a background child gets.
+
+    A background child runs with counters of its own, so handing it the parent's caps whole let
+    every child spend the full budget again -- and a child that delegated in turn multiplied it.
+    Each cap shrinks by what the run has used; one already spent leaves zero, and the child is
+    over budget before its first step.
+    """
+    return replace(
+        limits,
+        max_tool_calls=max(limits.max_tool_calls - state.tool_calls, 0),
+        max_peer_hops=max(limits.max_peer_hops - state.peer_hops, 0),
+        max_wall_clock_seconds=max(limits.max_wall_clock_seconds - state.elapsed_ms() / 1000.0, 0.0),
+        max_input_tokens=max(limits.max_input_tokens - state.tokens_input, 0),
+        max_output_tokens=max(limits.max_output_tokens - state.tokens_output, 0),
+        max_cost_usd=max(limits.max_cost_usd - state.cost_usd, 0.0),
+    )
+
+
 def effective_limits(limits: Limits | None) -> EffectiveLimits:
     """A manifest's declared limits, with DEFAULT_LIMITS filling every unset field."""
     from felix.manifests.schema import DEFAULT_LIMITS
@@ -147,4 +166,12 @@ def effective_limits(limits: Limits | None) -> EffectiveLimits:
     )
 
 
-__all__ = ["BudgetVerdict", "EffectiveLimits", "check_budgets", "effective_limits", "tightest", "trip"]
+__all__ = [
+    "BudgetVerdict",
+    "EffectiveLimits",
+    "check_budgets",
+    "effective_limits",
+    "residual",
+    "tightest",
+    "trip",
+]
