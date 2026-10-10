@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -35,7 +36,7 @@ from felix.patterns.model import (
 )
 from felix.patterns.overflow import is_context_overflow, is_silent_overflow
 from felix.patterns.registry import PatternBuildContext, register_pattern
-from felix.patterns.tool_runner import ToolRunner
+from felix.patterns.tool_runner import FatalCall, ToolRunner
 from felix.patterns.types import (
     Agent,
     ChatMessage,
@@ -58,6 +59,8 @@ from felix.steer import (
 )
 from felix.tools.retrieval import select_tools_from_ctx_async
 from felix.tools.types import Tool
+from felix.workspace_notes import WorkspaceNote, mark_run_active, mark_run_idle
+from felix.workspace_notes import drain as drain_workspace_notes
 
 if TYPE_CHECKING:
     from felix.decisions import MeteredDecider
@@ -700,6 +703,50 @@ class _ReactAgent:
             context_window=window,
         )
 
+    def _audit_final_response(
+        self,
+        thread_id: str | None,
+        final: ChatMessage,
+        *,
+        fatal: FatalCall | None,
+        ended_denied: bool,
+        denied_calls: int,
+        died: BaseException | None = None,
+    ) -> None:
+        """The run's one `final_response` row, and on a failed run, why it failed (#543).
+
+        `reasons` holds each cause that applies: `fatal` (a fatal tool's failure ended the run,
+        named in `fatal_call` so the row leads to that call's `tool_call` row), `denied` (the
+        last round had a refusal; the run usually replied around it), `cancelled` (the caller
+        went away or the task was cancelled) and `exception` (the run raised, `error_type` saying
+        what — #305: a model call that timed out left no row at all, so the run read as never
+        having finished). The exception's message stays out, as a failed call's does.
+        """
+        reasons: list[str] = []
+        payload: dict[str, Any] = {
+            "thread_id": thread_id,
+            "chars": len(final.content or ""),
+            "denied_calls": denied_calls,
+        }
+        if fatal is not None:
+            reasons.append("fatal")
+            payload["fatal_call"] = {"tool_call_id": fatal.tool_call_id, "error_code": fatal.error_code.value}
+        if ended_denied:
+            reasons.append("denied")
+        if isinstance(died, (asyncio.CancelledError, GeneratorExit)):
+            reasons.append("cancelled")
+        elif died is not None:
+            reasons.append("exception")
+            payload["error_type"] = type(died).__name__
+        if reasons:
+            payload["reasons"] = reasons
+        emit_agent_audit(
+            "final_response",
+            status="error" if reasons else "ok",
+            manifest_id=self.manifest_id,
+            payload=payload,
+        )
+
     def _note_stop_reason(self, stop_reason: str, thread_id: str | None) -> str:
         """Record a stop reason and return the session status it implies.
 
@@ -968,6 +1015,58 @@ class _ReactAgent:
         if delivered:
             await self._append_produced(thread_id, delivered)
 
+    async def _record_workspace_notes(self, thread_id: str, notes: list[WorkspaceNote]) -> None:
+        """Append each note to the log as the in-context entry `/chat/workspace/edited` would.
+
+        `custom`, so a client can tell it from a turn the operator typed, with `in_context` set
+        and the `user` role: a `system` custom entry is downgraded to a labelled user turn on
+        render (`session.types._model_role_and_content`), and a note is the operator's own
+        statement, not one the client added.
+        """
+        if self.session_store is None or not notes:
+            return
+        try:
+            from felix.session.tree import annotate_and_append
+            from felix.session.types import AppendableEvent
+
+            await annotate_and_append(
+                self.session_store.open(thread_id),
+                [
+                    AppendableEvent(kind="custom", role="user", content=n.text(), metadata=n.metadata())
+                    for n in notes
+                ],
+            )
+        except Exception:
+            logger.warning("workspace note append failed for thread=%s", thread_id, exc_info=True)
+
+    async def _deliver_workspace_notes(
+        self,
+        tenant_id: str,
+        thread_id: str | None,
+        messages: list[ChatMessage],
+        *,
+        emit_events: bool,
+    ) -> AsyncIterator[Event]:
+        """Put the operator's queued workspace edits in front of the next model call.
+
+        Called before every model call, so a note sent mid-run is read on the run's next step
+        rather than on its next run. Unlike a steer it cancels nothing: a batch already running
+        finishes, and the note is read alongside its results. Logged as it is delivered, so the
+        next run's history carries it once; drained notes leave the queue, so it is never
+        delivered twice. Not added to the run's `produced` messages: it is not a turn anybody
+        sent, and `done` lists those.
+        """
+        if not thread_id or self.session_store is None:
+            return
+        notes = await drain_workspace_notes(tenant_id, thread_id)
+        if not notes:
+            return
+        await self._record_workspace_notes(thread_id, notes)
+        for note in notes:
+            messages.append(ChatMessage(role="user", content=note.text()))
+            if emit_events:
+                yield Event(event="workspace_note", data=note.event_data())
+
     async def invoke(self, input: InvokeInput) -> InvokeOutput:
         """Run a turn to completion and return the result.
 
@@ -987,9 +1086,13 @@ class _ReactAgent:
 
     async def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]:
         """Run a turn, emitting display events as they happen."""
-        async for item in self._run(input, emit_events=True):
-            if isinstance(item, Event):
-                yield item
+        # Closed with this generator, not left to the garbage collector: a consumer that stops
+        # early would otherwise finalise the run later, outside its request, where its
+        # `final_response` row cannot be written.
+        async with aclosing(self._run(input, emit_events=True)) as run:
+            async for item in run:
+                if isinstance(item, Event):
+                    yield item
 
     async def _run(self, input: InvokeInput, *, emit_events: bool) -> AsyncIterator[Event | InvokeOutput]:
         """The turn loop. Yields display events, then exactly one `InvokeOutput`.
@@ -1063,7 +1166,7 @@ class _ReactAgent:
             # this run's first tool round instead.
             await clear_cancel_flag(tenant_id, input.thread_id)
         final = ChatMessage(role="assistant", content="")
-        fatal = False
+        fatal: FatalCall | None = None
         any_denied = False
         # Every refusal in the run, across rounds. `any_denied` is the *last* batch's: #311 made
         # `final_response.status` say whether the run ended on a refusal, so a run that recovered
@@ -1102,6 +1205,12 @@ class _ReactAgent:
             },
         )
 
+        # A run that can deliver workspace notes says so, so `/chat/workspace/edited` queues for
+        # it rather than writing straight to the log. Marked here, immediately before the `try`
+        # whose `finally` unmarks it.
+        notes_thread = input.thread_id if input.thread_id and self.session_store is not None else None
+        if notes_thread:
+            await mark_run_active(tenant_id, notes_thread)
         try:
             for _step in range(self.recursion_limit):
                 if input.thread_id and await is_aborted(tenant_id, input.thread_id):
@@ -1126,6 +1235,11 @@ class _ReactAgent:
                         event="session_progress",
                         data={"phase": "compaction", "reason": "after_turn"},
                     )
+
+                async for ev in self._deliver_workspace_notes(
+                    tenant_id, input.thread_id, messages, emit_events=emit_events
+                ):
+                    yield ev
 
                 injected = await run_before_turn(
                     messages,
@@ -1304,7 +1418,7 @@ class _ReactAgent:
                             if batch.done():
                                 break
                             await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
-                    tool_msgs, had_fatal, all_terminate, batch_denied = await batch
+                    tool_msgs, batch_fatal, all_terminate, batch_denied = await batch
                 except BaseException:
                     # The batch no longer inherits cancellation from this frame, so a
                     # client that hangs up mid-tool would otherwise leave it running.
@@ -1327,10 +1441,10 @@ class _ReactAgent:
                 await self._append_produced(input.thread_id, tool_msgs)
                 any_denied = bool(batch_denied)
                 denied_calls += batch_denied
-                if had_fatal:
+                if batch_fatal is not None:
                     # A fatal tool error ends the run. Follow-ups are not drained: the
                     # run did not reach a state a follow-up could sensibly continue from.
-                    fatal = True
+                    fatal = batch_fatal
                     break
                 if all_terminate:
                     delivered = []
@@ -1378,21 +1492,36 @@ class _ReactAgent:
                 if emit_events:
                     yield Event(event="max_turns", data={"limit": self.recursion_limit})
 
+        except BaseException as exc:
+            # Written before the queue is released below, which awaits and so could itself be
+            # cancelled. Every run writes exactly one `final_response`, a dead one included.
+            self._audit_final_response(
+                input.thread_id,
+                final,
+                fatal=fatal,
+                ended_denied=any_denied,
+                denied_calls=denied_calls,
+                died=exc,
+            )
+            raise
+        else:
+            # Here rather than after the `finally`, for the same reason: a cancel landing in its
+            # awaits would otherwise skip the row of a run that had finished.
+            self._audit_final_response(
+                input.thread_id, final, fatal=fatal, ended_denied=any_denied, denied_calls=denied_calls
+            )
         finally:
+            if notes_thread:
+                # Unmarked first, then flushed: a note that saw the mark and was queued after the
+                # run's last model call reaches the log here rather than waiting for a next run.
+                # One queued after this flush is delivered at the thread's next run.
+                await mark_run_idle(tenant_id, notes_thread)
+                await self._record_workspace_notes(
+                    notes_thread, await drain_workspace_notes(tenant_id, notes_thread)
+                )
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
                 await release_side_events(input.thread_id)
-
-        emit_agent_audit(
-            "final_response",
-            status="error" if (fatal or any_denied) else "ok",
-            manifest_id=self.manifest_id,
-            payload={
-                "thread_id": input.thread_id,
-                "chars": len(final.content or ""),
-                "denied_calls": denied_calls,
-            },
-        )
         await self._maybe_capture_memory(input, final, model)
 
         output = InvokeOutput(messages=produced, final=final, stop_reason=last_stop)

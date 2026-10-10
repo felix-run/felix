@@ -334,6 +334,26 @@ def _context(command: str, *, project: Path, cwd: Path) -> str:
         # A resumed run's authority is rebuilt here — the gate said no security review was
         # needed on #149, the change that carried the caller's scopes into durable state.
         "packages/harness/src/felix/durability/fibers.py",
+        # Paths that run a command or reach outward for a manifest, and request-path controls
+        # outside `auth/` — none of which the list named until an audit compared it to the tree.
+        "packages/harness/src/felix/tools/shell.py",
+        "packages/harness/src/felix/shell_runner.py",
+        "packages/harness/src/felix/tools/workspace_hosted.py",
+        "packages/harness/src/felix/tools/http_fetch.py",
+        "packages/harness/src/felix/tools/web_search.py",
+        "packages/harness/src/felix/mcp/client.py",
+        "packages/harness/src/felix/a2a/peers.py",
+        "packages/harness/src/felix/skills/importer.py",
+        "packages/harness/src/felix/tools/github_publish.py",
+        "packages/harness/src/felix/repos/checkouts.py",
+        "packages/harness/src/felix/tools/client_bridge.py",
+        "apps/api/src/felix_api/middleware.py",
+        "packages/harness/src/felix/idempotency.py",
+        "packages/harness/src/felix/limits.py",
+        "packages/harness/src/felix/db/models.py",
+        # Broad tokens, pinned on purpose: the per-person repo routes and a skill's GitHub fetch.
+        "apps/api/src/felix_api/routes/repos.py",
+        "packages/harness/src/felix/skills/github.py",
     ],
 )
 def test_a_control_path_change_also_asks_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:
@@ -351,6 +371,11 @@ def test_a_control_path_change_also_asks_for_the_security_reviewer(tmp_path: Pat
         # `rls` inside `urls`. Matched as a bare substring, this asked for a security review
         # of a URL helper — and a false positive is how a note gets trained into noise.
         "apps/api/src/felix_api/urls.py",
+        # `db/models` is matched with its directory so that a bare `models` does not take
+        # every route's response-model module with it.
+        "apps/api/src/felix_api/routes/_skill_library_models.py",
+        # The MCP *server* surface is a route like any other; only the client dials out.
+        "apps/api/src/felix_api/routes/mcp.py",
     ],
 )
 def test_an_ordinary_change_does_not_ask_for_the_security_reviewer(tmp_path: Path, changed: str) -> None:

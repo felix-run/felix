@@ -42,8 +42,10 @@ enforces inbound auth and the compile pin, then compiles:
 
 ## The wrapper order is load-bearing
 
+<!-- toolkit:enum wrapper-order -->
+
     secret masking -> policies -> command screening -> content screening -> limits ->
-    guardrails -> judges -> approvals -> artifact spill
+    guardrails -> judges -> approvals -> artifact spill -> workspace scope
 
 Each wrapper clones the tool with a new executor, so the order defines precedence. The comment
 `order matters` in `builder.py` is not decorative. Never reorder it to make a test pass.

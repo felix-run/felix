@@ -145,6 +145,14 @@ class SessionRenderOpts:
 
 @runtime_checkable
 class SessionStrategy(Protocol):
+    """Renders a thread's history for a model call.
+
+    `opts` as a dict may carry `stored_summary_only: True` — `POST /chat/ask` sends it. A
+    strategy that summarises should then use only what it has already stored and not call the
+    model: a side question writes nothing, so a new summary is paid for and thrown away. The
+    session it is handed then drops writes either way.
+    """
+
     async def render(
         self,
         session: Session,

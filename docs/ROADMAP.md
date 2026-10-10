@@ -667,7 +667,7 @@ First, because everything else governs it.
       The entry's last sentence was stale rather than wrong: **there is no `heartbeat_at`
       column**, anywhere in the models or migrations. Sleeping is already distinguishable from
       crashed by `status` plus `lease_until`, which `_save_fiber` clears on every save.
-- [ ] **Record each tool call's result as it lands.** #531 logs a batch's calls before they
+- [ ] **Record each tool call's result as it lands** (felix-run/felix#574). #531 logs a batch's calls before they
       run, so a re-run sees them, but their results are still written once the whole batch
       returns. A call that finished inside a batch that did not is therefore closed as
       interrupted ("may have already taken effect"), and the model is asked to check work it

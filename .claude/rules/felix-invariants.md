@@ -34,10 +34,11 @@ next one.** A hostname checked against a DNS-name pattern was interpolated into
 past it. When a validated value crosses into a command line, a header, a URL, a query, or a log
 line, re-validate it against *that* grammar's separators. Details: the **security-review** skill.
 
+<!-- toolkit:enum wrapper-order -->
 - **Wrapper order in `manifests/builder.py` is load-bearing.** secret masking → policies → command
-  screening → content screening → limits → guardrails → judges → approvals → artifact spill. Each
-  wrapper clones the tool with a new executor, so order defines precedence. Never reorder to make a
-  test pass. Details: the **governance-pipeline** skill.
+  screening → content screening → limits → guardrails → judges → approvals → artifact spill →
+  workspace scope. Each wrapper clones the tool with a new executor, so order defines precedence.
+  Never reorder to make a test pass. Details: the **governance-pipeline** skill.
 - **Extensibility is the product.** Felix must not dictate a workflow: what other harnesses
   bake in should be buildable here as a plugin, a skill, or a third-party package, with core
   staying minimal. Concretely — a list that selects a swappable implementation is an open

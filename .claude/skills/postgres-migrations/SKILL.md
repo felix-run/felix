@@ -3,6 +3,8 @@ name: postgres-migrations
 description: Author and apply Alembic migrations for Felix, including SQLAlchemy model changes, tenant RLS policies, pgvector columns, and Postgres FTS indexes, plus the in-memory store twin every new store needs. Use when changing db/models.py, adding a table, column, index, or RLS policy, when a migration fails, or when asked about the database schema.
 compatibility: Requires uv; a running Postgres (make up) only for the live migrate/rollback check.
 allowed-tools: Read Grep Glob Bash(uv run felix migrate:*) Bash(uv run alembic:*) Bash(./scripts/test.sh:*)
+metadata:
+  covers: felix/db/
 ---
 
 # Postgres migrations
@@ -24,7 +26,8 @@ ls migrations/versions/ | sort | tail -3     # the head is the last one
 ## Add a revision
 
 1. Copy the shape of the nearest existing revision in `migrations/versions/`. Name it
-   `000N_<slug>.py`, set `down_revision` to the current head, and write a real `downgrade()`.
+   `NNNN_<slug>.py` — the next four-digit number after the head
+   (`ls migrations/versions/[0-9]*.py | tail -1` — a bare `ls` ends on `__pycache__`) — set `down_revision` to that head, and write a real `downgrade()`.
 2. Keep it **online-safe**: `CREATE INDEX CONCURRENTLY` where possible, no long exclusive locks, no
    rewriting a large table in one statement. New columns are nullable or have a default.
 3. Tenant-scoped table? Mirror the policy pattern from `0006_tenant_rls.py`

@@ -2,6 +2,8 @@
 name: plugin-seam
 description: How optional features attach to Felix without polluting core — the plugin registry, felix.plugins entry points, the composition wiring root, and the lean-default rule for heavy dependencies and extras. Use when adding an optional feature, an extra, a new tool provider, an authenticator, a cron task, or when the plugin-boundary test fails.
 allowed-tools: Read Grep Glob Bash(uv:*) Bash(./scripts/test.sh:*)
+metadata:
+  covers: felix/plugins.py, felix/hooks.py, felix/storage/, felix/secrets.py, felix/warehouse.py
 ---
 
 # The plugin seam
@@ -29,6 +31,7 @@ On the registry / plugin object:
 | Rate-limit keys | `plugin.rate_limit_key(request)` |
 | Body limits | `plugin.body_limit_bytes` |
 | Self-authenticating mounts | `plugin.self_authenticating_mounts` |
+| Model / decision providers | `registry.register_model_provider(name, factory)` / `register_decision_provider(name, factory)` → a `FELIX_MODEL_ROUTES` / `FELIX_DECISION_ROUTES` entry |
 | Audit / usage sinks | `registry.register_audit_sink(factory)` / `register_usage_sink(factory)` |
 | Startup hooks | `registry.register_startup_hook(hook)` (awaited in the API lifespan) |
 | Agent-loop hooks | `registry.register_before_turn` / `filter_history` / `before_compact` / `before_model` / `after_model` / `before_tool` / `after_tool` / `compact_failed` |

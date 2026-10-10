@@ -14,13 +14,16 @@ and fails the second, and one that crashed passes neither.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 
 import pytest
 
@@ -114,6 +117,18 @@ def fake_uv(tmp_path: pathlib.Path) -> tuple[dict[str, str], pathlib.Path]:
         ("apps/api/src/felix_api/routes/memory.py", "management-api.mdx"),
         ("apps/api/src/felix_api/routes/chat.py", "rest-api.mdx"),
         ("packages/ai/src/felix_ai/catalog.py", "model-client.mdx"),
+        # Surfaces an audit found mapped to no page: a second CLI module, the client package,
+        # the agent card, the completion webhook payload and the error envelope.
+        ("apps/cli/src/felix_cli/skills.py", "skill-import.mdx"),
+        ("packages/client/src/felix_client/client.py", "getting-started.mdx"),
+        # Each with a token only its own message carries, so two mappings collapsing into one
+        # generic line, or swapping, goes red.
+        ("packages/harness/src/felix/a2a/card.py", "agent-card.json"),
+        ("packages/harness/src/felix/durability/webhooks.py", "Completion webhooks"),
+        ("apps/api/src/felix_api/errors.py", "error envelope"),
+        ("apps/api/src/felix_api/middleware.py", "error envelope"),
+        # The CLI glob, not only its `skills.py` special case.
+        ("apps/cli/src/felix_cli/main.py", "deploy.mdx"),
     ],
 )
 def test_doc_sync_reminder_speaks_inside_a_worktree(repo: pathlib.Path, rel: str, expect: str) -> None:
@@ -148,6 +163,46 @@ def test_settings_sync_reminder_speaks_inside_a_worktree(repo: pathlib.Path) -> 
         "settings-sync-reminder.sh", {"tool_input": {"file_path": str(wt / "README.md")}}, project=repo
     )
     assert _context(unrelated) == ""
+
+
+@needs_jq
+@pytest.mark.parametrize(
+    ("rel", "expect"),
+    [
+        # The wire contract is checked in; a route edit that does not regenerate it fails CI.
+        ("apps/api/src/felix_api/routes/chat.py", ("make contract",)),
+        ("apps/api/src/felix_api/routes/_sse.py", ("make contract",)),
+        ("packages/harness/src/felix/manifests/schema.py", ("make schema",)),
+        # Generated or release-written files: the point is "do not hand-edit this", which a
+        # make target alone does not say -- the generated branch names both targets.
+        ("schemas/openapi.json", ("generated", "make contract")),
+        ("schemas/sse-events.json", ("generated", "make contract")),
+        ("schemas/manifest.schema.json", ("generated", "make schema")),
+        ("CHANGELOG.md", ("release step", "## Changelog")),
+        ("packages/harness/src/felix/jobs/scheduler.py", ("felix-scheduler",)),
+    ],
+)
+def test_settings_sync_reminder_names_the_regeneration_step(
+    repo: pathlib.Path, rel: str, expect: tuple[str, ...]
+) -> None:
+    said = _context(
+        _hook("settings-sync-reminder.sh", {"tool_input": {"file_path": str(repo / rel)}}, project=repo)
+    )
+    for token in expect:
+        assert token in said, f"{rel}: {token!r} not in {said!r}"
+
+
+@needs_jq
+def test_the_route_reminder_stays_inside_the_routes_package(repo: pathlib.Path) -> None:
+    """`app.py` sits beside `routes/`; a glob widened to the API package would catch it."""
+    said = _context(
+        _hook(
+            "settings-sync-reminder.sh",
+            {"tool_input": {"file_path": str(repo / "apps/api/src/felix_api/app.py")}},
+            project=repo,
+        )
+    )
+    assert "make contract" not in said, said
 
 
 @needs_jq
@@ -297,6 +352,25 @@ def test_subagent_log_records_the_agent_type(tmp_path: pathlib.Path) -> None:
     assert line[1:] == ["s1", "felix-test-engineer", "a42"], line
 
 
+@needs_jq
+@pytest.mark.parametrize(
+    ("names", "want"),
+    [
+        ({"agent_type": ""}, "unnamed"),
+        # An empty type falls through to the next field that has a value.
+        ({"agent_type": "", "agent_name": "felix-engineer"}, "felix-engineer"),
+        ({}, "unnamed"),
+    ],
+)
+def test_subagent_log_never_writes_an_empty_agent_column(
+    tmp_path: pathlib.Path, names: dict[str, str], want: str
+) -> None:
+    """An empty column is indistinguishable from a lost one when the log is audited."""
+    _hook("subagent-log.sh", {"session_id": "s1", "agent_id": "a43", **names}, project=tmp_path)
+    line = (tmp_path / ".claude" / "logs" / "subagents.log").read_text().strip().split("\t")
+    assert line[1:] == ["s1", want, "a43"], line
+
+
 # --- doc-drift-stop: this session's changes, not the tree's ----------------------------------
 
 
@@ -441,6 +515,9 @@ def _hint(command: str, output: str) -> str:
         ("x", "psycopg.OperationalError: connection to server at 127.0.0.1 port 5432 failed", "Postgres"),
         ("x", "redis.exceptions.ConnectionError: Connection refused 6379", "Postgres/Valkey"),
         ("ruff format --check .", "Would reformat: a.py\n1 file would be reformatted", "make fmt"),
+        # validate-manifest spells it in lower case; build_agent capitalises it.
+        ("uv run felix validate-manifest m.yaml", "invalid m.yaml: unknown pattern 'reactt'", "spec.pattern"),
+        ("x", "ValueError: Unknown pattern 'reactt' for manifest 'm'", "spec.pattern"),
     ],
 )
 def test_failure_hints_fire_only_on_their_own_failure(command: str, output: str, expect: str) -> None:
@@ -501,3 +578,414 @@ def test_the_validator_catches_a_stale_citation(tmp_path: pathlib.Path) -> None:
     assert "<name>" not in found
     assert "`make check`" not in found
     assert "lib/real.sh" not in found
+
+
+# --- validate-toolkit: prose lists checked against the code they restate ----------------------
+#
+# Each case plants one disagreement in a copy of the real tree and asserts the validator names
+# it. The copy holds only what the enumeration check reads, so it fails other checks (cited
+# paths it did not copy); the assertion is on what the plant *adds* over the unplanted copy.
+
+_ENUM_INPUTS = [
+    "CLAUDE.md",
+    "README.md",
+    "Makefile",
+    "schemas/manifest.schema.json",
+    "tests/unit/test_invariants.py",
+    "apps/api/src/felix_api/app.py",
+    "apps/api/src/felix_api/routes",
+    "packages/harness/src/felix/session/strategies.py",
+    "apps/cli/src/felix_cli/main.py",
+    "skills/felix-architecture/SKILL.md",
+]
+
+
+def _enum_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    tree = tmp_path / "tree"
+    shutil.copytree(
+        ROOT / ".claude",
+        tree / ".claude",
+        ignore=shutil.ignore_patterns("worktrees", "logs", "settings.local.json"),
+    )
+    for rel in _ENUM_INPUTS:
+        source, target = ROOT / rel, tree / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            shutil.copy2(source, target)
+    return tree
+
+
+def _validator_problems(tree: pathlib.Path) -> set[str]:
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "validate-toolkit.py"), str(tree)],
+        capture_output=True,
+        text=True,
+    )
+    assert "Traceback" not in proc.stderr, proc.stderr
+    return {
+        line.strip().removeprefix("- ") for line in proc.stderr.splitlines() if line.strip().startswith("- ")
+    }
+
+
+def _enum_baseline(tree: pathlib.Path) -> set[str]:
+    before = _validator_problems(tree)
+    assert not [p for p in before if "toolkit:enum" in p or " list " in p], before
+    return before
+
+
+def _plant(tree: pathlib.Path, rel: str, old: str, new: str) -> None:
+    path = tree / rel
+    text = path.read_text()
+    assert old in text, f"the plant's anchor is gone from {rel}: {old!r}"
+    path.write_text(text.replace(old, new, 1))
+
+
+def _append(tree: pathlib.Path, rel: str, code: str) -> None:
+    path = tree / rel
+    path.write_text(path.read_text() + code)
+
+
+def _edit_schema(tree: pathlib.Path, edit: Callable[[dict], None]) -> None:
+    path = tree / "schemas/manifest.schema.json"
+    schema = json.loads(path.read_text())
+    edit(schema["$defs"])
+    path.write_text(json.dumps(schema, indent=2))
+
+
+def _marker_files(key: str) -> set[str]:
+    """Every file the validator expects to carry `key` -- each must notice a change in the code."""
+    source = (ROOT / "scripts" / "validate-toolkit.py").read_text()
+    table = ast.literal_eval(
+        re.search(r"EXPECTED_MARKERS: dict\[str, set\[str\]\] = (\{.*?\n\})", source, re.S)[1]
+    )
+    return {rel for rel, keys in table.items() if key in keys}
+
+
+@pytest.mark.parametrize(
+    ("rel", "old", "new", "expect"),
+    [
+        (
+            ".claude/rules/felix-invariants.md",
+            "judges → approvals",
+            "approvals → judges",
+            "where the code has 'judges'",
+        ),
+        ("CLAUDE.md", " → workspace scope", "", "has 9 elements; the code has 10"),
+        (
+            ".claude/hooks/compact-reminder.sh",
+            "judges -> approvals",
+            "approvals -> judges",
+            "where the code has 'judges'",
+        ),
+        (
+            ".claude/skills/governance-pipeline/SKILL.md",
+            "→ workspace scope\n",
+            "→ workspace scope\n → tool budget\n",
+            "has 11 elements; the code has 10",
+        ),
+        (
+            ".claude/skills/api-surface/SKILL.md",
+            "body limit → rate limit",
+            "rate limit → body limit",
+            "where the code has 'body limit'",
+        ),
+        # The last element replaced while its word survives later in the paragraph
+        # (`auth/mgmt.py`): a search for "auth" anywhere in it called this a match.
+        ("CLAUDE.md", "`AuthMiddleware`", "`CsrfMiddleware`", "where the code has 'auth'"),
+        (
+            ".claude/skills/api-surface/SKILL.md",
+            "| `mcp.py` |",
+            "| `mcp.py`, `ghost.py` |",
+            "names 'ghost', which the code does not define",
+        ),
+        (
+            ".claude/skills/manifest-authoring/SKILL.md",
+            "| `pattern` |",
+            "| `phantom` | nothing |\n| `pattern` |",
+            "names 'phantom', which the code does not define",
+        ),
+        # Dropped from the list while the paragraph names it again after the list ends.
+        (
+            "README.md",
+            "`compacting` (token-threshold), ",
+            "",
+            "session-strategies list does not name 'compacting'",
+        ),
+        (
+            ".claude/skills/manifest-authoring/references/spec-fields.md",
+            "| `windowed:N` |",
+            "| `ghost:N` | x |\n| `windowed:N` |",
+            "names 'ghost', which the code does not define",
+        ),
+        (
+            ".claude/skills/model-layer/SKILL.md",
+            "`content_screening.decider`",
+            "`content_screening`",
+            "does not name 'content_screening.decider'",
+        ),
+        (
+            ".claude/skills/model-layer/SKILL.md",
+            "`reflect.decider`",
+            "`reflect.decider`, `reflect.critic.decider`",
+            "names 'reflect.critic.decider', which the code does not define",
+        ),
+        ("CLAUDE.md", " | doctor |", " |", "cli-commands list does not name 'doctor'"),
+        (
+            "CLAUDE.md",
+            "<!-- toolkit:enum middleware-order -->\n",
+            "",
+            "lost its `toolkit:enum middleware-order` marker",
+        ),
+    ],
+    ids=[
+        "rules-wrapper-reordered",
+        "claude-md-wrapper-dropped",
+        "compact-reminder-wrapper-reordered",
+        "governance-pipeline-wrapper-extra",
+        "api-surface-middleware-reordered",
+        "claude-md-last-middleware-replaced",
+        "api-surface-route-that-does-not-exist",
+        "manifest-authoring-field-that-does-not-exist",
+        "readme-strategy-dropped-but-mentioned-later",
+        "spec-fields-strategy-that-does-not-exist",
+        "model-layer-decider-consumer-dropped",
+        "model-layer-decider-consumer-that-does-not-exist",
+        "claude-md-cli-command-dropped",
+        "claude-md-marker-removed",
+    ],
+)
+def test_the_validator_catches_prose_that_disagrees_with_the_code(
+    tmp_path: pathlib.Path, rel: str, old: str, new: str, expect: str
+) -> None:
+    tree = _enum_tree(tmp_path)
+    before = _enum_baseline(tree)
+    _plant(tree, rel, old, new)
+    added = _validator_problems(tree) - before
+    assert any(p.startswith(f"{rel}: ") and expect in p for p in added), (
+        f"{expect!r} not among {sorted(added)}"
+    )
+
+
+def _optional_decider(defs: dict) -> None:
+    defs["SkillSuggestionSpec"]["properties"]["decider"] = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+
+
+_CODE_PLANTS: dict[str, tuple[Callable[[pathlib.Path], None], str, str]] = {
+    # name: (plant, key, the problem every file carrying that key must now report)
+    "adds-a-wrapper": (
+        lambda tree: _plant(
+            tree,
+            "tests/unit/test_invariants.py",
+            "EXPECTED_WRAPPER_ORDER = [\n",
+            'EXPECTED_WRAPPER_ORDER = [\n    "apply_tool_budget",\n',
+        ),
+        "wrapper-order",
+        "the code has 11",
+    ),
+    "adds-a-middleware": (
+        lambda tree: _append(tree, "apps/api/src/felix_api/app.py", "\napp.add_middleware(GzipMiddleware)\n"),
+        "middleware-order",
+        "the code has 6",
+    ),
+    "adds-a-strategy": (
+        lambda tree: _plant(
+            tree, "packages/harness/src/felix/session/strategies.py", "frozenset({", 'frozenset({"fancy", '
+        ),
+        "session-strategies",
+        "does not name 'fancy'",
+    ),
+    "adds-a-command": (
+        lambda tree: _append(
+            tree, "apps/cli/src/felix_cli/main.py", '\n@app.command("frobnicate")\ndef _f() -> None: ...\n'
+        ),
+        "cli-commands",
+        "does not name 'frobnicate'",
+    ),
+    "adds-a-command-named-after-its-function": (
+        lambda tree: _append(
+            tree, "apps/cli/src/felix_cli/main.py", "\n@app.command()\ndef do_thing() -> None: ...\n"
+        ),
+        "cli-commands",
+        "does not name 'do-thing'",
+    ),
+    "adds-a-sub-app": (
+        lambda tree: _append(
+            tree, "apps/cli/src/felix_cli/main.py", '\napp.add_typer(object(), name="frob")\n'
+        ),
+        "cli-commands",
+        "does not name 'frob'",
+    ),
+    "adds-a-spec-field": (
+        lambda tree: _edit_schema(
+            tree, lambda defs: defs["Spec"]["properties"].update(brand_new={"type": "string"})
+        ),
+        "spec-fields",
+        "does not name 'brand_new'",
+    ),
+    "adds-a-decider-consumer": (
+        lambda tree: _edit_schema(
+            tree, lambda defs: defs["SkillSuggestionSpec"]["properties"].update(decider={"type": "boolean"})
+        ),
+        "decider-consumers",
+        "does not name 'skill_suggestion.decider'",
+    ),
+    # `bool | None` is `anyOf: [boolean, null]`; read as a type of None, it was skipped.
+    "adds-an-optional-decider-consumer": (
+        lambda tree: _edit_schema(tree, _optional_decider),
+        "decider-consumers",
+        "does not name 'skill_suggestion.decider'",
+    ),
+    # Newer syntax than the runner's python3 must be reported, not end the run in a traceback.
+    "stops-parsing": (
+        lambda tree: _append(tree, "apps/api/src/felix_api/app.py", "\ndef (:\n"),
+        "middleware-order",
+        "cannot check the middleware-order list",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_CODE_PLANTS))
+def test_every_copy_of_a_list_notices_when_the_code_changes(tmp_path: pathlib.Path, name: str) -> None:
+    """Every file carrying the key must report it: one copy noticing is not the check working,
+    since a marker that governs the wrong paragraph can still contain every name."""
+    plant, key, expect = _CODE_PLANTS[name]
+    tree = _enum_tree(tmp_path)
+    before = _enum_baseline(tree)
+    plant(tree)
+    added = _validator_problems(tree) - before
+    reporting = {p.split(": ", 1)[0] for p in added if expect in p}
+    assert reporting == _marker_files(key), sorted(added)
+
+
+def test_a_new_route_module_must_join_the_api_surface_table(tmp_path: pathlib.Path) -> None:
+    tree = _enum_tree(tmp_path)
+    before = _enum_baseline(tree)
+    (tree / "apps/api/src/felix_api/routes/new_surface.py").write_text("")
+    added = _validator_problems(tree) - before
+    assert (
+        ".claude/skills/api-surface/SKILL.md: the route-modules list does not name 'new_surface'" in added
+    ), added
+
+
+# Ownership: every subpackage, and every module over the size floor, must be claimed by a
+# skill's `metadata.covers` or listed in the validator's UNOWNED. These run the tree's own copy
+# of the validator so a plant can edit UNOWNED as well as the skills.
+
+_OWNED_ROOTS = [
+    "packages/harness/src/felix",
+    "packages/ai/src/felix_ai",
+    "packages/client/src/felix_client",
+    "apps/api/src/felix_api",
+    "apps/cli/src/felix_cli",
+    "apps/worker/src/felix_worker",
+]
+_OWNERSHIP_WORDS = ("has no owner", "covers ", "UNOWNED")
+OWNED_FLOOR = 300  # OWNED_MIN_LINES in the validator
+
+
+def _owned_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    tree = tmp_path / "tree"
+    shutil.copytree(
+        ROOT / ".claude",
+        tree / ".claude",
+        ignore=shutil.ignore_patterns("worktrees", "logs", "settings.local.json"),
+    )
+    for rel in _OWNED_ROOTS:
+        shutil.copytree(ROOT / rel, tree / rel, ignore=shutil.ignore_patterns("__pycache__"))
+    (tree / "scripts").mkdir()
+    shutil.copy2(ROOT / "scripts" / "validate-toolkit.py", tree / "scripts" / "validate-toolkit.py")
+    return tree
+
+
+def _ownership_problems(tree: pathlib.Path) -> set[str]:
+    proc = subprocess.run(
+        [sys.executable, str(tree / "scripts" / "validate-toolkit.py"), str(tree)],
+        capture_output=True,
+        text=True,
+    )
+    assert "Traceback" not in proc.stderr, proc.stderr
+    problems = {line.strip().removeprefix("- ") for line in proc.stderr.splitlines()}
+    return {p for p in problems if any(word in p for word in _OWNERSHIP_WORDS)}
+
+
+def _unowned_entry(tree: pathlib.Path, entry: str) -> None:
+    _plant(
+        tree,
+        "scripts/validate-toolkit.py",
+        "UNOWNED: dict[str, str] = {",
+        f"UNOWNED: dict[str, str] = {{{entry!r}: 'x', ",
+    )
+
+
+def _a_module_of(lines: int) -> Callable[[pathlib.Path], None]:
+    return lambda tree: (tree / "packages/harness/src/felix/sizeable.py").write_text("x = 1\n" * lines)
+
+
+def _a_subpackage(rel: str, *, parents: bool = False) -> Callable[[pathlib.Path], None]:
+    def plant(tree: pathlib.Path) -> None:
+        (tree / rel).mkdir(parents=parents)
+        (tree / rel / "__init__.py").write_text("")
+
+    return plant
+
+
+_OWNERSHIP_PLANTS: dict[str, tuple[Callable[[pathlib.Path], None], str]] = {
+    # name: (plant, the problem it must add)
+    "new-subpackage": (_a_subpackage("packages/harness/src/felix/newthing"), "felix/newthing/ has no owner"),
+    "module-at-the-floor": (_a_module_of(OWNED_FLOOR), "felix/sizeable.py has no owner"),
+    # A namespace directory: no `.py` of its own, real code one level down.
+    "code-only-in-a-nested-package": (
+        _a_subpackage("packages/harness/src/felix/ns/inner", parents=True),
+        "felix/ns/ has no owner",
+    ),
+    # One bare root claimed whole would own every new harness package silently.
+    "cover-of-the-whole-harness": (
+        lambda tree: _plant(tree, ".claude/skills/model-layer/SKILL.md", "covers: ", "covers: felix, "),
+        "covers 'felix', which names nothing",
+    ),
+    "skill-drops-a-cover": (
+        lambda tree: _plant(
+            tree, ".claude/skills/durable-execution/SKILL.md", "covers: felix/durability/, ", "covers: "
+        ),
+        "felix/durability/ has no owner",
+    ),
+    "cover-that-names-nothing": (
+        lambda tree: _plant(
+            tree, ".claude/skills/model-layer/SKILL.md", "covers: ", "covers: felix/ghost/, "
+        ),
+        "covers 'felix/ghost/', which names nothing",
+    ),
+    "unowned-entry-now-covered": (
+        lambda tree: _unowned_entry(tree, "felix/tools/"),
+        "UNOWNED lists felix/tools/, which tools-runtime now covers",
+    ),
+    "unowned-entry-that-is-gone": (
+        lambda tree: _unowned_entry(tree, "felix/retired/"),
+        "UNOWNED lists felix/retired/, which is no longer a subpackage",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_OWNERSHIP_PLANTS))
+def test_code_without_an_owning_skill_fails_the_validator(tmp_path: pathlib.Path, name: str) -> None:
+    plant, expect = _OWNERSHIP_PLANTS[name]
+    tree = _owned_tree(tmp_path)
+    assert not _ownership_problems(tree)
+    plant(tree)
+    added = _ownership_problems(tree)
+    assert any(p.startswith(expect) or f": {expect}" in p for p in added), sorted(added)
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [_a_subpackage("apps/api/src/felix_api/newsurface"), _a_module_of(OWNED_FLOOR - 1)],
+    ids=["under-a-covered-directory", "below-the-size-floor"],
+)
+def test_code_already_covered_or_too_small_to_need_an_owner_passes(
+    tmp_path: pathlib.Path, plant: Callable[[pathlib.Path], None]
+) -> None:
+    tree = _owned_tree(tmp_path)
+    plant(tree)
+    assert not _ownership_problems(tree)

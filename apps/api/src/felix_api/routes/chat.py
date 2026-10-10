@@ -38,7 +38,8 @@ from felix.steer import enqueue
 from felix.thread_ids import effective_thread_id
 from felix.tools.client_bridge import MAX_TOOL_CALL_ID
 from felix.ui.ask_user import LIVE_STREAM_EXTRA
-from pydantic import BaseModel, Field
+from felix.workspace_files import TREE_DEFAULT_LIMIT, TREE_MAX_LIMIT
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from felix_api.errors import client_safe_message, log_gateway_error
 from felix_api.routes._sse import (
@@ -142,6 +143,160 @@ class SteerRequest(BaseModel):
     kind: Literal["steer", "follow_up"] = "steer"
 
 
+def _one_line_path(value: str | None) -> str | None:
+    """A workspace path a note may quote: the path is quoted into text the model reads, and a
+    control character -- a newline above all -- would let it carry a line of its own."""
+    if value is not None and any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise ValueError("path must not contain control characters")
+    return value
+
+
+class WorkspaceEditedRequest(BaseModel):
+    """The operator changed a workspace file directly. Structure only: the server writes the note."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path the operator changed.")
+    op: Literal["write", "delete", "rename"] = "write"
+    bytes: int | None = Field(default=None, ge=0, description="Size after a `write`. Not sent for `delete`.")
+    to_path: str | None = Field(
+        default=None, min_length=1, max_length=4096, description="New path. Required for `rename`, only."
+    )
+
+    @field_validator("path", "to_path")
+    @classmethod
+    def _one_line(cls, value: str | None) -> str | None:
+        return _one_line_path(value)
+
+    @model_validator(mode="after")
+    def _shape_matches_op(self) -> WorkspaceEditedRequest:
+        if self.op == "rename" and self.to_path is None:
+            raise ValueError("to_path is required for op 'rename'")
+        if self.op != "rename" and self.to_path is not None:
+            raise ValueError("to_path is only accepted for op 'rename'")
+        if self.op == "delete" and self.bytes is not None:
+            raise ValueError("bytes is not accepted for op 'delete'")
+        return self
+
+
+class WorkspaceEditedOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="`queued`: a run is in flight and reads the note before its next model call. "
+        "`recorded`: no run is, so the note was appended to the thread for the next one."
+    )
+    thread_id: str
+    event_id: str | None = Field(default=None, description="The session entry's id, when `recorded`.")
+
+
+# The read and write caps the workspace tools hold a model to, so the file pane can open exactly
+# what an agent can and save nothing an agent's `read_file` could not read back whole.
+WORKSPACE_FILE_MAX_BYTES = 512_000
+
+
+class WorkspaceWriteRequest(BaseModel):
+    """Replace one workspace file with the operator's text, from the file pane."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path to write.")
+    content: str = Field(description=f"UTF-8 text, at most {WORKSPACE_FILE_MAX_BYTES:,} bytes encoded.")
+    expected_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="The digest `GET /chat/workspace/file` returned. When set, the write is refused "
+        "(409 `workspace_changed`) unless the file still has it; a missing file never does.",
+    )
+    manifest: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="The manifest a thread that has never run will run under. Ignored once it has.",
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        return _one_line_path(value) or value
+
+
+class WorkspaceTreeEntryOut(BaseModel):
+    path: str
+    type: Literal["file", "dir"]
+    bytes: int | None = Field(default=None, description="A file's size. Absent for a directory.")
+
+
+class WorkspaceTreeOut(BaseModel):
+    root_kind: Literal["scoped", "checkout"] = Field(
+        description="`checkout`: the thread's repository checkout, whatever the manifest's scope. "
+        "`scoped`: the manifest's `spec.workspace.scope` directory."
+    )
+    scope: Literal["thread", "tenant", "deployment"] | None = Field(
+        description="The manifest's workspace scope; null when a checkout overrides it."
+    )
+    manifest: str | None = Field(
+        description="The manifest whose scope decided the workspace; null when none resolved "
+        "(the thread is then on `thread` scope, the narrowest)."
+    )
+    entries: list[WorkspaceTreeEntryOut]
+    truncated: bool
+
+
+class WorkspaceFileOut(BaseModel):
+    path: str
+    bytes: int
+    sha256: str = Field(description="Of the bytes, whatever the encoding. Send it back as `expected_sha256`.")
+    encoding: Literal["utf-8", "base64"]
+    content: str
+
+
+class WorkspaceWriteOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="Where the edit note went: as `/workspace/edited`."
+    )
+    path: str = Field(description="The path written, normalised as the workspace tools report it.")
+    bytes: int
+    sha256: str
+    event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
+
+
+class WorkspaceChangedOut(BaseModel):
+    detail: Literal["workspace_changed"]
+    sha256: str | None = Field(
+        description="The file's digest now; null when it is missing, or (with `bytes`) over the read cap."
+    )
+    bytes: int | None = Field(default=None, description="The file's size now; null when it is missing.")
+
+
+class WorkspaceErrorOut(BaseModel):
+    detail: str
+
+
+_WORKSPACE_READ_ERRORS: dict[int | str, dict[str, Any]] = {
+    400: {
+        "model": WorkspaceErrorOut,
+        "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), "
+        "`reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`.",
+    },
+    404: {
+        "model": WorkspaceErrorOut,
+        "description": "`not_found`: no such file. "
+        "`unknown_manifest`: the `manifest` named does not resolve.",
+    },
+    409: {
+        "model": WorkspaceErrorOut,
+        "description": "`workspace_unavailable`: the thread's checkout is cloning, failed or expired, "
+        "or its scope is one this tenant may not use.",
+    },
+    503: {
+        "model": WorkspaceErrorOut,
+        "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` "
+        "(the hosted workspace gateway did not answer).",
+    },
+}
+
+
 class ToolResultRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -208,6 +363,13 @@ class CompactRequest(BaseModel):
     thread_id: str = Field(min_length=1)
     manifest: str = Field(min_length=1)
     instructions: str | None = None
+
+
+class AskRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=8000)
 
 
 class LabelRequest(BaseModel):
@@ -1187,6 +1349,313 @@ async def chat_steer(body: SteerRequest, request: Request, lease_token: LeaseTok
     return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
 
 
+@router.post("/workspace/edited", responses=LEASE_REFUSALS)
+async def chat_workspace_edited(
+    body: WorkspaceEditedRequest, request: Request, lease_token: LeaseToken = None
+) -> WorkspaceEditedOut:
+    """Tell the agent the operator edited, deleted or renamed a workspace file directly.
+
+    A run in flight reads it before its next model call, without cancelling any tool call
+    (`status: queued`, and a `workspace_note` frame on that run's stream); otherwise it is
+    appended to the thread for the next run (`status: recorded`). Either way it lands in the
+    session log once, as an in-context `custom` entry with `metadata.type: workspace_edit`.
+    The text the model reads is written by the server from these fields.
+    """
+    from felix.workspace_notes import WorkspaceNote
+
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    note = WorkspaceNote(path=body.path, op=body.op, bytes=body.bytes, to_path=body.to_path)
+    status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
+    return WorkspaceEditedOut(status=status, thread_id=thread, event_id=event_id)
+
+
+async def _deliver_workspace_note(
+    request: Request, tenant_id: str, thread: str, note: Any
+) -> tuple[Literal["queued", "recorded"], str | None]:
+    """Queue `note` for the run in flight on `thread`, or append it for the next one.
+
+    The one path both `/workspace/edited` and `/workspace/write` take, so a save from the file
+    pane reaches the agent exactly as a client's own report of an edit does.
+    """
+    from felix.session.tree import annotate_and_append
+    from felix.session.types import AppendableEvent
+    from felix.workspace_notes import enqueue_if_running
+
+    if await enqueue_if_running(tenant_id, thread, note):
+        return "queued", None
+    ids = await annotate_and_append(
+        get_session_store(request.app.state.settings, tenant_id=tenant_id).open(thread),
+        [AppendableEvent(kind="custom", role="user", content=note.text(), metadata=note.metadata())],
+        sync=True,
+    )
+    return "recorded", ids[-1] if ids else None
+
+
+def _workspace_refusal(exc: Exception, *, missing_dir_is_404: bool = True) -> HTTPException | None:
+    """The HTTP answer for a workspace operation that raised `exc`, or None for one it does not map.
+
+    Codes only, never the exception's text: a "workspace_root" message names directories on the
+    host (`workspace_root does not exist: /srv/...`), which a client has no business reading.
+    """
+    from felix.tools.workspace import NotAFileError
+    from felix.tools.workspace_hosted import GatewayUnavailable
+
+    if isinstance(exc, NotAFileError | IsADirectoryError):
+        return HTTPException(status_code=400, detail="not_a_file")
+    if isinstance(exc, GatewayUnavailable | TimeoutError):
+        return HTTPException(status_code=503, detail="workspace_unavailable")
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        if message.startswith("workspace_root") and "not configured" in message:
+            return HTTPException(status_code=503, detail="workspace_not_configured")
+        if message.startswith("workspace_root"):
+            return HTTPException(status_code=409, detail="workspace_unavailable")
+        return HTTPException(status_code=400, detail="invalid_path")
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail="not_found")
+    if isinstance(exc, NotADirectoryError):
+        # A component on the way is a file: nothing is at the path to read, and nothing can be put there.
+        return HTTPException(
+            status_code=404 if missing_dir_is_404 else 400,
+            detail="not_found" if missing_dir_is_404 else "invalid_path",
+        )
+    if isinstance(exc, OSError):
+        logger.warning("workspace file operation failed: %s", type(exc).__name__, exc_info=True)
+        return HTTPException(status_code=500, detail="workspace_io_error")
+    return None
+
+
+async def _thread_workspace(
+    request: Request, thread_id: str, manifest: str | None
+) -> tuple[AuthContext, Any]:
+    """The caller's tenant and the workspace `thread_id` works in (`felix.workspace_files`)."""
+    from felix.workspace_files import UnknownManifest, resolve_thread_workspace
+
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    try:
+        workspace = await resolve_thread_workspace(
+            request.app.state.settings, auth.tenant_id, thread, manifest
+        )
+    except UnknownManifest:
+        raise HTTPException(status_code=404, detail="unknown_manifest") from None
+    except ValueError as exc:
+        refusal = _workspace_refusal(exc)
+        assert refusal is not None
+        raise refusal from None
+    return auth, workspace
+
+
+def _pane_parts(path: str) -> list[str]:
+    """`path` as the tools would walk it; 400 for one they refuse or the pane may not touch."""
+    from felix.tools.workspace import workspace_parts
+    from felix.tools.workspace_backend import pane_hides
+
+    try:
+        parts = workspace_parts(path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_path") from None
+    if not parts:
+        raise HTTPException(status_code=400, detail="not_a_file")
+    if any(pane_hides(part) for part in parts):
+        raise HTTPException(status_code=400, detail="reserved_path")
+    return parts
+
+
+_PaneThread = Annotated[
+    str, Query(min_length=1, description="The thread's id suffix, as everywhere on /chat.")
+]
+_PaneManifest = Annotated[
+    str | None,
+    Query(
+        min_length=1,
+        max_length=256,
+        description="The manifest a thread that has never run will run under. Ignored once it has: "
+        "the manifest its newest turn ran under decides the workspace.",
+    ),
+]
+
+
+@router.get("/workspace/tree", responses={200: {"model": WorkspaceTreeOut}, **_WORKSPACE_READ_ERRORS})
+async def chat_workspace_tree(
+    request: Request,
+    thread_id: _PaneThread,
+    limit: int = Query(default=TREE_DEFAULT_LIMIT, ge=1, le=TREE_MAX_LIMIT),
+    manifest: _PaneManifest = None,
+) -> dict[str, Any]:
+    """Every file and directory in the thread's workspace, for the operator's file pane.
+
+    The workspace is the one the agent's next turn works in: the thread's repository checkout
+    when it has one (`root_kind: checkout`), otherwise the directory its manifest's
+    `spec.workspace.scope` names (`root_kind: scoped`). Recursive, in pre-order and case-folded
+    name order, following no symlink (a link is not listed); `.git` and `.felix-scopes` are left
+    out. `truncated` when the walk stopped short of the whole tree -- the limit, a directory too
+    large to read whole, very deep nesting, or its time budget. A workspace nothing has written to
+    yet lists no entries rather than failing.
+    """
+    from felix.tools.workspace_backend import get_workspace_backend
+
+    _auth, workspace = await _thread_workspace(request, thread_id, manifest)
+    backend = get_workspace_backend(request.app.state.settings)
+    try:
+        tree = await backend.tree(workspace.scope, limit)
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from None
+    return {
+        "root_kind": workspace.root_kind,
+        "scope": workspace.scope_name,
+        "manifest": workspace.manifest,
+        "entries": tree.entries,
+        "truncated": tree.truncated,
+    }
+
+
+@router.get(
+    "/workspace/file",
+    response_model=WorkspaceFileOut,
+    responses={
+        **_WORKSPACE_READ_ERRORS,
+        413: {"model": WorkspaceErrorOut, "description": "`too_large`: over the 512,000-byte read cap."},
+    },
+)
+async def chat_workspace_file(
+    request: Request,
+    thread_id: _PaneThread,
+    path: Annotated[str, Query(min_length=1, max_length=4096)],
+    manifest: _PaneManifest = None,
+) -> WorkspaceFileOut:
+    """One workspace file, whole, from the workspace `GET /chat/workspace/tree` lists.
+
+    `encoding: utf-8` when the bytes decode cleanly, otherwise `base64`. `sha256` is of the bytes;
+    send it back as `expected_sha256` on `POST /chat/workspace/write` to refuse a save over a file
+    the agent has changed since. Files over the workspace tools' read cap (512,000 bytes) are
+    refused whole rather than cut.
+    """
+    import base64
+    import hashlib
+
+    from felix.tools.workspace_backend import get_workspace_backend
+
+    _pane_parts(path)
+    _auth, workspace = await _thread_workspace(request, thread_id, manifest)
+    backend = get_workspace_backend(request.app.state.settings)
+    try:
+        read = await backend.read_file(workspace.scope, path, 0, WORKSPACE_FILE_MAX_BYTES)
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from None
+    if read.size > WORKSPACE_FILE_MAX_BYTES or len(read.data) > WORKSPACE_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="too_large")
+    data = read.data
+    try:
+        content, encoding = data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        content, encoding = base64.b64encode(data).decode("ascii"), "base64"
+    return WorkspaceFileOut(
+        path=read.path,
+        bytes=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+        encoding=encoding,  # type: ignore[arg-type]
+        content=content,
+    )
+
+
+@router.post(
+    "/workspace/write",
+    response_model=WorkspaceWriteOut,
+    responses={
+        **_WORKSPACE_READ_ERRORS,
+        409: {
+            "model": WorkspaceChangedOut,
+            "description": "`workspace_changed` (body carries the file's `sha256` and `bytes` now): "
+            "`expected_sha256` no longer matches, or the file is gone. Nothing was written. Also "
+            "`workspace_unavailable` as on the reads, and the lease refusals "
+            "(`lease_read_only`, `lease_held`) as on `/chat/steer`.",
+        },
+        413: {
+            "model": WorkspaceErrorOut,
+            "description": "`too_large`: `content` is over 512,000 bytes encoded.",
+        },
+    },
+)
+async def chat_workspace_write(
+    body: WorkspaceWriteRequest, request: Request, lease_token: LeaseToken = None
+) -> Any:
+    """Replace one workspace file with the operator's text, and tell the agent.
+
+    Written to the same workspace `GET /chat/workspace/tree` lists and `GET /chat/workspace/file`
+    reads. With `expected_sha256` the write is conditional: compared under the same per-path lock
+    the agent's own writes take in this process, and refused with `409 workspace_changed` when the
+    file is not what the caller read. The file is replaced whole and atomically, keeping its mode.
+
+    Then the agent is told as `POST /chat/workspace/edited` would tell it (`op: write`): a run in
+    flight reads the note before its next model call (`status: queued`), otherwise it is appended
+    for the next run (`status: recorded`). Audited as `workspace_write`. Lease-guarded like
+    `/chat/steer`.
+    """
+    from felix.audit import store as audit_store
+    from felix.tools.workspace_backend import WorkspaceChanged, get_workspace_backend
+    from felix.workspace_notes import WorkspaceNote
+
+    settings = request.app.state.settings
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    data = body.content.encode("utf-8")
+    if len(data) > WORKSPACE_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="too_large")
+    _pane_parts(body.path)
+    auth, workspace = await _thread_workspace(request, body.thread_id, body.manifest)
+    backend = get_workspace_backend(settings)
+    expected = body.expected_sha256.lower() if body.expected_sha256 else None
+    # Under a request context of its own, so the hosted backend backs up the scope it wrote as the
+    # request ends, as it does for a run's writes (`async_run_with_context`).
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=workspace.manifest or "", thread_id=thread)
+    try:
+        async with async_run_with_context(ctx):
+            written = await backend.write_file_checked(workspace.scope, body.path, data, expected)
+    except WorkspaceChanged as exc:
+        return JSONResponse(status_code=409, content=exc.detail)
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc, missing_dir_is_404=False)
+        if refusal is None:
+            raise
+        raise refusal from None
+
+    note = WorkspaceNote(path=written.path, op="write", bytes=written.bytes)
+    status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
+    audit_store.record_event(
+        settings,
+        auth.tenant_id,
+        "workspace_write",
+        principal_subj=auth.principal_sub or "",
+        manifest_id=workspace.manifest or "",
+        status="ok",
+        payload={
+            "thread_id": thread,
+            "path": written.path,
+            "bytes": written.bytes,
+            "manifest": workspace.manifest,
+        },
+    )
+    return WorkspaceWriteOut(
+        status=status, path=written.path, bytes=written.bytes, sha256=written.sha256, event_id=event_id
+    )
+
+
 @router.post("/tool_result", responses=LEASE_REFUSALS)
 async def chat_tool_result(
     body: ToolResultRequest, request: Request, lease_token: LeaseToken = None
@@ -1910,6 +2379,51 @@ async def chat_thinking(
         sync=True,
     )
     return {"ok": True, "thread_id": thread, "thinking_level": level}
+
+
+@router.post("/ask")
+async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
+    """Answer one question from a thread's context, leaving the thread exactly as it was.
+
+    Answered by the thread's own manifest, admitted and screened as a turn of it would be, from
+    the history its next turn would read. Read-only: no session event, no steer or follow-up, no
+    phase change, and no lease check — a question is most useful while a run or another tab
+    holds the thread. One model call, no tools, metered under the manifest. `status` is
+    `answered`, `not_in_context` when the conversation does not hold the answer, or `withheld`
+    when a final-response judge refused it.
+    """
+    from felix.manifests.governance import GovernanceError
+    from felix.session.side_question import UnknownManifestError, UnknownThreadError, answer_side_question
+
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    try:
+        return await answer_side_question(
+            settings,
+            auth=auth,
+            tenant_id=auth.tenant_id,
+            thread_id=thread,
+            question=body.question,
+            tools=request.app.state.tools,
+        )
+    except UnknownThreadError as exc:
+        raise HTTPException(status_code=404, detail="unknown_thread") from exc
+    except UnknownManifestError as exc:
+        # The manifest the thread last ran under no longer resolves.
+        raise HTTPException(status_code=404, detail="unknown_manifest") from exc
+    except ModelGatewayError as exc:
+        log_gateway_error(logger, exc)
+        raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
+    except GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=client_safe_message(exc)) from exc
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        raise
 
 
 @router.post("/compact", responses=LEASE_REFUSALS)

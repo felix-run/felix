@@ -7,7 +7,10 @@ Felix invariants to keep after compaction:
 - Absence rots fastest. Re-grep the tree at HEAD before acting on "nothing reads this" — never on an earlier note in this session.
 - Validating a value for one grammar does not validate it for the next: re-check separators when it crosses into a command line, header, URL, or query.
 - Tests: ./scripts/test.sh (memory:// stores). Full gate: make check (ruff + ty + pytest + format check); CI types only 'packages apps'.
-- Governance wrapper order in manifests/builder.py is load-bearing: secret masking -> policies -> command screening -> content screening -> limits -> guardrails -> judges -> approvals -> artifact spill.
+TXT
+# toolkit:enum wrapper-order (scripts/validate-toolkit.py compares the next line with the code)
+echo '- Governance wrapper order in manifests/builder.py is load-bearing: secret masking -> policies -> command screening -> content screening -> limits -> guardrails -> judges -> approvals -> artifact spill -> workspace scope.'
+cat <<'TXT'
 - Core never imports optional plugin packages; apps/api/src/felix_api/composition.py is the only place plugins are named (tests/unit/test_plugin_boundary.py enforces it).
 - Keep the default install/image lean: heavy deps live behind extras and are imported lazily inside functions.
 - New FELIX_ setting => felix/config.py + .env.example + README table.

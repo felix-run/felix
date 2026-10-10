@@ -236,6 +236,125 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def workspace_edited(
+        self,
+        path: str,
+        *,
+        op: str = "write",
+        bytes: int | None = None,
+        to_path: str | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Tell the agent the operator changed a workspace file (`POST /chat/workspace/edited`).
+
+        `op` is `write`, `delete` or `rename` (which needs `to_path`); `bytes` is the size after a
+        write. Returns `{"status": "queued" | "recorded", "thread_id", "event_id"}`: `queued` when
+        a run in flight will read it before its next model call, `recorded` when it was appended
+        for the next run.
+        """
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for workspace_edited")
+        body: dict[str, Any] = {"thread_id": tid, "path": path, "op": op}
+        if bytes is not None:
+            body["bytes"] = bytes
+        if to_path is not None:
+            body["to_path"] = to_path
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/workspace/edited",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    def _workspace_thread(self, thread_id: str | None, what: str) -> str:
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError(f"thread_id required for {what}")
+        return tid
+
+    async def workspace_tree(
+        self, *, thread_id: str | None = None, limit: int | None = None, manifest: str | None = None
+    ) -> dict[str, Any]:
+        """Every file and directory in the thread's workspace (`GET /chat/workspace/tree`).
+
+        Returns `{"root_kind": "scoped" | "checkout", "scope", "manifest", "entries": [{"path",
+        "type": "file" | "dir", "bytes"?}], "truncated"}`. The harness decides which workspace from
+        the manifest the thread last ran under; `manifest` only names the one a thread that has
+        never run will use. `limit` defaults to the server's (2,000; at most 5,000).
+        """
+        params: dict[str, Any] = {"thread_id": self._workspace_thread(thread_id, "workspace_tree")}
+        if limit is not None:
+            params["limit"] = limit
+        if manifest is not None:
+            params["manifest"] = manifest
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/chat/workspace/tree", headers=self._headers(), params=params
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def workspace_read(
+        self, path: str, *, thread_id: str | None = None, manifest: str | None = None
+    ) -> dict[str, Any]:
+        """One workspace file, whole (`GET /chat/workspace/file`).
+
+        Returns `{"path", "bytes", "sha256", "encoding": "utf-8" | "base64", "content"}`. Pass the
+        `sha256` back to `workspace_write` as `expected_sha256` to refuse a save over a file the
+        agent has changed since. A file over 512,000 bytes is a 413.
+        """
+        params: dict[str, Any] = {
+            "thread_id": self._workspace_thread(thread_id, "workspace_read"),
+            "path": path,
+        }
+        if manifest is not None:
+            params["manifest"] = manifest
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                f"{self.base_url.rstrip('/')}/chat/workspace/file", headers=self._headers(), params=params
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def workspace_write(
+        self,
+        path: str,
+        content: str,
+        *,
+        expected_sha256: str | None = None,
+        thread_id: str | None = None,
+        manifest: str | None = None,
+        lease_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace a workspace file with `content` and tell the agent (`POST /chat/workspace/write`).
+
+        Returns `{"status": "queued" | "recorded", "path", "bytes", "sha256", "event_id"}`. With
+        `expected_sha256` the write is refused, as an `httpx.HTTPStatusError` carrying a 409 whose
+        body is `{"detail": "workspace_changed", "sha256", "bytes"}`, when the file is no longer
+        what was read. `lease_token` is sent as `X-Felix-Lease-Token`.
+        """
+        body: dict[str, Any] = {
+            "thread_id": self._workspace_thread(thread_id, "workspace_write"),
+            "path": path,
+            "content": content,
+        }
+        if expected_sha256 is not None:
+            body["expected_sha256"] = expected_sha256
+        if manifest is not None:
+            body["manifest"] = manifest
+        headers = self._headers()
+        if lease_token:
+            headers["x-felix-lease-token"] = lease_token
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/workspace/write", headers=headers, json=body
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def fork(
         self,
         new_thread_id: str,

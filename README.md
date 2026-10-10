@@ -363,6 +363,8 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
 | Durable run poll | `GET /chat/runs/{resume_token}` |
 | Steer / follow-up | `POST /chat/steer` |
+| Operator edited a workspace file | `POST /chat/workspace/edited` |
+| Thread workspace files (file pane) | `GET /chat/workspace/tree`, `GET /chat/workspace/file`, `POST /chat/workspace/write` |
 | Abort / continue | `POST /chat/abort`, `POST /chat/continue` |
 | Thinking level | `POST /chat/thinking` |
 | Session snapshot | `GET /chat/sessions`, `GET /chat/sessions/{id}` |
@@ -370,6 +372,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Session lease | `POST /chat/sessions/lease`, `…/lease/release`, `GET /chat/sessions/{id}/lease` |
 | Session name / label / export | `POST /chat/sessions/name`, `…/label`, `GET …/export` |
 | Compact / UI prompt | `POST /chat/compact`, `POST /chat/ui` |
+| Side question (read-only) | `POST /chat/ask` |
 | Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
 | OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
 | A2A JSON-RPC | `POST /a2a` |
@@ -393,13 +396,17 @@ way. Non-browser clients — the CLI, `felix-client`, curl, other services — a
 
 A failed send is safe to resend: `POST /chat` and `POST /chat/stream` take an `Idempotency-Key` header, and a resend under the same key never runs a second turn — `/chat` returns the stored response, `/chat/stream` replays what the first request wrote to its thread (see [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md)). Session leases are advisory by default; `FELIX_LEASE_ENFORCE=strict` refuses a driving request that presents no `X-Felix-Lease-Token` while another client holds the thread.
 
+An operator who edits, deletes or renames a workspace file directly can say so with `POST /chat/workspace/edited` (`{thread_id, path, op: write|delete|rename, bytes?, to_path?}` — structure only; the server writes the text the model reads). A run in flight reads it before its next model call without cancelling any tool call, unlike a steer, and its stream carries a `workspace_note` frame (`{path, op, bytes}`, plus `to_path` for a rename); with no run in flight it is appended for the next one. Either way the thread's log holds it once, as an in-context `custom` entry with `metadata.type: workspace_edit`. Lease-guarded like `/chat/steer`.
+
+A client can also show and edit the thread's workspace itself, in the same directory the agent's next turn works in. `GET /chat/workspace/tree?thread_id=` lists it recursively (`{root_kind: scoped|checkout, scope, manifest, entries: [{path, type: file|dir, bytes?}], truncated}`; `limit` defaults to 2,000, at most 5,000; no symlink is followed or listed, and `.git` and `.felix-scopes` are left out). `GET /chat/workspace/file?thread_id=&path=` returns one file whole (`{path, bytes, sha256, encoding: utf-8|base64, content}`), refusing one over the workspace tools' 512,000-byte read cap with `413 too_large`. `POST /chat/workspace/write` (`{thread_id, path, content, expected_sha256?}`) replaces a file atomically and folds in the same note `/chat/workspace/edited` sends; with `expected_sha256` it is refused with `409 {detail: workspace_changed, sha256, bytes}` when the file is no longer what was read, so an operator's save never silently overwrites the agent's. The workspace is decided server-side: a thread's repository checkout when it has one, otherwise the `spec.workspace.scope` of the manifest the thread last ran under — or, for a thread that has never run, of the `manifest` the caller names (else `FELIX_DEFAULT_MANIFEST`). The caller never chooses a scope. Writes are lease-guarded and audited as `workspace_write`. Each `/v1/models` entry says where its agent keeps files: `felix.workspace` is `{tools: server|client|both|none, scope}`.
+
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`; `?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client (**experimental**): the `felix-client` package — `from felix_client import
-FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`,
-`set_model`), durable runs with their polling, and approvals. It depends on httpx and nothing in
+FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `workspace_edited`, `fork`, `rewind`,
+`set_model`), the thread's workspace (`workspace_tree`, `workspace_read`, `workspace_write`), durable runs with their polling, and approvals. It depends on httpx and nothing in
 Felix, so installing it does not install the server; its surface may change between releases
 without a deprecation period. Not yet on PyPI — install it from the repository:
 `pip install "felix-client @ git+https://github.com/felix-run/felix#subdirectory=packages/client"`.
@@ -671,7 +678,8 @@ Sessions and skills:
 - **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills` (which *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue; set `spec.skills_declared_only: true` to make the declared names the whole set). `spec.personal_skills: read` also offers each authenticated caller the live skills in their own library, ahead of the tenant's, so one of theirs shadows a tenant skill of its name for them alone — never a skill the manifest names in `spec.skills`. It is `off` by default and refused with `skills_declared_only`; a durable run keeps the library of the caller who started it; an anonymous caller (and `auth_mode=none`) has none. A caller reads their own library at `/skill-library/~me` and, with `skills:personal`, writes it (within `FELIX_SKILL_PERSONAL_MAX_BYTES`, 50 MiB by default; see `deploy/GOVERNANCE.md`), and an administrator can list, read and archive anyone's. `spec.personal_skills: write` (which needs `spec.skill_authoring.enabled`) points the agent's authoring there too: `create_skill` saves into the caller's library and `update_skill` edits a skill in the library it came from, for a caller holding `skills:personal`; a caller without a library or the scope is refused, never redirected to the tenant's. An approval of such a save binds the library it goes into, and in publish mode a personal skill that would replace a tenant skill waits for its owner to publish it.
   Bundled: `calculator-help`, plus the developer set used by the `contributor` manifest —
   `felix-architecture`, `felix-conventions`, `felix-testing`, `felix-contributing`
-- **Session strategies**: `compacting` (token-threshold), `windowed:N`, `semantic:N`, `full_replay`
+<!-- toolkit:enum session-strategies -->
+- **Session strategies**: `compacting` (token-threshold), `windowed:N`, `summarizing:N` (compacting that keeps at least N turns), `semantic:N`, `full_replay`<!-- /toolkit:enum -->
   — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider
   rejects a request for length anyway. When the kept window starts mid-turn, that turn's opening
   user message is kept verbatim (up to 16,000 characters) and its earlier steps get a separate,

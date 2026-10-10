@@ -27,7 +27,9 @@ writes touches this host.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -39,13 +41,17 @@ import httpx
 
 from felix.tools.workspace import NotAFileError
 from felix.tools.workspace_backend import (
+    CheckedWriteResult,
     EditRefused,
     EditResult,
     ListResult,
     ReadResult,
     SearchResult,
+    TreeResult,
+    WorkspaceChanged,
     WorkspaceScope,
     WriteResult,
+    pane_hides,
 )
 
 if TYPE_CHECKING:
@@ -117,6 +123,20 @@ def gateway_path(settings: Settings, scope: WorkspaceScope) -> str:
     rel = scope_relpath(settings, scope.tenant_id, scope.thread_id, scope.scope)
     _, tenant, key = rel.split("/")
     return f"{tenant}/{key}"
+
+
+# The gateway has no recursive listing, so the file pane's tree is walked one `list` call per
+# directory. Bounded in calls as well as entries: a tree of many small directories would otherwise
+# cost one round trip each up to the entry limit.
+_TREE_MAX_DIRS = 400
+# `list`'s own cap per directory (`_MAX_LIST_ENTRIES` in the helper, as locally): a directory that
+# answers this many may have had more.
+_LIST_CAP = 500
+# Per process, per scope and path: orders a conditional write from the file pane against the next
+# one from this process. It cannot order against a write that reaches the sandbox from anywhere
+# else -- a tool call in another replica, or on the worker -- because the gateway has no
+# compare-and-write; see `write_file_checked`.
+_checked_write_locks: dict[str, asyncio.Lock] = {}
 
 
 class HostedBackend:
@@ -232,6 +252,92 @@ class HostedBackend:
         body = {"path": path, "query": query, "regex": regex, "max_hits": max_hits}
         out = await self._call(scope, "search", body)
         return SearchResult(hits=list(out["hits"]))
+
+    async def tree(self, scope: WorkspaceScope | None, limit: int) -> TreeResult:
+        if self._is_local(scope):
+            return await self._local().tree(scope, limit)
+        assert scope is not None
+        entries: list[dict[str, Any]] = []
+        truncated = False
+        # Pre-order, as the local walk: a stack of directories still to list, each listing's
+        # children reverse-sorted so `pop` takes them in name order.
+        stack: list[list[dict[str, Any]]] = [await self._tree_level(scope, ".")]
+        listed_dirs = 1
+        while stack:
+            pending = stack[-1]
+            if not pending:
+                stack.pop()
+                continue
+            if len(entries) >= limit:
+                truncated = True
+                break
+            item = pending.pop()
+            if item.get("_more"):
+                truncated = True
+                continue
+            path = str(item["path"])
+            if item["type"] == "file":
+                entries.append({"path": path, "type": "file", "bytes": int(item.get("size", 0))})
+                continue
+            entries.append({"path": path, "type": "dir"})
+            if listed_dirs >= _TREE_MAX_DIRS:
+                truncated = True
+                continue
+            listed_dirs += 1
+            try:
+                stack.append(await self._tree_level(scope, path))
+            except FileNotFoundError, NotADirectoryError, NotAFileError:
+                continue  # gone, or swapped for something else, since its parent was listed
+        return TreeResult(entries=entries, truncated=truncated)
+
+    async def _tree_level(self, scope: WorkspaceScope, path: str) -> list[dict[str, Any]]:
+        out = await self._call(scope, "list", {"path": path})
+        raw = [e for e in out["entries"] if isinstance(e, dict)]
+        kept = [
+            e
+            for e in raw
+            if e.get("type") in ("file", "dir") and not pane_hides(str(e.get("path", "")).rsplit("/", 1)[-1])
+        ]
+        kept.sort(key=lambda e: (str(e["path"]).lower(), str(e["path"])), reverse=True)
+        if len(raw) >= _LIST_CAP:
+            # Popped after the directory's listed entries: the walk reports it as cut short.
+            kept.insert(0, {"_more": True})
+        return kept
+
+    async def write_file_checked(
+        self, scope: WorkspaceScope | None, path: str, data: bytes, expected_sha256: str | None
+    ) -> CheckedWriteResult:
+        """Read, compare, write -- three gateway calls, not one atomic operation.
+
+        The gateway has no conditional write, so this is as strong as a lock in this process makes
+        it: two saves from the file pane through this replica are ordered, but a tool call that
+        writes the same file from another replica or the worker between the read and the write is
+        not seen, and is overwritten. Moving the compare into the gateway's helper closes that.
+        """
+        if self._is_local(scope):
+            return await self._local().write_file_checked(scope, path, data, expected_sha256)
+        assert scope is not None
+        from felix.tools.workspace import _MAX_READ_BYTES
+
+        key = f"{gateway_path(self._settings, scope)}\0{path}"
+        async with _checked_write_locks.setdefault(key, asyncio.Lock()):
+            if expected_sha256 is not None:
+                try:
+                    out = await self._call(
+                        scope, "read", {"path": path, "offset": 0, "limit": _MAX_READ_BYTES}
+                    )
+                except FileNotFoundError:
+                    raise WorkspaceChanged(None) from None
+                size = int(out["size"])
+                if size > _MAX_READ_BYTES:
+                    raise WorkspaceChanged(None, size)
+                current = hashlib.sha256(base64.b64decode(out["data"])).hexdigest()
+                if current != expected_sha256:
+                    raise WorkspaceChanged(current, size)
+            written = await self.write_file(scope, path, data, False)
+        return CheckedWriteResult(
+            path=written.path, bytes=written.bytes, sha256=hashlib.sha256(data).hexdigest()
+        )
 
     async def exec(
         self, scope: WorkspaceScope, argv: list[str], cwd: str, stdin: str | None, timeout_ms: int

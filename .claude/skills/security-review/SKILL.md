@@ -2,6 +2,8 @@
 name: security-review
 description: Threat-model-driven security review of Felix changes — tenant isolation and RLS, auth modes and management scopes, the governance and screening pipeline, secret handling and masking, SSRF and outbound egress, sandboxes, approvals, and prompt-injection paths. Use before shipping changes to auth, governance, secrets, tools, or outbound integrations, and when asked for a security review or audit.
 allowed-tools: Read Grep Glob Bash(git:*) Bash(rg:*)
+metadata:
+  covers: felix/auth/, felix/security/, felix/secrets.py
 ---
 
 # Security review
@@ -30,6 +32,10 @@ Rank findings by this threat model:
 | Secret refs + masking | `manifests/secret_refs.py`, `secrets.py`, `builder.py:apply_secret_masking` |
 | Tenant RLS | `db/session.py` (`tenant_session`, `rls_bypass`), `migrations/versions/0006_tenant_rls.py` |
 | Outbound/inbound integrations | `mcp/`, `a2a/peers.py`, `tools/{sandboxes,queues,transports,client_bridge,browser}.py` |
+
+How each tool family runs, and the one rule each must keep, is in the **tools-runtime** skill
+(`.claude/skills/tools-runtime/SKILL.md`); the skill library's import screening and publish gate are
+in **skill-library**.
 
 Detailed checklist: [references/checklist.md](references/checklist.md).
 

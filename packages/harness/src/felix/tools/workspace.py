@@ -27,7 +27,7 @@ from felix.context import try_get_context
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider
 from felix.tools.types import ToolOutput, ToolOutputDict, define_tool
-from felix.tools.workspace_backend import EditRefused
+from felix.tools.workspace_backend import PANE_HIDDEN_PREFIX, EditRefused
 
 if TYPE_CHECKING:
     from felix.tools.workspace_backend import WorkspaceBackend, WorkspaceScope
@@ -56,7 +56,8 @@ _MAX_DIR_BATCH = 10_000
 # The temporary sibling an edit writes before renaming it over the target. Random, so a
 # directory or link planted under a predictable name cannot block every edit of a file, and
 # short and fixed-length, so a leaf near NAME_MAX still has a temporary name that fits.
-_EDIT_TMP_PREFIX = ".felix-edit-"
+# One spelling with the file pane's, which leaves these out of a listing.
+_EDIT_TMP_PREFIX = PANE_HIDDEN_PREFIX
 
 
 class PathArgs(BaseModel):
@@ -158,7 +159,14 @@ def workspace_parts(user_path: str) -> list[str]:
     """``user_path`` as plain components under the root, or ``ValueError``.
 
     `..` is applied lexically, which is exact here: with no symlink ever followed, the parent
-    of a component is the directory the walk came from.
+    of a component is the directory the walk came from. Each component is then a single name:
+    no separator, no NUL, nothing `.` or `..`, and at most 255 bytes (NAME_MAX on Linux and
+    macOS; past it the open fails with ENAMETOOLONG, which read as an internal error).
+
+    The containment that matters is the walk -- every component opened from its parent's
+    descriptor with `O_NOFOLLOW` (`open_workspace_parent`). The normalise-and-prefix check at the
+    end restates it in the form a static analyser recognises as a path barrier, and the
+    components returned are the ones that passed it.
     """
     raw = (user_path or ".").strip() or "."
     if Path(raw).is_absolute():
@@ -174,8 +182,18 @@ def workspace_parts(user_path: str) -> list[str]:
             continue
         if "\0" in seg:
             raise ValueError("path contains a NUL byte")
+        if os.altsep and os.altsep in seg:
+            raise ValueError("path contains a separator other than /")
+        if len(seg.encode("utf-8", "surrogateescape")) > 255:
+            raise ValueError("path component is longer than 255 bytes")
         parts.append(seg)
-    return parts
+    if not parts:
+        return []
+    anchor = "/workspace-root/"
+    checked = os.path.normpath(os.path.join(anchor, *parts))
+    if not checked.startswith(anchor):
+        raise ValueError("path escapes workspace root")
+    return checked[len(anchor) :].split("/")
 
 
 def open_at(dir_fd: int, name: str, flags: int, shown: str, mode: int = 0o600) -> int:
@@ -668,6 +686,11 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
         return _os_failed(exc)
 
 
+# The tools `register_workspace_tools` binds, by name: what a manifest's `spec.tools` lists to work
+# in the harness's workspace (`felix.usage.catalog.workspace_summary` reads it).
+WORKSPACE_TOOL_NAMES = frozenset({"list_dir", "read_file", "write_file", "edit_file", "search_files"})
+
+
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
     provider.register(
         "list_dir",
@@ -723,6 +746,7 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
 
 
 __all__ = [
+    "WORKSPACE_TOOL_NAMES",
     "EditFileArgs",
     "NotAFileError",
     "PathArgs",

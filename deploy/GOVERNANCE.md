@@ -1720,7 +1720,8 @@ holder has since taken is `409 lease_held`. A request without the header is not 
 caller that never takes a lease (a script, `/v1`, A2A) is unaffected — which also means the
 header protects a client from its own mistakes, not the thread from a caller that omits it.
 `/chat/fork` only reads its source and `/chat/sessions/feedback` rates a reply without writing
-the log, so neither checks it. Approvals are decided through `/approvals`, gated on the
+the log, so neither checks it. Nor does `/chat/ask`, which writes nothing to the thread; see
+below. Approvals are decided through `/approvals`, gated on the
 `approvals:write` scope, not on a lease.
 
 **`FELIX_LEASE_ENFORCE=strict` makes the lease binding** on those same routes. A request
@@ -1738,6 +1739,31 @@ caller in the tenant may acquire a lease, and with no lease taken nothing is ref
 Leases live in Redis so they hold across replicas, and every transition is one `WATCH`/`MULTI`
 transaction, so two replicas cannot both grant the exclusive hold. Without Redis they fall back
 to per-process state, where each replica can grant its own.
+
+## Side questions
+
+`POST /chat/ask` answers one question about a thread without adding to it, and it is governed as
+a turn of that thread is. The manifest is the thread's own, the one its last turn ran under
+(`404 unknown_thread` for a thread with none); the caller does not choose it. Before any model
+call it passes the turn's admission: the manifest's `spec.auth.inbound`, its compile pin
+(`409` on drift, as a turn gets), `validate_governance` including `auth.outbound.providers`, and
+the measurable-cost check. The question goes through the manifest's input screening (content
+screening and input PII), the rendered history through its replay image screening, and the
+answer through its reply controls: PII redacted or blocked, and a final-response judge's denial
+returned as `status: withheld` with the denial as the answer (a PII block reads `withheld` too).
+The history reaches the model as one transcript, fenced as untrusted data the way a summariser's
+is, so thread content written to look like the transcript's end and a question of its own stays
+inside the fence. A manifest with `sub_agents` is asked under a neutral prompt rather than its own,
+which is a router's or planner's; its admission and controls still apply.
+
+What it skips is every write to the thread. The history is rendered from the stored summary and
+the window a pass would keep (`stored_summary_only` in the render options), with no summariser
+call and no `before_compact` / `compact_failed` hook, so it costs one model call however long the
+thread is; nothing is appended to the session log, no lease is taken or checked, no phase, pin,
+steer or follow-up is touched, and this process's leaf index for the thread is not moved. (On
+Postgres, reading the leaf of a thread whose state row predates leaf tracking adopts it, as an
+export or a snapshot does.) A plugin session strategy that summarises should honour
+`stored_summary_only`; one that does not still cannot write, but its summary call is billed. It is metered under the manifest and audited as `side_question`.
 
 ## Browser-facing posture
 

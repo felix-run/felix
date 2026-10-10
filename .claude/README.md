@@ -47,9 +47,12 @@ these skills are portable to any skills-compatible agent.
 |---|---|
 | `felix-dev-loop` | Install, run, the test tiers, and the three gate tiers (`make check`, `make check-ci`, CI-only) |
 | `model-layer` | `felix_ai`, providers and routes, the catalog, caching, metering, decision models and their consumers |
-| `manifest-authoring` | Writing `felix/v1` manifests; adding a spec field (+ `references/spec-fields.md`) |
+| `manifest-authoring` | Writing `felix/v1` manifests; adding a spec field (+ `references/spec-fields.md`); session and memory internals |
+| `tools-runtime` | How a bound tool runs: executor, transports, shell, workspaces, fetch/search, MCP client, client tools |
+| `durable-execution` | Durable runs, resume, webhooks, waiters, idempotency, scheduled jobs, the worker |
+| `skill-library` | Agent Skills: loading, the library, import and screening, publishing, upstream updates |
 | `governance-pipeline` | The compile pipeline and tool wrapper stack; adding a control |
-| `api-surface` | Adding/changing REST, `/v1`, A2A, MCP, and management endpoints |
+| `api-surface` | Adding/changing REST, `/v1`, A2A, MCP, and management endpoints; the Python client |
 | `postgres-migrations` | Alembic revisions, RLS, pgvector, in-memory twins |
 | `plugin-seam` | Optional features, extras, and the lean-default rule |
 | `security-review` | Threat model and control map (+ `references/checklist.md`) |
@@ -121,11 +124,52 @@ CI validates this directory on every change (the `toolkit` job runs
 `scripts/validate-toolkit.py`; `make toolkit` locally): hook scripts and `hooks/lib/` parse and are
 executable, `settings.json` references only scripts that exist, subagent frontmatter is
 well-formed and every preloaded skill exists, skill frontmatter stays inside the six Agent Skills
-spec fields and every linked `references/*.md` exists — and **every repo path, `file.py:symbol`
+spec fields (`metadata.covers` included) and every linked `references/*.md` exists — and **every repo path, `file.py:symbol`
 and `make` target the Markdown here cites still exists**, and every route module is mapped to a
 docs page. The toolkit is prose about the tree; that last check is what keeps it from rotting
 unnoticed, as it had (a migration list eleven revisions behind, and a tests directory for evals
 that was never there).
+
+A path that still exists can still be described wrongly, and that is the drift a citation check
+cannot see: six copies of the governance wrapper order fell one wrapper behind while every file
+they named stayed put. So **a list that restates something the code defines carries a marker** —
+`<!-- toolkit:enum KEY -->` on the line before it in Markdown, `# toolkit:enum KEY` before the line
+in a hook — and the validator compares it with the code:
+
+| Key | Compared with |
+|---|---|
+| `wrapper-order` | `EXPECTED_WRAPPER_ORDER` in `tests/unit/test_invariants.py` — every wrapper, in order, and no more |
+| `middleware-order` | the `add_middleware` calls in `apps/api/src/felix_api/app.py`, reversed into runtime order |
+| `route-modules` | `apps/api/src/felix_api/routes/*.py` — each named, none invented |
+| `spec-fields` | the `Spec` properties in `schemas/manifest.schema.json`, read from the table's first column |
+| `session-strategies` | `_BUILTIN_STRATEGY_PREFIXES` in `packages/harness/src/felix/session/strategies.py` |
+| `decider-consumers` | every boolean `decider` flag in the manifest schema, by dotted path |
+| `cli-commands` | the top-level commands and sub-apps in `apps/cli/src/felix_cli/main.py` |
+
+The marker governs the next fenced block, else the next paragraph or table (a blank line or a new
+list item ends it); in a hook, the next line. An inline list that runs on into other prose ends at
+`<!-- /toolkit:enum -->`, so a name the paragraph mentions again later cannot stand in for one the
+list dropped. Ordered lists are read element by element between the arrows; set lists both ways —
+nothing missing, nothing the code does not define. `EXPECTED_MARKERS` in the validator lists where each
+marker lives, so deleting one fails like a wrong list would. Writing a new copy of one of these
+lists? Mark it and add it there — or better, point at the existing one instead of copying it.
+
+Neither check notices what the toolkit never describes, and for months `felix/tools/`,
+`felix/skills/` and `felix/durability/` — over 20k lines between them — had no skill at all. So
+**every subpackage, and every module of 300 lines or more, in `felix`, `felix_ai`, `felix_client`,
+`felix_api`, `felix_cli` and `felix_worker` has an owner**: a skill whose frontmatter claims it,
+
+```yaml
+metadata:
+  covers: felix/durability/, felix/jobs/, felix_worker/
+```
+
+or an entry in `UNOWNED` in the validator saying why none does yet. Paths are import-path
+spelling; a directory covers everything under it. The smaller packages may be claimed whole
+(`felix_api/`); `felix` may not, since one entry would own every new harness package unread. A new package fails the validator until someone
+decides which skill describes it. `UNOWNED` only shrinks: an entry that a skill now covers, or that
+no longer exists, fails until it is removed. Owning code means the skill is where an agent learns
+how it works — and the one to re-read when it changes.
 
 Test a hook by feeding it its event JSON:
 

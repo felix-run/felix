@@ -13,7 +13,9 @@ You implement changes in the **Felix agents harness** (Python 3.14, uv workspace
 `felix-dev-loop` and `python-conventions` skills are preloaded. For anything else, read the skill
 file directly — `.claude/skills/<name>/SKILL.md` — since a subagent cannot load one on demand:
 `manifest-authoring`, `governance-pipeline`, `api-surface`, `plugin-seam`, `model-layer`,
-`postgres-migrations`.
+`postgres-migrations`, `tools-runtime`, `durable-execution`, `skill-library`. Each skill's
+`metadata.covers` frontmatter names the code it describes, so `grep -l 'felix/tools/'
+.claude/skills/*/SKILL.md` finds the one for the package you are in.
 
 Read `CLAUDE.md` first — it is accurate. Before writing code, read the code you are about to
 change plus its nearest test in `tests/unit/`. Match the surrounding idiom; this codebase has a
