@@ -1057,8 +1057,9 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       thread, expiring with what started it, read with `task_result`; `subagent_start`/`subagent_end` frames
       for `task`. *Next:* a `task` entry that names a peer so local and A2A delegates share one
       tool; the same frames for router/parallel/groupchat (*Headless / contract*); plan mode as a
-      permission mode. `todo_write` (any pattern, via `spec.tools`): the run's checklist, kept in
-      thread meta, on the snapshot as `todos`, announced as `todo_updated`.
+      permission mode. `todo_write` (any pattern, via `spec.tools`): the run's checklist, read off
+      the current branch onto the snapshot as `todos` (follows rewind/fork), announced as
+      `todo_updated`.
 - [ ] **W2 — permissions, hooks, commands.** Per-session modes (`default | accept_edits | plan |
       bypass`) as one deliberate new governance slot ahead of approvals; declarative `spec.hooks`
       with `session_start`, `user_prompt_submit`, `stop` and `subagent_stop` events, delivered over

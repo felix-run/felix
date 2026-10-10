@@ -118,3 +118,91 @@ async def test_it_is_bound_only_where_a_manifest_names_it(boot: Any) -> None:
     ) as app:
         await _stream(app)
         assert "todo_write" not in app.spy.tools[0]
+
+
+async def test_frame_and_snapshot_carry_the_same_items_whole(boot: Any) -> None:
+    """Every field, ids included, on both surfaces -- not just the ones the first test reads."""
+    item = {"content": "Run the tests", "status": "in_progress", "active_form": "Running the tests"}
+    script = [
+        ScriptedTurn(tool_calls=[ToolCall(id="t1", name="todo_write", args={"todos": [item]})]),
+        ScriptedTurn(content="ok"),
+    ]
+    async with boot(script, manifests={"e2e-todo": _agent()}) as app:
+        frames = await _stream(app)
+        [update] = [f["data"]["todos"] for f in frames if f.get("event") == "todo_updated"]
+        assert update == [{"id": "1", **item}]
+        assert await _snapshot_todos(app) == update
+
+
+async def test_an_empty_write_clears_the_list(boot: Any) -> None:
+    script = [
+        _write("t1", ("A", "in_progress"), ("B", "pending"), ("C", "pending")),
+        _write("t2"),
+        ScriptedTurn(content="nothing left"),
+    ]
+    async with boot(script, manifests={"e2e-todo": _agent()}) as app:
+        frames = await _stream(app)
+        updates = [f["data"]["todos"] for f in frames if f.get("event") == "todo_updated"]
+        assert [len(u) for u in updates] == [3, 0]
+        assert await _snapshot_todos(app) == []
+        assert "Todo list cleared." in _text(app.spy.prompts[2])
+
+
+async def test_a_refused_write_leaves_the_last_good_list(boot: Any) -> None:
+    script = [
+        _write("t1", ("A", "in_progress"), ("B", "pending")),
+        _write("t2", ("A", "in_progress"), ("B", "in_progress")),
+        ScriptedTurn(content="kept"),
+    ]
+    async with boot(script, manifests={"e2e-todo": _agent()}) as app:
+        await _stream(app)
+        assert [(t["content"], t["status"]) for t in await _snapshot_todos(app)] == [
+            ("A", "in_progress"),
+            ("B", "pending"),
+        ]
+
+
+async def test_a_rewind_shows_the_list_that_branch_had(boot: Any) -> None:
+    """The list is read off the current branch, so rewinding past a write undoes it on screen."""
+    script = [
+        _write("t1", ("First plan", "in_progress")),
+        ScriptedTurn(content="turn one done"),
+        _write("t2", ("Second plan", "in_progress")),
+        ScriptedTurn(content="turn two done"),
+    ]
+    async with boot(script, manifests={"e2e-todo": _agent()}) as app:
+        await _stream(app, "one")
+        await _stream(app, "two")
+        assert [t["content"] for t in await _snapshot_todos(app)] == ["Second plan"]
+
+        snapshot = (await app.client.get(f"/chat/sessions/{THREAD}")).json()
+        [end_of_one] = [i for i in snapshot["transcript"] if i.get("content") == "turn one done"]
+        event_id = end_of_one["metadata"]["event_id"]
+        resp = await app.client.post("/chat/rewind", json={"thread_id": THREAD, "event_id": event_id})
+        assert resp.status_code == 200, resp.text
+        assert [t["content"] for t in await _snapshot_todos(app)] == ["First plan"]
+
+
+async def test_it_works_on_a_turn_with_no_thread(boot: Any) -> None:
+    script = [_write("t1", ("A", "pending")), ScriptedTurn(content="ok")]
+    async with boot(script, manifests={"e2e-todo": _agent()}) as app:
+        resp = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "e2e-todo", "messages": [{"role": "user", "content": "go"}]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert "Todo list updated: 0/1 completed." in _text(app.spy.prompts[1])
+
+
+async def test_a_write_governance_refused_is_not_the_list(boot: Any) -> None:
+    """Valid arguments, refused by `limits`: the call is in the transcript, but it changed
+    nothing, so the snapshot keeps the list the last *successful* write left."""
+    script = [
+        _write("t1", ("Kept", "in_progress")),
+        _write("t2", ("Never written", "in_progress")),
+        ScriptedTurn(content="out of calls"),
+    ]
+    async with boot(script, manifests={"e2e-todo": _agent(limits={"max_tool_calls": 1})}) as app:
+        await _stream(app)
+        assert "max_tool_calls (1) exceeded" in _text(app.spy.prompts[2])
+        assert [t["content"] for t in await _snapshot_todos(app)] == ["Kept"]
