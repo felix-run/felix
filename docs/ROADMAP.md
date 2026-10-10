@@ -1936,10 +1936,10 @@ cycle's, and the route contracts below are the next capability-adjacent step.
   - [x] `tests/support/`: the 13 root helpers move into one package. The 18 cross-test imports go
         through it, an invariant forbids new ones, and `factories.py` holds `make_settings`
         and `app_client`.
-  - [ ] `tests/fixtures/` for test-only data (`fixtures/skills`, recorded SSE, shared SKILL.md
-        bodies). `fixtures/eval` stays at the root, because `felix eval` and CI read it. Also: the
-        remaining ~85 local `_settings` copies onto `make_settings`, the redundant
-        `@pytest.mark.asyncio`, declared markers and `--strict-markers`, and `tests/README.md`.
+  - [x] `tests/fixtures/` (`fixtures/skills` moved there), `tests/README.md`, one SSE payload
+        parser and shared SKILL.md bodies in `tests/support/`, 48 more helpers on `make_settings`,
+        1746 redundant asyncio markers gone, `--strict-markers`/`--strict-config`, unraisable
+        exceptions as errors.
   - [ ] Onboarding: `make bootstrap`, `make db` for the without-Compose path, a `make check` that
         works on a lean install, generated `make help`, and local targets for the CI-only lock,
         dependency-age, helm and compose checks.
