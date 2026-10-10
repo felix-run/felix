@@ -21,7 +21,7 @@ from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 
-from tests.skill_import_fake import skill_md
+from tests.support.skill_import_fake import skill_md
 
 PLAYBOOK = (
     "# Refund playbook\n\n"

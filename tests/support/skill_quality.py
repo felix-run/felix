@@ -5,7 +5,7 @@ and gives each logical route its own queue of turns, so a test scripts "the impr
 the judge scores that" without caring how the calls interleave. Every call's messages are kept,
 which is the only evidence of what a model was *shown* -- the fencing assertions read them.
 
-A route that runs out of turns raises instead of inventing one, as `tests/e2e/conftest.py`
+A route that runs out of turns raises instead of inventing one, as `tests/support/e2e.py`
 does: an invented `ok` would read as a plausible answer and a test would pass on it. The jobs
 catch every exception and record it on their row, so the raise alone could pass for a job that
 failed on purpose; `exhausted` records each one, and `scripted_routes` fails the test at teardown

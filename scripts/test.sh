@@ -43,7 +43,7 @@ export FELIX_REDIS_URL=redis://127.0.0.1:9/0
 #
 # This stops the billing, not the egress: a blank key logs a warning and still sends an
 # unauthenticated request. Not reaching a vendor at all is the route map's job -- see
-# `tests/e2e/conftest.py`.
+# `tests/support/e2e.py:scripted_model_routes`.
 export FELIX_ANTHROPIC_API_KEY=""
 export FELIX_OPENAI_API_KEY=""
 export FELIX_SEARCH_API_KEY=""

@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from tests.helm import helm_or_skip, render
+from tests.support.helm import helm_or_skip, render
 
 ROOT = Path(__file__).resolve().parents[2]
 

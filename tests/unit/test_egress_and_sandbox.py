@@ -393,7 +393,7 @@ async def test_sandbox_kwargs_are_accepted_by_real_docker_py() -> None:
     This arm reads the SDK, so a kwarg that docker-py drops or renames fails here rather
     than in production.
     """
-    from tests.optional_deps import require_optional
+    from tests.support.optional_deps import require_optional
 
     models = require_optional("docker.models.containers", "sandbox")
     accepted = {

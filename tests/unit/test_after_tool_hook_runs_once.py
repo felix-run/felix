@@ -18,18 +18,11 @@ Verified against the pre-fix code, which is why this file exists rather than a n
 from __future__ import annotations
 
 import pytest
-from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.hooks import get_agent_hooks
 from felix.patterns import tool_runner
 from felix.patterns.tool_runner import ToolRunner
 from felix.patterns.types import ToolCall
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput
-
-
-@pytest.fixture(autouse=True)
-def _clean_hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 class _Succeeds:

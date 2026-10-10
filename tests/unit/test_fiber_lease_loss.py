@@ -17,15 +17,11 @@ import pytest
 from felix.config import Settings
 from felix.durability import fibers as F
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(
-        database_url="memory://fiber-lease-loss",
-        object_store="memory",
-        auth_mode="none",
-        allow_insecure=True,
-        host="127.0.0.1",
-    )
+    return make_settings(host="127.0.0.1")
 
 
 async def _claimed(settings: Settings) -> dict[str, Any]:

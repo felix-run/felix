@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.compose_yaml import load_compose as _load
+from tests.support.compose_yaml import load_compose as _load
 
 ROOT = Path(__file__).resolve().parents[2]
 OVERLAY = ROOT / "deploy" / "docker" / "compose.pgbouncer.yml"

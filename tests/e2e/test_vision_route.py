@@ -15,13 +15,13 @@ from typing import Any
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.e2e.conftest import DEFAULT_ROUTE, WIRE_MODEL, _scripted_routes
+from tests.support.e2e import DEFAULT_ROUTE, WIRE_MODEL, scripted_model_routes
 
 PNG = "data:image/png;base64,iVBORw0KGgo="
 
 
 def _routes_with_text_only_default() -> str:
-    routes: dict[str, dict[str, Any]] = dict(_scripted_routes())
+    routes: dict[str, dict[str, Any]] = dict(scripted_model_routes())
     routes[DEFAULT_ROUTE] = {"provider": "scripted", "model": WIRE_MODEL, "modalities": ["text"]}
     routes["e2e-vision"] = {"provider": "scripted", "model": WIRE_MODEL, "modalities": ["text", "image"]}
     return json.dumps(routes)

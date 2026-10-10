@@ -26,25 +26,13 @@ from felix.config import Settings
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 from felix.thread_ids import effective_thread_id
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
+
+from tests.support.factories import app_client, make_settings
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://history",
-        redis_url="",
-    )
-
-
-def _client(settings: Settings) -> AsyncClient:
-    from felix_api.app import create_app
-
-    app = create_app(settings=settings, plugins=[])
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30.0)
+    return make_settings(redis_url="")
 
 
 async def _seed(settings: Settings, thread: str, count: int) -> None:
@@ -66,7 +54,7 @@ async def _history(client: AsyncClient, thread: str, **params: Any) -> dict[str,
 async def test_a_limit_returns_the_newest_events_not_the_oldest() -> None:
     settings = _settings()
     await _seed(settings, "newest", 40)
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _history(client, "newest", limit=10)
 
     contents = [m["content"] for m in body["messages"]]
@@ -81,7 +69,7 @@ async def test_paging_backwards_reaches_the_start_without_gaps() -> None:
     settings = _settings()
     await _seed(settings, "walk", 25)
     seen: list[str] = []
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _history(client, "walk", limit=10)
         while True:
             seen = [m["content"] for m in body["messages"]] + seen
@@ -96,7 +84,7 @@ async def test_paging_backwards_reaches_the_start_without_gaps() -> None:
 async def test_has_more_is_false_once_the_thread_fits() -> None:
     settings = _settings()
     await _seed(settings, "short", 5)
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _history(client, "short", limit=10)
     assert body["has_more"] is False
     assert body["oldest_seq"] == 0
@@ -110,7 +98,7 @@ async def test_the_response_is_bounded_even_with_no_limit_asked_for() -> None:
 
     settings = _settings()
     await _seed(settings, "capped", 60)
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _history(client, "capped")
 
     assert len(body["messages"]) == 60, "a thread below the cap should still return whole"
@@ -121,7 +109,7 @@ async def test_the_response_is_bounded_even_with_no_limit_asked_for() -> None:
 async def test_a_limit_of_zero_is_rejected_rather_than_returning_everything() -> None:
     settings = _settings()
     await _seed(settings, "zero", 3)
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         resp = await client.get("/chat/history/zero", params={"limit": 0})
     assert resp.status_code == 400, resp.status_code
 
@@ -129,7 +117,7 @@ async def test_a_limit_of_zero_is_rejected_rather_than_returning_everything() ->
 @pytest.mark.asyncio
 async def test_an_empty_thread_pages_cleanly() -> None:
     settings = _settings()
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _history(client, "empty", limit=10)
     assert body["messages"] == []
     assert body["has_more"] is False
@@ -152,7 +140,7 @@ async def test_the_cursor_survives_a_filtered_event_at_the_window_edge() -> None
             AppendableEvent(kind="message", role="user", content="newest"),
         ]
     )
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _history(client, "filtered", limit=2)
         assert body["oldest_seq"] == 1, f"cursor should be the window edge, got {body['oldest_seq']}"
         older = await _history(client, "filtered", limit=2, before_seq=body["oldest_seq"])

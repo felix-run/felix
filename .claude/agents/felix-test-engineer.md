@@ -27,11 +27,14 @@ test must clear. This file is only what those two do not say.
 
 - `asyncio_mode = "auto"`: write `async def test_…` with no decorator. 120s timeout, thread method.
 - `tests/conftest.py` resets the process-global `memory://` stores and scrubs ambient git variables
-  between tests. Build `Settings(...)` inline and pass it down; do not add global fixtures.
-- A test that needs an optional extra calls `tests/optional_deps.py:require_optional(module, extra)`,
+  between tests. Build settings with `tests/support/factories.py:make_settings(...)` and pass them
+  down; do not add global fixtures.
+- Shared helpers, fakes and factories live in `tests/support/`. Never import from another test
+  module or a conftest — an invariant fails it; move the shared piece into `tests/support/`.
+- A test that needs an optional extra calls `tests/support/optional_deps.py:require_optional(module, extra)`,
   never a bare `pytest.importorskip` (an invariant enforces it; CI sets
   `FELIX_REQUIRE_OPTIONAL_EXTRAS=1` so a missing extra fails instead of vanishing).
-- A test that makes a throwaway git repo uses `tests/git_fixture.py`.
+- A test that makes a throwaway git repo uses `tests/support/git_fixture.py`.
 - Fakes over mocks: `fakeredis`, the in-memory store twins, `httpx` ASGI transport. A mock where a
   twin exists is a finding in review.
 - Model calls are never real — `scripts/test.sh` blanks every vendor credential. Use the scripted

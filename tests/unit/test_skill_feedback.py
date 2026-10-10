@@ -26,7 +26,7 @@ from felix.skills.library_store import get_skill_library_store
 from felix.skills.loader import load_manifest_skills
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 
-from tests.skill_quality import (
+from tests.support.skill_quality import (
     IMPROVER,
     NAME,
     TENANT,

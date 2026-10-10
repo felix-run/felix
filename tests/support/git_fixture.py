@@ -27,6 +27,21 @@ import os
 import subprocess
 from pathlib import Path
 
+# Variables that redirect git away from the repository a command names. `tests/conftest.py`
+# pops them once for the whole session; the comment there says why.
+GIT_REDIRECTS = frozenset(
+    (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+    )
+)
+
 
 def git(repo: Path | str, *args: str, check: bool = True, extra: dict[str, str] | None = None) -> str:
     """Run `git <args>` against `repo`, immune to an ambient git environment.

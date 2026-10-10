@@ -12,19 +12,12 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
-from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.hooks import get_agent_hooks
 from felix.manifests.schema import ModelSpec
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, InvokeInput, ToolCall
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput
 from felix_ai.types import ModelChatResult, StreamDelta, TokenUsage
-
-
-@pytest.fixture(autouse=True)
-def _clean_hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 class _Recorder:

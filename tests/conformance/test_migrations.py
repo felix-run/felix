@@ -22,7 +22,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.conformance.conftest import downgrade_to_base, drop_everything, migrate_to_head, postgres_url
+from tests.support.backends import downgrade_to_base, drop_everything, migrate_to_head, postgres_url
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("empty_database")]
 

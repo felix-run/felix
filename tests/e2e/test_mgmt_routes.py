@@ -19,34 +19,7 @@ from typing import Any
 import pytest
 from felix_ai.providers.scripted import ScriptedTurn
 
-ADMIN = "sk-admin-not-a-secret"
-READER = "sk-reader-not-a-secret"
-WRITER = "sk-writer-not-a-secret"
-
-
-def _keys(*, reader: list[str], writer: list[str] | None = None) -> dict[str, str]:
-    """Three keys: `admin` bypasses everything, `reader` and `writer` hold one scope each.
-
-    The precise scopes matter. `admin` satisfies every gate by design, so a positive case
-    driven with the admin key cannot tell "this scope grants access" from "admin bypasses the
-    check" — and a route whose `require_mgmt_scopes` call was deleted would still pass it. The
-    writer key holds only the write scope under test, so its success is evidence about that
-    scope and nothing else.
-    """
-    return {
-        "FELIX_AUTH_MODE": "api_key",
-        "FELIX_AUTH_API_KEYS": json.dumps(
-            {
-                ADMIN: {"tenant_id": "default", "sub": "admin", "scopes": ["admin"]},
-                READER: {"tenant_id": "default", "sub": "reader", "scopes": reader},
-                WRITER: {"tenant_id": "default", "sub": "writer", "scopes": writer or []},
-            }
-        ),
-    }
-
-
-def _as(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+from tests.support.mgmt_keys import ADMIN, READER, WRITER, bearer, scoped_keys
 
 
 def _answer(text: str = "noted") -> ScriptedTurn:
@@ -62,7 +35,7 @@ async def test_a_job_round_trips_through_the_api(boot: Any) -> None:
     The delete is asserted by the 404 that follows it, not by its own status: a delete that
     answers `{"status": "deleted"}` and removes nothing is the failure worth catching.
     """
-    async with boot([], env=_keys(reader=["jobs:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["jobs:read"])) as app:
         created = await app.client.put(
             "/jobs/nightly",
             json={
@@ -71,11 +44,11 @@ async def test_a_job_round_trips_through_the_api(boot: Any) -> None:
                 "enabled": True,
                 "payload": {"note": "nightly sweep"},
             },
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert created.status_code == 200, created.text
 
-        fetched = await app.client.get("/jobs/nightly", headers=_as(ADMIN))
+        fetched = await app.client.get("/jobs/nightly", headers=bearer(ADMIN))
         assert fetched.status_code == 200, fetched.text
         assert fetched.json()["schedule"] == "0 3 * * *"
         assert fetched.json()["manifest_id"] == "quick"
@@ -84,33 +57,33 @@ async def test_a_job_round_trips_through_the_api(boot: Any) -> None:
         assert fetched.json()["enabled"] is True
         assert fetched.json()["payload"] == {"note": "nightly sweep"}
 
-        listing = await app.client.get("/jobs", headers=_as(ADMIN))
+        listing = await app.client.get("/jobs", headers=bearer(ADMIN))
         assert listing.status_code == 200, listing.text
         assert [row["name"] for row in listing.json()["items"]] == ["nightly"]
 
-        runs = await app.client.get("/jobs/nightly/runs", headers=_as(ADMIN))
+        runs = await app.client.get("/jobs/nightly/runs", headers=bearer(ADMIN))
         assert runs.status_code == 200, runs.text
         assert runs.json()["items"] == []
 
-        deleted = await app.client.delete("/jobs/nightly", headers=_as(ADMIN))
+        deleted = await app.client.delete("/jobs/nightly", headers=bearer(ADMIN))
         assert deleted.status_code == 200, deleted.text
-        assert (await app.client.get("/jobs/nightly", headers=_as(ADMIN))).status_code == 404
+        assert (await app.client.get("/jobs/nightly", headers=bearer(ADMIN))).status_code == 404
 
 
 async def test_a_schedule_outside_the_grammar_is_refused_and_nothing_is_stored(boot: Any) -> None:
     """It used to be stored and fired every sixty seconds, whatever it said."""
-    async with boot([], env=_keys(reader=["jobs:read"])) as app:
-        refused = await app.client.put("/jobs/daily", json={"schedule": "daily at 9"}, headers=_as(ADMIN))
+    async with boot([], env=scoped_keys(reader=["jobs:read"])) as app:
+        refused = await app.client.put("/jobs/daily", json={"schedule": "daily at 9"}, headers=bearer(ADMIN))
         assert refused.status_code == 422, refused.text
         assert "cron" in refused.json()["detail"]
-        assert (await app.client.get("/jobs/daily", headers=_as(ADMIN))).status_code == 404
+        assert (await app.client.get("/jobs/daily", headers=bearer(ADMIN))).status_code == 404
 
 
 async def test_an_unknown_job_is_a_404_on_both_read_and_delete(boot: Any) -> None:
     """A missing row must not read as an empty one, which a caller would treat as configured."""
-    async with boot([], env=_keys(reader=["jobs:read"])) as app:
-        assert (await app.client.get("/jobs/ghost", headers=_as(ADMIN))).status_code == 404
-        assert (await app.client.delete("/jobs/ghost", headers=_as(ADMIN))).status_code == 404
+    async with boot([], env=scoped_keys(reader=["jobs:read"])) as app:
+        assert (await app.client.get("/jobs/ghost", headers=bearer(ADMIN))).status_code == 404
+        assert (await app.client.delete("/jobs/ghost", headers=bearer(ADMIN))).status_code == 404
 
 
 async def test_writing_a_job_needs_a_write_scope(boot: Any) -> None:
@@ -118,20 +91,20 @@ async def test_writing_a_job_needs_a_write_scope(boot: Any) -> None:
 
     Read is asserted alongside so a blanket refusal cannot pass for scope enforcement.
     """
-    async with boot([], env=_keys(reader=["jobs:read"], writer=["jobs:write"])) as app:
+    async with boot([], env=scoped_keys(reader=["jobs:read"], writer=["jobs:write"])) as app:
         # The write scope alone grants the write: evidence about `jobs:write`, not about admin.
-        created = await app.client.put("/jobs/nightly", json={"schedule": "@daily"}, headers=_as(WRITER))
+        created = await app.client.put("/jobs/nightly", json={"schedule": "@daily"}, headers=bearer(WRITER))
         assert created.status_code == 200, created.text
 
-        assert (await app.client.get("/jobs", headers=_as(READER))).status_code == 200
+        assert (await app.client.get("/jobs", headers=bearer(READER))).status_code == 200
         # `x:write` implies `x:read`, so the writer can also list.
-        assert (await app.client.get("/jobs", headers=_as(WRITER))).status_code == 200
+        assert (await app.client.get("/jobs", headers=bearer(WRITER))).status_code == 200
 
-        refused = await app.client.put("/jobs/nightly", json={"schedule": "@hourly"}, headers=_as(READER))
+        refused = await app.client.put("/jobs/nightly", json={"schedule": "@hourly"}, headers=bearer(READER))
         assert refused.status_code == 403, refused.text
 
         # And the refusal actually prevented the write.
-        current = await app.client.get("/jobs/nightly", headers=_as(ADMIN))
+        current = await app.client.get("/jobs/nightly", headers=bearer(ADMIN))
         assert current.json()["schedule"] == "@daily", current.json()
 
 
@@ -153,24 +126,24 @@ async def test_jobs_are_partitioned_by_the_keys_tenant(boot: Any) -> None:
         ),
     }
     async with boot([], env=env) as app:
-        await app.client.put("/jobs/mine", json={"schedule": "@daily"}, headers=_as(ADMIN))
-        theirs = await app.client.put("/jobs/theirs", json={"schedule": "@hourly"}, headers=_as(READER))
+        await app.client.put("/jobs/mine", json={"schedule": "@daily"}, headers=bearer(ADMIN))
+        theirs = await app.client.put("/jobs/theirs", json={"schedule": "@hourly"}, headers=bearer(READER))
         assert theirs.status_code == 200, theirs.text
 
         # Each reads its own.
-        assert (await app.client.get("/jobs/theirs", headers=_as(READER))).status_code == 200
-        assert (await app.client.get("/jobs/mine", headers=_as(ADMIN))).status_code == 200
+        assert (await app.client.get("/jobs/theirs", headers=bearer(READER))).status_code == 200
+        assert (await app.client.get("/jobs/mine", headers=bearer(ADMIN))).status_code == 200
 
         # And neither reads the other's.
-        assert (await app.client.get("/jobs/mine", headers=_as(READER))).status_code == 404
-        assert (await app.client.get("/jobs/theirs", headers=_as(ADMIN))).status_code == 404
+        assert (await app.client.get("/jobs/mine", headers=bearer(READER))).status_code == 404
+        assert (await app.client.get("/jobs/theirs", headers=bearer(ADMIN))).status_code == 404
 
-        assert [r["name"] for r in (await app.client.get("/jobs", headers=_as(ADMIN))).json()["items"]] == [
-            "mine"
-        ]
-        assert [r["name"] for r in (await app.client.get("/jobs", headers=_as(READER))).json()["items"]] == [
-            "theirs"
-        ]
+        assert [
+            r["name"] for r in (await app.client.get("/jobs", headers=bearer(ADMIN))).json()["items"]
+        ] == ["mine"]
+        assert [
+            r["name"] for r in (await app.client.get("/jobs", headers=bearer(READER))).json()["items"]
+        ] == ["theirs"]
 
 
 async def test_a_job_cannot_be_deleted_across_the_tenant_boundary(boot: Any) -> None:
@@ -185,10 +158,10 @@ async def test_a_job_cannot_be_deleted_across_the_tenant_boundary(boot: Any) -> 
         ),
     }
     async with boot([], env=env) as app:
-        await app.client.put("/jobs/mine", json={"schedule": "@daily"}, headers=_as(ADMIN))
+        await app.client.put("/jobs/mine", json={"schedule": "@daily"}, headers=bearer(ADMIN))
 
-        assert (await app.client.delete("/jobs/mine", headers=_as(READER))).status_code == 404
-        assert (await app.client.get("/jobs/mine", headers=_as(ADMIN))).status_code == 200
+        assert (await app.client.delete("/jobs/mine", headers=bearer(READER))).status_code == 404
+        assert (await app.client.get("/jobs/mine", headers=bearer(ADMIN))).status_code == 200
 
 
 # --- eval ----------------------------------------------------------------------------------
@@ -197,22 +170,22 @@ async def test_a_job_cannot_be_deleted_across_the_tenant_boundary(boot: Any) -> 
 async def test_an_eval_dataset_round_trips(boot: Any) -> None:
     """Datasets are how a run is defined, so what comes back must be what went in."""
     items = [{"user_input": "what is 2+2?", "rubric": {"expect": "4"}}]
-    async with boot([], env=_keys(reader=["eval:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["eval:read"])) as app:
         created = await app.client.put(
             "/eval/datasets/smoke",
             json={"description": "arithmetic", "items": items},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert created.status_code == 200, created.text
 
-        fetched = await app.client.get("/eval/datasets/smoke", headers=_as(ADMIN))
+        fetched = await app.client.get("/eval/datasets/smoke", headers=bearer(ADMIN))
         assert fetched.status_code == 200, fetched.text
         body = fetched.json()
         assert body["description"] == "arithmetic"
         assert [i["user_input"] for i in body["items"]] == ["what is 2+2?"], body
         assert [i["rubric"] for i in body["items"]] == [{"expect": "4"}], body
 
-        listing = await app.client.get("/eval/datasets", headers=_as(ADMIN))
+        listing = await app.client.get("/eval/datasets", headers=bearer(ADMIN))
         # Exact, now that the stores are reset per test: this also catches a listing that
         # leaked another tenant's dataset or duplicated the row on re-put.
         assert [row["name"] for row in listing.json()["items"]] == ["smoke"], listing.json()
@@ -227,11 +200,11 @@ async def test_an_eval_item_with_unrecognised_keys_is_refused(boot: Any) -> None
     nothing. The rubric is still free-form; only shapes that cannot work are refused, and
     the message names the key that was found.
     """
-    async with boot([], env=_keys(reader=["eval:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["eval:read"])) as app:
         refused = await app.client.put(
             "/eval/datasets/mistyped",
             json={"items": [{"input": "what is 2+2?", "expect": "4"}]},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert refused.status_code == 422, refused.text
         errors = refused.json()["detail"]["errors"]
@@ -239,7 +212,7 @@ async def test_an_eval_item_with_unrecognised_keys_is_refused(boot: Any) -> None
 
         # And nothing was written: a refused write that half-applied would be worse than
         # the behaviour this replaced.
-        missing = await app.client.get("/eval/datasets/mistyped", headers=_as(ADMIN))
+        missing = await app.client.get("/eval/datasets/mistyped", headers=bearer(ADMIN))
         assert missing.status_code == 404, missing.text
 
 
@@ -250,11 +223,11 @@ async def test_an_eval_rubric_naming_no_rule_is_stored_with_a_warning(boot: Any)
     the non-empty rule, which passes any answer that is not blank. That is a real rule, so refusing it
     would be wrong; saying nothing is how a gate that gates nothing gets written.
     """
-    async with boot([], env=_keys(reader=["eval:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["eval:read"])) as app:
         created = await app.client.put(
             "/eval/datasets/loose",
             json={"items": [{"item_id": "a", "user_input": "anything", "rubric": {}}]},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert created.status_code == 200, created.text
         assert any("non-empty" in w for w in created.json()["warnings"]), created.json()
@@ -262,21 +235,21 @@ async def test_an_eval_rubric_naming_no_rule_is_stored_with_a_warning(boot: Any)
 
 async def test_writing_an_eval_dataset_needs_a_write_scope(boot: Any) -> None:
     """An eval a reader can rewrite is an eval nobody can trust."""
-    async with boot([], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
-        assert (await app.client.get("/eval/datasets", headers=_as(READER))).status_code == 200
+    async with boot([], env=scoped_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+        assert (await app.client.get("/eval/datasets", headers=bearer(READER))).status_code == 200
 
-        granted = await app.client.put("/eval/datasets/smoke", json={"items": []}, headers=_as(WRITER))
+        granted = await app.client.put("/eval/datasets/smoke", json={"items": []}, headers=bearer(WRITER))
         assert granted.status_code == 200, granted.text
 
-        refused = await app.client.put("/eval/datasets/smoke", json={"items": []}, headers=_as(READER))
+        refused = await app.client.put("/eval/datasets/smoke", json={"items": []}, headers=bearer(READER))
         assert refused.status_code == 403, refused.text
 
 
 async def test_an_unknown_eval_dataset_and_run_are_404(boot: Any) -> None:
     """Both id-addressed reads, because an empty body would read as a finished run."""
-    async with boot([], env=_keys(reader=["eval:read"])) as app:
-        assert (await app.client.get("/eval/datasets/ghost", headers=_as(ADMIN))).status_code == 404
-        assert (await app.client.get("/eval/runs/ghost", headers=_as(ADMIN))).status_code == 404
+    async with boot([], env=scoped_keys(reader=["eval:read"])) as app:
+        assert (await app.client.get("/eval/datasets/ghost", headers=bearer(ADMIN))).status_code == 404
+        assert (await app.client.get("/eval/runs/ghost", headers=bearer(ADMIN))).status_code == 404
 
 
 # --- audit ---------------------------------------------------------------------------------
@@ -290,16 +263,16 @@ async def test_the_audit_log_returns_what_a_turn_wrote(boot: Any) -> None:
     """
     from felix.flush import flush_all
 
-    async with boot([_answer()], env=_keys(reader=["audit:read"])) as app:
+    async with boot([_answer()], env=scoped_keys(reader=["audit:read"])) as app:
         turn = await app.client.post(
             "/chat",
             json={"manifest": "quick", "messages": [{"role": "user", "content": "hello"}]},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert turn.status_code == 200, turn.text
         await flush_all(app.settings)
 
-        listed = await app.client.get("/audit", headers=_as(ADMIN))
+        listed = await app.client.get("/audit", headers=bearer(ADMIN))
         assert listed.status_code == 200, listed.text
         events = listed.json()["items"]
         types = {e["event_type"] for e in events}
@@ -311,11 +284,11 @@ async def test_the_audit_log_returns_what_a_turn_wrote(boot: Any) -> None:
 
 async def test_reading_the_audit_log_needs_a_read_scope(boot: Any) -> None:
     """The audit log carries prompts and tool arguments; it is not ambiently readable."""
-    async with boot([], env=_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
-        assert (await app.client.get("/audit", headers=_as(READER))).status_code == 403
+    async with boot([], env=scoped_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
+        assert (await app.client.get("/audit", headers=bearer(READER))).status_code == 403
         # `audit:read` alone grants it, so this is evidence about that scope rather than
         # about admin, which satisfies every gate by design.
-        assert (await app.client.get("/audit", headers=_as(WRITER))).status_code == 200
+        assert (await app.client.get("/audit", headers=bearer(WRITER))).status_code == 200
 
 
 async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
@@ -329,11 +302,11 @@ async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
     from felix.audit import store as audit_store
     from felix.flush import flush_all
 
-    async with boot([_answer()], env=_keys(reader=["audit:read"])) as app:
+    async with boot([_answer()], env=scoped_keys(reader=["audit:read"])) as app:
         turn = await app.client.post(
             "/chat",
             json={"manifest": "quick", "messages": [{"role": "user", "content": "hello"}]},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert turn.status_code == 200, turn.text
         # Two events pinned to one millisecond. The turn's own events are stamped with the
@@ -343,7 +316,7 @@ async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
             audit_store.record_event(app.settings, "default", "tool_call", ts=1_000, principal_subj=subject)
         await flush_all(app.settings)
 
-        whole = await app.client.get("/audit", params={"limit": 500}, headers=_as(ADMIN))
+        whole = await app.client.get("/audit", params={"limit": 500}, headers=bearer(ADMIN))
         assert whole.status_code == 200, whole.text
         listed = whole.json()["items"]
         expected = {e["id"] for e in listed}
@@ -359,7 +332,7 @@ async def test_paging_the_audit_log_returns_every_event_once(boot: Any) -> None:
             params: dict[str, Any] = {"limit": 1}
             if cursor is not None:
                 params["cursor"] = cursor
-            page = await app.client.get("/audit", params=params, headers=_as(ADMIN))
+            page = await app.client.get("/audit", params=params, headers=bearer(ADMIN))
             assert page.status_code == 200, page.text
             body = page.json()
             for event in body["items"]:
@@ -380,12 +353,12 @@ async def test_a_malformed_audit_cursor_is_a_bad_request(boot: Any) -> None:
     Unhandled it reached the caller as a 500 — a server error for someone else's typo, and a
     page for whoever watches the error rate.
     """
-    async with boot([], env=_keys(reader=["audit:read"])) as app:
-        bad = await app.client.get("/audit", params={"cursor": "not-a-cursor"}, headers=_as(ADMIN))
+    async with boot([], env=scoped_keys(reader=["audit:read"])) as app:
+        bad = await app.client.get("/audit", params={"cursor": "not-a-cursor"}, headers=bearer(ADMIN))
         assert bad.status_code == 400, bad.text
         assert "cursor" in bad.json()["detail"], bad.text
 
-        usage = await app.client.get("/usage", params={"cursor": "nope"}, headers=_as(ADMIN))
+        usage = await app.client.get("/usage", params={"cursor": "nope"}, headers=bearer(ADMIN))
         assert usage.status_code == 400, usage.text
 
 
@@ -419,7 +392,7 @@ async def test_the_audit_listing_takes_a_time_range_and_pages_within_it(boot: An
     from felix.audit import store as audit_store
     from felix.flush import flush_all
 
-    async with boot([], env=_keys(reader=["audit:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["audit:read"])) as app:
         for ts in (100, 200, 250, 250, 300, 400):
             audit_store.record_event(app.settings, "default", "tool_call", ts=ts)
         await flush_all(app.settings)
@@ -427,7 +400,7 @@ async def test_the_audit_listing_takes_a_time_range_and_pages_within_it(boot: An
         walked: list[int] = []
         params: dict[str, Any] = {"since": 200, "until": 400, "limit": 2}
         for _ in range(10):
-            page = await app.client.get("/audit", params=params, headers=_as(ADMIN))
+            page = await app.client.get("/audit", params=params, headers=bearer(ADMIN))
             assert page.status_code == 200, page.text
             walked += [e["ts"] for e in page.json()["items"]]
             if page.json()["next_cursor"] is None:
@@ -451,7 +424,7 @@ async def test_the_audit_export_is_the_whole_range_across_pages(boot: Any, monke
     from felix_api.routes import audit as audit_route
 
     monkeypatch.setattr(audit_route, "_EXPORT_PAGE", 2)
-    async with boot([], env=_keys(reader=["audit:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["audit:read"])) as app:
         matching = [(200, "a"), (250, "b"), (250, "c"), (300, "d"), (315, "e"), (315, "f"), (330, "g")]
         for ts, subject in [*matching, (100, "early"), (400, "late")]:
             audit_store.record_event(
@@ -506,7 +479,7 @@ async def test_the_audit_export_is_the_whole_range_across_pages(boot: Any, monke
                 "manifest_id": "m",
                 "status": "ok",
             },
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
 
     assert exported.status_code == 200, exported.text
@@ -531,12 +504,12 @@ async def test_an_audit_export_that_fails_midway_says_so_in_the_file(boot: Any, 
     from felix_api.routes import audit as audit_route
 
     monkeypatch.setattr(audit_route, "_EXPORT_PAGE", 2)
-    async with boot([], env=_keys(reader=["audit:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["audit:read"])) as app:
         for ts in (100, 200, 300):
             audit_store.record_event(app.settings, "default", "tool_call", ts=ts)
         await flush_all(app.settings)
         _watch_audit_reads(monkeypatch, fail_on=2)
-        exported = await app.client.get("/audit/export", headers=_as(ADMIN))
+        exported = await app.client.get("/audit/export", headers=bearer(ADMIN))
 
     assert exported.status_code == 200, exported.text
     lines = [json.loads(line) for line in exported.text.splitlines()]
@@ -556,10 +529,10 @@ async def test_an_audit_export_that_fails_before_its_first_row_is_an_error_statu
     re-raises what production answers as a 500, so the raise is the evidence: the body-side
     version never raises, because the stream catches it.
     """
-    async with boot([], env=_keys(reader=["audit:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["audit:read"])) as app:
         reads = _watch_audit_reads(monkeypatch, fail_on=1)
         with pytest.raises(RuntimeError, match="the store went away"):
-            await app.client.get("/audit/export", headers=_as(ADMIN))
+            await app.client.get("/audit/export", headers=bearer(ADMIN))
 
     assert reads == [1]
 
@@ -568,16 +541,16 @@ async def test_the_audit_export_needs_a_read_scope_and_a_forward_range(boot: Any
     """The export is the audit log in bulk, so it has the log's gate, and an empty or backwards
     range is refused rather than answered with nothing, which reads as "nothing happened".
     The listing shares the rule, so it is asserted there too."""
-    async with boot([], env=_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
-        refused = await app.client.get("/audit/export", headers=_as(READER))
-        granted = await app.client.get("/audit/export", headers=_as(WRITER))
+    async with boot([], env=scoped_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
+        refused = await app.client.get("/audit/export", headers=bearer(READER))
+        granted = await app.client.get("/audit/export", headers=bearer(WRITER))
         empty = await app.client.get(
-            "/audit/export", params={"since": 500, "until": 500}, headers=_as(WRITER)
+            "/audit/export", params={"since": 500, "until": 500}, headers=bearer(WRITER)
         )
         backwards = await app.client.get(
-            "/audit/export", params={"since": 600, "until": 500}, headers=_as(WRITER)
+            "/audit/export", params={"since": 600, "until": 500}, headers=bearer(WRITER)
         )
-        listing = await app.client.get("/audit", params={"since": 600, "until": 500}, headers=_as(WRITER))
+        listing = await app.client.get("/audit", params={"since": 600, "until": 500}, headers=bearer(WRITER))
 
     assert refused.status_code == 403, refused.text
     assert granted.status_code == 200, granted.text
@@ -590,8 +563,8 @@ async def test_the_audit_export_needs_a_read_scope_and_a_forward_range(boot: Any
 
 async def test_listing_approvals_is_empty_before_anything_pauses(boot: Any) -> None:
     """The baseline the pending test below is measured against."""
-    async with boot([], env=_keys(reader=["approvals:read"])) as app:
-        listed = await app.client.get("/approvals", headers=_as(ADMIN))
+    async with boot([], env=scoped_keys(reader=["approvals:read"])) as app:
+        listed = await app.client.get("/approvals", headers=bearer(ADMIN))
         assert listed.status_code == 200, listed.text
         assert listed.json()["items"] == []
 
@@ -606,7 +579,7 @@ async def test_listing_approvals_narrows_to_one_thread_over_http(boot: Any) -> N
     """
     from felix.approvals import store as approvals_store
 
-    async with boot([], env=_keys(reader=["approvals:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["approvals:read"])) as app:
         mine = await approvals_store.create_pending(
             app.settings,
             "default",
@@ -624,7 +597,9 @@ async def test_listing_approvals_narrows_to_one_thread_over_http(boot: Any) -> N
             thread_id="default:two",
         )
 
-        listed = await app.client.get("/approvals", params={"thread_id": "default:one"}, headers=_as(ADMIN))
+        listed = await app.client.get(
+            "/approvals", params={"thread_id": "default:one"}, headers=bearer(ADMIN)
+        )
         assert listed.status_code == 200, listed.text
         items = listed.json()["items"]
         assert [r["id"] for r in items] == [mine["id"]], (
@@ -635,7 +610,7 @@ async def test_listing_approvals_narrows_to_one_thread_over_http(boot: Any) -> N
         assert items[0]["tool_call_id"] == "call_a"
 
         # Omitting it still means every thread.
-        everything = await app.client.get("/approvals", headers=_as(ADMIN))
+        everything = await app.client.get("/approvals", headers=bearer(ADMIN))
         assert len(everything.json()["items"]) == 2
 
 
@@ -656,7 +631,7 @@ async def test_a_chat_scoped_caller_cannot_read_approvals_through_the_durable_st
     """
     from felix.approvals import store as approvals_store
 
-    async with boot([], env=_keys(reader=["chat"], writer=["approvals:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["chat"], writer=["approvals:read"])) as app:
         await approvals_store.create_pending(
             app.settings,
             "default",
@@ -670,10 +645,10 @@ async def test_a_chat_scoped_caller_cannot_read_approvals_through_the_durable_st
         )
 
         # The caller really is refused on the management route...
-        refused = await app.client.get("/approvals", headers=_as(READER))
+        refused = await app.client.get("/approvals", headers=bearer(READER))
         assert refused.status_code == 403, refused.text
 
-        listed = await app.client.get("/approvals", headers=_as(WRITER))
+        listed = await app.client.get("/approvals", headers=bearer(WRITER))
         assert listed.status_code == 200, listed.text
         assert [r["tool_name"] for r in listed.json()["items"]] == ["send_wire_transfer"]
 
@@ -705,26 +680,26 @@ async def test_a_chat_scoped_caller_cannot_read_approvals_through_the_durable_st
 
 async def test_an_unknown_approval_is_a_404_on_read_and_on_decide(boot: Any) -> None:
     """Deciding an approval that does not exist must not create one."""
-    async with boot([], env=_keys(reader=["approvals:read"])) as app:
-        assert (await app.client.get("/approvals/ghost", headers=_as(ADMIN))).status_code == 404
+    async with boot([], env=scoped_keys(reader=["approvals:read"])) as app:
+        assert (await app.client.get("/approvals/ghost", headers=bearer(ADMIN))).status_code == 404
         decided = await app.client.post(
-            "/approvals/ghost/decide", json={"decision": "approved"}, headers=_as(ADMIN)
+            "/approvals/ghost/decide", json={"decision": "approved"}, headers=bearer(ADMIN)
         )
         assert decided.status_code == 404, decided.text
 
         # And the refusal did not bring one into existence. Asserted by re-reading the id,
         # not by listing: `params={"status": None}` serialises to `?status=`, which filters on
         # the empty string and matches nothing on any store — an assertion that cannot fail.
-        assert (await app.client.get("/approvals/ghost", headers=_as(ADMIN))).status_code == 404
+        assert (await app.client.get("/approvals/ghost", headers=bearer(ADMIN))).status_code == 404
 
 
 async def test_deciding_an_approval_needs_a_write_scope(boot: Any) -> None:
     """Approval is the human gate on a governed tool, so reading it is not deciding it."""
-    async with boot([], env=_keys(reader=["approvals:read"], writer=["approvals:write"])) as app:
-        assert (await app.client.get("/approvals", headers=_as(READER))).status_code == 200
+    async with boot([], env=scoped_keys(reader=["approvals:read"], writer=["approvals:write"])) as app:
+        assert (await app.client.get("/approvals", headers=bearer(READER))).status_code == 200
 
         refused = await app.client.post(
-            "/approvals/any/decide", json={"decision": "approved"}, headers=_as(READER)
+            "/approvals/any/decide", json={"decision": "approved"}, headers=bearer(READER)
         )
         assert refused.status_code == 403, refused.text
 
@@ -732,7 +707,7 @@ async def test_deciding_an_approval_needs_a_write_scope(boot: Any) -> None:
         # A 404 here rather than a 403 is what distinguishes "the scope granted" from "every
         # decide is refused", which the line above alone cannot show.
         allowed = await app.client.post(
-            "/approvals/any/decide", json={"decision": "approved"}, headers=_as(WRITER)
+            "/approvals/any/decide", json={"decision": "approved"}, headers=bearer(WRITER)
         )
         assert allowed.status_code == 404, allowed.text
 
@@ -749,7 +724,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
     """
     from felix.approvals import store as approvals_store
 
-    async with boot([], env=_keys(reader=["approvals:read"], writer=["approvals:write"])) as app:
+    async with boot([], env=scoped_keys(reader=["approvals:read"], writer=["approvals:write"])) as app:
         pending = await approvals_store.create_pending(
             app.settings,
             "default",
@@ -762,7 +737,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
         )
         approval_id = pending["id"]
 
-        listed = await app.client.get("/approvals", headers=_as(READER))
+        listed = await app.client.get("/approvals", headers=bearer(READER))
         assert listed.status_code == 200, listed.text
         rows = listed.json()["items"]
         assert [r["id"] for r in rows] == [approval_id], rows
@@ -776,7 +751,7 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
         decided = await app.client.post(
             f"/approvals/{approval_id}/decide",
             json={"decision": "approved", "note": "looks fine"},
-            headers=_as(WRITER),
+            headers=bearer(WRITER),
         )
         assert decided.status_code == 200, decided.text
         assert decided.json()["status"] == "approved", decided.json()
@@ -784,10 +759,10 @@ async def test_a_pending_approval_is_listed_and_can_be_decided(boot: Any) -> Non
         # recorded an anonymous decider would be an audit trail with the answer missing.
         assert decided.json()["decided_by"] == "writer", decided.json()
 
-        reread = await app.client.get(f"/approvals/{approval_id}", headers=_as(READER))
+        reread = await app.client.get(f"/approvals/{approval_id}", headers=bearer(READER))
         assert reread.json()["status"] == "approved", reread.json()
         assert reread.json()["thread_id"] == "default:e2e-appr", reread.json()
-        assert (await app.client.get("/approvals", headers=_as(READER))).json()["items"] == []
+        assert (await app.client.get("/approvals", headers=bearer(READER))).json()["items"] == []
 
 
 async def test_an_eval_run_scores_its_dataset_and_is_listed(boot: Any) -> None:
@@ -803,8 +778,8 @@ async def test_an_eval_run_scores_its_dataset_and_is_listed(boot: Any) -> None:
     that quietly consulted a judge still returns a score.
     """
     items = [{"user_input": "say ok", "rubric": {"expect": "ok"}}]
-    async with boot([_answer("ok")], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
-        await app.client.put("/eval/datasets/scored", json={"items": items}, headers=_as(ADMIN))
+    async with boot([_answer("ok")], env=scoped_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+        await app.client.put("/eval/datasets/scored", json={"items": items}, headers=bearer(ADMIN))
 
         started = await app.client.post(
             "/eval/runs",
@@ -813,7 +788,7 @@ async def test_an_eval_run_scores_its_dataset_and_is_listed(boot: Any) -> None:
                 "candidate_manifest": "quick",
                 "deterministic_judge": True,
             },
-            headers=_as(WRITER),
+            headers=bearer(WRITER),
         )
         assert started.status_code == 200, started.text
         run = started.json()
@@ -822,19 +797,21 @@ async def test_an_eval_run_scores_its_dataset_and_is_listed(boot: Any) -> None:
         # and evaluated nothing would still be listed below.
         assert run["pass_count"] + run["fail_count"] == 1, run
 
-        listed = await app.client.get("/eval/runs", headers=_as(READER))
+        listed = await app.client.get("/eval/runs", headers=bearer(READER))
         assert listed.status_code == 200, listed.text
         assert run["id"] in [r["id"] for r in listed.json()["items"]], listed.json()
 
-        fetched = await app.client.get(f"/eval/runs/{run['id']}", headers=_as(READER))
+        fetched = await app.client.get(f"/eval/runs/{run['id']}", headers=bearer(READER))
         assert fetched.status_code == 200, fetched.text
         assert fetched.json()["id"] == run["id"]
 
 
 async def test_starting_an_eval_run_without_a_dataset_is_refused(boot: Any) -> None:
     """`dataset_name` is what the run scores; without it there is nothing to score."""
-    async with boot([], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
-        resp = await app.client.post("/eval/runs", json={"candidate_manifest": "quick"}, headers=_as(WRITER))
+    async with boot([], env=scoped_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+        resp = await app.client.post(
+            "/eval/runs", json={"candidate_manifest": "quick"}, headers=bearer(WRITER)
+        )
         assert resp.status_code == 400, resp.text
         assert resp.json()["detail"] == "dataset_name_required"
 
@@ -846,13 +823,13 @@ async def test_the_dataset_run_alias_still_starts_a_run_and_says_it_is_deprecate
     deprecated, and its answer tells the caller where to go instead.
     """
     items = [{"user_input": "say ok", "rubric": {"expect": "ok"}}]
-    async with boot([_answer("ok")], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
-        await app.client.put("/eval/datasets/scored", json={"items": items}, headers=_as(ADMIN))
+    async with boot([_answer("ok")], env=scoped_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+        await app.client.put("/eval/datasets/scored", json={"items": items}, headers=bearer(ADMIN))
 
         resp = await app.client.post(
             "/eval/datasets/scored/run",
             json={"dataset_name": "elsewhere", "candidate_manifest": "quick", "deterministic_judge": True},
-            headers=_as(WRITER),
+            headers=bearer(WRITER),
         )
 
     assert resp.status_code == 200, resp.text
@@ -864,9 +841,9 @@ async def test_the_dataset_run_alias_still_starts_a_run_and_says_it_is_deprecate
 
 async def test_the_dataset_run_alias_says_it_is_deprecated_when_it_refuses(boot: Any) -> None:
     """A caller without the scope learns of the move from the 403 it does get."""
-    async with boot([], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+    async with boot([], env=scoped_keys(reader=["eval:read"], writer=["eval:write"])) as app:
         resp = await app.client.post(
-            "/eval/datasets/scored/run", json={"candidate_manifest": "quick"}, headers=_as(READER)
+            "/eval/datasets/scored/run", json={"candidate_manifest": "quick"}, headers=bearer(READER)
         )
 
     assert resp.status_code == 403, resp.text
@@ -887,16 +864,16 @@ async def test_audit_metrics_rolls_up_tool_calls_by_name(boot: Any) -> None:
         ScriptedTurn(content="", tool_calls=[calc], stop_reason="tool_use"),
         _answer("4"),
     ]
-    async with boot(script, env=_keys(reader=["audit:read"])) as app:
+    async with boot(script, env=scoped_keys(reader=["audit:read"])) as app:
         turn = await app.client.post(
             "/chat",
             json={"manifest": "quick", "messages": [{"role": "user", "content": "2+2?"}]},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
         assert turn.status_code == 200, turn.text
         await flush_all(app.settings)
 
-        metrics = await app.client.get("/audit/metrics", headers=_as(ADMIN))
+        metrics = await app.client.get("/audit/metrics", headers=bearer(ADMIN))
         assert metrics.status_code == 200, metrics.text
         rows = {r["tool"]: r for r in metrics.json()["tools"]}
         assert "calculator" in rows, metrics.json()
@@ -906,9 +883,9 @@ async def test_audit_metrics_rolls_up_tool_calls_by_name(boot: Any) -> None:
 
 async def test_audit_metrics_needs_a_read_scope(boot: Any) -> None:
     """It is a projection of the audit log, so it inherits the audit log's gate."""
-    async with boot([], env=_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
-        assert (await app.client.get("/audit/metrics", headers=_as(READER))).status_code == 403
-        assert (await app.client.get("/audit/metrics", headers=_as(WRITER))).status_code == 200
+    async with boot([], env=scoped_keys(reader=["jobs:read"], writer=["audit:read"])) as app:
+        assert (await app.client.get("/audit/metrics", headers=bearer(READER))).status_code == 403
+        assert (await app.client.get("/audit/metrics", headers=bearer(WRITER))).status_code == 200
 
 
 # --- running a job now ---------------------------------------------------------------------
@@ -918,7 +895,9 @@ async def test_a_job_runs_now_as_itself_and_leaves_its_schedule(boot: Any) -> No
     """`POST /jobs/{name}/run` fires the job through the scheduler's own path and returns the
     run. The schedule is untouched, and the run says who asked — while the job still runs as
     `cron`, not as the caller."""
-    async with boot([_answer("ran now")], env=_keys(reader=["jobs:read"], writer=["jobs:write"])) as app:
+    async with boot(
+        [_answer("ran now")], env=scoped_keys(reader=["jobs:read"], writer=["jobs:write"])
+    ) as app:
         await app.client.put(
             "/jobs/nightly",
             json={
@@ -927,17 +906,17 @@ async def test_a_job_runs_now_as_itself_and_leaves_its_schedule(boot: Any) -> No
                 "enabled": False,
                 "payload": {"prompt": "go"},
             },
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
-        before = (await app.client.get("/jobs/nightly", headers=_as(ADMIN))).json()
+        before = (await app.client.get("/jobs/nightly", headers=bearer(ADMIN))).json()
 
-        refused = await app.client.post("/jobs/nightly/run", headers=_as(READER))
+        refused = await app.client.post("/jobs/nightly/run", headers=bearer(READER))
         assert refused.status_code == 403, "running a job is a write"
-        run = await app.client.post("/jobs/nightly/run", headers=_as(WRITER))
+        run = await app.client.post("/jobs/nightly/run", headers=bearer(WRITER))
         assert run.status_code == 200, run.text
-        after = (await app.client.get("/jobs/nightly", headers=_as(ADMIN))).json()
-        history = (await app.client.get("/jobs/nightly/runs", headers=_as(ADMIN))).json()["items"]
-        missing = await app.client.post("/jobs/ghost/run", headers=_as(WRITER))
+        after = (await app.client.get("/jobs/nightly", headers=bearer(ADMIN))).json()
+        history = (await app.client.get("/jobs/nightly/runs", headers=bearer(ADMIN))).json()["items"]
+        missing = await app.client.post("/jobs/ghost/run", headers=bearer(WRITER))
 
     body = run.json()
     assert body["status"] == "ok"
@@ -963,25 +942,28 @@ async def test_a_manifests_versions_list_newest_first_with_the_pointer_marked(bo
             }
         }
 
-    async with boot([], env=_keys(reader=["manifests:read"])) as app:
+    async with boot([], env=scoped_keys(reader=["manifests:read"])) as app:
         for prompt in ("one", "two", "three"):
-            put = await app.client.put("/manifests/e2e-versioned", json=manifest(prompt), headers=_as(ADMIN))
+            put = await app.client.put(
+                "/manifests/e2e-versioned", json=manifest(prompt), headers=bearer(ADMIN)
+            )
             assert put.status_code == 200, put.text
         await app.client.post(
             "/manifests/e2e-versioned/canary",
             json={"canary_version": 3, "canary_weight": 10},
-            headers=_as(ADMIN),
+            headers=bearer(ADMIN),
         )
 
-        first = await app.client.get("/manifests/e2e-versioned/versions?limit=2", headers=_as(READER))
+        first = await app.client.get("/manifests/e2e-versioned/versions?limit=2", headers=bearer(READER))
         assert first.status_code == 200, first.text
         page = first.json()
         rest = (
             await app.client.get(
-                f"/manifests/e2e-versioned/versions?limit=2&before={page['next_before']}", headers=_as(READER)
+                f"/manifests/e2e-versioned/versions?limit=2&before={page['next_before']}",
+                headers=bearer(READER),
             )
         ).json()
-        denied = await app.client.get("/manifests/e2e-versioned/versions", headers=_as(WRITER))
+        denied = await app.client.get("/manifests/e2e-versioned/versions", headers=bearer(WRITER))
 
     assert [(i["version"], i["active"], i["canary"]) for i in page["items"]] == [
         (3, False, True),

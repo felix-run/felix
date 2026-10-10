@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.compose_yaml import load_compose
+from tests.support.compose_yaml import load_compose
 
 ROOT = Path(__file__).resolve().parents[2] / "deploy" / "docker"
 # (file, service) for every Felix process that opens the database.

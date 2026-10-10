@@ -3,7 +3,7 @@
 The clone runs in the thread's sandbox through the gateway's `clone` op, and everything that reads
 the repository afterwards -- the workspace tools, the listing, `describe` -- goes to that sandbox,
 with git run there by the helper's port of the harness's own `_git_exec`. The fake gateway
-(`tests/workspace_gateway_fake.py`) clones from the `git_server` fixture, adding the token the way
+(`tests/support/workspace_gateway_fake.py`) clones from the `git_server` fixture, adding the token the way
 the Worker's GitHub intercept does, so these tests see what the harness sends and what it keeps.
 """
 
@@ -22,9 +22,9 @@ from felix.tools.builtins import default_tool_provider
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 from felix.tools.workspace_scope import thread_key
 
-from tests.git_server import _Server
-from tests.workspace_gateway_fake import TOKEN as GATEWAY_TOKEN
-from tests.workspace_gateway_fake import URL, FakeGateway
+from tests.support.git_server import _Server
+from tests.support.workspace_gateway_fake import TOKEN as GATEWAY_TOKEN
+from tests.support.workspace_gateway_fake import URL, FakeGateway
 
 TOKEN = "ghu_person_token_0123456789"
 REPO = {"full_name": "acme/widgets", "default_branch": "main", "size": 12, "private": True}

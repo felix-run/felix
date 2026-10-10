@@ -21,7 +21,7 @@ from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 from httpx import ASGITransport, AsyncClient
 
-from tests.skill_import_fake import skill_md
+from tests.support.skill_import_fake import skill_md
 
 NAME = "invoice-triage"
 # A link to an executable is a `medium` finding: the scan is advisory, which blocks an import
@@ -238,7 +238,7 @@ async def test_the_improvers_edit_of_an_adopted_skill_stays_clean(tmp_path: Path
     the target version: an adopted skill's first improvement must not mark it imported again."""
     from felix.skills import feedback, improve
 
-    from tests.skill_quality import IMPROVER, object_store, routed_settings, run_jobs, scripted_routes
+    from tests.support.skill_quality import IMPROVER, object_store, routed_settings, run_jobs, scripted_routes
 
     with scripted_routes() as routes:
         settings = routed_settings(tmp_path)

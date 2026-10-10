@@ -22,7 +22,7 @@ from felix.context import AuthContext, RequestContext, run_with_context
 from felix.repos import checkouts
 from felix.tools.workspace import workspace_root
 
-from tests.git_server import _git, _Server
+from tests.support.git_server import _git, _Server
 
 TOKEN = "ghu_person_token_0123456789"
 REPO = {"full_name": "acme/widgets", "default_branch": "main", "size": 12, "private": True}

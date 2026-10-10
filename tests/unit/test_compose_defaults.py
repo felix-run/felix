@@ -124,7 +124,7 @@ def test_the_base_stack_can_be_pointed_at_an_external_otlp_backend(env_var: str,
     every periodic job (fiber resume, consolidation, retention), so a trace that ends at
     the API's 202 describes none of the work that actually ran.
     """
-    from tests.compose_yaml import load_compose
+    from tests.support.compose_yaml import load_compose
 
     env = load_compose(COMPOSE)["services"][service]["environment"]
     assert env_var in env, (
@@ -147,7 +147,7 @@ MODEL_ROUTING = ("FELIX_MODEL_ROUTES", "FELIX_DECISION_ROUTES", "FELIX_MODEL_PRO
 @pytest.mark.parametrize("service", ["api", "worker"])
 @pytest.mark.parametrize("env_var", MODEL_ROUTING)
 def test_every_model_routing_setting_reaches_the_process(env_var: str, service: str) -> None:
-    from tests.compose_yaml import load_compose
+    from tests.support.compose_yaml import load_compose
 
     env = load_compose(COMPOSE)["services"][service]["environment"]
     assert env_var in env, f"{env_var} does not reach {service}; a route that needs it cannot be configured"

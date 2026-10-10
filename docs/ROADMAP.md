@@ -1930,6 +1930,21 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 
 ### Repo / release hygiene
 
+- [ ] **Repo structure and developer-experience pass** (audit 2026-10-10), one PR at a time:
+  - [x] `tests/support/`: the 13 root helpers move into one package. The 18 cross-test imports go
+        through it, an invariant forbids new ones, and `factories.py` holds `make_settings`
+        and `app_client`.
+  - [ ] `tests/fixtures/` for test-only data (`fixtures/skills`, recorded SSE, shared SKILL.md
+        bodies). `fixtures/eval` stays at the root, because `felix eval` and CI read it. Also: the
+        remaining ~85 local `_settings` copies onto `make_settings`, the redundant
+        `@pytest.mark.asyncio`, declared markers and `--strict-markers`, and `tests/README.md`.
+  - [ ] Onboarding: `make bootstrap`, `make db` for the without-Compose path, a `make check` that
+        works on a lean install, generated `make help`, and local targets for the CI-only lock,
+        dependency-age, helm and compose checks.
+  - [ ] Layout: `clients/cli.py` becomes `felix chat`, root `skills/` moves under `manifests/self/`,
+        `ROADMAP.md` shipped entries go to `HISTORY.md`.
+  - [ ] Module splits, one per PR: `manifests/builder.py` (2,270 lines), `patterns/react.py`.
+
 - [x] **Credentials survive a `repr`.** Closed with `repr=False` rather than `SecretStr`: the
       value is untouched, so no call site changes, and what leaked was the rendering. Fourteen
       `Settings` fields — provider keys, `auth_api_keys`, `jwks_private`, the S3 keys, the

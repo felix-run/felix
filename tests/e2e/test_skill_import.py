@@ -5,7 +5,7 @@ the zero-argument app → the scope gate → `skills/importer.py` pinned to one 
 and its bytes in the stores the API booted with → the publish gate, stricter for an import → a
 fresh compile's catalog listing the imported skill → `activate_skill` returning its body.
 
-GitHub is `tests/skill_import_fake.py`, served to the production path's client factory
+GitHub is `tests/support/skill_import_fake.py`, served to the production path's client factory
 (`github.github_client`) and nothing else; every other hop is the real one.
 """
 
@@ -20,7 +20,7 @@ from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
-from tests.skill_import_fake import FakeRepos, skill_md
+from tests.support.skill_import_fake import FakeRepos, skill_md
 
 NAME = "invoice-triage"
 SOURCE = f"github:acme/skills/skills/{NAME}"

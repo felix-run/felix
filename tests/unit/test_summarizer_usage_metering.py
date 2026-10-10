@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns.model import ModelChatResult, TokenUsage, record_model_usage
 from felix.patterns.types import ChatMessage
@@ -24,6 +23,8 @@ from felix.session.tree import annotate_and_append
 from felix.session.types import AppendableEvent
 from felix.usage import store as usage_store
 from felix.usage.pricing import usage_with_cost
+
+from tests.support.factories import make_settings
 
 WIRE_MODEL = "claude-sonnet-4-5"  # priced in the bundled catalog
 
@@ -62,21 +63,9 @@ class _SilentSummarizer(_Summarizer):
         )
 
 
-def _settings() -> Settings:
-    return Settings(  # type: ignore[arg-type]
-        database_url="memory://summarizer-usage",
-        object_store="memory",
-        redis_url="",
-        allow_insecure=True,
-        auth_mode="none",
-        host="127.0.0.1",
-        environment="development",
-    )
-
-
 def _ctx() -> RequestContext:
     return RequestContext(
-        settings=_settings(),
+        settings=make_settings(redis_url="", host="127.0.0.1"),
         auth=AuthContext(principal_sub="alice", tenant_id="acme", anonymous=False),
         manifest_id="support",
     )

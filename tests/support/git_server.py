@@ -19,9 +19,9 @@ from felix.repos import checkouts
 
 
 def _git(cwd: Path, *args: str, bare: bool = False) -> str:
-    """git through `tests/git_fixture.py`, immune to an ambient GIT_DIR / GIT_WORK_TREE. A bare
+    """git through `tests/support/git_fixture.py`, immune to an ambient GIT_DIR / GIT_WORK_TREE. A bare
     repository is its own git directory, so `bare` points GIT_DIR at `cwd` itself."""
-    from tests.git_fixture import git
+    from tests.support.git_fixture import git
 
     extra = {"GIT_DIR": str(cwd), "GIT_WORK_TREE": str(cwd)} if bare else None
     return git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", *args, extra=extra)

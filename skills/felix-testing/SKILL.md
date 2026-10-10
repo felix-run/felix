@@ -47,7 +47,7 @@ every extra the tests gate on. Change a rule deliberately and you update the tes
 
 ## Optional extras: require_optional, never a bare importorskip
 
-A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
+A test that needs an optional extra gates on `tests/support/optional_deps.py:require_optional(module,
 extra)`. An invariant enforces this. A module-level `pytest.importorskip` collapses a whole file
 into a single collect-time skip, so it vanishes from the run without changing the skip count —
 that is how six Temporal tests went unexecuted in CI. CI installs the extras and sets

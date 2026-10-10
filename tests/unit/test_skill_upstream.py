@@ -1,7 +1,7 @@
 """Imported skills against their origin: the bounded diff, the check, the update, the listing and
 the worker's periodic sweep.
 
-GitHub is `tests/skill_import_fake.py` at the transport, handed in through `http=`; the stores are
+GitHub is `tests/support/skill_import_fake.py` at the transport, handed in through `http=`; the stores are
 the `memory://` twins. Each test that moves upstream pushes the whole tree again, as a commit does.
 """
 
@@ -20,7 +20,7 @@ from felix.skills.library_store import get_skill_library_store
 from felix.skills.upstream_store import get_upstream_store
 from felix.storage import MemoryObjectStore
 
-from tests.skill_import_fake import FakeRepos, blob_sha, skill_md
+from tests.support.skill_import_fake import FakeRepos, blob_sha, skill_md
 
 REPO = "acme/skills"
 NAME = "invoice-triage"

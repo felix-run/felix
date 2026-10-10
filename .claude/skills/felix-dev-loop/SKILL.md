@@ -42,7 +42,7 @@ a code failure. A `PreToolUse` hook blocks it.
 | conformance | `./scripts/test.sh tests/conformance` | one contract over every implementation of a seam. The model and decision provider arms need no infrastructure, so a skip there is a bug. Store arms add Postgres with `FELIX_CONFORMANCE_DATABASE_URL` (`make conformance`); the cross-replica arm adds Valkey with `FELIX_CONFORMANCE_REDIS_URL`. |
 | eval | `make eval` | `fixtures/eval/smoke.json` passes by construction and `negative.json` must fail; the pair is the gate, neither half alone. |
 
-A test that needs an optional extra uses `tests/optional_deps.py:require_optional(module, extra)`,
+A test that needs an optional extra uses `tests/support/optional_deps.py:require_optional(module, extra)`,
 never a module-level `pytest.importorskip` — that one silently removes a file from the run.
 
 ## The gates, in three tiers

@@ -1,7 +1,7 @@
 """Importing skills from GitHub into the library: sources, the allowlist, the pinned fetch, the
 tree digest, discovery, sanitising, and what an import does to the library.
 
-GitHub is `tests/skill_import_fake.py` at the transport, handed in through `http=`; the stores are
+GitHub is `tests/support/skill_import_fake.py` at the transport, handed in through `http=`; the stores are
 the `memory://` twins. The production client (`github.github_client`) is asserted to be the
 egress-pinned one, since every test here hands in its own.
 """
@@ -21,7 +21,7 @@ from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
-from tests.skill_import_fake import FakeRepos, blob_sha, skill_md
+from tests.support.skill_import_fake import FakeRepos, blob_sha, skill_md
 
 REPO = "acme/skills"
 SOURCE = f"github:{REPO}/skills/invoice-triage"

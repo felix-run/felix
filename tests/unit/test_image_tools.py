@@ -13,7 +13,7 @@ from felix.config import Settings
 from felix.manifests.schema import ContentScreening, ImageToolRef
 from felix.tools.types import ToolInvocationCtx, tool_output_content, tool_output_images
 
-from tests.optional_deps import require_optional
+from tests.support.optional_deps import require_optional
 
 # Written against files at the workspace root; scope selection is test_workspace_scopes.py.
 pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")

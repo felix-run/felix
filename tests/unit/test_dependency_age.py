@@ -8,7 +8,7 @@ from types import ModuleType
 
 import pytest
 
-from tests._scripts import load_script
+from tests.support.scripts_loader import load_script
 
 LOCK = """
 version = 1

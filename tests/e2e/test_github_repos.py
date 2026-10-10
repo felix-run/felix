@@ -20,7 +20,7 @@ from felix.auth import github
 from felix.repos import checkouts
 from joserfc import jwk
 
-from tests.github_fake import FakeGitHub, app_grant, org, repo
+from tests.support.github_fake import FakeGitHub, app_grant, org, repo
 
 _KEY = jwk.RSAKey.generate_key(2048)
 
@@ -217,7 +217,7 @@ async def test_under_the_hosted_backend_the_repository_lives_in_the_threads_sand
     from felix.tools import workspace_hosted
     from felix.tools.workspace_scope import thread_key
 
-    from tests.workspace_gateway_fake import TOKEN, URL, FakeGateway
+    from tests.support.workspace_gateway_fake import TOKEN, URL, FakeGateway
 
     gateway = FakeGateway(root=tmp_path / "sandboxes", clone_base=git_server.base)
     monkeypatch.setattr(workspace_hosted, "gateway_client", lambda settings: gateway.client())

@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-HELPER = Path(__file__).resolve().parents[1] / "deploy/cloudflare/workspace-gateway/helper/felix_fs.py"
+HELPER = Path(__file__).resolve().parents[2] / "deploy/cloudflare/workspace-gateway/helper/felix_fs.py"
 URL = "https://gateway.test"
 TOKEN = "g" * 40
 

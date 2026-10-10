@@ -16,7 +16,7 @@ from felix.model_catalog import entry_for
 from felix.usage.catalog import supported_thinking_levels
 from felix.usage.pricing import _lookup_price
 
-from tests.e2e.conftest import DEFAULT_ROUTE, WIRE_MODEL
+from tests.support.e2e import DEFAULT_ROUTE, WIRE_MODEL
 
 
 async def _listed(boot: Any) -> dict[str, dict[str, Any]]:

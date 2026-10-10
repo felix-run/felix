@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from tests._scripts import load_script
+from tests.support.scripts_loader import load_script
 
 contract = load_script("gen-wire-contract")
 

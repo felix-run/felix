@@ -21,7 +21,7 @@ import pytest
 from felix.auth import github, github_connections
 from joserfc import jwk
 
-from tests.github_fake import FakeGitHub, app_grant, org
+from tests.support.github_fake import FakeGitHub, app_grant, org
 
 _KEY = jwk.RSAKey.generate_key(2048)
 APP = "http://localhost:5181"

@@ -8,12 +8,7 @@ from felix.config import Settings
 from felix.db import migrations
 from felix.db.session import dispose_engine
 
-from tests.conformance.conftest import (
-    downgrade_to_base,
-    drop_everything,
-    migrate_to_head,
-    postgres_url_or_skip,
-)
+from tests.support.backends import downgrade_to_base, drop_everything, migrate_to_head, postgres_url_or_skip
 
 
 @pytest.mark.asyncio

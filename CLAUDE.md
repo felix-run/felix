@@ -91,7 +91,12 @@ statement mentions: every `[project.scripts]` target, the `module:attr` string G
 Taskiq broker/scheduler/module paths, and the `felix-*` binary each Compose, Dockerfile and Helm
 command names — plus `create_application()` called the way production calls it, with no arguments.
 
-A test that needs an optional extra gates on `tests/optional_deps.py:require_optional(module,
+Shared test code lives in `tests/support/`: fakes (`github_fake`, `loopback_http`, …), the e2e
+scaffolding (`e2e.py`), and `factories.py` — `make_settings` (the `memory://` baseline, overrides at the
+call site) and `app_client`. A test imports shared code from there and
+never from another test module or a conftest; `test_invariants.py` enforces it.
+
+A test that needs an optional extra gates on `tests/support/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level
 `importorskip` collapses a whole file into one collect-time skip, so it vanishes from the run
 without touching the skip count; that is how six Temporal tests went unexecuted in CI. CI installs

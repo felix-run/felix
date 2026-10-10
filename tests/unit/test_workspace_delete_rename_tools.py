@@ -36,7 +36,7 @@ from felix.tools.workspace import WORKSPACE_TOOL_NAMES
 from felix.tools.workspace_scope import SCOPES_DIR, thread_key
 from felix.usage.catalog import workspace_summary
 
-from tests.workspace_gateway_fake import TOKEN, URL, FakeGateway
+from tests.support.workspace_gateway_fake import TOKEN, URL, FakeGateway
 
 ROOT = Path(__file__).resolve().parents[2]
 TENANT = "acme"

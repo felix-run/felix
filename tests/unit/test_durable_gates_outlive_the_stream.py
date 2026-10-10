@@ -26,16 +26,15 @@ from felix.config import Settings
 from felix.durability import fibers
 from felix.tools import client_requests
 
-from tests.unit.test_durable_stream_tails_session_log import (
-    _blocks,
-    _client,
-    _force_durable,
-    _gate,
-    _names,
-    _post_stream,
-    _settings,
-    _stub_fiber,
+from tests.support.durable_stream import (
+    durable_settings,
+    force_durable,
+    pending_gate,
+    post_stream,
+    stub_fiber,
 )
+from tests.support.factories import app_client
+from tests.support.sse import sse_blocks, sse_event_names
 
 
 async def _reattach(client: Any, thread: str) -> str:
@@ -68,47 +67,47 @@ def _finish(fiber_id: str) -> None:
 
 @pytest.mark.asyncio
 async def test_a_reattach_is_asked_to_run_the_client_tool_the_run_is_waiting_on() -> None:
-    settings = _settings("reattach-client-tool")
+    settings = durable_settings()
     thread = "default:reattach-tool"
     request = {"id": "call_w", "name": "local_write", "args": {"path": "a.md"}, "thread_id": thread}
     await client_requests.record(thread, request, timeout=300)
     try:
-        async with _client(settings) as client:
+        async with app_client(settings) as client:
             body = await _reattach(client, "reattach-tool")
     finally:
         await client_requests.clear(thread, "call_w")
 
-    asked = [p["data"] for _, p in _blocks(body) if p.get("event") == "tool_request"]
+    asked = [p["data"] for _, p in sse_blocks(body) if p.get("event") == "tool_request"]
     # Once, however many polls saw it pending: the stream's own dedupe.
-    assert asked == [request], f"expected one tool_request, got {asked} in {_names(body)}"
+    assert asked == [request], f"expected one tool_request, got {asked} in {sse_event_names(body)}"
 
 
 @pytest.mark.asyncio
 async def test_a_reattach_is_asked_to_decide_the_approval_the_run_is_waiting_on() -> None:
-    settings = _settings("reattach-approval")
+    settings = durable_settings()
     thread = "default:reattach-gate"
-    await _gate(settings, thread, tool_name="local_write", tool_call_id="call_g", ttl_seconds=600)
+    await pending_gate(settings, thread, tool_name="local_write", tool_call_id="call_g", ttl_seconds=600)
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _reattach(client, "reattach-gate")
 
-    gates = [p["data"] for _, p in _blocks(body) if p.get("event") == "approval_required"]
-    assert [g["tool_call_id"] for g in gates] == ["call_g"], _names(body)
+    gates = [p["data"] for _, p in sse_blocks(body) if p.get("event") == "approval_required"]
+    assert [g["tool_call_id"] for g in gates] == ["call_g"], sse_event_names(body)
     assert gates[0]["thread_id"] == thread
 
 
 @pytest.mark.asyncio
 async def test_a_reattach_is_not_told_another_threads_gates() -> None:
-    settings = _settings("reattach-scope")
-    await _gate(settings, "default:theirs", call_signature="sig-theirs", ttl_seconds=600)
+    settings = durable_settings()
+    await pending_gate(settings, "default:theirs", call_signature="sig-theirs", ttl_seconds=600)
     await client_requests.record("default:theirs", {"id": "call_t", "name": "local_write"}, timeout=300)
     try:
-        async with _client(settings) as client:
+        async with app_client(settings) as client:
             body = await _reattach(client, "mine")
     finally:
         await client_requests.clear("default:theirs", "call_t")
 
-    names = _names(body)
+    names = sse_event_names(body)
     assert "approval_required" not in names and "tool_request" not in names, names
 
 
@@ -117,14 +116,14 @@ async def test_a_reattach_holds_open_while_a_durable_run_is_in_flight() -> None:
     """The idle limit (0.2s here) is for an idle thread. A durable run blocked on a person is
     idle by that measure for as long as nobody answers, and closing then is closing exactly
     when the client needs the stream."""
-    settings = _settings("reattach-holds")
+    settings = durable_settings()
     run = await _durable_run_on(settings, "default:held")
 
     async def finish_later() -> None:
         await asyncio.sleep(0.8)
         _finish(str(run["id"]))
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         started = time.monotonic()
         finisher = asyncio.create_task(finish_later())
         await _reattach(client, "held")
@@ -136,8 +135,8 @@ async def test_a_reattach_holds_open_while_a_durable_run_is_in_flight() -> None:
 
 @pytest.mark.asyncio
 async def test_a_reattach_with_no_run_in_flight_still_closes_when_idle() -> None:
-    settings = _settings("reattach-idle")
-    async with _client(settings) as client:
+    settings = durable_settings()
+    async with app_client(settings) as client:
         started = time.monotonic()
         await _reattach(client, "idle")
     assert time.monotonic() - started < 5.0
@@ -151,10 +150,10 @@ async def test_the_durable_stream_outlives_its_deadline_while_a_worker_holds_the
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Past `expires_at` mid-step, the run is still running: report its end, not the deadline."""
-    settings = _settings("durable-held-past-deadline")
-    _force_durable(monkeypatch)
+    settings = durable_settings()
+    force_durable(monkeypatch)
     # The stub run reports `running` three times, then `completed`; its deadline is long past.
-    _stub_fiber(monkeypatch, statuses=["running", "running", "running"], expires_at=1)
+    stub_fiber(monkeypatch, statuses=["running", "running", "running"], expires_at=1)
     # And a worker holds the fiber the stream will look up, past its expiry.
     fibers._memory_fibers[("default", "fiber-1")] = {
         "tenant_id": "default",
@@ -164,10 +163,10 @@ async def test_the_durable_stream_outlives_its_deadline_while_a_worker_holds_the
         "lease_until": fibers.now_ms() + 60_000,
     }
 
-    async with _client(settings) as client:
-        body = await _post_stream(client, "past-deadline")
+    async with app_client(settings) as client:
+        body = await post_stream(client, "past-deadline")
 
-    names = _names(body)
+    names = sse_event_names(body)
     assert "final" in names, f"the stream gave up on a run a worker still held: {names}"
     assert "run_expired:fiber-1" not in body
 
@@ -176,9 +175,9 @@ async def test_the_durable_stream_outlives_its_deadline_while_a_worker_holds_the
 async def test_the_durable_stream_still_says_expired_when_nothing_holds_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = _settings("durable-unheld-past-deadline")
-    _force_durable(monkeypatch)
-    _stub_fiber(monkeypatch, statuses=["running", "running"], expires_at=1)
+    settings = durable_settings()
+    force_durable(monkeypatch)
+    stub_fiber(monkeypatch, statuses=["running", "running"], expires_at=1)
     fibers._memory_fibers[("default", "fiber-1")] = {
         "tenant_id": "default",
         "id": "fiber-1",
@@ -187,7 +186,7 @@ async def test_the_durable_stream_still_says_expired_when_nothing_holds_the_run(
         "lease_until": None,
     }
 
-    async with _client(settings) as client:
-        body = await _post_stream(client, "unheld")
+    async with app_client(settings) as client:
+        body = await post_stream(client, "unheld")
 
     assert "run_expired:fiber-1" in body

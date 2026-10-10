@@ -15,7 +15,7 @@ import pytest
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.unit.test_completion_webhooks import SECRET, receiver
+from tests.support.webhook_receiver import SECRET, receiver
 
 
 def _durable(webhooks: list[str]) -> Any:
