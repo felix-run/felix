@@ -498,6 +498,9 @@ class _RenderRequest:
     instructions: str | None = None
     reason: str = "threshold"
     will_retry: bool = False
+    # Render from the stored summary and the kept window, never a new pass: no summariser call,
+    # no compaction hooks, nothing appended. A side question (`POST /chat/ask`) reads this way.
+    stored_only: bool = False
 
     @classmethod
     def read(cls, opts: SessionRenderOpts | dict[str, Any], incoming: list[ChatMessage]) -> _RenderRequest:
@@ -510,6 +513,7 @@ class _RenderRequest:
                 instructions=opts.get("compact_instructions"),
                 reason=str(opts.get("compact_reason") or "threshold"),
                 will_retry=bool(opts.get("will_retry")),
+                stored_only=bool(opts.get("stored_summary_only")),
             )
         return cls(system_prompt=opts.system_prompt, model=opts.model, incoming=incoming)
 
@@ -667,6 +671,15 @@ class CompactingSessionStrategy:
         older, kept, is_split, plan = self._cut(compactable, pinned, carried)
         if not older:
             return uncut_frame(summary_msg)
+        if request.stored_only:
+            # The cut a pass would make, without the pass: what the cut drops since the last
+            # summary is left out rather than summarised, and the frame says so.
+            opening = [chat_message_from_parts(**plan.opening)] if plan.opening else []
+            note = ChatMessage(
+                role="system",
+                content=f"[session] {len(older)} older event(s) since the last summary are not shown.",
+            )
+            return _degraded_frame(request, summary_msg, lead_msgs or opening, [*pinned, *kept], note)
 
         pass_ = _Pass(
             request=request,

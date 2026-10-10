@@ -132,7 +132,9 @@ def session_plumbing(settings: Settings, manifest: Any, tenant_id: str) -> tuple
 
     One place, so anything that renders a thread the way its next turn will (`POST /chat/ask`)
     does it with the same checkpointer, strategy and budgets, not a second copy of them. The
-    store is None for `checkpointer: none`, which runs the agent with no session state.
+    strategy is the bare one: `build_agent` wraps it in the manifest's replay screening, and so
+    must any other renderer. The store is None for `checkpointer: none`, which runs the agent
+    with no session state.
     """
     spec = getattr(manifest, "spec", None)
     checkpointer = str(getattr(getattr(spec, "memory", None), "checkpointer", "postgres") or "postgres")

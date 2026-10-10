@@ -23,6 +23,9 @@ from felix.session.types import AppendableEvent
 class _Summarizer:
     model_id = "fast"
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def chat(self, messages: list[ChatMessage], tools: list[Any], opts: Any = None) -> ModelChatResult:
         return ModelChatResult(
             message=ChatMessage(role="assistant", content="summary"),
@@ -31,13 +34,49 @@ class _Summarizer:
         )
 
 
-@pytest.mark.asyncio
-async def test_a_compacting_render_over_budget_appends_nothing_through_the_read_only_view() -> None:
+async def _long_session() -> Any:
     session = InMemorySessionStore(tenant_id="acme").open("acme:ask")
     for i in range(20):
         await annotate_and_append(
             session, [AppendableEvent(kind="message", role="user", content=("hello world " * 200) + str(i))]
         )
+    return session
+
+
+@pytest.mark.asyncio
+async def test_a_stored_summary_render_runs_no_pass_and_fires_no_hook() -> None:
+    """What `POST /chat/ask` asks for: the cut a pass would make, without the pass."""
+    from felix.hooks import get_agent_hooks, reset_agent_hooks
+
+    reset_agent_hooks()
+    fired: list[str] = []
+    get_agent_hooks().register_before_compact(lambda prep, ctx: fired.append("before_compact"))
+    get_agent_hooks().register_compact_failed(lambda info, ctx: fired.append("compact_failed"))
+    try:
+        session = await _long_session()
+        before = await session.get_events()
+        model = _Summarizer()
+        readonly = _ReadOnlySession(session)
+
+        rendered = await CompactingSessionStrategy(
+            reserve_tokens=10, keep_recent_tokens=50, context_window_tokens=100
+        ).render(
+            readonly,
+            [ChatMessage(role="user", content="q")],
+            {"system_prompt": "sys", "model": model, "stored_summary_only": True},
+        )
+    finally:
+        reset_agent_hooks()
+
+    assert (model.calls, fired, readonly.dropped_writes) == (0, [], 0)
+    assert await session.get_events() == before
+    assert any("not shown" in (m.content or "") for m in rendered), "the frame says what it left out"
+    assert len(rendered) < len(before), "and it is the cut window, not the whole thread"
+
+
+@pytest.mark.asyncio
+async def test_a_compacting_render_over_budget_appends_nothing_through_the_read_only_view() -> None:
+    session = await _long_session()
     before = await session.get_events()
     strategy = CompactingSessionStrategy(reserve_tokens=10, keep_recent_tokens=50, context_window_tokens=100)
     readonly = _ReadOnlySession(session)

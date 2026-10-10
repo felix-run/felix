@@ -89,11 +89,6 @@
       "AskRequest": {
         "additionalProperties": false,
         "properties": {
-          "manifest": {
-            "minLength": 1,
-            "title": "Manifest",
-            "type": "string"
-          },
           "question": {
             "maxLength": 8000,
             "minLength": 1,
@@ -108,7 +103,6 @@
         },
         "required": [
           "thread_id",
-          "manifest",
           "question"
         ],
         "title": "AskRequest",
@@ -7760,7 +7754,7 @@
     },
     "/chat/ask": {
       "post": {
-        "description": "Answer one question from a thread's context, leaving the thread exactly as it was.\n\nRead-only: no session event, no steer or follow-up, no phase change, and no lease check \u2014 a\nquestion is most useful while a run or another tab holds the thread. One model call, no\ntools, metered under `manifest` like `/chat/compact`. `status` is `not_in_context` when the\nconversation does not hold the answer.",
+        "description": "Answer one question from a thread's context, leaving the thread exactly as it was.\n\nAnswered by the thread's own manifest, admitted and screened as a turn of it would be, from\nthe history its next turn would read. Read-only: no session event, no steer or follow-up, no\nphase change, and no lease check \u2014 a question is most useful while a run or another tab\nholds the thread. One model call, no tools, metered under the manifest. `status` is\n`answered`, `not_in_context` when the conversation does not hold the answer, or `withheld`\nwhen a final-response judge refused it.",
         "operationId": "chat_ask_chat_ask_post",
         "requestBody": {
           "content": {

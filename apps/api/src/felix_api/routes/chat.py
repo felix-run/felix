@@ -214,7 +214,6 @@ class AskRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     thread_id: str = Field(min_length=1)
-    manifest: str = Field(min_length=1)
     question: str = Field(min_length=1, max_length=8000)
 
 
@@ -1924,12 +1923,15 @@ async def chat_thinking(
 async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
     """Answer one question from a thread's context, leaving the thread exactly as it was.
 
-    Read-only: no session event, no steer or follow-up, no phase change, and no lease check — a
-    question is most useful while a run or another tab holds the thread. One model call, no
-    tools, metered under `manifest` like `/chat/compact`. `status` is `not_in_context` when the
-    conversation does not hold the answer.
+    Answered by the thread's own manifest, admitted and screened as a turn of it would be, from
+    the history its next turn would read. Read-only: no session event, no steer or follow-up, no
+    phase change, and no lease check — a question is most useful while a run or another tab
+    holds the thread. One model call, no tools, metered under the manifest. `status` is
+    `answered`, `not_in_context` when the conversation does not hold the answer, or `withheld`
+    when a final-response judge refused it.
     """
-    from felix.session.side_question import answer_side_question
+    from felix.manifests.governance import GovernanceError
+    from felix.session.side_question import UnknownThreadError, answer_side_question
 
     auth = _auth_from_request(request)
     settings = request.app.state.settings
@@ -1937,22 +1939,29 @@ async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     try:
-        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
-    except (LookupError, ValueError) as exc:
-        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
-    try:
         return await answer_side_question(
             settings,
-            manifest=resolved.manifest,
-            manifest_id=body.manifest,
+            auth=auth,
             tenant_id=auth.tenant_id,
             thread_id=thread,
             question=body.question,
             tools=request.app.state.tools,
         )
+    except UnknownThreadError as exc:
+        raise HTTPException(status_code=404, detail="unknown_thread") from exc
     except ModelGatewayError as exc:
         log_gateway_error(logger, exc)
         raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
+    except GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=client_safe_message(exc)) from exc
+    except Exception as exc:
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        if isinstance(exc, LookupError):
+            # The manifest the thread last ran under no longer resolves.
+            raise HTTPException(status_code=404, detail="unknown_manifest") from exc
+        raise
 
 
 @router.post("/compact", responses=LEASE_REFUSALS)

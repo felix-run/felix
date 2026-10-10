@@ -207,6 +207,45 @@ async def assert_resume_pin(
     assert_pin_matches(pinned, manifest, version=version, sub_agents=children)
 
 
+def _pinned_of(meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "manifest_name": meta.get("manifest_name"),
+        "manifest_version": meta.get("manifest_version"),
+        "manifest_hash": meta.get("manifest_hash"),
+        "pin_compile": meta.get("pin_compile"),
+        "sub_agents_hash": meta.get("sub_agents_hash"),
+    }
+
+
+async def check_thread_pin(
+    *,
+    settings: Any,
+    tenant_id: str,
+    thread_id: str,
+    manifest: Manifest,
+    version: int | None = None,
+    resolved_out: dict[str, Manifest | None] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Refuse `manifest` on `thread_id` when its pin drifted, writing nothing; `(fields, meta)`.
+
+    The read half of `ensure_thread_pin`, for a caller that must honour a pin without taking
+    one — a side question (`POST /chat/ask`) runs against a thread, never adds to it.
+    """
+    from felix.session.thread_state import get_thread_meta
+
+    fields = pin_fields(manifest, version=version)
+    if fields["pin_compile"]:
+        # Resolving the children costs a store read each; only an enforced pin pays it.
+        fields = await pin_fields_for(
+            settings, tenant_id, manifest, version=version, resolved_out=resolved_out
+        )
+    meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id)
+    pinned = _pinned_of(meta)
+    if pinned.get("manifest_hash"):
+        assert_pin_matches(pinned, manifest, version=version, sub_agents=fields.get("sub_agents_hash"))
+    return fields, meta
+
+
 async def ensure_thread_pin(
     *,
     settings: Any,
@@ -217,27 +256,19 @@ async def ensure_thread_pin(
     resolved_out: dict[str, Manifest | None] | None = None,
 ) -> dict[str, Any]:
     """Check drift against prior pin; store pin when ``pin_compile`` is enabled."""
-    from felix.session.thread_state import LAST_MANIFEST_KEY, get_thread_meta, update_thread_meta
+    from felix.session.thread_state import LAST_MANIFEST_KEY, update_thread_meta
 
-    fields = pin_fields(manifest, version=version)
     if not thread_id:
-        return fields
-    if fields["pin_compile"]:
-        # Resolving the children costs a store read each; only an enforced pin pays it.
-        fields = await pin_fields_for(
-            settings, tenant_id, manifest, version=version, resolved_out=resolved_out
-        )
-
-    meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id)
-    pinned = {
-        "manifest_name": meta.get("manifest_name"),
-        "manifest_version": meta.get("manifest_version"),
-        "manifest_hash": meta.get("manifest_hash"),
-        "pin_compile": meta.get("pin_compile"),
-        "sub_agents_hash": meta.get("sub_agents_hash"),
-    }
-    if pinned.get("manifest_hash"):
-        assert_pin_matches(pinned, manifest, version=version, sub_agents=fields.get("sub_agents_hash"))
+        return pin_fields(manifest, version=version)
+    fields, meta = await check_thread_pin(
+        settings=settings,
+        tenant_id=tenant_id,
+        thread_id=thread_id,
+        manifest=manifest,
+        version=version,
+        resolved_out=resolved_out,
+    )
+    pinned = _pinned_of(meta)
 
     # The manifest this turn runs under, for the session index. `manifest_name` is the pin's
     # first-touch record and a thread without `pin_compile` may move to another manifest after
@@ -280,6 +311,7 @@ __all__ = [
     "ManifestDriftError",
     "assert_pin_matches",
     "assert_resume_pin",
+    "check_thread_pin",
     "ensure_thread_pin",
     "manifest_content_hash",
     "pin_fields",
