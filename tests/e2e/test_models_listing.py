@@ -14,6 +14,7 @@ from typing import Any
 from felix.manifests.loader import load_manifest_file
 from felix.model_catalog import entry_for
 from felix.usage.catalog import supported_thinking_levels
+from felix.usage.pricing import _lookup_price
 
 from tests.e2e.conftest import DEFAULT_ROUTE, WIRE_MODEL
 
@@ -45,5 +46,13 @@ async def test_a_manifest_on_the_default_route_is_described_by_that_routes_model
 async def test_a_manifest_naming_a_route_reports_that_route(boot: Any) -> None:
     listed = await _listed(boot)
 
-    assert listed["hybrid-router"]["felix"]["providerModel"] == "claude-haiku"
-    assert listed["hybrid-router"]["id"] == "hybrid-router", "the id stays the manifest's name"
+    hybrid = listed["hybrid-router"]
+    served = entry_for(WIRE_MODEL)
+
+    assert hybrid["id"] == "hybrid-router", "the id stays the manifest's name"
+    assert hybrid["felix"]["providerModel"] == "claude-haiku"
+    # Every e2e route is the scripted one on WIRE_MODEL: read by route name, `claude-haiku`
+    # would be priced and sized as the real Haiku.
+    assert hybrid["felix"]["contextWindow"] == served.context_window
+    assert hybrid["felix"]["cost"]["inputPerMillion"] == _lookup_price(WIRE_MODEL)["input"]
+    assert _lookup_price(WIRE_MODEL)["input"] != _lookup_price("claude-haiku")["input"], "or this cannot fail"
