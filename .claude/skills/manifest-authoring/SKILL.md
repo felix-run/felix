@@ -38,7 +38,7 @@ spec:
     strategy: compacting
     reserve_tokens: 16384
     keep_recent_tokens: 20000
-    context_window_tokens: 128000
+    # context_window_tokens: omit it — unset means the model's own window from the catalog
   memory:
     checkpointer: postgres   # postgres | none, or one you register
     store: pgvector
@@ -57,17 +57,32 @@ Copy `manifests/governed.yaml` when the agent needs governance — it is the ful
 | Spec field | Consumed by |
 |---|---|
 | `pattern` | `patterns/registry.py:get_pattern` → e.g. `patterns/react.py` |
-| `tools` | `ToolProvider.resolve` (`tools/provider.py`, builtins in `tools/builtins.py`) |
+| `reflect` / `plan_execute` | per-pattern config, read by `_build_reflect` / `_build_plan_execute` in `patterns/__init__.py` |
+| `sub_agents` / `aggregator_prompt` | composite patterns (`patterns/delegating.py`); sub-agents resolved in `runtime.py` and pinned in `manifests/pin.py` |
+| `max_turns` / `recursion_limit` / `output_schema` / `extensions` | passed through `PatternBuildContext` by `builder.py`; `output_schema` only to patterns registered `honours_output_schema=True`; `extensions` is plugin-owned and core never reads inside it |
+| `model` / `decider` | `patterns/model.py:build_model` and `felix/decisions.py` — see the model-layer skill |
+| `system_prompt` / `prompts` | `builder.py`; `prompts` templates in `prompts/templates.py` |
+| `tools` / `tool_guidance` | `ToolProvider.resolve` (`tools/provider.py`, builtins in `tools/builtins.py`); `tool_guidance` joins each tool's own `prompt_guidance` in the prompt section `builder.py:tool_guidance_section` writes |
+| `tools_retrieval` | `tools/retrieval.py` (and `tools/decider_retrieval.py`), applied in `patterns/react.py` |
 | `mcp_servers` | `mcp/client.py:tools_from_mcp_servers` → `server__tool` |
 | `peers` | `a2a/peers.py:tools_from_peers` → `peer__name` |
+| `a2a` | the published agent card: `a2a/card.py`, served by `routes/well_known.py` |
 | `browser_tools` / `sandboxes` / `containers` / `queues` / `client_tools` | `tools/{browser,sandboxes,queues,client_bridge}.py` |
-| `skills` | `felix/skills/` — catalog XML appended to the system prompt |
+| `shell_tools` / `workspace` | `tools/shell.py`, `shell_runner.py`, `security/shell_policy.py`; `tools/workspace_*.py` (and the outermost `apply_workspace_scope`); both have refusals in `manifests/governance.py` |
+| `http_tools` / `search_tools` / `document_tools` / `image_tools` / `github_publish` | `tools/{http_fetch,web_search,document_search,image_tools,github_publish}.py` |
+| `skills` / `skills_declared_only` / `personal_skills` | `felix/skills/loader.py` — catalog XML appended to the system prompt; personal skills also via `runtime.py` |
+| `skill_suggestion` / `skill_authoring` | `skills/suggest.py` (read in `patterns/react.py`); `skills/{authoring,tools}.py` |
 | `session` | `session/strategies.py` via `runtime.py:build_tenant_agent` |
 | `memory` / `procedural_memory` | `memory/{capture,store,procedural}.py` |
 | `policies`, `command_screening`, `content_screening`, `limits`, `guardrails`, `approvals`, `artifacts` | the `apply_*` wrappers in `builder.py` (fixed order — see the governance-pipeline skill) |
 | `governance` | `manifests/governance.py:validate_governance` (compile-time) |
+| `anomaly` | `jobs/anomaly.py` (the worker's scan), validated in `manifests/governance.py` |
+| `observability` | `runtime.py`, `observability/metrics.py` |
 | `auth.inbound` | `manifests/inbound_auth.py:enforce_inbound_auth` |
 | `execution.mode: durable` | `durability/fibers.py` — `/chat` returns `202` + `resume_token` |
+
+The authoritative list of fields is `schemas/manifest.schema.json` (the `Spec` definition). A field
+missing from this table is not a field that does nothing — grep `spec.<field>` before concluding so.
 
 See [references/spec-fields.md](references/spec-fields.md) for the per-block details and gotchas.
 
@@ -117,7 +132,13 @@ uv run felix bundle-manifests                                        # all bundl
 
 CI runs `bundle-manifests` before pytest, so a broken manifest fails the whole build.
 
-**What validation does not catch:** `validate-manifest` checks the schema and the governance
-frameworks only. `spec.pattern: nope` validates "ok" and fails later at compile time with
-`Unknown pattern`; an unreachable MCP/peer URL binds zero tools with only a logged warning. Smoke
-the manifest against a running API (`POST /chat` with `"manifest": "<name>"`) before calling it done.
+`validate-manifest` runs the schema, the governance frameworks, the refusals `PUT /manifests`
+makes (`validate_for_write`, so `ok` means the store would take it), the pattern registry (an
+unregistered `spec.pattern` fails here, listing the registered names), and — unless
+`--no-resolve-egress` — resolves the hostnames of `mcp_servers[].url`, `peers[].url` and
+`containers[].gateway_url` and rejects blocked addresses. Other outbound URLs (`http_tools`,
+`execution.webhooks`, queues) are checked at dial time, not here.
+
+**What validation does not catch:** that an MCP server or peer actually answers. An unreachable
+one binds zero tools at compile time with only a logged warning. Smoke the manifest against a
+running API (`POST /chat` with `"manifest": "<name>"`) before calling it done.

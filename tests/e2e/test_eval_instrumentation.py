@@ -27,8 +27,8 @@ async def test_each_item_reports_its_time_tokens_and_cost_and_the_run_sums_them(
     async with boot([turn]) as app:
         await _dataset(app, {"contains": "4"})
         resp = await app.client.post(
-            "/eval/datasets/instrumented/run",
-            json={"candidate_manifest": "quick", "deterministic_judge": True},
+            "/eval/runs",
+            json={"dataset_name": "instrumented", "candidate_manifest": "quick", "deterministic_judge": True},
         )
         assert resp.status_code == 200, resp.text
         run = resp.json()
@@ -48,8 +48,13 @@ async def test_a_judge_that_cannot_run_is_reported_not_hidden(boot: Any) -> None
     async with boot([ScriptedTurn(content="It is 4.")]) as app:
         await _dataset(app, {"contains": "4", "llm_judge": True, "judge_model": "e2e-no-such-route"})
         resp = await app.client.post(
-            "/eval/datasets/instrumented/run",
-            json={"candidate_manifest": "quick", "deterministic_judge": False, "use_llm_judge": True},
+            "/eval/runs",
+            json={
+                "dataset_name": "instrumented",
+                "candidate_manifest": "quick",
+                "deterministic_judge": False,
+                "use_llm_judge": True,
+            },
         )
         assert resp.status_code == 200, resp.text
         run = resp.json()

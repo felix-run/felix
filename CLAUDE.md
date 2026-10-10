@@ -178,7 +178,7 @@ bundled YAML), enforces inbound auth and the compile pin, then compiles:
 3. Wire Agent Skills (catalog XML appended to the prompt) and inject active memory facts.
 4. **Wrap every tool in the governance stack, in a fixed order** — secret masking →
    policies → command screening → content screening → limits → guardrails → judges →
-   approvals → artifact spill. The comment `order matters` is load-bearing; each wrapper
+   approvals → artifact spill → workspace scope. The comment `order matters` is load-bearing; each wrapper
    clones the tool with a new executor, so order defines precedence.
 5. Hand the result to a pattern builder from the open registry
    (`patterns/registry.py`; `patterns/react.py:build_react_agent` is the main one) via a

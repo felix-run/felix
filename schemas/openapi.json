@@ -10021,7 +10021,8 @@
     },
     "/eval/datasets/{name}/run": {
       "post": {
-        "description": "Alias for chat-ui: POST /eval/datasets/{name}/run.",
+        "deprecated": true,
+        "description": "Deprecated: `POST /eval/runs` with `dataset_name` in the body starts the same run.\n\nTwo routes started an eval run, which made `POST /eval/runs` read as an unbuilt feature to\nanything counting call sites (#247). This one stays for a release, says so in `Deprecation`\nand `Link`, and takes the dataset from the path over any in the body, as it always has.",
         "operationId": "run_dataset_eval_datasets__name__run_post",
         "parameters": [
           {
