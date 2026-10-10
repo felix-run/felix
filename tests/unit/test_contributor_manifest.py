@@ -78,7 +78,7 @@ NEVER_BOUND_GITHUB_TOOLS = frozenset(
 
 @pytest.fixture
 def manifest() -> Manifest:
-    return load_bundled("contributor")
+    return load_bundled("contributor", bundled_dir=ROOT / "manifests" / "self")
 
 
 def test_loads_under_its_own_name(manifest: Manifest) -> None:

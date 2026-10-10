@@ -7,6 +7,7 @@ import logging
 import os
 import socket
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field, field_validator
@@ -621,6 +622,11 @@ class Settings(BaseSettings):
     # core itself enforces, not a component core loads, so there is nothing for a third
     # value to select.
     manifest_source: Literal["store", "bundled"] = "store"
+    # Extra directory of manifest YAML, searched after the bundled `manifests/` dir and served
+    # like it. Bundled means every install serves it, so a manifest that only one stack can run
+    # lives outside it: `manifests/self/` holds `contributor` and `triage`, which need the
+    # builder stack's workspace and shell runner, and `compose.self.yml` points this there.
+    manifests_dir: str = ""
 
     hibernate_after_seconds: int = 300
     # How often each emitting process drains its audit/usage buffers. The agent
@@ -984,6 +990,23 @@ class Settings(BaseSettings):
                 f"FELIX_SKILL_IMPORT_GITHUB_TOKEN is set: that is every owner the token reads. {fix}"
             )
 
+    def _validate_manifests_dir(self) -> None:
+        """A configured directory that is not there would leave its manifests unserved, quietly."""
+        raw = self.manifests_dir.strip()
+        if not raw:
+            return
+        extra = Path(raw).expanduser()
+        if not extra.is_dir():
+            raise RuntimeError(f"FELIX_MANIFESTS_DIR={raw!r} is not a directory.")
+        from felix.manifests.loader import _default_bundled_dir, _names_in
+
+        both = sorted(_names_in(_default_bundled_dir()) & _names_in(extra))
+        if both:
+            raise RuntimeError(
+                f"FELIX_MANIFESTS_DIR={raw!r} holds manifests the bundled set also has: {', '.join(both)}. "
+                "Refused rather than letting one shadow the other."
+            )
+
     def _validate_shell_runner(self) -> None:
         """A runner URL without a token would be an unauthenticated exec endpoint's client."""
         url = self.shell_runner_url.strip()
@@ -1049,6 +1072,7 @@ class Settings(BaseSettings):
 
         self._validate_skill_import()
         self._validate_shell_runner()
+        self._validate_manifests_dir()
         self._validate_workspace_gateway()
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()

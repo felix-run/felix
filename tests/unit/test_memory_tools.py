@@ -198,7 +198,7 @@ def test_bundled_manifests_that_enable_capture_use_the_cheap_tier() -> None:
 
     root = Path(__file__).resolve().parents[2] / "manifests"
     enabled = []
-    for path in sorted(root.glob("*.yaml")):
+    for path in sorted([*root.glob("*.yaml"), *(root / "self").glob("*.yaml")]):
         manifest = load_manifest_file(str(path))
         capture = manifest.spec.memory.capture
         if not capture.enabled:

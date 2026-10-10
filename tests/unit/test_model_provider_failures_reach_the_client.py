@@ -12,6 +12,7 @@ The real app, the real compiler and the real wire client — only the endpoint i
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -215,20 +216,34 @@ def test_a_missing_secret_is_relayed_by_name() -> None:
 
 
 async def test_a_missing_manifest_secret_names_it_on_every_surface(monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.config import get_settings
+    from felix.manifests.loader import clear_bundled_cache
     from felix_api.app import create_app
 
     monkeypatch.delenv("GITHUB_MCP_TOKEN", raising=False)
-    app = create_app(settings=_settings(secrets_backend="env"), plugins=[])
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30) as client:
-        plain = await client.post(
-            "/chat", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
-        )
-        streamed = await client.post(
-            "/chat/stream", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
-        )
-        v1 = await client.post(
-            "/v1/chat/completions", json={"model": "triage", "messages": [{"role": "user", "content": "hi"}]}
-        )
+    # `triage` is not bundled; the builder stack serves it from manifests/self.
+    monkeypatch.setenv("FELIX_MANIFESTS_DIR", str(Path(__file__).resolve().parents[2] / "manifests" / "self"))
+    get_settings.cache_clear()
+    clear_bundled_cache()
+    try:
+        app = create_app(settings=_settings(secrets_backend="env"), plugins=[])
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", timeout=30
+        ) as client:
+            plain = await client.post(
+                "/chat", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
+            )
+            streamed = await client.post(
+                "/chat/stream", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
+            )
+            v1 = await client.post(
+                "/v1/chat/completions",
+                json={"model": "triage", "messages": [{"role": "user", "content": "hi"}]},
+            )
+    finally:
+        monkeypatch.delenv("FELIX_MANIFESTS_DIR")
+        get_settings.cache_clear()
+        clear_bundled_cache()
     assert plain.status_code == 503, plain.text
     assert plain.json()["detail"] == "secret not found: GITHUB_MCP_TOKEN"
     assert "secret not found: GITHUB_MCP_TOKEN" in streamed.text
