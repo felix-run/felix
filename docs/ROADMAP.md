@@ -1049,8 +1049,9 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       and records why. `limits.precount` (read by nothing) is retired through `compat.RETIRED`.
 - [~] **W1 — delegation and planning.** *Landed:* `spec.delegation` binds a `task` tool the
       model calls to hand a job to a child agent — compiled beside `sub_agents` (store first,
-      cycles and depth refused, pinned), fresh context, governed as a tool and by its own stack,
-      untrusted output, the parent's budgets and `max_peer_hops`. *Next:* a child thread linked in
+      cycles and depth refused, pinned), fresh context, the child's own inbound auth checked per
+      call, governed as a tool and by its own stack, untrusted output, held to the parent's caps
+      (`LimitState.ceilings`) and `max_peer_hops`. *Next:* a child thread linked in
       `session/tree.py` so its transcript is inspectable, and a `task` entry that names a peer so
       local and A2A delegates share one tool; background children on durable fibers, with the
       `subagent_start`/`subagent_end` frames from *Headless / contract*; a `todo_write` tool for
