@@ -867,3 +867,125 @@ def test_a_new_route_module_must_join_the_api_surface_table(tmp_path: pathlib.Pa
     assert (
         ".claude/skills/api-surface/SKILL.md: the route-modules list does not name 'new_surface'" in added
     ), added
+
+
+# Ownership: every subpackage, and every module over the size floor, must be claimed by a
+# skill's `metadata.covers` or listed in the validator's UNOWNED. These run the tree's own copy
+# of the validator so a plant can edit UNOWNED as well as the skills.
+
+_OWNED_ROOTS = [
+    "packages/harness/src/felix",
+    "packages/ai/src/felix_ai",
+    "packages/client/src/felix_client",
+    "apps/api/src/felix_api",
+    "apps/cli/src/felix_cli",
+    "apps/worker/src/felix_worker",
+]
+_OWNERSHIP_WORDS = ("has no owner", "covers ", "UNOWNED")
+OWNED_FLOOR = 300  # OWNED_MIN_LINES in the validator
+
+
+def _owned_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    tree = tmp_path / "tree"
+    shutil.copytree(
+        ROOT / ".claude",
+        tree / ".claude",
+        ignore=shutil.ignore_patterns("worktrees", "logs", "settings.local.json"),
+    )
+    for rel in _OWNED_ROOTS:
+        shutil.copytree(ROOT / rel, tree / rel, ignore=shutil.ignore_patterns("__pycache__"))
+    (tree / "scripts").mkdir()
+    shutil.copy2(ROOT / "scripts" / "validate-toolkit.py", tree / "scripts" / "validate-toolkit.py")
+    return tree
+
+
+def _ownership_problems(tree: pathlib.Path) -> set[str]:
+    proc = subprocess.run(
+        [sys.executable, str(tree / "scripts" / "validate-toolkit.py"), str(tree)],
+        capture_output=True,
+        text=True,
+    )
+    assert "Traceback" not in proc.stderr, proc.stderr
+    problems = {line.strip().removeprefix("- ") for line in proc.stderr.splitlines()}
+    return {p for p in problems if any(word in p for word in _OWNERSHIP_WORDS)}
+
+
+def _unowned_entry(tree: pathlib.Path, entry: str) -> None:
+    _plant(
+        tree,
+        "scripts/validate-toolkit.py",
+        "UNOWNED: dict[str, str] = {",
+        f"UNOWNED: dict[str, str] = {{{entry!r}: 'x', ",
+    )
+
+
+def _a_module_of(lines: int) -> Callable[[pathlib.Path], None]:
+    return lambda tree: (tree / "packages/harness/src/felix/sizeable.py").write_text("x = 1\n" * lines)
+
+
+def _a_subpackage(rel: str, *, parents: bool = False) -> Callable[[pathlib.Path], None]:
+    def plant(tree: pathlib.Path) -> None:
+        (tree / rel).mkdir(parents=parents)
+        (tree / rel / "__init__.py").write_text("")
+
+    return plant
+
+
+_OWNERSHIP_PLANTS: dict[str, tuple[Callable[[pathlib.Path], None], str]] = {
+    # name: (plant, the problem it must add)
+    "new-subpackage": (_a_subpackage("packages/harness/src/felix/newthing"), "felix/newthing/ has no owner"),
+    "module-at-the-floor": (_a_module_of(OWNED_FLOOR), "felix/sizeable.py has no owner"),
+    # A namespace directory: no `.py` of its own, real code one level down.
+    "code-only-in-a-nested-package": (
+        _a_subpackage("packages/harness/src/felix/ns/inner", parents=True),
+        "felix/ns/ has no owner",
+    ),
+    # One bare root claimed whole would own every new harness package silently.
+    "cover-of-the-whole-harness": (
+        lambda tree: _plant(tree, ".claude/skills/model-layer/SKILL.md", "covers: ", "covers: felix, "),
+        "covers 'felix', which names nothing",
+    ),
+    "skill-drops-a-cover": (
+        lambda tree: _plant(
+            tree, ".claude/skills/durable-execution/SKILL.md", "covers: felix/durability/, ", "covers: "
+        ),
+        "felix/durability/ has no owner",
+    ),
+    "cover-that-names-nothing": (
+        lambda tree: _plant(
+            tree, ".claude/skills/model-layer/SKILL.md", "covers: ", "covers: felix/ghost/, "
+        ),
+        "covers 'felix/ghost/', which names nothing",
+    ),
+    "unowned-entry-now-covered": (
+        lambda tree: _unowned_entry(tree, "felix/tools/"),
+        "UNOWNED lists felix/tools/, which tools-runtime now covers",
+    ),
+    "unowned-entry-that-is-gone": (
+        lambda tree: _unowned_entry(tree, "felix/retired/"),
+        "UNOWNED lists felix/retired/, which is no longer a subpackage",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_OWNERSHIP_PLANTS))
+def test_code_without_an_owning_skill_fails_the_validator(tmp_path: pathlib.Path, name: str) -> None:
+    plant, expect = _OWNERSHIP_PLANTS[name]
+    tree = _owned_tree(tmp_path)
+    assert not _ownership_problems(tree)
+    plant(tree)
+    added = _ownership_problems(tree)
+    assert any(p.startswith(expect) or f": {expect}" in p for p in added), sorted(added)
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [_a_subpackage("apps/api/src/felix_api/newsurface"), _a_module_of(OWNED_FLOOR - 1)],
+    ids=["under-a-covered-directory", "below-the-size-floor"],
+)
+def test_code_already_covered_or_too_small_to_need_an_owner_passes(
+    tmp_path: pathlib.Path, plant: Callable[[pathlib.Path], None]
+) -> None:
+    tree = _owned_tree(tmp_path)
+    plant(tree)
+    assert not _ownership_problems(tree)

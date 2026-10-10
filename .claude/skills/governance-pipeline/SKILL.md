@@ -2,6 +2,8 @@
 name: governance-pipeline
 description: How Felix compiles a manifest into a governed agent and how the tool wrapper stack works — secret masking, policies, command and content screening, limits, guardrails, judges, approvals, artifact spill — including how to add a new control in the right slot. Use when editing manifests/builder.py, adding or debugging a governance control, tracing why a tool call was blocked, masked, or paused for approval, or reviewing security-relevant agent behavior.
 allowed-tools: Read Grep Glob Bash(uv run:*)
+metadata:
+  covers: felix/governance/, felix/approvals/, felix/audit/
 ---
 
 # The governance pipeline

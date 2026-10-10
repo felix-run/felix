@@ -2,6 +2,8 @@
 name: model-layer
 description: How Felix talks to models and decision models — the felix_ai package boundary, wire formats, ProviderSpec rows and the provider registry, FELIX_MODEL_ROUTES and FELIX_DECISION_ROUTES, the model catalog and pricing, prompt caching, metering through record_usage, and the decider (Jev, llm) with each consumer that opts into it. Use when adding or changing a model provider, a decision provider, a route, a catalog entry, caching or thinking behaviour, or anything that calls spec.decider; and when a provider test skips or a run is metered wrong.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*) Bash(uv run felix:*)
+metadata:
+  covers: felix_ai/, felix/usage/
 ---
 
 # The model layer

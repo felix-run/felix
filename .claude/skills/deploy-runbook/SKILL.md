@@ -3,6 +3,8 @@ name: deploy-runbook
 description: Deploy and operate Felix — lean Docker image and Compose overlays, small-VM tuning, Helm, AWS and GCP notes, required services, health checks, and the production configuration that must be right before going live. Use when packaging, deploying, tuning memory, debugging a container or chart, or answering how Felix runs in production.
 compatibility: Requires Docker for local stacks; Helm/kubectl and cloud CLIs only for the corresponding targets.
 allowed-tools: Read Grep Glob Bash(docker compose:*) Bash(helm template:*) Bash(helm lint:*) Bash(make:*)
+metadata:
+  covers: felix/observability/, felix/health.py
 ---
 
 # Deploy runbook

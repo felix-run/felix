@@ -52,8 +52,9 @@ list is `_BUILTIN_STRATEGIES` in `session/strategies.py`.
 `memory.checkpointer` (default `postgres`; `none`, or any name passed to `register_checkpointer`).
 `checkpointer` is an open registry lookup, so an unregistered name parses and then fails inside
 `build_tenant_agent` — validate against a running registry, not the schema. When the store is not
-`none` and capture is enabled, `memory/capture.py:active_facts_prompt` injects durable facts into the
-system prompt at compile time — that prelude is **not** content-screened; `memory.recall.tools: true`
+`none` and either capture is enabled or the store is `pgvector` or `memory` — so the default manifest
+too — `memory/capture.py:active_facts_prompt` injects durable facts at compile time as a context prelude — a
+separate `user` message ahead of the turn, kept out of `system` for prompt caching. That prelude is **not** content-screened; `memory.recall.tools: true`
 binds the memory tools before the wrapper stack, which is the governed path. The worker's
 `consolidate_memory` cron dedupes every pool by content hash regardless; `memory.consolidate.enabled`
 opts this manifest's pool into its second pass, a **metered** call to `consolidate.model` that merges

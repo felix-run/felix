@@ -25,6 +25,8 @@ Checks:
     decider consumers, the CLI commands -- still says what the code says. Each such list sits
     under a `toolkit:enum <key>` marker, and every marker the toolkit is known to carry must
     still be there: removing a marker removes the check
+  * every subpackage, and every module of OWNED_MIN_LINES or more, has an owner: a skill whose
+    `metadata.covers` claims it, or an UNOWNED entry saying why none does
 
 Usage: validate-toolkit.py [repo-root]   (the root defaults to this script's repository)
 """
@@ -32,6 +34,7 @@ Usage: validate-toolkit.py [repo-root]   (the root defaults to this script's rep
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import os
 import re
@@ -70,6 +73,7 @@ def fail(msg: str) -> None:
     errors.append(msg)
 
 
+@functools.cache  # read by more than one check; a missing block is reported once
 def frontmatter(path: Path) -> dict[str, str]:
     text = path.read_text(encoding="utf-8")
     match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
@@ -77,15 +81,20 @@ def frontmatter(path: Path) -> dict[str, str]:
         fail(f"{path.relative_to(ROOT)}: missing YAML frontmatter")
         return {}
     # Stdlib only (CI runs this with a bare python3), so this reads the subset of YAML
-    # frontmatter uses: `key: value`, a folded continuation line, and a `- item` list,
-    # which is kept comma-joined so `skills:` reads the same in either spelling.
+    # frontmatter uses: `key: value`, a folded continuation line, a `- item` list, which is
+    # kept comma-joined so `skills:` reads the same in either spelling, and one nested level
+    # under `metadata:` (`metadata:` → `covers:`), read as `metadata.covers`.
     fields: dict[str, str] = {}
-    last = ""
+    last = parent = ""
     for line in match.group(1).splitlines():
         key = re.match(r"^([A-Za-z][A-Za-z-]*):\s*(.*)$", line)
+        nested = re.match(r"^\s+([A-Za-z][A-Za-z-]*):\s*(.*)$", line)
         if key:
-            last = key.group(1)
+            last = parent = key.group(1)
             fields[last] = key.group(2).strip()
+        elif nested and parent == "metadata" and not fields[parent]:
+            last = f"{parent}.{nested.group(1)}"
+            fields[last] = nested.group(2).strip()
         elif last and (item := re.match(r"^\s+-\s+(.*)$", line)):
             fields[last] = ",".join(filter(None, [fields[last], item.group(1).strip()]))
         elif last and line.startswith((" ", "\t")):
@@ -152,7 +161,7 @@ def check_agents() -> None:
             fail(f"{rel}: frontmatter name {fields.get('name')!r} != filename {agent.stem!r}")
         if not fields.get("description"):
             fail(f"{rel}: missing description (it is how Claude decides to delegate)")
-        unknown = set(fields) - AGENT_FIELDS
+        unknown = {field.split(".")[0] for field in fields} - AGENT_FIELDS
         if unknown:
             fail(f"{rel}: unknown frontmatter field(s): {', '.join(sorted(unknown))}")
         for skill in as_list(fields.get("skills", "")):
@@ -169,7 +178,7 @@ def check_skills() -> None:
         name = fields.get("name", "")
         directory = skill.parent.name
 
-        unknown = set(fields) - SPEC_FIELDS
+        unknown = {field.split(".")[0] for field in fields} - SPEC_FIELDS
         if unknown:
             fail(
                 f"{rel}: frontmatter field(s) outside the Agent Skills spec: "
@@ -224,9 +233,11 @@ SHORTHAND_ROOTS = (
     "packages/ai/src/felix_ai/",
     "apps/cli/src/felix_cli/",
     "apps/worker/src/felix_worker/",
+    "packages/client/src/felix_client/",
     # `felix/config.py`, `felix_ai/registry.py`: the import-path spelling.
     "packages/harness/src/",
     "packages/ai/src/",
+    "packages/client/src/",
     "apps/cli/src/",
     "apps/api/src/",
     "apps/worker/src/",
@@ -657,6 +668,102 @@ def check_enumerations() -> None:
             fail(f"{rel}: lost its `toolkit:enum {key}` marker -- the list under it is no longer checked")
 
 
+# --- ownership -------------------------------------------------------------------------
+#
+# The checks above keep what the toolkit says true; nothing above notices what it never
+# says. `felix/tools/`, `felix/skills/` and `felix/durability/` -- over 20k lines between
+# them -- grew for months with no skill describing them, so an agent working there had
+# only the code. Every subpackage, and every module of OWNED_MIN_LINES or more, in the
+# packages below must be claimed by a skill's `metadata.covers` or listed in UNOWNED with
+# the reason nobody owns it yet. A new package then fails until someone decides.
+
+PACKAGE_ROOTS = {
+    "felix": "packages/harness/src/felix",
+    "felix_ai": "packages/ai/src/felix_ai",
+    "felix_client": "packages/client/src/felix_client",
+    "felix_api": "apps/api/src/felix_api",
+    "felix_cli": "apps/cli/src/felix_cli",
+    "felix_worker": "apps/worker/src/felix_worker",
+}
+OWNED_MIN_LINES = 300
+# Roots a skill may not claim whole. The others are claimed whole today (api-surface owns
+# `felix_api/`), so the check's force is inside the harness, where no one skill can own it all.
+UNCLAIMABLE_WHOLE = {"felix"}
+# Code no skill describes yet, and why that is acceptable for now. Like `KNOWN_OPEN` in
+# tests/unit/test_ordering_rule.py this only shrinks: an entry a skill now covers, or that
+# no longer exists, fails until it is removed.
+UNOWNED: dict[str, str] = {}
+
+
+def ownership_units() -> list[str]:
+    """Every subpackage and every module over the size floor, in import-path spelling."""
+    units: list[str] = []
+    for name, rel in PACKAGE_ROOTS.items():
+        root = ROOT / rel
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            if entry.is_dir() and any("__pycache__" not in p.parts for p in entry.rglob("*.py")):
+                units.append(f"{name}/{entry.name}/")
+            elif entry.suffix == ".py" and entry.name != "__init__.py":
+                with entry.open(encoding="utf-8") as handle:
+                    if sum(1 for _ in handle) >= OWNED_MIN_LINES:
+                        units.append(f"{name}/{entry.name}")
+    return units
+
+
+def owned_path(entry: str) -> Path | None:
+    """`felix/tools/` → the directory it names, or None when it names nothing.
+
+    The smaller packages may be claimed whole (`felix_api/`); the harness may not, since one
+    bare `felix` entry would turn the check off where it has force."""
+    head, _, tail = entry.partition("/")
+    if head not in PACKAGE_ROOTS or (head in UNCLAIMABLE_WHOLE and not tail.strip("/")):
+        return None
+    path = ROOT / PACKAGE_ROOTS[head] / tail
+    return path if path.exists() else None
+
+
+def skill_covers() -> dict[str, list[str]]:
+    covers: dict[str, list[str]] = {}
+    for skill in sorted((CLAUDE / "skills").glob("*/SKILL.md")):
+        fields = frontmatter(skill)
+        for entry in as_list(fields.get("metadata.covers", "")):
+            path = owned_path(entry)
+            if path is None:
+                fail(
+                    f"{skill.relative_to(ROOT)}: covers {entry!r}, which names nothing under "
+                    f"{', '.join(f'{k}/' for k in PACKAGE_ROOTS)}"
+                )
+                continue
+            entry = entry if path.is_file() or entry.endswith("/") else f"{entry}/"
+            covers.setdefault(entry, []).append(skill.parent.name)
+    return covers
+
+
+def check_ownership() -> None:
+    covers = skill_covers()
+
+    def owners(unit: str) -> list[str]:
+        return sorted({s for entry, skills in covers.items() if unit.startswith(entry) for s in skills})
+
+    units = ownership_units()
+    for unit in units:
+        if not owners(unit) and unit not in UNOWNED:
+            fail(
+                f"{unit} has no owner: add it to the `metadata.covers` of the skill that describes it, "
+                f"or to UNOWNED in scripts/validate-toolkit.py with the reason none does"
+            )
+    for unit in sorted(UNOWNED):
+        if unit not in units:
+            fail(
+                f"UNOWNED lists {unit}, which is no longer a subpackage or a module of "
+                f"{OWNED_MIN_LINES}+ lines -- remove it"
+            )
+        elif owned_by := owners(unit):
+            fail(f"UNOWNED lists {unit}, which {', '.join(owned_by)} now covers -- remove it")
+
+
 def main() -> int:
     if not CLAUDE.is_dir():
         print("no .claude/ directory — nothing to validate")
@@ -668,6 +775,7 @@ def main() -> int:
     check_citations()
     check_route_docs_map()
     check_enumerations()
+    check_ownership()
 
     if errors:
         print(f"Claude Code toolkit: {len(errors)} problem(s)\n", file=sys.stderr)

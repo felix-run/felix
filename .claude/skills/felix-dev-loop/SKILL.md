@@ -3,6 +3,8 @@ name: felix-dev-loop
 description: The verified change loop for the Felix Python harness — how to install, run the API locally, run tests under the in-memory memory:// path, pick the right test tier (unit, e2e, conformance, eval), and pass the gates CI enforces, in the tiers make check, make check-ci and CI-only. Use before running any test or lint command in this repo, when a command fails with a Postgres connection error, or when asked to verify, check, or validate a change.
 compatibility: Requires Python 3.14, uv, and (for the full stack) Docker. Designed for Claude Code.
 allowed-tools: Bash(uv:*) Bash(make:*) Bash(./scripts/test.sh:*) Read Grep Glob
+metadata:
+  covers: felix/eval/, felix_cli/
 ---
 
 # Felix dev loop
