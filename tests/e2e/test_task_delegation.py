@@ -13,6 +13,8 @@ from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
+from tests.support.sse import sse_payloads
+
 
 def _agent(name: str, **spec: Any) -> Any:
     base: dict[str, Any] = {"pattern": "react", "auth": {"inbound": {"allow_anonymous": True}}}
@@ -267,16 +269,6 @@ async def test_a_delegate_stored_under_another_name_is_refused(boot: Any) -> Non
 # --- the stream, and background children ------------------------------------------------------
 
 
-def _frames(body: str) -> list[dict[str, Any]]:
-    import json
-
-    return [
-        json.loads(line[len("data: ") :])
-        for line in body.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
-    ]
-
-
 async def test_the_stream_marks_where_a_child_starts_and_ends(boot: Any) -> None:
     """Without these a child's work reads as the parent's: one flat turn."""
     script = [
@@ -294,7 +286,7 @@ async def test_the_stream_marks_where_a_child_starts_and_ends(boot: Any) -> None
             },
         )
         assert resp.status_code == 200, resp.text
-        frames = [(f.get("event"), f.get("data") or {}) for f in _frames(resp.text)]
+        frames = [(f.get("event"), f.get("data") or {}) for f in sse_payloads(resp.text)]
         names = [name for name, _ in frames]
         start, end, tool_end = (
             names.index("subagent_start"),
@@ -487,7 +479,7 @@ async def test_a_child_that_fails_ends_its_frame_with_an_error(boot: Any) -> Non
                 "messages": [{"role": "user", "content": "go"}],
             },
         )
-        ends = [f.get("data") for f in _frames(resp.text) if f.get("event") == "subagent_end"]
+        ends = [f.get("data") for f in sse_payloads(resp.text) if f.get("event") == "subagent_end"]
         assert ends == [{"agent": "e2e-researcher", "outcome": "error"}]
 
 
@@ -502,7 +494,7 @@ async def test_a_background_start_frame_names_the_task_and_its_thread(boot: Any)
                 "messages": [{"role": "user", "content": "go"}],
             },
         )
-        frames = _frames(resp.text)
+        frames = sse_payloads(resp.text)
         starts = [f.get("data") or {} for f in frames if f.get("event") == "subagent_start"]
         assert len(starts) == 1
         start = starts[0]

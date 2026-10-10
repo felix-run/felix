@@ -24,3 +24,8 @@ def sse_blocks(body: str) -> list[tuple[int | None, dict[str, Any]]]:
 
 def sse_event_names(body: str) -> list[str]:
     return [str(p.get("event")) for _, p in sse_blocks(body)]
+
+
+def sse_payloads(body: str) -> list[dict[str, Any]]:
+    """Every `data:` payload in order, decoded, without the `[DONE]` terminator."""
+    return [payload for _, payload in sse_blocks(body)]

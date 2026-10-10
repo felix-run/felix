@@ -19,6 +19,7 @@ from felix_ai.types import TokenUsage, ToolCall
 
 from tests.support.e2e import WIRE_MODEL
 from tests.support.screening import EMAIL, PII, audit_rows, governed_manifest
+from tests.support.sse import sse_payloads
 
 # Assertions live inside the `async with` throughout: the HTTP client is only usable there,
 # and the process globals the audit and usage checks read are reset on the way out.
@@ -36,15 +37,6 @@ TURN_USAGE = TokenUsage(input=11, output=7)
 
 def _answer(text: str = "The answer is 4") -> ScriptedTurn:
     return ScriptedTurn(content=text, usage=TURN_USAGE)
-
-
-def _frames(body: str) -> list[dict[str, Any]]:
-    """Parse an SSE body into `{event, data}` payloads, dropping the terminator."""
-    out: list[dict[str, Any]] = []
-    for line in body.splitlines():
-        if line.startswith("data: ") and line != "data: [DONE]":
-            out.append(json.loads(line[len("data: ") :]))
-    return out
 
 
 async def _audit_controls(settings: Any) -> list[tuple[str, str, str]]:
@@ -221,7 +213,7 @@ async def test_the_stream_carries_the_frames_a_client_resumes_from(boot: Any) ->
             },
         )
         assert resp.status_code == 200, resp.text
-        frames = _frames(resp.text)
+        frames = sse_payloads(resp.text)
         names = [f.get("event") for f in frames]
         assert "text_delta" in names
         assert "tool_start" in names
