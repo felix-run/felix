@@ -13,9 +13,10 @@ What it cannot prevent: an allowlisted command runs repository code — `./scrip
 imports whatever the agent just wrote, and a relative `argv[0]` resolves against the `cwd` the
 model chose. Where that code runs is the boundary. With `FELIX_SHELL_RUNNER_URL` unset it is a
 child of this process, as this process's user, and can read this process's environment through
-`/proc`. With it set, every check above still runs here and the exec happens in
-`felix.shell_runner`, a separate process (on the builder stack, a separate container sharing
-only the workspace volume and holding no secrets). A runner that cannot be reached fails the
+`/proc` — so only on a development box; anywhere else the call is refused (`isolation_refusal`), as the
+boot and the manifest write already were. With it set, every check above still runs here and
+the exec happens in `felix.shell_runner`, a separate process (on the builder stack, a separate
+container sharing only the workspace volume and holding no secrets). A runner that cannot be reached fails the
 call: there is no fallback to a local exec. `deploy/GOVERNANCE.md` "Shell tools" carries the
 full list.
 """
@@ -41,6 +42,7 @@ from felix.security.shell_policy import (
     ShellNotAllowedError,
     assert_argv_allowed,
     assert_shell_commands_allowed,
+    local_exec_refusal,
     split_prefix,
 )
 from felix.security.stdio_policy import stdio_child_env
@@ -228,6 +230,12 @@ class _ShellExecutor:
                 stdin_text,
                 _scope_on_runner(root, settings),
             )
+        # The exec below is in this process, whatever the settings say about runners or backends
+        # (the hosted backend's `deployment` scope reaches here), so only a development box may.
+        # Checked at boot and compile too; this holds for settings that never went through either.
+        refusal = local_exec_refusal(settings)
+        if refusal is not None:
+            return self._refuse("isolation", refusal)
         try:
             result = await exec_argv(argv, cwd=cwd, root=root, stdin=stdin_text, timeout_s=self._timeout_s)
         except OSError as exc:
@@ -452,12 +460,14 @@ async def exec_argv(
     }
 
 
-def tools_from_shell_refs(refs: list[ShellToolRef], *, settings: Any | None = None) -> list[Tool]:
+def tools_from_shell_refs(
+    refs: list[ShellToolRef], *, settings: Any | None = None, scope: str | None = None
+) -> list[Tool]:
     if settings is None:
         from felix.config import get_settings
 
         settings = get_settings()
-    assert_shell_commands_allowed(refs, settings)
+    assert_shell_commands_allowed(refs, settings, scope=scope)
     out: list[Tool] = []
     for ref in refs:
         timeout_s = timeout_seconds(ref.timeout_ms, default_s=DEFAULT_SHELL_TIMEOUT_S)

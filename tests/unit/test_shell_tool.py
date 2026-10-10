@@ -301,8 +301,12 @@ def test_a_shell_tool_may_not_be_reached_anonymously_outside_development(tmp_pat
     manifest = parse_manifest(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "m"}, "spec": spec}
     )
+    # With a runner, so the refusal under test is the anonymity rule, not the isolation one.
     prod = Settings(
-        workspace_root=str(tmp_path), shell_allowed_commands="git status", environment="production"
+        workspace_root=str(tmp_path),
+        shell_allowed_commands="git status",
+        environment="production",
+        shell_runner_url="http://shell:8080",
     )
     with pytest.raises(GovernanceError, match="allow_anonymous"):
         validate_for_write(manifest, prod)

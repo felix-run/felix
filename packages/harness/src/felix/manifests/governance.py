@@ -203,7 +203,9 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
     from felix.security.shell_policy import ShellNotAllowedError, assert_shell_commands_allowed
 
     try:
-        assert_shell_commands_allowed(manifest.spec.shell_tools, settings)
+        assert_shell_commands_allowed(
+            manifest.spec.shell_tools, settings, scope=manifest.spec.workspace.scope
+        )
     except ShellNotAllowedError as exc:
         raise GovernanceError(str(exc)) from exc
     # The cowork precedent, as a rule instead of a manifest comment: a tool that execs on the

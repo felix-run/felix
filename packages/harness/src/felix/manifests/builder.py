@@ -1890,7 +1890,10 @@ async def build_agent(
                 from felix.tools.shell import tools_from_shell_refs
 
                 _append_unique_tools(
-                    resolved, tools_from_shell_refs(list(m.spec.shell_tools), settings=deps.settings)
+                    resolved,
+                    tools_from_shell_refs(
+                        list(m.spec.shell_tools), settings=deps.settings, scope=m.spec.workspace.scope
+                    ),
                 )
             except ShellNotAllowedError as exc:
                 raise GovernanceError(str(exc)) from exc
