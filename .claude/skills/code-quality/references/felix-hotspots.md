@@ -35,7 +35,7 @@ optional dependency as an unresolved import.
 <!-- toolkit:enum wrapper-order -->
 - `packages/harness/src/felix/manifests/builder.py` — the compile pipeline. Its governance wrapper
   order (secret masking → policies → command screening → content screening → limits → guardrails →
-  judges → approvals → artifact spill → workspace scope) is an invariant asserted by
+  judges → approvals → permission mode → artifact spill → workspace scope) is an invariant asserted by
   `test_governance_wrapper_order_is_unchanged`. Each wrapper clones the tool with a new executor, so
   order defines precedence. Extracting or reordering to reduce length changes behavior.
 - `packages/harness/src/felix/config.py` — one `Settings` class on purpose; splitting it breaks the

@@ -9,7 +9,7 @@ Felix invariants to keep after compaction:
 - Tests: ./scripts/test.sh (memory:// stores). Full gate: make check (ruff + ty + pytest + format check); CI types only 'packages apps'.
 TXT
 # toolkit:enum wrapper-order (scripts/validate-toolkit.py compares the next line with the code)
-echo '- Governance wrapper order in manifests/builder.py is load-bearing: secret masking -> policies -> command screening -> content screening -> limits -> guardrails -> judges -> approvals -> artifact spill -> workspace scope.'
+echo '- Governance wrapper order in manifests/builder.py is load-bearing: secret masking -> policies -> command screening -> content screening -> limits -> guardrails -> judges -> approvals -> permission mode -> artifact spill -> workspace scope.'
 cat <<'TXT'
 - Core never imports optional plugin packages; apps/api/src/felix_api/composition.py is the only place plugins are named (tests/unit/test_plugin_boundary.py enforces it).
 - Keep the default install/image lean: heavy deps live behind extras and are imported lazily inside functions.

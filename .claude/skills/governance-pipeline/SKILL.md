@@ -34,8 +34,9 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
              → guardrails (PII)
                → judges
                  → approvals
-                   → artifact spill
-                     → workspace scope
+                   → permission mode
+                     → artifact spill
+                       → workspace scope
    ```
 
    The comment `order matters` in the source is load-bearing. Each `apply_*` clones every tool with
@@ -59,6 +60,9 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
    - Sees tool output → after the call, later in the stack (content screening, guardrails, judges).
    - Blocks execution pending a human → approvals, late so cheaper checks reject first.
    - Rewrites output for storage → artifact spill, after the controls.
+   - Depends on the thread's permission mode → permission mode, just outside approvals: plan mode
+     refuses a non-read-only tool before anyone is asked to approve it, and the mode it resolves is
+     what `waives_approval` reads inside approvals (`governance/permission_mode.py`).
    - Sets what the call runs *against* rather than judging it → workspace scope, outermost, so an
      approval's preview reads the same directory the call will write.
 4. Emit an audit event (`audit/emit.py`) when the control fires — a control with no audit trail is

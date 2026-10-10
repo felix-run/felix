@@ -2193,6 +2193,32 @@
         "title": "OutdatedItemOut",
         "type": "object"
       },
+      "PermissionModeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "default",
+              "accept_edits",
+              "plan",
+              "bypass"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "mode"
+        ],
+        "title": "PermissionModeRequest",
+        "type": "object"
+      },
       "PersonalLibrariesOut": {
         "properties": {
           "items": {
@@ -8725,6 +8751,80 @@
           }
         },
         "summary": "Chat History",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/mode": {
+      "post": {
+        "description": "Set the thread's permission mode: `default`, `plan`, `accept_edits` or `bypass`.\n\nTakes effect from the next run. A mode the thread's manifest does not allow is stored and\nignored -- the run falls back to the manifest's default -- because the manifest a thread runs\ncan change under it. `bypass` waives every approval, so setting it needs `approvals:bypass`\nhere, and the run checks the scope again for whoever drives the thread then.",
+        "operationId": "chat_permission_mode_chat_mode_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PermissionModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat Permission Mode Chat Mode Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Permission Mode",
         "tags": [
           "Threads"
         ]

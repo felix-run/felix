@@ -116,6 +116,10 @@ class Tool:
     # latency; re-running a payment charges twice. Defaults to False so a tool that has
     # not considered the question is never replayed.
     replay_safe: bool = False
+    # Whether the tool only reads: it changes nothing outside the run. Plan mode lets only these
+    # run (`governance/permission_mode.py`). Defaults to False, so a tool that has not
+    # considered the question is treated as one that can change things.
+    read_only: bool = False
     # One line for the system prompt about how to use this tool well, assembled by the compile
     # from the tools the agent actually has — so the prompt cannot recommend a tool that was
     # removed. `spec.tool_guidance` sets it per manifest; this is for tools defined in code.
@@ -164,6 +168,8 @@ FAILURE_CONTENT_PREFIXES: tuple[str, ...] = (
     "[guardrails]",
     "[judge ",
     "[approval ",
+    # `governance/permission_mode.py`: a tool that can change things, refused in plan mode.
+    "[plan mode]",
 )
 
 
@@ -322,6 +328,7 @@ def define_tool(
     fatal: bool = False,
     transport: str = "local",
     replay_safe: bool = False,
+    read_only: bool = False,
     prompt_guidance: str = "",
     validate: Callable[[ToolInput], ToolInput | Mapping[str, Any]] | None = None,
     relays_untrusted: bool = False,
@@ -369,6 +376,7 @@ def define_tool(
         source=source,
         fatal=fatal,
         replay_safe=replay_safe,
+        read_only=read_only,
         prompt_guidance=prompt_guidance,
         relays_untrusted=relays_untrusted,
         executor=local_executor(_execute, transport=transport),
@@ -388,6 +396,7 @@ def define_tool_with_executor(
     source: str | None = None,
     fatal: bool = False,
     replay_safe: bool = False,
+    read_only: bool = False,
     prompt_guidance: str = "",
     approval_preview: Callable[[ToolInput], Awaitable[str]] | None = None,
 ) -> Tool:
@@ -402,6 +411,7 @@ def define_tool_with_executor(
         source=source,
         fatal=fatal,
         replay_safe=replay_safe,
+        read_only=read_only,
         prompt_guidance=prompt_guidance,
         approval_preview=approval_preview,
         executor=executor,

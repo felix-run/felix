@@ -1568,6 +1568,54 @@
       "title": "OutboundAuth",
       "type": "object"
     },
+    "PermissionsSpec": {
+      "additionalProperties": false,
+      "description": "Which permission modes a conversation with this agent may be in, and which it starts in.\n\n`plan` runs only read-only tools until a person approves the plan (`exit_plan_mode`);\n`accept_edits` waives approvals for the workspace's edit tools and `edit_tools`; `bypass`\nwaives every approval, and is honoured only for a caller holding `approvals:bypass`.",
+      "properties": {
+        "default_mode": {
+          "default": "default",
+          "enum": [
+            "default",
+            "accept_edits",
+            "plan",
+            "bypass"
+          ],
+          "title": "Default Mode",
+          "type": "string"
+        },
+        "allowed_modes": {
+          "items": {
+            "enum": [
+              "default",
+              "accept_edits",
+              "plan",
+              "bypass"
+            ],
+            "type": "string"
+          },
+          "title": "Allowed Modes",
+          "type": "array"
+        },
+        "read_only_tools": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Read Only Tools",
+          "type": "array"
+        },
+        "edit_tools": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Edit Tools",
+          "type": "array"
+        }
+      },
+      "title": "PermissionsSpec",
+      "type": "object"
+    },
     "PlanExecuteSpec": {
       "additionalProperties": false,
       "description": "`pattern: plan_execute` \u2014 plan the work, run the steps, synthesise an answer.\n\nThe split is the reason to choose this pattern over `react`: planning is one call whose\nquality shapes everything after it, execution is many narrow calls. `planner_model` and\n`executor_model` are what let those be different models, and `replan_on_failure` is what\nkeeps one refused step from poisoning the notes the answer is synthesised from.",
@@ -2299,6 +2347,9 @@
             }
           ],
           "default": null
+        },
+        "permissions": {
+          "$ref": "#/$defs/PermissionsSpec"
         },
         "aggregator_prompt": {
           "default": "",

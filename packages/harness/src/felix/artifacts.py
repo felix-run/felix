@@ -427,6 +427,7 @@ def make_read_artifact_tool(
         handler=handler,
         source=_READER_SOURCE,
         replay_safe=True,
+        read_only=True,
     )
 
 

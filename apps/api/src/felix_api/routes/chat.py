@@ -414,6 +414,13 @@ class SessionNameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=256)
 
 
+class PermissionModeRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    mode: Literal["default", "accept_edits", "plan", "bypass"]
+
+
 class ThinkingRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -2602,6 +2609,44 @@ async def chat_thinking(
         sync=True,
     )
     return {"ok": True, "thread_id": thread, "thinking_level": level}
+
+
+@router.post("/mode", responses=LEASE_REFUSALS)
+async def chat_permission_mode(
+    body: PermissionModeRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
+    """Set the thread's permission mode: `default`, `plan`, `accept_edits` or `bypass`.
+
+    Takes effect from the next run. A mode the thread's manifest does not allow is stored and
+    ignored -- the run falls back to the manifest's default -- because the manifest a thread runs
+    can change under it. `bypass` waives every approval, so setting it needs `approvals:bypass`
+    here, and the run checks the scope again for whoever drives the thread then.
+    """
+    from felix.audit import store as audit_store
+    from felix.auth.mgmt import holds_mgmt_scopes
+    from felix.governance.permission_mode import BYPASS_SCOPE
+    from felix.session.thread_state import update_thread_meta
+
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    if body.mode == "bypass" and not holds_mgmt_scopes(settings, auth.scopes, BYPASS_SCOPE):
+        raise HTTPException(status_code=403, detail=f"missing_scope:{BYPASS_SCOPE}")
+    await update_thread_meta(
+        settings=settings, tenant_id=auth.tenant_id, thread_id=thread, permission_mode=body.mode
+    )
+    audit_store.record_event(
+        settings,
+        auth.tenant_id,
+        "permission_mode_change",
+        principal_subj=auth.principal_sub or "",
+        status=body.mode,
+        payload={"thread_id": thread, "mode": body.mode},
+    )
+    return {"ok": True, "thread_id": thread, "mode": body.mode}
 
 
 @router.post("/ask")

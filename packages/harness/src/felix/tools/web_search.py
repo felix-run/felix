@@ -147,6 +147,7 @@ def tools_from_search_refs(refs: list[SearchToolRef], *, backend: Any) -> list[T
                 # operator's own rather than one the model named — the distinction that made
                 # `http_fetch` unsafe to replay does not apply.
                 replay_safe=True,
+                read_only=True,
             )
         )
     return out

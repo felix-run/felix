@@ -50,6 +50,7 @@ def build_snapshot(
     labels: dict[str, str] | None = None,
     feedback: dict[str, dict[str, Any]] | None = None,
     todos: list[dict[str, Any]] | None = None,
+    permission_mode: str | None = None,
     queued_steer: list[dict[str, Any]] | None = None,
     attached: bool = False,
     locked: bool = False,
@@ -95,6 +96,9 @@ def build_snapshot(
         # The agent's checklist (`todo_write`), as the last successful write on the current
         # branch left it: `[{id, content, status: pending | in_progress | completed, active_form}]`.
         "todos": todos or [],
+        # The mode the thread was last set to (`POST /chat/mode`, or an approved plan), or null
+        # for the manifest's default. Stored, not resolved: a run may still fall back from it.
+        "permissionMode": permission_mode,
         "transcript": transcript,
         # The durable run in flight on this thread, or null. `phase` cannot say so -- a durable
         # run's agent is in the worker, which writes no thread phase -- and the run's token was
@@ -197,6 +201,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
         labels=dict(meta.get("labels") or {}),
         feedback=dict(meta.get("feedback") or {}),
         todos=todos_on_branch(active_branch_events(events, leaf_id=leaf)),
+        permission_mode=meta.get("permission_mode"),
         queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
         revision=int(meta.get("revision") or 0),
         attached=bool(lease.get("attached")),

@@ -217,5 +217,6 @@ def _plan_tools() -> list[Tool]:
                 "properties": {"plan_id": {"type": "string"}},
             },
             handler=plan_get,
+            read_only=True,
         ),
     ]

@@ -1056,12 +1056,14 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       is left of every budget above it, no nested background, `max_background` in flight per
       thread, expiring with what started it, read with `task_result`; `subagent_start`/`subagent_end` frames
       for `task`. *Next:* a `task` entry that names a peer so local and A2A delegates share one
-      tool; the same frames for router/parallel/groupchat (*Headless / contract*); plan mode as a
-      permission mode. `todo_write` (any pattern, via `spec.tools`): the run's checklist, read off
+      tool; the same frames for router/parallel/groupchat (*Headless / contract*). Plan mode: see W2. `todo_write` (any pattern, via `spec.tools`): the run's checklist, read off
       the current branch onto the snapshot as `todos` (follows rewind/fork), announced as
       `todo_updated`.
-- [ ] **W2 — permissions, hooks, commands.** Per-session modes (`default | accept_edits | plan |
-      bypass`) as one deliberate new governance slot ahead of approvals; declarative `spec.hooks`
+- [~] **W2 — permissions, hooks, commands.** *Landed:* per-thread permission modes (`default |
+      accept_edits | plan | bypass`, `spec.permissions`, `POST /chat/mode`) as one deliberate new
+      wrapper slot just outside approvals; plan mode runs only `read_only` tools and ends through
+      `exit_plan_mode` and the built-in `plan-approval` rule; `bypass` needs `approvals:bypass`,
+      checked at set and per run. *Next:* declarative `spec.hooks`
       with `session_start`, `user_prompt_submit`, `stop` and `subagent_stop` events, delivered over
       signed HTTP or a sandbox command; `/name args` resolved against `spec.prompts`; output styles;
       `spec.network.allow_hosts`, landed with *credentials the model never holds*.

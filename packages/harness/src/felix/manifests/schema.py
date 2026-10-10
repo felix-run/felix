@@ -1006,6 +1006,41 @@ class Guardrails(_Strict):
     judges: list[JudgeRule] = Field(default_factory=list)
 
 
+# Closed on purpose (see `governance/permission_mode.py`): each mode says which existing control
+# runs, so a plugin-defined one would be a governance bypass with a name.
+PermissionModeName = Literal["default", "accept_edits", "plan", "bypass"]
+
+
+class PermissionsSpec(_Strict):
+    """Which permission modes a conversation with this agent may be in, and which it starts in.
+
+    `plan` runs only read-only tools until a person approves the plan (`exit_plan_mode`);
+    `accept_edits` waives approvals for the workspace's edit tools and `edit_tools`; `bypass`
+    waives every approval, and is honoured only for a caller holding `approvals:bypass`.
+    """
+
+    default_mode: PermissionModeName = "default"
+    allowed_modes: list[PermissionModeName] = Field(
+        default_factory=lambda: ["default", "plan", "accept_edits"]
+    )
+    # Tools (names or globs) plan mode may run beside the built-in read-only ones -- an MCP
+    # server's search tools, a shell tool restricted to reads. An MCP tool's own read-only
+    # annotation is not trusted for this: the server wrote it.
+    read_only_tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+    # Tools (names or globs) `accept_edits` waives approvals for, beside the workspace's own.
+    edit_tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+    @model_validator(mode="after")
+    def _default_is_allowed(self) -> PermissionsSpec:
+        if self.default_mode not in self.allowed_modes:
+            raise ValueError("permissions.default_mode must be one of permissions.allowed_modes")
+        if self.default_mode == "bypass":
+            # Bypass needs a caller holding `approvals:bypass`; as a default it would be the mode
+            # of every conversation, whoever started it.
+            raise ValueError("permissions.default_mode cannot be bypass")
+        return self
+
+
 class ApprovalRule(_Strict):
     id: str = Field(min_length=1)
     description: str = ""
@@ -1194,6 +1229,7 @@ class Spec(_Strict):
     sub_agents: list[str] = Field(default_factory=list)
     # Binds the `task` tool. Unset binds nothing.
     delegation: DelegationSpec | None = None
+    permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
     aggregator_prompt: str = ""
     #: Rounds for the multi-agent patterns — `groupchat`, `plan_execute` and friends. A `react`
     #: agent's loop is bounded by `recursion_limit` below and never reads this; setting it on
@@ -1413,6 +1449,7 @@ __all__ = [
     "Manifest",
     "Metadata",
     "ModelSpec",
+    "PermissionsSpec",
     "Policy",
     "PromptTemplateSpec",
     "Spec",
