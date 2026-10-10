@@ -363,6 +363,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Direct REST / SSE | `POST /chat`, `POST /chat/stream` |
 | Durable run poll | `GET /chat/runs/{resume_token}` |
 | Steer / follow-up | `POST /chat/steer` |
+| Operator edited a workspace file | `POST /chat/workspace/edited` |
 | Abort / continue | `POST /chat/abort`, `POST /chat/continue` |
 | Thinking level | `POST /chat/thinking` |
 | Session snapshot | `GET /chat/sessions`, `GET /chat/sessions/{id}` |
@@ -394,12 +395,14 @@ way. Non-browser clients — the CLI, `felix-client`, curl, other services — a
 
 A failed send is safe to resend: `POST /chat` and `POST /chat/stream` take an `Idempotency-Key` header, and a resend under the same key never runs a second turn — `/chat` returns the stored response, `/chat/stream` replays what the first request wrote to its thread (see [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md)). Session leases are advisory by default; `FELIX_LEASE_ENFORCE=strict` refuses a driving request that presents no `X-Felix-Lease-Token` while another client holds the thread.
 
+An operator who edits, deletes or renames a workspace file directly can say so with `POST /chat/workspace/edited` (`{thread_id, path, op: write|delete|rename, bytes?, to_path?}` — structure only; the server writes the text the model reads). A run in flight reads it before its next model call without cancelling any tool call, unlike a steer, and its stream carries a `workspace_note` frame (`{path, op, bytes}`, plus `to_path` for a rename); with no run in flight it is appended for the next one. Either way the thread's log holds it once, as an in-context `custom` entry with `metadata.type: workspace_edit`. Lease-guarded like `/chat/steer`.
+
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron; `GET /manifests/{name}/versions` lists what a rollback can go back to. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`; `?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client (**experimental**): the `felix-client` package — `from felix_client import
-FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `fork`, `rewind`,
+FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `workspace_edited`, `fork`, `rewind`,
 `set_model`), durable runs with their polling, and approvals. It depends on httpx and nothing in
 Felix, so installing it does not install the server; its surface may change between releases
 without a deprecation period. Not yet on PyPI — install it from the repository:

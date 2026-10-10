@@ -236,6 +236,39 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def workspace_edited(
+        self,
+        path: str,
+        *,
+        op: str = "write",
+        bytes: int | None = None,
+        to_path: str | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Tell the agent the operator changed a workspace file (`POST /chat/workspace/edited`).
+
+        `op` is `write`, `delete` or `rename` (which needs `to_path`); `bytes` is the size after a
+        write. Returns `{"status": "queued" | "recorded", "thread_id", "event_id"}`: `queued` when
+        a run in flight will read it before its next model call, `recorded` when it was appended
+        for the next run.
+        """
+        tid = thread_id if thread_id is not None else self._thread_id
+        if not tid:
+            raise ValueError("thread_id required for workspace_edited")
+        body: dict[str, Any] = {"thread_id": tid, "path": path, "op": op}
+        if bytes is not None:
+            body["bytes"] = bytes
+        if to_path is not None:
+            body["to_path"] = to_path
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/workspace/edited",
+                headers=self._headers(),
+                json=body,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def fork(
         self,
         new_thread_id: str,

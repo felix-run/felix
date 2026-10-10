@@ -38,7 +38,7 @@ from felix.steer import enqueue
 from felix.thread_ids import effective_thread_id
 from felix.tools.client_bridge import MAX_TOOL_CALL_ID
 from felix.ui.ask_user import LIVE_STREAM_EXTRA
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from felix_api.errors import client_safe_message, log_gateway_error
 from felix_api.routes._sse import (
@@ -140,6 +140,48 @@ class SteerRequest(BaseModel):
     thread_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     kind: Literal["steer", "follow_up"] = "steer"
+
+
+class WorkspaceEditedRequest(BaseModel):
+    """The operator changed a workspace file directly. Structure only: the server writes the note."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path the operator changed.")
+    op: Literal["write", "delete", "rename"] = "write"
+    bytes: int | None = Field(default=None, ge=0, description="Size after a `write`. Not sent for `delete`.")
+    to_path: str | None = Field(
+        default=None, min_length=1, max_length=4096, description="New path. Required for `rename`, only."
+    )
+
+    @field_validator("path", "to_path")
+    @classmethod
+    def _one_line(cls, value: str | None) -> str | None:
+        # The path is quoted into text the model reads. A control character -- a newline above
+        # all -- would let it carry a line of its own.
+        if value is not None and any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+            raise ValueError("path must not contain control characters")
+        return value
+
+    @model_validator(mode="after")
+    def _shape_matches_op(self) -> WorkspaceEditedRequest:
+        if self.op == "rename" and self.to_path is None:
+            raise ValueError("to_path is required for op 'rename'")
+        if self.op != "rename" and self.to_path is not None:
+            raise ValueError("to_path is only accepted for op 'rename'")
+        if self.op == "delete" and self.bytes is not None:
+            raise ValueError("bytes is not accepted for op 'delete'")
+        return self
+
+
+class WorkspaceEditedOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="`queued`: a run is in flight and reads the note before its next model call. "
+        "`recorded`: no run is, so the note was appended to the thread for the next one."
+    )
+    thread_id: str
+    event_id: str | None = Field(default=None, description="The session entry's id, when `recorded`.")
 
 
 class ToolResultRequest(BaseModel):
@@ -1192,6 +1234,38 @@ async def chat_steer(body: SteerRequest, request: Request, lease_token: LeaseTok
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     await _refuse_unless_driver(request, thread, lease_token)
     return await enqueue(auth.tenant_id, thread, kind=body.kind, text=body.text)
+
+
+@router.post("/workspace/edited", responses=LEASE_REFUSALS)
+async def chat_workspace_edited(
+    body: WorkspaceEditedRequest, request: Request, lease_token: LeaseToken = None
+) -> WorkspaceEditedOut:
+    """Tell the agent the operator edited, deleted or renamed a workspace file directly.
+
+    A run in flight reads it before its next model call, without cancelling any tool call
+    (`status: queued`, and a `workspace_note` frame on that run's stream); otherwise it is
+    appended to the thread for the next run (`status: recorded`). Either way it lands in the
+    session log once, as an in-context `custom` entry with `metadata.type: workspace_edit`.
+    The text the model reads is written by the server from these fields.
+    """
+    from felix.session.tree import annotate_and_append
+    from felix.session.types import AppendableEvent
+    from felix.workspace_notes import WorkspaceNote, enqueue_if_running
+
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    note = WorkspaceNote(path=body.path, op=body.op, bytes=body.bytes, to_path=body.to_path)
+    if await enqueue_if_running(auth.tenant_id, thread, note):
+        return WorkspaceEditedOut(status="queued", thread_id=thread)
+    ids = await annotate_and_append(
+        get_session_store(request.app.state.settings, tenant_id=auth.tenant_id).open(thread),
+        [AppendableEvent(kind="custom", role="user", content=note.text(), metadata=note.metadata())],
+        sync=True,
+    )
+    return WorkspaceEditedOut(status="recorded", thread_id=thread, event_id=ids[-1] if ids else None)
 
 
 @router.post("/tool_result", responses=LEASE_REFUSALS)
