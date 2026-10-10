@@ -34,7 +34,7 @@ optional dependency as an unresolved import.
 
 - `packages/harness/src/felix/manifests/builder.py` — the compile pipeline. Its governance wrapper
   order (secret masking → policies → command screening → content screening → limits → guardrails →
-  judges → approvals → artifact spill) is an invariant asserted by
+  judges → approvals → artifact spill → workspace scope) is an invariant asserted by
   `test_governance_wrapper_order_is_unchanged`. Each wrapper clones the tool with a new executor, so
   order defines precedence. Extracting or reordering to reduce length changes behavior.
 - `packages/harness/src/felix/config.py` — one `Settings` class on purpose; splitting it breaks the
@@ -54,11 +54,10 @@ the command before trusting them:**
 find packages apps -name '*.py' | xargs wc -l | sort -rn | head -12
 ```
 
-Measured 2026-09-25, largest first — a snapshot for orientation, not a number to cite:
-`manifests/builder.py` (~1,580), `routes/chat.py` (~1,330), `patterns/react.py` (~1,170),
-`manifests/schema.py` (~1,000), `patterns/delegating.py`, `memory/store.py`,
-`durability/fibers.py`, `config.py` and `felix_cli/main.py` (each 740–910). `builder.py`, `react.py`,
-`schema.py` and `delegating.py` each grew by 30–160 lines over the snapshot before it.
+The snapshot that used to sit here named eight modules at 740–1,580 lines; two weeks later the
+two largest had grown by ~600 lines each and four modules over 1,100 lines (`skills/library.py`,
+`skills/library_store.py`, `durability/fibers.py`, `session/compaction.py`) were missing from it.
+Run the command; do not keep a copy of its output here.
 
 `builder.py` has a partial defense — the governance wrapper order is load-bearing and must
 stay one readable sequence — but that argument covers the `apply_*` chain, not the whole
@@ -71,7 +70,7 @@ obvious next step, long after that split had happened. **A stale hotspot map cos
 no map**: it aims a reviewer at work already done and away from whatever has grown since.
 That is the reason for the `find | wc -l` line above — this table will rot too.
 
-It is 522 lines now. Three splits: the wire formats and neutral types to `packages/ai`
+It was 522 lines right after the split (it has grown since; measure it). Three splits: the wire formats and neutral types to `packages/ai`
 (which is what makes model-agnosticism structural rather than claimed), the GenAI span
 shaping to `observability/genai.py`, and the resilience composites to
 `patterns/model_composites.py`. What remains is route resolution, `record_usage`, the traced
@@ -83,7 +82,7 @@ the comment there — it is not "nothing here meters". `_EscalationClient` makes
 calls and returns one, so it folds the discarded turn's usage into the result; a caller can
 only meter what it is handed.
 
-`packages/harness/src/felix/patterns/__init__.py` was 920 lines and is now 152: the composite
+`packages/harness/src/felix/patterns/__init__.py` went from 920 lines to 152 in one pass: the composite
 agent moved to `patterns/delegating.py` and the deep pattern's plan tools to
 `patterns/plan_tools.py`, which also removed both of that file's `noqa: E402` imports.
 `delegating.py` holds one `_run_*` per pattern. It is the split to repeat when it grows: wiring

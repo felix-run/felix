@@ -6,23 +6,25 @@ The repo-specific half of the **test-quality** skill. Authoritative sources: `sc
 ## The runner and its environment
 
 `./scripts/test.sh [args]` is the only supported entry point; `make test` and CI both go through it.
-It forwards every argument to the test runner (defaulting to `-q`) after exporting:
+It forwards every argument to the test runner (defaulting to `-q`) after exporting an in-memory,
+credential-free environment. **The variable list lives in `scripts/test.sh`, with the reason for
+each beside it — read it there rather than a copy here.** What each family is for:
 
-```
-FELIX_ALLOW_INSECURE=true
-FELIX_AUTH_MODE=none
-FELIX_HOST=127.0.0.1        # auth_mode=none is only permitted on a loopback bind
-FELIX_DATABASE_URL=memory://ci
-FELIX_OBJECT_STORE=memory
-FELIX_ANTHROPIC_API_KEY=""  # no live vendor call can be made from the suite
-FELIX_OPENAI_API_KEY=""
-```
-
-The two blank keys are as load-bearing as the in-memory stores. The repo `.env` carries real
-credentials and pydantic-settings reads it, so before they were blanked any test that reached a
-model called the vendor and billed it — which the first run of `tests/e2e/` did, because `.env`
-also overrides `default_model_id` and the route it thought was scripted was not. A mis-routed
-model call must fail closed, not succeed quietly against production.
+- **In-memory stores** (`FELIX_DATABASE_URL=memory://ci`, `FELIX_OBJECT_STORE=memory`) — the
+  supported no-infrastructure path, not a mock layer.
+- **Auth off on loopback** (`FELIX_AUTH_MODE=none`, `FELIX_HOST=127.0.0.1`) — `none` is only
+  allowed on a loopback bind, and the repo `.env` binds `0.0.0.0`.
+- **A cache that answers nothing** (`FELIX_REDIS_URL` at port 9) — with the local stack up, the
+  suite otherwise shared one rate-limit counter with Valkey and failed with 429s that moved run to
+  run.
+- **Every credential blank** (the vendor keys, `FELIX_SEARCH_API_KEY`, and
+  `FELIX_MODEL_PROVIDER_OPTIONS`, whose per-provider `api_key` outranks the named fields).
+  `test_invariants.py` pins this list against `Settings`, so a new credential field fails the suite.
+  The repo `.env` carries real credentials and pydantic-settings reads it, so before they were
+  blanked a test that reached a model called the vendor and billed it — which the first run of
+  `tests/e2e/` did. A mis-routed model call must fail closed, not succeed quietly against
+  production.
+- **No embedding download** (`FELIX_MEMORY_EMBEDDER=none`) — tests needing vectors set their own.
 
 A bare `uv run pytest` reads the repo `.env`, points `FELIX_DATABASE_URL` at a real Postgres, and
 fails DB-touching tests with what looks like a code bug. The `PreToolUse` hook
@@ -55,7 +57,7 @@ CI's `test` job runs the lean install and then `make test-cov`, which is also wh
 runs:
 
 ```bash
-./scripts/test.sh -q --cov --cov-report=term:skip-covered --cov-fail-under=79
+./scripts/test.sh -q -n auto --cov --cov-report=term:skip-covered --cov-fail-under=79
 ```
 
 The floor is that flag on the `test-cov` recipe in the `Makefile`, and the comment beside it is the

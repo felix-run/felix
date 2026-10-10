@@ -114,6 +114,18 @@ def fake_uv(tmp_path: pathlib.Path) -> tuple[dict[str, str], pathlib.Path]:
         ("apps/api/src/felix_api/routes/memory.py", "management-api.mdx"),
         ("apps/api/src/felix_api/routes/chat.py", "rest-api.mdx"),
         ("packages/ai/src/felix_ai/catalog.py", "model-client.mdx"),
+        # Surfaces an audit found mapped to no page: a second CLI module, the client package,
+        # the agent card, the completion webhook payload and the error envelope.
+        ("apps/cli/src/felix_cli/skills.py", "skill-import.mdx"),
+        ("packages/client/src/felix_client/client.py", "getting-started.mdx"),
+        # Each with a token only its own message carries, so two mappings collapsing into one
+        # generic line, or swapping, goes red.
+        ("packages/harness/src/felix/a2a/card.py", "agent-card.json"),
+        ("packages/harness/src/felix/durability/webhooks.py", "Completion webhooks"),
+        ("apps/api/src/felix_api/errors.py", "error envelope"),
+        ("apps/api/src/felix_api/middleware.py", "error envelope"),
+        # The CLI glob, not only its `skills.py` special case.
+        ("apps/cli/src/felix_cli/main.py", "deploy.mdx"),
     ],
 )
 def test_doc_sync_reminder_speaks_inside_a_worktree(repo: pathlib.Path, rel: str, expect: str) -> None:
@@ -148,6 +160,46 @@ def test_settings_sync_reminder_speaks_inside_a_worktree(repo: pathlib.Path) -> 
         "settings-sync-reminder.sh", {"tool_input": {"file_path": str(wt / "README.md")}}, project=repo
     )
     assert _context(unrelated) == ""
+
+
+@needs_jq
+@pytest.mark.parametrize(
+    ("rel", "expect"),
+    [
+        # The wire contract is checked in; a route edit that does not regenerate it fails CI.
+        ("apps/api/src/felix_api/routes/chat.py", ("make contract",)),
+        ("apps/api/src/felix_api/routes/_sse.py", ("make contract",)),
+        ("packages/harness/src/felix/manifests/schema.py", ("make schema",)),
+        # Generated or release-written files: the point is "do not hand-edit this", which a
+        # make target alone does not say -- the generated branch names both targets.
+        ("schemas/openapi.json", ("generated", "make contract")),
+        ("schemas/sse-events.json", ("generated", "make contract")),
+        ("schemas/manifest.schema.json", ("generated", "make schema")),
+        ("CHANGELOG.md", ("release step", "## Changelog")),
+        ("packages/harness/src/felix/jobs/scheduler.py", ("felix-scheduler",)),
+    ],
+)
+def test_settings_sync_reminder_names_the_regeneration_step(
+    repo: pathlib.Path, rel: str, expect: tuple[str, ...]
+) -> None:
+    said = _context(
+        _hook("settings-sync-reminder.sh", {"tool_input": {"file_path": str(repo / rel)}}, project=repo)
+    )
+    for token in expect:
+        assert token in said, f"{rel}: {token!r} not in {said!r}"
+
+
+@needs_jq
+def test_the_route_reminder_stays_inside_the_routes_package(repo: pathlib.Path) -> None:
+    """`app.py` sits beside `routes/`; a glob widened to the API package would catch it."""
+    said = _context(
+        _hook(
+            "settings-sync-reminder.sh",
+            {"tool_input": {"file_path": str(repo / "apps/api/src/felix_api/app.py")}},
+            project=repo,
+        )
+    )
+    assert "make contract" not in said, said
 
 
 @needs_jq
@@ -297,6 +349,25 @@ def test_subagent_log_records_the_agent_type(tmp_path: pathlib.Path) -> None:
     assert line[1:] == ["s1", "felix-test-engineer", "a42"], line
 
 
+@needs_jq
+@pytest.mark.parametrize(
+    ("names", "want"),
+    [
+        ({"agent_type": ""}, "unnamed"),
+        # An empty type falls through to the next field that has a value.
+        ({"agent_type": "", "agent_name": "felix-engineer"}, "felix-engineer"),
+        ({}, "unnamed"),
+    ],
+)
+def test_subagent_log_never_writes_an_empty_agent_column(
+    tmp_path: pathlib.Path, names: dict[str, str], want: str
+) -> None:
+    """An empty column is indistinguishable from a lost one when the log is audited."""
+    _hook("subagent-log.sh", {"session_id": "s1", "agent_id": "a43", **names}, project=tmp_path)
+    line = (tmp_path / ".claude" / "logs" / "subagents.log").read_text().strip().split("\t")
+    assert line[1:] == ["s1", want, "a43"], line
+
+
 # --- doc-drift-stop: this session's changes, not the tree's ----------------------------------
 
 
@@ -441,6 +512,9 @@ def _hint(command: str, output: str) -> str:
         ("x", "psycopg.OperationalError: connection to server at 127.0.0.1 port 5432 failed", "Postgres"),
         ("x", "redis.exceptions.ConnectionError: Connection refused 6379", "Postgres/Valkey"),
         ("ruff format --check .", "Would reformat: a.py\n1 file would be reformatted", "make fmt"),
+        # validate-manifest spells it in lower case; build_agent capitalises it.
+        ("uv run felix validate-manifest m.yaml", "invalid m.yaml: unknown pattern 'reactt'", "spec.pattern"),
+        ("x", "ValueError: Unknown pattern 'reactt' for manifest 'm'", "spec.pattern"),
     ],
 )
 def test_failure_hints_fire_only_on_their_own_failure(command: str, output: str, expect: str) -> None:

@@ -23,7 +23,12 @@ together — `scripts/validate-toolkit.py` fails when a route module is missing 
 | `db/*`, `session/store.py`, `migrations/versions/*` | `$DOCS/internals/persistence.mdx` |
 | `observability/*`, `audit/*`, `usage/*` | `$DOCS/internals/observability.mdx` |
 | `config.py`, `deploy/**`, `Makefile`, `.env.example` | `$DOCS/guide/deploy.mdx`, `$DOCS/guide/getting-started.mdx` |
-| `sdk.py`, `clients/cli.py`, `apps/cli/.../main.py` | `$DOCS/guide/getting-started.mdx` |
+| `sdk.py`, `clients/cli.py`, `apps/cli/.../*.py` | `$DOCS/guide/getting-started.mdx` (and `$DOCS/guide/deploy.mdx` for operator commands) |
+| `apps/cli/.../skills.py` (`felix skills …`) | `$DOCS/guide/skill-import.mdx` |
+| `packages/client/**` (`felix_client`, re-exported as `felix.sdk`) | `$DOCS/guide/getting-started.mdx`, plus the page of the surface the method wraps |
+| `a2a/card.py` (the agent card) | `$DOCS/guide/rest-api.mdx`, `$DOCS/guide/manifest-reference.mdx` (`spec.a2a`) |
+| `durability/webhooks.py` (completion webhooks) | `$DOCS/guide/rest-api.mdx`, `$DOCS/guide/manifest-reference.mdx` (`spec.execution.webhooks`) |
+| `apps/api/.../{app,middleware,errors}.py` (middleware order, error envelope) | `$DOCS/guide/rest-api.mdx`, `$DOCS/internals/architecture.mdx` |
 | `felix/skills/*`, `skills/*/SKILL.md` | `$DOCS/guide/concepts.mdx` |
 | `tests/**` (only if the testing story changed) | `$DOCS/internals/testing.mdx` |
 
