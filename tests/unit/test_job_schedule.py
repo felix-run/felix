@@ -37,6 +37,15 @@ SAT_1030 = _ms(2026, 10, 10, 10, 30)
         ("0 0 29 2 *", _ms(2028, 2, 29, 0, 0)),
         # Both day fields restricted: either matches (Monday the 12th beats the 15th).
         ("0 0 15 * 1", _ms(2026, 10, 12, 0, 0)),
+        # ...and from the other side: Sunday the 11th beats Friday the 16th.
+        ("0 0 11 * 5", _ms(2026, 10, 11, 0, 0)),
+        # A `*`-led day field is unrestricted (Vixie): odd days AND Mondays -> Monday the 19th.
+        ("0 0 */2 * 1", _ms(2026, 10, 19, 0, 0)),
+        ("5/15 * * * *", _ms(2026, 10, 10, 10, 35)),
+        ("0 0 31 * *", _ms(2026, 10, 31, 0, 0)),
+        ("0 0 1 1 *", _ms(2027, 1, 1, 0, 0)),
+        ("@monthly", _ms(2026, 11, 1, 0, 0)),
+        ("@yearly", _ms(2027, 1, 1, 0, 0)),
         ("@daily", _ms(2026, 10, 11, 0, 0)),
         ("@hourly", _ms(2026, 10, 10, 11, 0)),
         ("@weekly", _ms(2026, 10, 11, 0, 0)),
@@ -100,14 +109,47 @@ async def test_put_job_refuses_a_schedule_it_cannot_read(settings: Settings) -> 
 
 
 @pytest.mark.asyncio
-async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why(settings: Settings) -> None:
-    """A row written before validation existed. It fired every minute; now it sits, with a reason."""
+async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row written before validation existed. It fired every minute; now it sits, with a
+    reason, and the operator's record of its last real run and due time is left alone."""
     await jobs_store.put_job(settings, "default", "j", schedule="@daily")
-    jobs_store._memory_jobs[("default", "j")]["schedule"] = "every tuesday"
+    row = jobs_store._memory_jobs[("default", "j")]
+    row.update(schedule="every tuesday", last_run_at=1_000, next_run_at=2_000)
+
+    writes: list[dict] = []
+    real_touch = jobs_store.touch_run
+
+    async def _spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        writes.append(kwargs)
+        await real_touch(*args, **kwargs)
+
+    monkeypatch.setattr(jobs_store, "touch_run", _spy)
 
     assert await run_due_jobs(settings) == 0
+    assert await run_due_jobs(settings) == 0
+    assert len(writes) == 1, "the reason is recorded once, not on every tick"
     (job,) = await jobs_store.list_jobs(settings, "default")
     assert job["last_status"] == "error"
     assert "cron" in job["last_error"]
-    assert job["next_run_at"] is None
+    assert (job["last_run_at"], job["next_run_at"]) == (1_000, 2_000)
     assert await jobs_store.list_runs(settings, "default", "j") == []
+
+
+@pytest.mark.asyncio
+async def test_changing_a_schedule_moves_its_due_time(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keeping the old due time left a job moved from `@daily` to `*/5` waiting a day."""
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: SAT_1030)
+    await jobs_store.put_job(settings, "default", "j", schedule="@daily")
+    jobs_store._memory_jobs[("default", "j")]["next_run_at"] = _ms(2026, 10, 11, 0, 0)
+
+    await jobs_store.put_job(settings, "default", "j", schedule="*/5 * * * *")
+    assert (await jobs_store.get_job(settings, "default", "j"))["next_run_at"] == _ms(2026, 10, 10, 10, 35)
+
+    # Re-saving the same schedule (toggling `enabled`, editing the payload) leaves it be.
+    jobs_store._memory_jobs[("default", "j")]["next_run_at"] = 42
+    await jobs_store.put_job(settings, "default", "j", schedule="*/5 * * * *", enabled=False)
+    assert (await jobs_store.get_job(settings, "default", "j"))["next_run_at"] == 42
