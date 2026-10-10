@@ -1724,6 +1724,15 @@ async def build_agent(
                     sub_agents = {name: deps.compiled[name] for name in m.spec.sub_agents}
                 if m.spec.delegation is not None:
                     delegates = {ref.name: deps.compiled[ref.name] for ref in m.spec.delegation.agents}
+                    for ref_name, child in delegates.items():
+                        # `task` checks the child's inbound auth from `compiled_manifests`, keyed
+                        # by `metadata.name`. A child found under one name that calls itself
+                        # another would have the gate read some other manifest's door.
+                        if getattr(child, "manifest_id", ref_name) != ref_name:
+                            raise ValueError(
+                                f"delegate '{ref_name}' resolved to a manifest named "
+                                f"'{child.manifest_id}'; the names must match"
+                            )
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:

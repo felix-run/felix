@@ -251,3 +251,14 @@ async def test_a_child_the_caller_could_not_call_by_name_is_refused(boot: Any) -
         # Lead, then lead again: the child never ran.
         assert len(app.spy.prompts) == 2
         assert "the caller may not run agent 'e2e-researcher'" in _text(app.spy.prompts[1])
+
+
+async def test_a_delegate_stored_under_another_name_is_refused(boot: Any) -> None:
+    """The auth gate reads the child's manifest by its own `metadata.name`; a child found under
+    one name that calls itself another would have the gate check the wrong door."""
+    from felix.manifests.store import put_version
+
+    async with boot(manifests={"e2e-lead": _lead()}) as app:
+        await put_version(app.settings, "default", "e2e-researcher", _agent("e2e-impostor"))
+        with pytest.raises(ValueError, match="names must match"):
+            await _chat(app)
