@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import re
 import secrets
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from felix.tools.workspace import (
     _DIR_FLAGS,
     _EDIT_TMP_PREFIX,
+    _MAX_DIR_BATCH,
     _MAX_EDIT_FILE_BYTES,
     _MAX_LIST_ENTRIES,
     _MAX_READ_BYTES,
@@ -51,13 +53,17 @@ from felix.tools.workspace import (
     workspace_parts,
 )
 from felix.tools.workspace_backend import (
+    CheckedWriteResult,
     EditRefused,
     EditResult,
     ListResult,
     ReadResult,
     SearchResult,
+    TreeResult,
+    WorkspaceChanged,
     WorkspaceScope,
     WriteResult,
+    pane_hides,
 )
 
 if TYPE_CHECKING:
@@ -253,6 +259,117 @@ def _search(root: Path, args: SearchFilesArgs, pattern: re.Pattern[str] | None) 
     return hits
 
 
+# The file pane's tree walk: the same budget a search has, since it is the same kind of walk over
+# a tree the agent's code may have made as large and as deep as it liked.
+_TREE_BUDGET_S = _SEARCH_BUDGET_S
+
+
+def _pane_key(entry: tuple[str, os.stat_result]) -> tuple[str, str]:
+    # `list_dir`'s order: case-folded, then the exact name, which is unique in a directory.
+    return (entry[0].lower(), entry[0])
+
+
+def _tree_batch(fd: int) -> tuple[list[tuple[str, os.stat_result]], bool]:
+    """A directory's files and subdirectories for the tree, reverse-sorted for `pop`, and whether
+    the directory had more than one batch holds (so the listing of it is incomplete)."""
+    batch = _dir_batch(fd, dirs_and_files_only=True)
+    kept = sorted((e for e in batch if not pane_hides(e[0])), key=_pane_key, reverse=True)
+    return kept, len(batch) >= _MAX_DIR_BATCH
+
+
+def _tree(root: Path, limit: int) -> TreeResult:
+    """Pre-order over the whole scope by descriptor, as `_scan_tree` walks: no symlink is listed or
+    entered, one descriptor is held per level, and depth, entries and time are all bounded."""
+    entries: list[dict[str, Any]] = []
+    truncated = False
+    deadline = time.monotonic() + _TREE_BUDGET_S
+    with open_workspace_dir(root, ".") as (top, _rel):
+        first, full = _tree_batch(top)
+        truncated = full
+        stack = [(top, ".", first)]
+        try:
+            while stack:
+                fd, here, pending = stack[-1]
+                if not pending:
+                    stack.pop()
+                    if fd != top:
+                        os.close(fd)
+                    continue
+                if len(entries) >= limit or time.monotonic() > deadline:
+                    truncated = True
+                    break
+                name, st = pending.pop()
+                child = _child_rel(here, name)
+                if stat.S_ISREG(st.st_mode):
+                    entries.append({"path": child, "type": "file", "bytes": st.st_size})
+                    continue
+                entries.append({"path": child, "type": "dir"})
+                if len(stack) > _MAX_SEARCH_DEPTH:
+                    truncated = True
+                    continue
+                try:
+                    sub = open_at(fd, name, _DIR_FLAGS, child)
+                except ValueError, OSError:
+                    continue  # swapped for a link since the listing, or gone: not entered
+                try:
+                    batch, full = _tree_batch(sub)
+                except OSError:
+                    os.close(sub)
+                    continue
+                truncated = truncated or full
+                stack.append((sub, child, batch))
+        finally:
+            for fd, _, _ in stack:
+                if fd != top:
+                    os.close(fd)
+    return TreeResult(entries=entries, truncated=truncated)
+
+
+def _current_state(root: Path, path: str, *, digest: bool) -> tuple[str | None, int | None, int | None]:
+    """`(sha256, bytes, mode)` of the regular file at `path`: all None when it is missing.
+
+    The digest is taken only when asked for, and only of a file within the read cap: one larger
+    than that was never readable through the file pane, so no caller can hold its hash, and it is
+    reported by size alone (`sha256` None, `bytes` set). Raises as the other operations do for a
+    path naming a directory, a symlink or something else that is not a regular file.
+    """
+    try:
+        with open_workspace_parent(root, path) as (parent, leaf, rel):
+            if leaf is None:
+                raise NotAFileError(rel)
+            try:
+                fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+            except FileNotFoundError:
+                return None, None, None
+            try:
+                st = os.fstat(fd)
+                mode = stat.S_IMODE(st.st_mode)
+                if not digest:
+                    return None, st.st_size, mode
+                raw = _pread(fd, _MAX_READ_BYTES + 1, 0)
+            finally:
+                os.close(fd)
+    except FileNotFoundError:
+        return None, None, None  # a directory on the way is missing: so is the file
+    if len(raw) > _MAX_READ_BYTES:
+        return None, max(len(raw), st.st_size), mode
+    return hashlib.sha256(raw).hexdigest(), len(raw), mode
+
+
+def _write_checked(root: Path, path: str, data: bytes, expected_sha256: str | None) -> str:
+    """Compare, then replace: one synchronous call, so nothing else in this process runs between
+    the two once the caller holds the path's lock. Returns the path as the tools report it."""
+    current, size, mode = _current_state(root, path, digest=expected_sha256 is not None)
+    if expected_sha256 is not None and current != expected_sha256:
+        raise WorkspaceChanged(current, size)
+    with open_workspace_parent(root, path, create=True) as (parent, leaf, rel):
+        if leaf is None:
+            raise NotAFileError(rel)
+        # A new file gets the mode a tool's write would have given it; an existing one keeps its own.
+        _replace_file(parent, leaf, 0o600 if mode is None else mode, data)
+    return rel
+
+
 class LocalBackend:
     """The workspace on this host's filesystem. Stateless: the locks are module-level, so two
     instances order their writes against each other as one would."""
@@ -366,6 +483,27 @@ class LocalBackend:
                 payload = text.replace(old, new).encode("utf-8")
                 _replace_file(parent, leaf, stat.S_IMODE(st.st_mode), payload)
         return EditResult(path=rel, replacements=found, bytes=len(payload))
+
+    async def tree(self, scope: WorkspaceScope | None, limit: int) -> TreeResult:
+        """On a worker thread, under its own deadline, like a search."""
+        root = self._root(scope)
+        return await asyncio.to_thread(_tree, root, limit)
+
+    async def write_file_checked(
+        self, scope: WorkspaceScope | None, path: str, data: bytes, expected_sha256: str | None
+    ) -> CheckedWriteResult:
+        """The compare and the replace run on a worker thread while this path's lock is held, so a
+        tool's `write_file` or `edit_file` in this process cannot land between them.
+
+        The lock is process-local, as the tools' own is. A writer in another process -- a durable
+        run on the worker, a `shell` command -- is not ordered against it; the compare narrows that
+        window to the microseconds between one read and one rename, and does not close it.
+        """
+        root = self._root(scope)
+        rel = "/".join(workspace_parts(path)) or "."
+        async with _write_lock(_lock_key(root, rel)):
+            rel = await asyncio.to_thread(_write_checked, root, path, data, expected_sha256)
+        return CheckedWriteResult(path=rel, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
 
     async def search(
         self, scope: WorkspaceScope | None, path: str, query: str, regex: bool, max_hits: int

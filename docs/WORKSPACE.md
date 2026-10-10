@@ -108,6 +108,17 @@ implementation per backend and the same tests run against all of them.
 Approvals are untouched by construction: the gate runs in the tool wrapper before `execute`, so a
 refused call never reaches a backend, and an approved one reaches it exactly as today.
 
+**The operator's file pane (2026-10-10).** Two operations joined the seam for
+`GET /chat/workspace/tree` and `POST /chat/workspace/write` rather than for a model: `tree(scope,
+limit)`, a recursive walk that follows no link and leaves out `.git` and `.felix-scopes`, and
+`write_file_checked(scope, path, data, expected_sha256)`, a whole-file atomic replace that first
+compares the file's digest under the path's lock and raises `WorkspaceChanged` on a mismatch. Which
+scope a pane request is for is decided server-side from the manifest the thread last ran under
+(`felix/workspace_files.py`), with the checkout overriding it as for the tools. On `hosted` the tree
+is one gateway `list` per directory and the compare is a `read` before the `write`, ordered only by a
+lock in the requesting process: a tool call writing the same file from another replica or the worker
+between the two is not seen. Moving the compare into the helper closes that.
+
 ### Scope
 
 `WorkspaceScope` is `(tenant_id, key)`, taken from the request context the tools already run in.
@@ -478,9 +489,11 @@ and a `scope: thread` workspace starts empty. So:
    helper's process start plus a round trip; a turn of five tool calls adds about two seconds. That
    is acceptable for a background or cowork turn, and the place to cut further is the helper's
    start (a resident process instead of one per call), not batching.
-6. **Reading a workspace from chat-ui.** The web client's "Touched this session" list is derived from
+6. **Reading a workspace from chat-ui.** ~~The web client's "Touched this session" list is derived from
    tool arguments today. The export route in phase 4 is the natural source for a real file list, and
-   the client should wait for it rather than invent one.
+   the client should wait for it rather than invent one.~~ Answered by `GET /chat/workspace/tree`,
+   `GET /chat/workspace/file` and `POST /chat/workspace/write` (the file pane, above). Delete and
+   rename are not there yet: the backend has neither operation.
 
 ## Review checklist for each phase
 
