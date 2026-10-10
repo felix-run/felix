@@ -71,6 +71,9 @@ STATUS: dict[str, int] = {
     "agent_draft": 409,
     # An adopt's save is not the version it names (another parent, other files).
     "adopt_mismatch": 409,
+    # A promotion into a tenant skill that already holds an undecided one: a reviewer decides
+    # that one first. The per-person cap on promotions is `pending_cap_reached`, as for agents.
+    "promotion_pending": 409,
     # Feedback already decided; the inbox moved on underneath the caller.
     "feedback_conflict": 409,
     # An agent's undecided feedback; drains as a person decides it, so a retry later can succeed.
@@ -150,6 +153,7 @@ STRUCTURAL_FIELDS = frozenset(
         "target_version",
         "result_version",
         "adopted_from",
+        "promoted_from",
         "status",
         "source",
         "scenario_source",

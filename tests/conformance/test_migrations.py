@@ -356,3 +356,54 @@ async def test_skills_are_keyed_by_owner_and_a_personal_skill_blocks_the_downgra
     finally:
         await drop_everything(url)
         await _drop_migrator(url)
+
+
+async def _downgrade_past_0038(url: str) -> None:
+    from alembic import command
+    from felix.db.migrations import alembic_config
+
+    await asyncio.to_thread(command.downgrade, alembic_config(url), "0037_thread_state_listing_index")
+
+
+async def test_a_promoted_version_blocks_the_downgrade_past_0038() -> None:
+    """`0038_skill_version_promoted`: `promoted` is a source the check takes, `promoted_from` is a
+    nullable column, and the downgrade refuses while any promoted version exists. Run as a role RLS
+    binds, for the reason the `0033` test gives: `0026`'s guard counts without the bypass and so
+    reads zero on managed Postgres; this one must not."""
+    url = _url_or_skip()
+    try:
+        await migrate_to_head(url)
+        await _execute(
+            url,
+            "INSERT INTO skill_version (tenant_id, owner, name, version, status, source, security_status, "
+            "created_at, promoted_from) VALUES ('acme', '', 'notes', '0.1.0', 'draft', 'promoted', 'pass', 1, "
+            "'0.3.0')",
+        )
+        migrator = await _as_migrator(url)
+        assert await _scalar(migrator, "SELECT count(*) FROM skill_version") == 0, (
+            "the migrator role sees rows without the bypass, so this test cannot catch a guard missing it"
+        )
+        with pytest.raises(RuntimeError, match="promoted from personal libraries"):
+            await _downgrade_past_0038(migrator)
+        assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0038_skill_version_promoted"
+
+        await _execute(url, "DELETE FROM skill_version WHERE source = 'promoted'")
+        await _downgrade_past_0038(migrator)
+        assert (
+            await _scalar(
+                url,
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_name = 'skill_version' AND column_name = 'promoted_from'",
+            )
+            == 0
+        )
+        with pytest.raises(Exception, match="ck_skill_version_source"):
+            await _execute(
+                url,
+                "INSERT INTO skill_version (tenant_id, owner, name, version, status, source, "
+                "security_status, created_at) VALUES ('acme', '', 'notes', '0.1.0', 'draft', 'promoted', "
+                "'pass', 1)",
+            )
+    finally:
+        await drop_everything(url)
+        await _drop_migrator(url)

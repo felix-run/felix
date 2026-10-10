@@ -143,6 +143,30 @@ now the one durable path.
 
 ---
 
+## `0038_skill_version_promoted`: promoting a personal skill
+
+**A brief lock on `skill_version`, library reads that fail on old replicas once someone promotes,
+and a rollback past it can refuse.**
+
+`skill_version` gains a nullable `promoted_from` column (catalog-only) and its source check takes a
+fourth value, `promoted`, for a version a person proposed from their own library with
+`POST /skill-library/~me/{name}/versions/{version}/promote`. Replacing the check holds
+`skill_version` under an ACCESS EXCLUSIVE lock while it scans the table's rows -- one per skill
+version, so the wait is short, as `0026`'s was.
+
+- **During the roll.** Only new replicas promote. Once one has, an old replica answers the tenant
+  library's listing, review queue and version reads that include the promoted draft with a 500:
+  its response models know three sources, not four. Agent turns and catalog loads are unaffected.
+  Roll quickly, or hold promotions until every replica runs the new image.
+- **Rollback.** The downgrade refuses while any `promoted` version exists: dropping it would delete
+  a tenant's review history. The count runs with `app.rls_bypass` on, so it sees every tenant's
+  rows on managed Postgres too. Check before rolling back:
+
+  ```bash
+  psql "$FELIX_DATABASE_URL" -c "set app.rls_bypass = 'on'" \
+    -c "select tenant_id, name, version from skill_version where source = 'promoted'"
+  ```
+
 ## `0034_fiber_thread`: one durable run per thread
 
 **A catalog-only column, a small index, and a refusal clients may not have seen before.**

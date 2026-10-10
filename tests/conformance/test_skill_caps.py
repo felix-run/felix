@@ -65,7 +65,7 @@ def _widened(monkeypatch: pytest.MonkeyPatch) -> None:
         staticmethod(then_wait(PostgresSkillFeedbackStore._pending_agent)),
     )
     monkeypatch.setattr(
-        PostgresSkillLibraryStore, "_pending", staticmethod(then_wait(PostgresSkillLibraryStore._pending))
+        PostgresSkillLibraryStore, "_drafts", staticmethod(then_wait(PostgresSkillLibraryStore._drafts))
     )
 
 
@@ -201,7 +201,12 @@ async def test_an_agents_racing_drafts_fill_its_pending_cap_exactly(store_settin
         return_exceptions=True,
     )
     assert _split(results, library.SkillPendingCapReached) == (CAP, RACERS - CAP)
-    assert await get_skill_library_store(store_settings, owner=ORG_OWNER).count_pending(TENANT, "m") == CAP
+    assert (
+        await get_skill_library_store(store_settings, owner=ORG_OWNER).count_drafts(
+            TENANT, source="agent", origin_manifest_id="m"
+        )
+        == CAP
+    )
     # A refused save left nothing behind: no row, and no bytes.
     saved = {r["name"] for r in results if isinstance(r, dict)}
     assert {k.split("/")[2] for k in objects._data if k.startswith("skill-library/")} == saved

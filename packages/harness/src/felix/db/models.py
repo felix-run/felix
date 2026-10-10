@@ -210,10 +210,15 @@ class SkillVersionRow(Base):
     # whose files it carries byte for byte, vouched for with the row's `reason` by its `author`.
     # Its own `lineage_import` is false; the copy rule still counts its files as imported.
     adopted_from: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set on a version `library.promote` saved into the tenant's library: the version of the
+    # promoter's personal library it was copied from. Never the owner -- `author` is who promoted.
+    promoted_from: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint("status IN ('draft', 'published', 'archived')", name="ck_skill_version_status"),
-        CheckConstraint("source IN ('agent', 'operator', 'import')", name="ck_skill_version_source"),
+        CheckConstraint(
+            "source IN ('agent', 'operator', 'import', 'promoted')", name="ck_skill_version_source"
+        ),
     )
 
 

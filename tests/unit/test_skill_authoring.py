@@ -787,6 +787,119 @@ async def test_publish_mode_never_auto_publishes_an_edit_of_an_imported_skill(
     assert skill is not None and skill["live_version"] == "0.1.0"
 
 
+async def test_publish_mode_never_auto_publishes_an_edit_of_a_promoted_draft(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """A promotion waits on a reviewer of the tenant's; an agent's edit built on it, published at
+    once, would put its text live with no reviewer having read it."""
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="promoted", author="alice", promoted_from="0.2.0"),
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
+    )
+    assert result["status"] == "draft" and "review_required" in result
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] is None
+
+
+async def _promoted_draft(settings: Settings, store: MemoryObjectStore) -> None:
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(),
+        provenance=library.DraftProvenance(source="promoted", author="alice", promoted_from="0.2.0"),
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+
+
+async def test_publish_mode_holds_a_second_edit_built_on_a_held_edit_of_a_promoted_draft(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Two hops: the first edit of the promotion is held, and is itself an agent's draft. Edited
+    again, the second would publish at once with the promotion's unreviewed files in it, unless
+    the check walks back through undecided drafts to the promotion."""
+    await _promoted_draft(settings, store)
+    tools = _authoring(settings, store, mode="publish")
+    first = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n3. More.\n", "reason": "r", "parent_version": "0.1.0"},
+    )
+    assert first["status"] == "draft" and "review_required" in first
+    second = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n4. Most.\n", "reason": "r", "parent_version": "0.1.1"},
+    )
+    assert second["status"] == "draft" and "review_required" in second, second
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] is None
+
+
+async def test_publish_mode_holds_an_edit_of_an_improvement_of_a_promoted_draft(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """The first hop by `improve.py` instead: an agent draft saved on the promotion, as the
+    improver saves one (`source="agent"`, no origin manifest), then an agent's edit of that."""
+    await _promoted_draft(settings, store)
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(body=BODY + "\nImproved.\n"),
+        provenance=library.DraftProvenance(source="agent", author="skill-improver", origin_manifest_id=None),
+        name="invoice-triage",
+        parent="0.1.0",
+        expect_newest="0.1.0",
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n5. Again.\n", "reason": "r", "parent_version": "0.1.1"},
+    )
+    assert result["status"] == "draft" and "review_required" in result, result
+    skill = await get_skill_library_store(settings, owner=ORG_OWNER).get_skill("acme", "invoice-triage")
+    assert skill is not None and skill["live_version"] is None
+
+
+async def test_publish_mode_still_publishes_an_edit_of_a_published_agent_version(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """The walk stops at a decided version: a promotion a reviewer published is reviewed text, and
+    the agent's edits on top of it publish as any agent's do."""
+    await _promoted_draft(settings, store)
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.0", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    await library.save_draft(
+        settings,
+        "acme",
+        files=_bundle(body=BODY + "\nAn agent's.\n"),
+        provenance=library.DraftProvenance(source="agent", author="m", origin_manifest_id="m"),
+        name="invoice-triage",
+        parent="0.1.0",
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    await library.publish(
+        settings, "acme", "invoice-triage", "0.1.1", by="ops", object_store=store, owner=ORG_OWNER
+    )
+    tools = _authoring(settings, store, mode="publish")
+    result = await _call(
+        tools["update_skill"],
+        {"name": "invoice-triage", "body": BODY + "\n6. On.\n", "reason": "r", "parent_version": "0.1.1"},
+    )
+    assert result["status"] == "published", result
+
+
 def _spec(**spec: Any) -> dict[str, Any]:
     return {
         "apiVersion": "felix/v1",

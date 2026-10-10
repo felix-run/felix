@@ -306,3 +306,54 @@ async def test_an_agent_saves_into_its_callers_library_and_they_review_it(boot: 
     ], results
     assert published.status_code == 200 and later.status_code == 200, (published.text, later.text)
     assert "Alice's own way of taking notes" in prompt, "what she published reaches her next turn"
+
+
+async def test_a_promotion_reaches_the_tenant_only_through_its_review_queue(boot: Any) -> None:
+    """`POST /~me/{name}/versions/{v}/promote`: Alice proposes her live version to the tenant. It
+    waits in the tenant's review queue as a `promoted` draft -- in no one else's catalog -- until a
+    reviewer publishes it; then Bob's turns see it too, and Alice's own skill is untouched."""
+    async with boot([ScriptedTurn(content="ok")] * 2, env=ENV, manifests=MANIFESTS) as app:
+        saved = await _alice_publishes(app)
+        promoted = await app.client.post(
+            f"/skill-library/~me/notes/versions/{saved['version']}/promote",
+            json={"reason": "the team keeps asking"},
+            headers=_h("alice"),
+        )
+        writer_cannot = await app.client.post(
+            f"/skill-library/~me/notes/versions/{saved['version']}/promote", headers=_h("writer")
+        )
+        queue = (await app.client.get("/skill-library/-/review", headers=_h("writer"))).json()
+        before = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-personal", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_h("bob"),
+        )
+        version = promoted.json()["version"]
+        published = await app.client.post(
+            f"/skill-library/notes/versions/{version}/publish", headers=_h("writer")
+        )
+        after = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-personal", "messages": [{"role": "user", "content": "hi"}]},
+            headers=_h("bob"),
+        )
+        hers = (await app.client.get("/skill-library/~me/notes", headers=_h("alice"))).json()
+        bob_before, bob_after = (
+            "\n".join(str(m.content) for m in prompt if m.role == "system") for prompt in app.spy.prompts
+        )
+
+    assert promoted.status_code == 201, promoted.text
+    body = promoted.json()
+    assert (body["source"], body["status"], body["author"], body["promoted_from"]) == (
+        "promoted",
+        "draft",
+        "alice",
+        saved["version"],
+    )
+    assert writer_cannot.status_code == 403, "skills:write is not skills:personal"
+    assert [(d["name"], d["source"]) for d in queue["items"]] == [("notes", "promoted")]
+    assert before.status_code == after.status_code == 200
+    assert "Alice's own way of taking notes" not in bob_before, "a draft reaches no catalog"
+    assert published.status_code == 200, published.text
+    assert "Alice's own way of taking notes" in bob_after
+    assert hers["live_version"] == saved["version"] and len(hers["versions"]) == 1

@@ -148,7 +148,20 @@ class SkillLibraryStore(Protocol):
 
     async def list_files(self, tenant_id: str, name: str, version: str) -> list[dict[str, Any]]: ...
 
-    async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int: ...
+    async def count_drafts(
+        self,
+        tenant_id: str,
+        *,
+        source: str,
+        name: str | None = None,
+        author: str | None = None,
+        origin_manifest_id: str | None = None,
+    ) -> int:
+        """Undecided drafts of ``source`` in this library, narrowed to the skill ``name``, the
+        ``author`` and the ``origin_manifest_id`` given. What bounds the review queue: an agent
+        manifest's pending cap (`source="agent"`, by origin manifest) and promotions
+        (`source="promoted"`, by skill and by promoter)."""
+        ...
 
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
@@ -247,6 +260,7 @@ _VERSION_DEFAULTS: dict[str, Any] = {
     **dict.fromkeys(ORIGIN_COLUMNS),
     "lineage_import": False,
     "adopted_from": None,
+    "promoted_from": None,
 }
 
 
@@ -427,8 +441,18 @@ class InMemorySkillLibraryStore:
         files = self._files.get(_VersionKey(tenant_id, self._owner, name, version), [])
         return copy.deepcopy(sorted(files, key=lambda f: f["path"]))
 
-    async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
-        return self._pending(tenant_id, origin_manifest_id)
+    async def count_drafts(
+        self,
+        tenant_id: str,
+        *,
+        source: str,
+        name: str | None = None,
+        author: str | None = None,
+        origin_manifest_id: str | None = None,
+    ) -> int:
+        return self._drafts(
+            tenant_id, source=source, name=name, author=author, origin_manifest_id=origin_manifest_id
+        )
 
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
@@ -446,14 +470,24 @@ class InMemorySkillLibraryStore:
             for f in files
         )
 
-    def _pending(self, tenant_id: str, origin_manifest_id: str) -> int:
+    def _drafts(
+        self,
+        tenant_id: str,
+        *,
+        source: str,
+        name: str | None = None,
+        author: str | None = None,
+        origin_manifest_id: str | None = None,
+    ) -> int:
         return sum(
             1
             for k, r in self._versions.items()
             if self._mine(tenant_id, k)
             and r["status"] == "draft"
-            and r["source"] == "agent"
-            and r.get("origin_manifest_id") == origin_manifest_id
+            and r["source"] == source
+            and (name is None or k.name == name)
+            and (author is None or r.get("author") == author)
+            and (origin_manifest_id is None or r.get("origin_manifest_id") == origin_manifest_id)
         )
 
     async def insert_version(
@@ -470,7 +504,12 @@ class InMemorySkillLibraryStore:
         # No await from the count to the write: one event loop cannot interleave another save.
         if (
             max_pending is not None
-            and (held := self._pending(tenant_id, str(row.get("origin_manifest_id")))) >= max_pending
+            and (
+                held := self._drafts(
+                    tenant_id, source="agent", origin_manifest_id=str(row.get("origin_manifest_id"))
+                )
+            )
+            >= max_pending
         ):
             raise SkillPendingFull(held, max_pending)
         skill_key, key = _SkillKey(tenant_id, owner, name), _VersionKey(tenant_id, owner, name, version)
@@ -895,9 +934,25 @@ class PostgresSkillLibraryStore:
             ).all()
             return [self._row(r) for r in rows]
 
-    async def count_pending(self, tenant_id: str, origin_manifest_id: str) -> int:
+    async def count_drafts(
+        self,
+        tenant_id: str,
+        *,
+        source: str,
+        name: str | None = None,
+        author: str | None = None,
+        origin_manifest_id: str | None = None,
+    ) -> int:
         async with self._session(tenant_id) as db:
-            return await self._pending(db, tenant_id, self._owner, origin_manifest_id)
+            return await self._drafts(
+                db,
+                tenant_id,
+                self._owner,
+                source=source,
+                name=name,
+                author=author,
+                origin_manifest_id=origin_manifest_id,
+            )
 
     async def holds_imported_file(
         self, tenant_id: str, digests: Collection[str], *, normalized: Collection[str]
@@ -938,23 +993,32 @@ class PostgresSkillLibraryStore:
             return bool(await db.scalar(query))
 
     @staticmethod
-    async def _pending(db: Any, tenant_id: str, owner: str, origin_manifest_id: str) -> int:
+    async def _drafts(
+        db: Any,
+        tenant_id: str,
+        owner: str,
+        *,
+        source: str,
+        name: str | None = None,
+        author: str | None = None,
+        origin_manifest_id: str | None = None,
+    ) -> int:
         from sqlalchemy import func, select
 
-        from felix.db.models import SkillVersionRow
+        from felix.db.models import SkillVersionRow as V
 
-        count = await db.scalar(
+        stmt = (
             select(func.count())
-            .select_from(SkillVersionRow)
-            .where(
-                SkillVersionRow.tenant_id == tenant_id,
-                SkillVersionRow.owner == owner,
-                SkillVersionRow.origin_manifest_id == origin_manifest_id,
-                SkillVersionRow.status == "draft",
-                SkillVersionRow.source == "agent",
-            )
+            .select_from(V)
+            .where(V.tenant_id == tenant_id, V.owner == owner, V.status == "draft", V.source == source)
         )
-        return int(count or 0)
+        if name is not None:
+            stmt = stmt.where(V.name == name)
+        if author is not None:
+            stmt = stmt.where(V.author == author)
+        if origin_manifest_id is not None:
+            stmt = stmt.where(V.origin_manifest_id == origin_manifest_id)
+        return int(await db.scalar(stmt) or 0)
 
     async def insert_version(
         self,
@@ -984,7 +1048,10 @@ class PostgresSkillLibraryStore:
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
                     {"k": pending_lock_key(tenant_id, origin, owner=self._owner)},
                 )
-                if (held := await self._pending(db, tenant_id, self._owner, origin)) >= max_pending:
+                held = await self._drafts(
+                    db, tenant_id, self._owner, source="agent", origin_manifest_id=origin
+                )
+                if held >= max_pending:
                     raise SkillPendingFull(held, max_pending)
             skill = pg_insert(cast(Any, SkillRow.__table__)).values(
                 tenant_id=tenant_id,

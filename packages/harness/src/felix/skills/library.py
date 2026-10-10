@@ -23,7 +23,7 @@ import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cmp_to_key
-from typing import Any, Literal
+from typing import Any
 
 from felix.config import Settings
 from felix.logging_setup import loggable
@@ -57,6 +57,14 @@ from felix.skills.publish_gate import (
     policy_for_source,
 )
 from felix.skills.semver import SemverBump, compare_semver, resolve_next_semver
+from felix.skills.sources import (
+    SkillSourceKind,
+    SourceTraits,
+    needs_review_when_agent_edits,
+    source_label,
+    source_traits,
+    unreviewed_until_decided,
+)
 
 logger = logging.getLogger("felix.skills.library")
 
@@ -76,10 +84,11 @@ PERSONAL_EVAL_REQUIRED = (
 
 now_ms = lambda: int(time.time() * 1000)
 
-# `import`: fetched from an external source (`skills/importer.py`) at a person's request.
-# Third-party text, so the gate treats it at least as strictly as an agent's draft
-# (`publish_gate.policy_for_source`, `publish_gate.gate_scenario_source`).
-SkillSourceKind = Literal["agent", "operator", "import"]
+# Undecided promotions one person may hold in the tenant's review queue at once: the agent pending
+# cap's default (`SkillAuthoringSpec.max_pending`), since a promotion is a draft waiting on a
+# reviewer as an agent's is. A constant rather than the manifest field because a promotion has no
+# manifest; `tests/unit/test_skill_promote.py` holds the two equal.
+MAX_PENDING_PROMOTIONS = 20
 
 # Strict `major.minor.patch`: a version is interpolated into an object key, and the loader's
 # own key-segment rule (`loader._VERSION_RE`) is looser than this.
@@ -165,6 +174,13 @@ class SkillVersionCapReached(SkillLibraryError):
     code = "version_cap_reached"
 
 
+class SkillPromotionPending(SkillLibraryError):
+    """The tenant's skill of the name already holds a promoted draft nobody has decided. One at a
+    time per skill, so promotions into one name cannot pile up ahead of a reviewer."""
+
+    code = "promotion_pending"
+
+
 class SkillVersionCorrupt(SkillLibraryError):
     """A saved file is missing from the object store, or its bytes no longer match the digest
     recorded when it was saved."""
@@ -193,20 +209,29 @@ class DraftProvenance:
     # for. `save_draft` holds the save to it (`_check_adopt`: that version is the parent, carries
     # imported text, is no agent's unreviewed draft, and has exactly these files).
     adopted_from: str | None = None
+    # Set exactly when ``source="promoted"``: the personal version the files were copied from, and
+    # whether that version carries imported text (`publish_gate.carries_imported_text`) -- the
+    # mark rides along into the tenant's library (`_lineage_import`).
+    promoted_from: str | None = None
+    promoted_lineage_import: bool = False
 
     def __post_init__(self) -> None:
         if (self.source == "import") != (self.origin is not None):
             raise ValueError("an import's provenance carries its origin, and only an import's does")
         if self.adopted_from is not None and self.source != "operator":
             raise ValueError("only an operator's save adopts a version")
+        if (self.source == "promoted") != (self.promoted_from is not None):
+            raise ValueError("a promotion names its personal version, and only a promotion does")
+        if self.promoted_lineage_import and self.source != "promoted":
+            raise ValueError("only a promotion inherits lineage from another library")
 
     @property
     def builds_on_newest_buildable(self) -> bool:
         """Whether the save's parent must be the newest version that was not rejected, rather
-        than the newest of all. An agent's edit and an import: a rejected draft is not what they
-        replace (`importer._prior`). An adopt: it vouches for the version a reviewer would
-        otherwise be editing."""
-        return self.source in {"agent", "import"} or self.adopted_from is not None
+        than the newest of all. An agent's edit, an import and a promotion: a rejected draft is not
+        what they replace (`importer._prior`, `promote`). An adopt: it vouches for the version a
+        reviewer would otherwise be editing."""
+        return _traits(self.source).builds_on_buildable or self.adopted_from is not None
 
     @property
     def inherits_lineage(self) -> bool:
@@ -217,7 +242,8 @@ class DraftProvenance:
 
 class SkillOriginMismatch(SkillLibraryError):
     """An import named a skill the library holds from somewhere else: another source, or a
-    version an agent or an operator wrote. An import never takes over a name."""
+    version an agent or an operator wrote. An import never takes over a name -- and a promotion
+    never takes over an import's (`promote`)."""
 
     code = "origin_mismatch"
 
@@ -531,7 +557,9 @@ async def _check_pending(
     cap = _pending_cap(provenance, max_pending)
     if cap is None:
         return
-    held = await lib.count_pending(tenant_id, str(provenance.origin_manifest_id))
+    held = await lib.count_drafts(
+        tenant_id, source="agent", origin_manifest_id=str(provenance.origin_manifest_id)
+    )
     if held >= cap:
         raise _pending_refused(provenance.origin_manifest_id, held, cap)
 
@@ -589,6 +617,8 @@ async def save_draft(
         raise SkillNotFound(f"parent version {skill_name}@{parent} does not exist")
     if provenance.source == "agent":
         await _evals_only_inherited(lib, tenant_id, skill_name, parent, files)
+    elif provenance.source == "promoted":
+        await _evals_only_inherited(lib, tenant_id, skill_name, parent, files, exact=True)
     if provenance.adopted_from is not None:
         await _check_adopt(lib, tenant_id, skill_name, parent, provenance.adopted_from, files)
 
@@ -604,6 +634,7 @@ async def save_draft(
         "description": validation.frontmatter.description,
         **(provenance.origin.as_row() if provenance.origin else {}),
         "adopted_from": provenance.adopted_from,
+        "promoted_from": provenance.promoted_from,
         "lineage_import": await _lineage_import(lib, tenant_id, skill_name, parent, provenance, files),
         **(await asyncio.to_thread(assess, files, skill_name)).as_row(),
         "created_at": now_ms(),
@@ -660,8 +691,8 @@ async def _check_personal(
     """What a personal library refuses that the tenant's takes. Imports and adopts are the
     tenant's: their origin, sightings and update checks are keyed by name alone, and a person's
     copy of a third party's skill would escape all three."""
-    if provenance.source == "import" or provenance.adopted_from is not None:
-        raise SkillOrgOnly("imports and adopts go to the tenant's library, not a personal one")
+    if _traits(provenance.source).org_only or provenance.adopted_from is not None:
+        raise SkillOrgOnly("imports, adopts and promotions go to the tenant's library, not a personal one")
     usage = await lib.usage(tenant_id)
     new_name = await lib.get_skill(tenant_id, name) is None
     if new_name and usage["skills"] >= MAX_PERSONAL_SKILL_NAMES:
@@ -704,6 +735,10 @@ async def _lineage_import(
     was edited from does -- the named parent, else the skill's newest version, which is what a
     save that names none still starts from.
 
+    A promotion also carries the mark of the personal version it was copied from
+    (`DraftProvenance.promoted_lineage_import`), and is held to the copy rule as an agent's save
+    is: an agent may have written it in that library.
+
     For an agent's save, also when any of its files is a copy of a file of imported text
     anywhere in the tenant (`copy_rule`: by bytes, or by normalized text): an agent can read an
     imported skill and write its text into a new one under another name, and the copy is as much
@@ -720,10 +755,12 @@ async def _lineage_import(
         return True
     if not provenance.inherits_lineage:
         return False
+    if provenance.promoted_lineage_import:
+        return True
     basis = parent or newest_version(await lib.version_ids(tenant_id, name))
     if basis is not None and carries_imported_text(await lib.get_version(tenant_id, name, basis)):
         return True
-    if provenance.source != "agent":
+    if not _traits(provenance.source).copy_rule:
         return False
     inherited = (
         {str(r["path"]): str(r["sha256"]) for r in await lib.list_files(tenant_id, name, basis)}
@@ -734,15 +771,53 @@ async def _lineage_import(
     return await lib.holds_imported_file(tenant_id, exact, normalized=normalized)
 
 
+def _traits(source: str) -> SourceTraits:
+    traits = source_traits(source)
+    if traits is None:
+        raise ValueError(f"unknown skill source {source!r}")
+    return traits
+
+
+def _unreviewed(row: Mapping[str, Any]) -> bool:
+    """A draft whose text no reviewer of the tenant's has read: an agent's, or a promotion's
+    (`SourceTraits.unreviewed_until_decided`)."""
+    return unreviewed_until_decided(row.get("source")) and row.get("status") == "draft"
+
+
+async def builds_on_unreviewed_text(
+    lib: SkillLibraryStore, tenant_id: str, name: str, version: str | None
+) -> bool:
+    """Whether an agent's edit of ``name@version`` must go to a person: ``version`` was written,
+    imported or promoted by a person (`SourceTraits.needs_review_when_agent_edits`, which an
+    unknown source also answers yes to), or it is an undecided draft built -- through undecided
+    drafts only -- on one that was.
+
+    The chain matters because a held edit is itself an agent's draft: without the walk, a second
+    edit of it would publish at once, carrying the first one's unreviewed parent's files with it.
+    Bounded by the version cap, which no chain can be longer than."""
+    seen: set[str] = set()
+    while version and version not in seen and len(seen) < MAX_VERSIONS_PER_SKILL:
+        seen.add(version)
+        row = await lib.get_version(tenant_id, name, version)
+        if row is None:
+            return False
+        if needs_review_when_agent_edits(gate_source(row)):
+            return True
+        if not _unreviewed(row):
+            return False
+        version = row.get("parent_version")
+    return False
+
+
 def _adoptable(name: str, version: str, row: Mapping[str, Any]) -> None:
-    """Refuse a version an adopt may not vouch for: one with no imported text, or an agent's draft
-    no person has decided."""
+    """Refuse a version an adopt may not vouch for: one with no imported text, or an agent's or a
+    promotion's draft no person has decided."""
     if not carries_imported_text(row):
         raise SkillNotImportLineage(f"{name}@{version} carries no imported text; there is nothing to adopt")
-    if row.get("source") == "agent" and row.get("status") == "draft":
+    if _unreviewed(row):
         raise SkillAgentDraft(
-            f"{name}@{version} is an agent's draft nobody has reviewed; a person must reject it or "
-            "publish it before it can be adopted"
+            f"{name}@{version} is {source_label(row.get('source'))} draft nobody has reviewed; a "
+            "person must reject it or publish it before it can be adopted"
         )
 
 
@@ -767,34 +842,48 @@ async def _check_adopt(
         raise SkillAdoptMismatch(f"an adopt of {name}@{adopted_from} must carry exactly its files")
 
 
-async def _evals_only_inherited(
-    lib: SkillLibraryStore, tenant_id: str, name: str, parent: str | None, files: Mapping[str, str]
-) -> None:
-    """Refuse an agent's save that adds or changes a file under `evals/`.
+AGENT_EVALS = "an agent's save may only keep evals/ files unchanged from its parent"
+PROMOTED_EVALS = (
+    "a promotion must carry the tenant's evals/ files exactly -- none added, changed or removed; "
+    "a reviewer of the tenant's library edits them"
+)
 
-    The bundle's own scenarios are the only evaluation an agent's version is graded on
-    (`publish_gate.eval_counts_for_gate`), which is sound only if an agent cannot write them. Its
-    tools carry the parent's files unchanged; this makes that a rule rather than a habit of the
-    callers: every `evals/` file must be the parent's, byte for byte.
+
+async def _evals_only_inherited(
+    lib: SkillLibraryStore,
+    tenant_id: str,
+    name: str,
+    parent: str | None,
+    files: Mapping[str, str],
+    *,
+    exact: bool = False,
+) -> None:
+    """Refuse an agent's save that adds or changes a file under `evals/`, and with ``exact`` (a
+    promotion) one that also drops one of the parent's.
+
+    The bundle's own scenarios are the only evaluation an agent's or a promoted version is graded
+    on (`publish_gate.eval_counts_for_gate`), which is sound only if its author cannot write them.
+    An agent's tools carry the parent's files unchanged; this makes that a rule rather than a
+    habit of the callers: every `evals/` file must be the parent's, byte for byte. A promotion
+    brings a person's whole bundle, so dropping a scenario the tenant's reviewers wrote -- the
+    one it would fail, say -- would game the gate as surely as writing one; its `evals/` must be
+    exactly the parent's (none, for a skill the tenant does not hold). Refused, never stripped or
+    filled in: what a reviewer reads is what the person promoted.
     """
     evals = {p: c for p, c in files.items() if p.startswith("evals/")}
-    if not evals:
+    if not evals and not exact:
         return
     inherited = (
         {str(r["path"]): str(r["sha256"]) for r in await lib.list_files(tenant_id, name, parent)}
         if parent is not None
         else {}
     )
-    changed = sorted(p for p, c in evals.items() if inherited.get(p) != file_digest(p, c))
+    changed = {p for p, c in evals.items() if inherited.get(p) != file_digest(p, c)}
+    if exact:
+        changed |= {p for p in inherited if p.startswith("evals/") and p not in evals}
     if changed:
-        raise SkillBundleInvalid(
-            [
-                ValidationIssue(
-                    path=p, message="an agent's save may only keep evals/ files unchanged from its parent"
-                )
-                for p in changed
-            ]
-        )
+        message = PROMOTED_EVALS if exact else AGENT_EVALS
+        raise SkillBundleInvalid([ValidationIssue(path=p, message=message) for p in sorted(changed)])
 
 
 async def _discard(
@@ -1147,15 +1236,127 @@ async def _newer_than_adopted(
     row = await lib.get_version(tenant_id, name, newest) if newest else None
     if row is None:
         return f"{name}@{version} is not the newest version of {name}"
-    if row.get("source") == "agent" and row.get("status") == "draft":
+    if _unreviewed(row):
         return (
-            f"{name}@{version} is not the newest version: {newest} is an agent's draft by "
-            f"{row.get('author')!r} that nobody has reviewed; a person must reject or publish it first"
+            f"{name}@{version} is not the newest version: {newest} is "
+            f"{source_label(row.get('source'))} draft by {row.get('author')!r} that nobody has "
+            "reviewed; a person must reject or publish it first"
         )
     return (
         f"{name}@{version} is not the newest version: {newest} is, saved by "
         f"{row.get('source')} {row.get('author')!r}; read that one before adopting anything"
     )
+
+
+async def promote(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    version: str,
+    *,
+    by: str,
+    reason: str = "",
+    owner: str,
+    object_store: Any | None = None,
+) -> dict[str, Any]:
+    """Propose a version of ``owner``'s personal library to the tenant's: its files, byte for
+    byte, saved as a draft of the tenant's skill of the name (`source="promoted"`), which takes
+    the tenant's ordinary review queue. Promotion never publishes and skips no review; the
+    personal skill is left as it was.
+
+    The draft follows the tenant's newest version that was not rejected, when the tenant holds
+    the name, and is the skill's first version otherwise; a save racing it is `parent_changed`
+    or `skill_exists`. It records the personal version as ``promoted_from`` and inherits that
+    version's import lineage, and is judged as an agent's draft is: the copy rule runs on it,
+    only its bundle's own `evals/` scenarios count toward the gate, and its `evals/` files must be
+    exactly the tenant parent's -- none added, changed or removed (`invalid_bundle`).
+
+    Refused with ``org_only`` from the tenant's own library; ``not_found``; ``version_conflict``
+    for a version that never went live in ``owner``'s library (a draft, or a rejected one);
+    ``origin_mismatch`` while the tenant's newest version of the name carries imported text (an
+    import takes its source's updates until it is adopted); ``promotion_pending`` while the
+    tenant's skill of the name holds an undecided promotion; ``pending_cap_reached`` while ``by``
+    holds `MAX_PENDING_PROMOTIONS` of them; and anything `save_draft` refuses (a host skill's
+    name, the version cap).
+    """
+    if owner == ORG_OWNER:
+        raise SkillOrgOnly("promotion copies a personal version into the tenant's library, not from it")
+    mine = get_skill_library_store(settings, owner=owner)
+    row = await mine.get_version(tenant_id, name, version)
+    if row is None:
+        raise SkillNotFound(f"{name}@{version} does not exist")
+    if row.get("published_at") is None:
+        raise SkillVersionConflict(
+            f"{name}@{version} was never published in your library; publish it there first"
+        )
+    org = get_skill_library_store(settings, owner=ORG_OWNER)
+    await _check_promotions(org, tenant_id, name, by)
+    parent = newest_version((await org.buildable_versions(tenant_id, [name])).get(name, []))
+    if parent is not None and carries_imported_text(await org.get_version(tenant_id, name, parent)):
+        # A promotion would become the newest version an update builds on, and an update never
+        # replaces another origin's version (`importer._prior`): the skill would stop taking its
+        # source's updates, and its adopt would be refused as stale.
+        raise SkillOriginMismatch(
+            f"the tenant's {name} is imported and takes its updates from its source; a reviewer "
+            "must adopt it before anything can be promoted into it"
+        )
+    expect_newest: str | _MustNotExist | None = parent
+    if parent is None:
+        # A name the tenant never held must still be free when the draft lands. One whose every
+        # version was rejected -- a promotion a reviewer turned down, say -- is free to promote
+        # into again, building on nothing; `MUST_NOT_EXIST` counts rejected versions, so no check
+        # there: a save racing this one is just another draft beside it for the reviewer.
+        expect_newest = None if await org.version_ids(tenant_id, name) else MUST_NOT_EXIST
+    store = _object_store(settings, object_store)
+    saved = await save_draft(
+        settings,
+        tenant_id,
+        files=await read_version_files(settings, tenant_id, name, version, object_store=store, owner=owner),
+        provenance=DraftProvenance(
+            source="promoted",
+            author=by,
+            reason=reason,
+            principal=by,
+            promoted_from=version,
+            promoted_lineage_import=carries_imported_text(row),
+        ),
+        name=name,
+        parent=parent,
+        expect_newest=expect_newest,
+        object_store=store,
+        owner=ORG_OWNER,
+    )
+    # `library` here is the personal library the version came from; the draft's own
+    # `skill_draft_saved` event names the tenant's.
+    _audit(
+        settings,
+        tenant_id,
+        "skill_promoted",
+        saved,
+        owner=owner,
+        by=by,
+        promoted_from=version,
+        reason=_redacted(settings, (reason or "")[:200]),
+        principal=by,
+    )
+    return saved
+
+
+async def _check_promotions(org: SkillLibraryStore, tenant_id: str, name: str, by: str) -> None:
+    """Bound what promotions can put in front of the tenant's reviewers: one undecided promotion
+    per skill, and `MAX_PENDING_PROMOTIONS` per person. Soft under races -- two promotions in
+    flight can both pass the count -- which is acceptable: each is a person's deliberate request
+    under `skills:personal`, not an agent's loop, so the overshoot is a handful, not a flood."""
+    if await org.count_drafts(tenant_id, source="promoted", name=name):
+        raise SkillPromotionPending(
+            f"the tenant's {name} already holds a promoted draft awaiting review; it must be published "
+            "or rejected first"
+        )
+    held = await org.count_drafts(tenant_id, source="promoted", author=by)
+    if held >= MAX_PENDING_PROMOTIONS:
+        raise SkillPendingCapReached(
+            f"you already have {held} promotions awaiting review (limit {MAX_PENDING_PROMOTIONS})"
+        )
 
 
 async def reject(
@@ -1190,11 +1391,14 @@ async def archive_skill(
 
 
 __all__ = [
+    "AGENT_EVALS",
+    "MAX_PENDING_PROMOTIONS",
     "MAX_PERSONAL_SKILLS",
     "MAX_PERSONAL_SKILL_NAMES",
     "MUST_NOT_EXIST",
     "ORIGIN_COLUMNS",
     "PERSONAL_EVAL_REQUIRED",
+    "PROMOTED_EVALS",
     "VERSION_RE",
     "DraftProvenance",
     "ImportOrigin",
@@ -1213,17 +1417,21 @@ __all__ = [
     "SkillParentRejected",
     "SkillPendingCapReached",
     "SkillPersonalLibraryFull",
+    "SkillPromotionPending",
     "SkillPublishBlocked",
     "SkillReasonRequired",
+    "SkillSourceKind",
     "SkillVersionCapReached",
     "SkillVersionConflict",
     "SkillVersionCorrupt",
     "adopt",
     "archive_skill",
+    "builds_on_unreviewed_text",
     "evaluate_version",
     "host_owns",
     "newest_buildable_versions",
     "newest_version",
+    "promote",
     "publish",
     "read_version_file",
     "read_version_files",

@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.skills.library_keys import ORG_OWNER
-from felix.skills.publish_gate import gate_source
 from felix.skills.types import Skill, SkillCatalog
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
@@ -118,8 +117,9 @@ class _Composed(BaseModel):
     # Saved into the caller's own library rather than the tenant's.
     personal: bool = False
     parent: str | None = None
-    # Whether an operator wrote or imported the parent, live or not. An agent's edit of such a
-    # skill is review material in any mode (`make_skill_authoring_tools`).
+    # Whether a person wrote, imported or promoted the parent, live or not -- or the parent is an
+    # undecided draft built on such a version (`library.builds_on_unreviewed_text`). An agent's
+    # edit of such a skill is review material in any mode (`make_skill_authoring_tools`).
     edits_operator_skill: bool = False
     # The parent's files the save keeps unchanged, as `{path, sha256}`: what an approver is
     # shown beside the SKILL.md, since the agent's arguments never name them.
@@ -326,7 +326,6 @@ class _SkillAuthor:
             named = await lib.get_version(self.tenant_id, name, parent) if parent else None
             error = "parent_rejected" if named is not None and is_rejected(named) else "parent_changed"
             raise _ComposeError({"error": error, "name": name, "expected": parent, "current": newest})
-        parent_row = await lib.get_version(self.tenant_id, name, parent) or {}
         file_rows = await lib.list_files(self.tenant_id, name, parent)
         files = await library.read_version_files(
             self.settings, self.tenant_id, name, parent, object_store=self.object_store, owner=lib.owner
@@ -344,7 +343,7 @@ class _SkillAuthor:
             files=files,
             parent=parent,
             personal=lib is self.mine,
-            edits_operator_skill=gate_source(parent_row) in {"operator", "import"},
+            edits_operator_skill=await library.builds_on_unreviewed_text(lib, self.tenant_id, name, parent),
             inherited=inherited,
         )
 
@@ -362,7 +361,7 @@ class _SkillAuthor:
             by = "its owner" if composed.personal else "an operator"
             return {
                 **_draft_result(row, "draft"),
-                "review_required": f"the version this edits was written or imported by {by}; "
+                "review_required": f"the version this edits was written, imported or promoted by {by}; "
                 "a person must publish this",
             }
         try:

@@ -132,8 +132,41 @@ async def test_pending_counts_one_manifests_agent_drafts(store_settings: Any) ->
     await _save(store, "0.1.3", at=4, origin="other")
     await store.reject("acme", "invoice-triage", "0.1.1", by="ops", note="", at=5)
 
-    assert await store.count_pending("acme", "contributor") == 1
-    assert await store.count_pending("globex", "contributor") == 0
+    assert await store.count_drafts("acme", source="agent", origin_manifest_id="contributor") == 1
+    assert await store.count_drafts("globex", source="agent", origin_manifest_id="contributor") == 0
+
+
+@parametrized
+async def test_pending_promotions_count_undecided_promoted_drafts_by_skill_and_author(
+    store_settings: Any,
+) -> None:
+    """What `library.promote` bounds the review queue on: one undecided promotion per skill, and a
+    cap per promoter. Decided drafts, other sources, other owners and other tenants do not count."""
+    org = get_skill_library_store(store_settings, owner=ORG_OWNER)
+
+    async def promoted(name: str, version: str, author: str, *, at: int, store: Any = org, **kw: Any) -> None:
+        row = {**_row(version, at=at, source="promoted", origin=None), "name": name, "author": author}
+        await store.insert_version(kw.get("tenant", "acme"), row, FILES, created_by=author, at=at)
+
+    await promoted("invoice-triage", "0.1.0", "alice", at=1)
+    await promoted("invoice-triage", "0.1.1", "alice", at=2)
+    await promoted("receipts", "0.1.0", "bob", at=3)
+    await promoted("ledger", "0.1.0", "alice", at=4)
+    await promoted("ledger", "0.1.0", "alice", at=5, tenant="globex")
+    await promoted(
+        "ledger", "0.1.0", "alice", at=6, store=get_skill_library_store(store_settings, owner=ALICE)
+    )
+    await _save(org, "0.1.2", at=7)  # an agent's draft of the same skill
+    await org.reject("acme", "invoice-triage", "0.1.0", by="ops", note="", at=8)
+    await org.publish("acme", "ledger", "0.1.0", from_statuses={"draft"}, by="ops", at=9)
+
+    assert await org.count_drafts("acme", source="promoted") == 2
+    assert await org.count_drafts("acme", source="promoted", name="invoice-triage") == 1
+    assert await org.count_drafts("acme", source="promoted", name="ledger") == 0, "published is decided"
+    assert await org.count_drafts("acme", source="promoted", author="alice") == 1
+    assert await org.count_drafts("acme", source="promoted", author="bob") == 1
+    assert await org.count_drafts("acme", source="promoted", name="receipts", author="alice") == 0
+    assert await org.count_drafts("globex", source="promoted") == 1
 
 
 @parametrized
@@ -306,7 +339,12 @@ async def test_concurrent_agent_saves_stay_within_the_pending_cap(store_settings
     )
     assert sum(isinstance(r, library.SkillPendingCapReached) for r in results) == 2, results
     assert all(isinstance(r, dict | library.SkillLibraryError) for r in results), results
-    assert await get_skill_library_store(store_settings, owner=ORG_OWNER).count_pending("acme", "m") == 1
+    assert (
+        await get_skill_library_store(store_settings, owner=ORG_OWNER).count_drafts(
+            "acme", source="agent", origin_manifest_id="m"
+        )
+        == 1
+    )
 
 
 async def _named(store: Any, name: str, version: str, *, at: int, tenant: str = "acme") -> None:
@@ -504,7 +542,9 @@ async def test_an_imported_version_keeps_its_origin_and_others_read_back_null(st
     assert agent is not None and {k: agent[k] for k in ORIGIN} == dict.fromkeys(ORIGIN)
     newest, oldest = await store.list_versions("acme", "invoice-triage")
     assert oldest["origin_commit"] == "c" * 40 and newest["origin_commit"] is None
-    assert await store.count_pending("acme", "contributor") == 1, "an import is not an agent draft"
+    assert await store.count_drafts("acme", source="agent", origin_manifest_id="contributor") == 1, (
+        "an import is not an agent draft"
+    )
 
 
 @parametrized
@@ -1038,11 +1078,11 @@ async def test_the_pending_cap_counts_one_namespaces_drafts(store_settings: Any)
     alice = get_skill_library_store(store_settings, owner=ALICE)
     await _save(org, "0.1.0", at=1)
     await _save(org, "0.1.1", at=2)
-    assert await alice.count_pending("acme", "contributor") == 0
+    assert await alice.count_drafts("acme", source="agent", origin_manifest_id="contributor") == 0
     await alice.insert_version("acme", _row("0.1.0", at=3), FILES, created_by=ALICE, at=3, max_pending=1)
     with pytest.raises(SkillPendingFull):
         await alice.insert_version("acme", _row("0.1.1", at=4), FILES, created_by=ALICE, at=4, max_pending=1)
-    assert await org.count_pending("acme", "contributor") == 2
+    assert await org.count_drafts("acme", source="agent", origin_manifest_id="contributor") == 2
 
 
 @parametrized
@@ -1124,7 +1164,8 @@ _STRANGER_EMPTY = {
     "list_versions": (("acme", "invoice-triage"), []),
     "version_ids": (("acme", "invoice-triage"), []),
     "list_files": (("acme", "invoice-triage", "0.1.0"), []),
-    "count_pending": (("acme", "contributor"), 0),
+    # Alice's `0.2.0` is an agent's draft: the stranger counts none of it.
+    "count_drafts": (("acme", {"source": "agent"}), 0),
     "usage": (("acme",), {"skills": 0, "bytes": 0}),
     "buildable_versions": (("acme", ["invoice-triage"]), {}),
 }
@@ -1166,7 +1207,9 @@ async def test_a_stranger_reaches_nothing_through_any_method(store_settings: Any
 
     bob = get_skill_library_store(store_settings, owner=BOB)
     for method, (args, empty) in _STRANGER_EMPTY.items():
-        assert await getattr(bob, method)(*args) == empty, method
+        kwargs = args[-1] if args and isinstance(args[-1], dict) else {}
+        positional = args[:-1] if kwargs else args
+        assert await getattr(bob, method)(*positional, **kwargs) == empty, method
     for method, args in _STRANGER_REFUSED.items():
         kw: dict[str, Any] = {"by": BOB, "at": 9}
         if method == "publish":

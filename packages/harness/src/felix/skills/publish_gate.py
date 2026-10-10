@@ -24,6 +24,7 @@ from felix.config import Settings
 from felix.skills.format import validate_skill_bundle
 from felix.skills.review import review_skill_bundle
 from felix.skills.security import ScanStatus, scan_skill_security
+from felix.skills.sources import source_traits
 
 # What a security scan concludes; the `skill_version.security_status` column holds one.
 SecurityStatus = ScanStatus
@@ -121,25 +122,34 @@ def publish_policy(settings: Settings, row: Mapping[str, Any] | None) -> Publish
     return replace(effective, source="tenant" if effective == tenant else "tenant+settings")
 
 
-# Who wrote a version, when its own text could steer the test it is graded on: an agent, or a
-# third party whose skill was imported. Neither's generated or default scenarios count.
-_UNTRUSTED_AUTHORS = {"agent": "an agent wrote this version", "import": "this version was imported"}
+def _untrusted_eval(version_source: str | None) -> str | None:
+    """Why only the bundle's own scenarios count for a version by ``version_source``
+    (`sources.SourceTraits.untrusted_eval`: an agent, an import, a promotion), or None when any
+    do. A source the table does not know is held to the bundle's own, never let through."""
+    if version_source is None:
+        return None
+    traits = source_traits(version_source)
+    return (
+        traits.untrusted_eval
+        if traits is not None
+        else f"this version's source {version_source!r} is unknown"
+    )
 
 
 def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, Any]) -> tuple[bool, str]:
     """Whether ``evaluation`` can satisfy `require_eval` and `min_eval_uplift` for a version
     written by ``version_source``, and why not when it cannot.
 
-    For an agent's or an imported version only an evaluation on the bundle's own scenarios
-    counts. Generated and default scenarios are written from the skill's text -- the text the
-    agent, or the third party, wrote -- so its author could steer the test it is graded on. A
-    bundle's `evals/` files come only from an operator's save: an agent's save may only carry
-    them unchanged from its parent (`library.save_draft`), and an import drops them
-    (`importer.sanitize_bundle`).
+    For an agent's, an imported or a promoted version only an evaluation on the bundle's own
+    scenarios counts. Generated and default scenarios are written from the skill's text -- the
+    text the agent, the third party or the promoter wrote -- so its author could steer the test it
+    is graded on. A bundle's `evals/` files come only from an operator's save: an agent's save and
+    a promotion may only carry them unchanged from the tenant's parent (`library.save_draft`), and
+    an import drops them (`importer.sanitize_bundle`).
     """
     if evaluation.get("status") != "succeeded":
         return False, f"the evaluation has not succeeded (it is {evaluation.get('status')})"
-    who = _UNTRUSTED_AUTHORS.get(version_source or "")
+    who = _untrusted_eval(version_source)
     if who is not None and evaluation.get("scenario_source") != "bundle":
         return False, (
             f"{who}, and these scenarios were {evaluation.get('scenario_source')}: "
@@ -150,7 +160,7 @@ def eval_counts_for_gate(version_source: str | None, evaluation: Mapping[str, An
 
 def gate_scenario_source(version_source: str | None) -> str | None:
     """The scenario source an evaluation must have to count for this version, or None for any."""
-    return "bundle" if version_source in _UNTRUSTED_AUTHORS else None
+    return "bundle" if _untrusted_eval(version_source) is not None else None
 
 
 def carries_imported_text(row: Mapping[str, Any] | None) -> bool:

@@ -84,6 +84,7 @@ from felix.skills.github import (
 from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.sighting_store import get_sighting_store
+from felix.skills.sources import source_label
 
 logger = logging.getLogger("felix.skills.importer")
 
@@ -458,7 +459,11 @@ async def _prior(
         return None, None
     row = await lib.get_version(tenant_id, name, newest) or {}
     if row.get("source") != "import" or row.get("origin_source") != origin:
-        held = row.get("origin_source") if row.get("source") == "import" else f"an {row.get('source')}"
+        held = (
+            row.get("origin_source")
+            if row.get("source") == "import"
+            else f"{source_label(row.get('source'))} version"
+        )
         raise library.SkillOriginMismatch(
             f"{name}@{newest} came from {held}, not {origin}; an import never replaces another origin's skill"
         )
