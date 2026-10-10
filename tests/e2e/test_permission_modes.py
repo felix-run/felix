@@ -156,7 +156,7 @@ async def test_plan_mode_binds_even_an_agent_that_does_not_offer_it(boot: Any, r
     async with boot(script, env={"FELIX_WORKSPACE_ROOT": str(root)}, manifests={"e2e-modes": agent}) as app:
         assert (await _mode(app, "plan")).status_code == 200
         assert (await _chat(app)).status_code == 200
-        assert "[plan mode] write_file" in _text(app.spy.prompts[1])
+        assert "which this agent cannot leave: ask the person driving it" in _text(app.spy.prompts[1])
         assert _written(root) == []
         assert "exit_plan_mode" not in app.spy.tools[0]
 

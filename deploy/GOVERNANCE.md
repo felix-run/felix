@@ -1703,7 +1703,9 @@ falls back to its `default_mode`.
 **The plan approval.** `exit_plan_mode(plan)` is gated by the built-in `plan-approval` rule —
 `one_shot`, `bind_principal`, a 30-minute TTL — and its grant is bound to the thread as well as the
 plan text, so an approved plan is never a standing key out of plan mode for another thread, person
-or later turn. No mode waives it. Approval returns the thread to `default_mode`.
+or later turn. No mode waives it. Approval returns the thread to `default_mode`. The approval
+constrains the **model**, not the person driving the thread: a lease-holding driver can leave plan
+mode with `POST /chat/mode` at any time, without approving anything.
 
 **Enforcement.** The `permission mode` wrapper sits just outside approvals, so plan mode refuses
 before anyone is asked; approvals asks `waives_approval` itself. A run caches only the stored mode

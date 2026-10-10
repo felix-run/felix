@@ -159,6 +159,14 @@ def apply_permission_mode(tools: list[Tool], spec: PermissionsSpec, manifest_id:
     """Refuse every tool that is not read-only while this agent is in plan mode."""
     from felix.tools.executor import wrap_executor
 
+    way_out = (
+        f"this conversation is in plan mode: investigate with read-only tools, then propose the plan "
+        f"with {EXIT_PLAN_TOOL_NAME}"
+        if "plan" in spec.allowed_modes
+        else "the conversation was put in plan mode, which this agent cannot leave: ask the person "
+        "driving it to change the mode"
+    )
+
     def wrap_one(tool: Tool) -> Tool:
         if _is_read_only(tool, spec):
             return tool
@@ -167,10 +175,7 @@ def apply_permission_mode(tools: list[Tool], spec: PermissionsSpec, manifest_id:
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             if await current_mode(spec, try_get_context()) == "plan":
                 return deny_output(
-                    f"[plan mode] {tool.name} can change things, and this conversation is in plan "
-                    f"mode: investigate with read-only tools, then propose the plan with "
-                    f"{EXIT_PLAN_TOOL_NAME}",
-                    "permission_mode",
+                    f"[plan mode] {tool.name} can change things, and {way_out}", "permission_mode"
                 )
             return await inner.execute(args, ctx)
 
