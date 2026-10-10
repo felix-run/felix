@@ -81,6 +81,7 @@ Each consumer opts in on its own and keeps its previous behaviour as the fallbac
 errors or is below `spec.decider.min_confidence`. Turning a decider on never removes a path. Content
 screening is the exception, because it is a control: a decider outage there fails closed (see its row).
 
+<!-- toolkit:enum decider-consumers -->
 | Consumer | Code | Manifest opt-in |
 |---|---|---|
 | tool selection | `tools/decider_retrieval.py` | `tools_retrieval.decider` |

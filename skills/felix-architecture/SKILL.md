@@ -42,6 +42,8 @@ enforces inbound auth and the compile pin, then compiles:
 
 ## The wrapper order is load-bearing
 
+<!-- toolkit:enum wrapper-order -->
+
     secret masking -> policies -> command screening -> content screening -> limits ->
     guardrails -> judges -> approvals -> artifact spill -> workspace scope
 

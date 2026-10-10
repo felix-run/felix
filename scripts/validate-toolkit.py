@@ -20,13 +20,20 @@ Checks:
     and a `.claude/scripts/` directory described in detail that did not exist
   * every route module is mapped to a docs page, in both hooks/lib/surfaces.sh and the
     docs-sync skill's page-map.md, so a new route cannot land with no docs owner
+  * every list the prose keeps of something the code defines -- the governance wrapper order,
+    the middleware order, the route modules, the spec fields, the session strategies, the
+    decider consumers, the CLI commands -- still says what the code says. Each such list sits
+    under a `toolkit:enum <key>` marker, and every marker the toolkit is known to carry must
+    still be there: removing a marker removes the check
 
 Usage: validate-toolkit.py [repo-root]   (the root defaults to this script's repository)
 """
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -329,6 +336,327 @@ def check_route_docs_map() -> None:
             fail(f"{page_map.relative_to(ROOT)}: route module {module.name} is missing from the table")
 
 
+# --- enumerations: prose lists of things the code defines ------------------------------------
+#
+# A path citation survives a wrapper added to the governance stack: the file it names is still
+# there. That is how six copies of the wrapper order fell one wrapper behind, and how CLAUDE.md
+# went on listing four session strategies after a fifth existed. Each list that restates code
+# sits under a marker -- `<!-- toolkit:enum KEY -->` in Markdown, `# toolkit:enum KEY` in a
+# hook -- and is compared here with the definition it restates. A marker stands alone on its
+# line, so prose that quotes one in backticks is not one. An inline list that runs on into
+# other prose ends at `<!-- /toolkit:enum -->`, so names mentioned after it are not read as
+# members of it.
+
+ENUM_MARKER = re.compile(
+    r"^\s*<!--\s*toolkit:enum\s+([\w-]+)\s*-->\s*$|^\s*#\s*toolkit:enum\s+([\w-]+)\b.*$", re.M
+)
+ENUM_END = "<!-- /toolkit:enum -->"
+ARROW = re.compile(r"→|->")
+
+# Where each list lives. A marker that disappears is a check that disappears, so its absence
+# fails as loudly as a wrong list.
+EXPECTED_MARKERS: dict[str, set[str]] = {
+    "CLAUDE.md": {"wrapper-order", "middleware-order", "session-strategies", "cli-commands"},
+    "README.md": {"session-strategies"},
+    ".claude/rules/felix-invariants.md": {"wrapper-order"},
+    ".claude/hooks/compact-reminder.sh": {"wrapper-order"},
+    ".claude/skills/code-quality/references/felix-hotspots.md": {"wrapper-order"},
+    ".claude/skills/governance-pipeline/SKILL.md": {"wrapper-order"},
+    ".claude/skills/api-surface/SKILL.md": {"middleware-order", "route-modules"},
+    ".claude/skills/manifest-authoring/SKILL.md": {"spec-fields"},
+    ".claude/skills/manifest-authoring/references/spec-fields.md": {
+        "session-strategies",
+        "decider-consumers",
+    },
+    ".claude/skills/model-layer/SKILL.md": {"decider-consumers"},
+    ".claude/agents/felix-manifest-architect.md": {"session-strategies"},
+    "skills/felix-architecture/SKILL.md": {"wrapper-order"},
+}
+
+
+class SourceUnreadable(Exception):
+    """A definition the check compares against could not be read; reported, never a traceback."""
+
+
+def _module(rel: str) -> ast.Module | None:
+    path = ROOT / rel
+    if not path.is_file():
+        return None
+    try:
+        return ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        # CI runs this with the runner's python3, which can be older than the syntax the repo
+        # uses (`except A, B:` is 3.14). One unparseable file must not take every check with it.
+        raise SourceUnreadable(
+            f"{rel} does not parse under Python {sys.version.split()[0]}: {exc.msg}"
+        ) from exc
+
+
+def _assigned(tree: ast.Module | None, name: str) -> ast.expr | None:
+    for node in ast.walk(tree) if tree else ():
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return node.value
+    return None
+
+
+def _literal(value: ast.expr, where: str) -> object:
+    try:
+        return ast.literal_eval(value)
+    except ValueError as exc:
+        raise SourceUnreadable(f"{where} is no longer a literal this check can read") from exc
+
+
+def _words(name: str) -> str:
+    """`apply_secret_masking` -> `secret masking`; `RateLimitMiddleware` -> `rate limit`."""
+    name = name.removeprefix("apply_").removesuffix("Middleware")
+    name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name).replace("_", " ")
+    return name.lower().strip()
+
+
+def code_wrapper_order() -> list[str]:
+    value = _assigned(_module("tests/unit/test_invariants.py"), "EXPECTED_WRAPPER_ORDER")
+    if value is None:
+        return []
+    return [_words(name) for name in _literal(value, "EXPECTED_WRAPPER_ORDER")]  # type: ignore[union-attr]
+
+
+def code_middleware_order() -> list[str]:
+    tree = _module("apps/api/src/felix_api/app.py")
+    registered = [
+        node.args[0].id
+        for node in (ast.walk(tree) if tree else ())
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_middleware"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    ]
+    # `add_middleware` inserts at the front, so the runtime order is the registration reversed.
+    return [_words(name) for name in reversed(registered)]
+
+
+def code_route_modules() -> set[str]:
+    routes = ROOT / "apps/api/src/felix_api/routes"
+    return {module.stem for module in routes.glob("*.py") if module.name != "__init__.py"}
+
+
+def _schema() -> dict:
+    path = ROOT / "schemas/manifest.schema.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def code_spec_fields() -> set[str]:
+    return set(_schema().get("$defs", {}).get("Spec", {}).get("properties", {}))
+
+
+def code_decider_consumers() -> set[str]:
+    """Every manifest path of a boolean `decider` flag -- each one a consumer that opts in."""
+    defs = _schema().get("$defs", {})
+
+    def resolve(node: dict) -> dict:
+        if "$ref" in node:
+            return defs.get(node["$ref"].rsplit("/", 1)[-1], {})
+        for key in ("anyOf", "allOf", "oneOf"):
+            for option in node.get(key, []):
+                found = resolve(option)
+                if found.get("properties") or found.get("items"):
+                    return found
+        return node
+
+    def is_boolean(node: dict) -> bool:
+        # `decider: bool | None` is `anyOf: [boolean, null]` -- a consumer all the same.
+        options = [node, *node.get("anyOf", []), *node.get("oneOf", [])]
+        return any(option.get("type") == "boolean" for option in options)
+
+    found: set[str] = set()
+
+    def walk(node: dict, path: str, depth: int) -> None:
+        node = resolve(node)
+        if depth > 8:
+            return
+        if "items" in node:
+            walk(node["items"], f"{path}[]", depth + 1)
+            return
+        for key, value in node.get("properties", {}).items():
+            if key == "decider" and is_boolean(value):
+                found.add(f"{path}.{key}".lstrip("."))
+            else:
+                walk(value, f"{path}.{key}", depth + 1)
+
+    if "Spec" in defs:
+        walk(defs["Spec"], "", 0)
+    return found
+
+
+def code_session_strategies() -> set[str]:
+    value = _assigned(
+        _module("packages/harness/src/felix/session/strategies.py"), "_BUILTIN_STRATEGY_PREFIXES"
+    )
+    if value is None:
+        return set()
+    if isinstance(value, ast.Call):  # frozenset({...})
+        if not value.args:
+            return set()
+        value = value.args[0]
+    return set(_literal(value, "_BUILTIN_STRATEGY_PREFIXES"))  # type: ignore[arg-type]
+
+
+def code_cli_commands() -> set[str]:
+    def on_app(call: ast.expr, attr: str) -> bool:
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == attr
+            # Top-level only: `sessions_app.command("backfill-previews")` is a subcommand.
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "app"
+        )
+
+    tree = _module("apps/cli/src/felix_cli/main.py")
+    names: set[str] = set()
+    for node in ast.walk(tree) if tree else ():
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            for decorator in node.decorator_list:
+                if on_app(decorator, "command"):
+                    first = decorator.args[0] if decorator.args else None  # type: ignore[attr-defined]
+                    # A bare `@app.command()` is named after the function, as Typer names it.
+                    named = first.value if isinstance(first, ast.Constant) else None
+                    names.add(named or node.name.replace("_", "-"))
+        elif on_app(node, "add_typer"):
+            for kw in node.keywords:  # type: ignore[attr-defined]
+                if kw.arg == "name" and isinstance(kw.value, ast.Constant):
+                    names.add(kw.value.value)
+    return names
+
+
+def enum_block(text: str, end_of_marker: int, shell: bool) -> str:
+    """The list a marker governs: the next line in a hook; in Markdown the next fenced block,
+    else the next paragraph or table, which a blank line or the start of another list item
+    ends -- and an explicit end marker ends sooner."""
+    lines = text[end_of_marker:].lstrip("\n").splitlines()
+    if shell:
+        return lines[0] if lines else ""
+    if lines and lines[0].strip().startswith("```"):
+        body = []
+        for line in lines[1:]:
+            if line.strip().startswith("```"):
+                break
+            body.append(line)
+        return "\n".join(body)
+    block: list[str] = []
+    for i, line in enumerate(lines):
+        if not line.strip() or (i and re.match(r"^\s*(?:[-*]|\d+\.)\s", line)):
+            break
+        block.append(line)
+    return "\n".join(block).split(ENUM_END, 1)[0]
+
+
+def _label(label: str) -> str:
+    """A label as a pattern: `request id` also matches `request-id`, `RequestId`, `request_id`."""
+    return r"[\s_-]*".join(map(re.escape, label.split()))
+
+
+def check_order(rel: str, key: str, block: str, expected: list[str]) -> None:
+    """Every element, in order, and no more -- each one at its own arrow.
+
+    Splitting on the arrows and reading each element where it stands, rather than searching the
+    paragraph for each label, is the point: a replaced last element went unreported while the
+    word survived later in the same paragraph (`auth/mgmt.py` stood in for `AuthMiddleware`)."""
+    order = " → ".join(expected)
+    segments = [re.sub(r"\s+", " ", s).strip().lower() for s in ARROW.split(block)]
+    if len(segments) != len(expected):
+        fail(f"{rel}: the {key} list has {len(segments)} elements; the code has {len(expected)} ({order})")
+        return
+    edge = r"[\s`*_]*"
+    for i, (segment, label) in enumerate(zip(segments, expected, strict=True)):
+        # The first element ends its segment (prose leads into it); every other one opens its
+        # segment (prose may trail the last, and a gloss like "guardrails (PII)" may follow).
+        pattern = rf"\b{_label(label)}{edge}$" if i == 0 else rf"^{edge}{_label(label)}"
+        if not re.search(pattern, segment):
+            fail(f"{rel}: the {key} list has {segment[-40:]!r} where the code has {label!r} ({order})")
+            return
+
+
+def check_members(rel: str, key: str, named: set[str], expected: set[str]) -> None:
+    for missing in sorted(expected - named):
+        fail(f"{rel}: the {key} list does not name {missing!r}")
+    for extra in sorted(named - expected):
+        fail(f"{rel}: the {key} list names {extra!r}, which the code does not define")
+
+
+def _ticked(block: str) -> list[str]:
+    return re.findall(r"`([^`\n]+)`", block)
+
+
+def _is_table(block: str) -> bool:
+    return block.lstrip().startswith("|")
+
+
+def _first_cells(block: str) -> str:
+    return "\n".join(row.split("|")[1] for row in block.splitlines() if row.count("|") >= 2)
+
+
+def check_enum(rel: str, key: str, block: str) -> None:
+    if key == "wrapper-order":
+        check_order(rel, key, block, code_wrapper_order())
+    elif key == "middleware-order":
+        check_order(rel, key, block, code_middleware_order())
+    elif key == "route-modules":
+        named = set(re.findall(r"(?<![\w/.])(\w+)\.py\b", block))
+        check_members(rel, key, named, code_route_modules())
+    elif key == "spec-fields":
+        named = {re.split(r"[.:\s\[]", token)[0] for token in _ticked(_first_cells(block))}
+        check_members(rel, key, named, code_spec_fields())
+    elif key == "session-strategies":
+        # A table lists them in its first column; an inline list is everything ticked up to the
+        # end marker, so a name the prose mentions again afterwards cannot stand in for one the
+        # list dropped.
+        cells = _first_cells(block) if _is_table(block) else block
+        named = {re.split(r"[:\[]", token)[0] for token in _ticked(cells)}
+        check_members(rel, key, named, code_session_strategies())
+    elif key == "decider-consumers":
+        # `spec.decider` is the decider itself, not a consumer of it.
+        named = {path for path in re.findall(r"[\w\[\].]+\.decider\b", block) if not path.startswith("spec.")}
+        check_members(rel, key, named, code_decider_consumers())
+    elif key == "cli-commands":
+        piped = next((token for token in _ticked(block) if "|" in token), "")
+        named = {name.strip() for name in piped.split("|") if name.strip()}
+        check_members(rel, key, named, code_cli_commands())
+    else:
+        fail(f"{rel}: unknown toolkit:enum key {key!r}")
+
+
+def enum_sources() -> list[Path]:
+    sources = [ROOT / "CLAUDE.md", ROOT / "README.md", *sorted((ROOT / "skills").glob("*/SKILL.md"))]
+    # Pruned during the walk: `.claude/worktrees/` holds whole checkouts, venvs included, and
+    # filtering them out afterwards made the main checkout's run three times slower.
+    for directory, subdirs, files in os.walk(CLAUDE):
+        subdirs[:] = sorted(d for d in subdirs if d not in {"worktrees", "logs"})
+        sources += [Path(directory) / f for f in sorted(files) if f.endswith((".md", ".sh"))]
+    return [p for p in sources if p.is_file()]
+
+
+def check_enumerations() -> None:
+    seen: dict[str, set[str]] = {}
+    for source in enum_sources():
+        rel = str(source.relative_to(ROOT))
+        text = source.read_text(encoding="utf-8")
+        for marker in ENUM_MARKER.finditer(text):
+            key = marker.group(1) or marker.group(2)
+            seen.setdefault(rel, set()).add(key)
+            try:
+                check_enum(rel, key, enum_block(text, marker.end(), source.suffix == ".sh"))
+            except SourceUnreadable as exc:
+                fail(f"{rel}: cannot check the {key} list -- {exc}")
+    for rel, keys in EXPECTED_MARKERS.items():
+        if not (ROOT / rel).is_file():
+            continue
+        for key in sorted(keys - seen.get(rel, set())):
+            fail(f"{rel}: lost its `toolkit:enum {key}` marker -- the list under it is no longer checked")
+
+
 def main() -> int:
     if not CLAUDE.is_dir():
         print("no .claude/ directory — nothing to validate")
@@ -339,6 +667,7 @@ def main() -> int:
     check_skills()
     check_citations()
     check_route_docs_map()
+    check_enumerations()
 
     if errors:
         print(f"Claude Code toolkit: {len(errors)} problem(s)\n", file=sys.stderr)
