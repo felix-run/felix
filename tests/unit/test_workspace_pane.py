@@ -203,7 +203,7 @@ async def test_both_backends_rename_without_replacing_anything(
     (here / "a.txt").write_bytes(b"alpha")
     (here / "b.txt").write_bytes(b"bravo")
     (here / "dir").mkdir()
-    os.chmod(here / "a.txt", 0o640)
+    os.chmod(here / "a.txt", 0o700)
     os.symlink(outside / "nothing", here / "dangling")
     os.symlink(outside, here / "escape")
 
@@ -237,7 +237,7 @@ async def test_both_backends_rename_without_replacing_anything(
     )
     assert not (here / "a.txt").exists()
     assert (here / "archive" / "2026" / "a.txt").read_bytes() == b"alpha"
-    assert os.stat(here / "archive" / "2026" / "a.txt").st_mode & 0o777 == 0o640
+    assert os.stat(here / "archive" / "2026" / "a.txt").st_mode & 0o777 == 0o700
 
     (here / "big.bin").write_bytes(b"b" * 512_001)
     big = await backend_.rename_file(SCOPE, "big.bin", "big2.bin")
