@@ -187,3 +187,42 @@ async def test_read_timeout_writes_final_response(monkeypatch: pytest.MonkeyPatc
     assert row["payload"]["reasons"] == ["exception"]
     assert row["payload"]["error_type"] == "ReadTimeout"
     assert "10.0.0.7" not in repr(row), "the exception's message stays out of the audit log"
+
+
+async def test_a_stream_closed_mid_run_reads_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    import felix.patterns.react as react_mod
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(react_mod, "emit_agent_audit", lambda kind, **kw: rows.append((kind, kw)))
+    agent = _agent([_reply(call="c1"), _reply("done")])
+    input = InvokeInput(messages=[ChatMessage(role="user", content="go")], thread_id="default:reasons")
+    async with async_run_with_context(_ctx()):
+        stream = agent.stream_events(input)
+        async for event in stream:
+            if event.event == "tool_start":
+                break
+        await stream.aclose()  # type: ignore[attr-defined]
+    row = _final(rows)
+
+    assert row["status"] == "error"
+    assert row["payload"]["reasons"] == ["cancelled"]
+    assert "error_type" not in row["payload"]
+
+
+async def test_a_parallel_batch_names_its_first_fatal_call() -> None:
+    from felix.patterns.tool_runner import ToolRunner
+
+    tool = Tool(
+        name="lookup",
+        description="d",
+        args_schema=None,
+        executor=_Lookup(PermissionError("forbidden")),
+        fatal=True,
+    )
+    runner = ToolRunner(tool_map={"lookup": tool}, manifest_id="m")
+    runner.batch_mode = lambda calls: "parallel"  # type: ignore[method-assign]
+    calls = [ToolCall(id=i, name="lookup", args={}) for i in ("c1", "c2")]
+
+    _, fatal, _, _ = await runner.run_batch(calls, thread_id="th", tenant_id="t")
+
+    assert fatal is not None and fatal.tool_call_id == "c1"

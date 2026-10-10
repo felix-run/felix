@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
@@ -1031,9 +1032,13 @@ class _ReactAgent:
 
     async def stream_events(self, input: InvokeInput) -> AsyncIterator[Event]:
         """Run a turn, emitting display events as they happen."""
-        async for item in self._run(input, emit_events=True):
-            if isinstance(item, Event):
-                yield item
+        # Closed with this generator, not left to the garbage collector: a consumer that stops
+        # early would otherwise finalise the run later, outside its request, where its
+        # `final_response` row cannot be written.
+        async with aclosing(self._run(input, emit_events=True)) as run:
+            async for item in run:
+                if isinstance(item, Event):
+                    yield item
 
     async def _run(self, input: InvokeInput, *, emit_events: bool) -> AsyncIterator[Event | InvokeOutput]:
         """The turn loop. Yields display events, then exactly one `InvokeOutput`.
@@ -1434,14 +1439,16 @@ class _ReactAgent:
                 died=exc,
             )
             raise
+        else:
+            # Here rather than after the `finally`, for the same reason: a cancel landing in its
+            # awaits would otherwise skip the row of a run that had finished.
+            self._audit_final_response(
+                input.thread_id, final, fatal=fatal, ended_denied=any_denied, denied_calls=denied_calls
+            )
         finally:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
                 await release_side_events(input.thread_id)
-
-        self._audit_final_response(
-            input.thread_id, final, fatal=fatal, ended_denied=any_denied, denied_calls=denied_calls
-        )
         await self._maybe_capture_memory(input, final, model)
 
         output = InvokeOutput(messages=produced, final=final, stop_reason=last_stop)

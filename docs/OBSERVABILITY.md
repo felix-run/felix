@@ -263,12 +263,15 @@ Real, documented rather than hidden:
   the run *ended* on a refusal; the count answers whether it met one at all, so a run that
   recovered after a refusal (`ok`, `denied_calls > 0`) is told apart from one that was never
   refused (`ok`, `0`). Each refusal also has its own `policy_deny` row.
-- **Every run writes exactly one `final_response` row, and an `error` one says why.** A run that
-  raised — a model call that hit `httpx.ReadTimeout`, a cancelled task, a client that went away —
-  still writes it, with `status=error`. On an `error` row, `payload.reasons` lists each cause:
+- **Every run that wrote `user_input` writes exactly one `final_response` row, and an `error` one
+  says why.** A run that raised after that — a model call that hit `httpx.ReadTimeout`, a cancelled
+  task, a client that went away — still writes it, with `status=error`. One exception: a streamed
+  run abandoned at a yield and never closed is finalised by the garbage collector outside its
+  request, where no audit row can be written. On an `error` row, `payload.reasons` lists each cause:
   `fatal` (a `fatal` tool's failure ended the run; `payload.fatal_call` carries its `tool_call_id`
   and `error_code`), `denied` (the last round had a refusal), `cancelled`, and `exception`
-  (`payload.error_type` is the exception's class name; its message is never recorded). Rows written
+  (`payload.error_type` is the exception's class name; its message is never recorded). `denied` on
+  a row that also says `exception` means the last *completed* round had a refusal. Rows written
   before this have no `reasons`; treat the key as optional.
 - **A tool that raises writes a `tool_call` row with `status=error` and `payload.error_code`**, as
   one that returned a failure does. Before, a raise wrote only the metric, so the call that ended a
