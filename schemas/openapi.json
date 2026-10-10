@@ -6135,6 +6135,45 @@
         "title": "VersionHeadOut",
         "type": "object"
       },
+      "WorkspaceChangedOut": {
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file's size now; null when it is missing.",
+            "title": "Bytes"
+          },
+          "detail": {
+            "const": "workspace_changed",
+            "title": "Detail",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file's digest now; null when it is missing, or (with `bytes`) over the read cap.",
+            "title": "Sha256"
+          }
+        },
+        "required": [
+          "detail",
+          "sha256"
+        ],
+        "title": "WorkspaceChangedOut",
+        "type": "object"
+      },
       "WorkspaceEditedOut": {
         "properties": {
           "event_id": {
@@ -6229,6 +6268,256 @@
           "path"
         ],
         "title": "WorkspaceEditedRequest",
+        "type": "object"
+      },
+      "WorkspaceErrorOut": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "WorkspaceErrorOut",
+        "type": "object"
+      },
+      "WorkspaceFileOut": {
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "encoding": {
+            "enum": [
+              "utf-8",
+              "base64"
+            ],
+            "title": "Encoding",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "description": "Of the bytes, whatever the encoding. Send it back as `expected_sha256`.",
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "bytes",
+          "sha256",
+          "encoding",
+          "content"
+        ],
+        "title": "WorkspaceFileOut",
+        "type": "object"
+      },
+      "WorkspaceTreeEntryOut": {
+        "properties": {
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A file's size. Absent for a directory.",
+            "title": "Bytes"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "file",
+              "dir"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "type"
+        ],
+        "title": "WorkspaceTreeEntryOut",
+        "type": "object"
+      },
+      "WorkspaceTreeOut": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceTreeEntryOut"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest whose scope decided the workspace; null when none resolved (the thread is then on `thread` scope, the narrowest).",
+            "title": "Manifest"
+          },
+          "root_kind": {
+            "description": "`checkout`: the thread's repository checkout, whatever the manifest's scope. `scoped`: the manifest's `spec.workspace.scope` directory.",
+            "enum": [
+              "scoped",
+              "checkout"
+            ],
+            "title": "Root Kind",
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "thread",
+                  "tenant",
+                  "deployment"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest's workspace scope; null when a checkout overrides it.",
+            "title": "Scope"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "root_kind",
+          "scope",
+          "manifest",
+          "entries",
+          "truncated"
+        ],
+        "title": "WorkspaceTreeOut",
+        "type": "object"
+      },
+      "WorkspaceWriteOut": {
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The note's session entry, when `recorded`.",
+            "title": "Event Id"
+          },
+          "path": {
+            "description": "The path written, normalised as the workspace tools report it.",
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "status": {
+            "description": "Where the edit note went: as `/workspace/edited`.",
+            "enum": [
+              "queued",
+              "recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "path",
+          "bytes",
+          "sha256"
+        ],
+        "title": "WorkspaceWriteOut",
+        "type": "object"
+      },
+      "WorkspaceWriteRequest": {
+        "additionalProperties": false,
+        "description": "Replace one workspace file with the operator's text, from the file pane.",
+        "properties": {
+          "content": {
+            "description": "UTF-8 text, at most 512,000 bytes encoded.",
+            "title": "Content",
+            "type": "string"
+          },
+          "expected_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-fA-F]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The digest `GET /chat/workspace/file` returned. When set, the write is refused (409 `workspace_changed`) unless the file still has it; a missing file never does.",
+            "title": "Expected Sha256"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest a thread that has never run will run under. Ignored once it has.",
+            "title": "Manifest"
+          },
+          "path": {
+            "description": "Workspace path to write.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "path",
+          "content"
+        ],
+        "title": "WorkspaceWriteRequest",
         "type": "object"
       }
     }
@@ -9782,6 +10071,366 @@
           }
         },
         "summary": "Chat Workspace Edited",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/workspace/file": {
+      "get": {
+        "description": "One workspace file, whole, from the workspace `GET /chat/workspace/tree` lists.\n\n`encoding: utf-8` when the bytes decode cleanly, otherwise `base64`. `sha256` is of the bytes;\nsend it back as `expected_sha256` on `POST /chat/workspace/write` to refuse a save over a file\nthe agent has changed since. Files over the workspace tools' read cap (512,000 bytes) are\nrefused whole rather than cut.",
+        "operationId": "chat_workspace_file_chat_workspace_file_get",
+        "parameters": [
+          {
+            "description": "The thread's id suffix, as everywhere on /chat.",
+            "in": "query",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "The thread's id suffix, as everywhere on /chat.",
+              "minLength": 1,
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "Path",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The manifest a thread that has never run will run under. Ignored once it has: the manifest its newest turn ran under decides the workspace.",
+            "in": "query",
+            "name": "manifest",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The manifest a thread that has never run will run under. Ignored once it has: the manifest its newest turn ran under decides the workspace.",
+              "title": "Manifest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceFileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_unavailable`: the thread's checkout is cloning, failed or expired, or its scope is one this tenant may not use."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`too_large`: over the 512,000-byte read cap."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace File",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/workspace/tree": {
+      "get": {
+        "description": "Every file and directory in the thread's workspace, for the operator's file pane.\n\nThe workspace is the one the agent's next turn works in: the thread's repository checkout\nwhen it has one (`root_kind: checkout`), otherwise the directory its manifest's\n`spec.workspace.scope` names (`root_kind: scoped`). Recursive, in pre-order and case-folded\nname order, following no symlink (a link is not listed); `.git` and `.felix-scopes` are left\nout. `truncated` when the walk stopped short of the whole tree -- the limit, a directory too\nlarge to read whole, very deep nesting, or its time budget. A workspace nothing has written to\nyet lists no entries rather than failing.",
+        "operationId": "chat_workspace_tree_chat_workspace_tree_get",
+        "parameters": [
+          {
+            "description": "The thread's id suffix, as everywhere on /chat.",
+            "in": "query",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "The thread's id suffix, as everywhere on /chat.",
+              "minLength": 1,
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 2000,
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The manifest a thread that has never run will run under. Ignored once it has: the manifest its newest turn ran under decides the workspace.",
+            "in": "query",
+            "name": "manifest",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The manifest a thread that has never run will run under. Ignored once it has: the manifest its newest turn ran under decides the workspace.",
+              "title": "Manifest"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceTreeOut",
+                  "additionalProperties": true,
+                  "title": "Response Chat Workspace Tree Chat Workspace Tree Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_unavailable`: the thread's checkout is cloning, failed or expired, or its scope is one this tenant may not use."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace Tree",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/workspace/write": {
+      "post": {
+        "description": "Replace one workspace file with the operator's text, and tell the agent.\n\nWritten to the same workspace `GET /chat/workspace/tree` lists and `GET /chat/workspace/file`\nreads. With `expected_sha256` the write is conditional: compared under the same per-path lock\nthe agent's own writes take in this process, and refused with `409 workspace_changed` when the\nfile is not what the caller read. The file is replaced whole and atomically, keeping its mode.\n\nThen the agent is told as `POST /chat/workspace/edited` would tell it (`op: write`): a run in\nflight reads the note before its next model call (`status: queued`), otherwise it is appended\nfor the next run (`status: recorded`). Audited as `workspace_write`. Lease-guarded like\n`/chat/steer`.",
+        "operationId": "chat_workspace_write_chat_workspace_write_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceWriteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceChangedOut"
+                }
+              }
+            },
+            "description": "`workspace_changed` (body carries the file's `sha256` and `bytes` now): `expected_sha256` no longer matches, or the file is gone. Nothing was written. Also `workspace_unavailable` as on the reads, and the lease refusals (`lease_read_only`, `lease_held`) as on `/chat/steer`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`too_large`: `content` is over 512,000 bytes encoded."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace Write",
         "tags": [
           "Threads"
         ]

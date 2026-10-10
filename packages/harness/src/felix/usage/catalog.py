@@ -108,7 +108,9 @@ def catalog_from_manifest(
     """
     if manifest is None:
         entry = model_catalog_entry(model_id=name)
-        entry["felix"].update(providerModel=None, description=None, starters=[], greeting=None)
+        entry["felix"].update(
+            providerModel=None, description=None, starters=[], greeting=None, workspace=None
+        )
         return entry
     if settings is None:
         from felix.config import get_settings
@@ -146,7 +148,37 @@ def catalog_from_manifest(
     entry["felix"]["greeting"] = (
         {"headline": declared.headline, "subtitle": declared.subtitle} if declared is not None else None
     )
+    entry["felix"]["workspace"] = workspace_summary(manifest)
     return entry
+
+
+# A client tool works in the user's own folder when its name says so: the `local_*` family the
+# browser and terminal clients answer (`manifests/cowork.yaml`).
+CLIENT_WORKSPACE_PREFIX = "local_"
+
+
+def workspace_summary(manifest: Any) -> dict[str, str]:
+    """Where this manifest's agent keeps files, for a client deciding which file pane to show.
+
+    `tools`: `server` when it binds the harness's workspace tools (`list_dir`, `read_file`,
+    `write_file`, `edit_file`, `search_files`) or a `shell_tools` command, which runs in the same
+    directory; `client` when it binds `local_*` client tools, which the connected client answers
+    from the user's own folder; `both`; or `none`. `scope` is `spec.workspace.scope`, the directory
+    the server-side half works in (`GET /chat/workspace/tree` lists it). Read from the manifest's own
+    declarations, not its sub-agents', which keep workspaces of their own.
+    """
+    from felix.tools.workspace import WORKSPACE_TOOL_NAMES
+
+    spec = getattr(manifest, "spec", None)
+    names = {str(t) for t in (getattr(spec, "tools", None) or [])}
+    server = bool(names & WORKSPACE_TOOL_NAMES) or bool(getattr(spec, "shell_tools", None))
+    client = any(
+        str(getattr(ref, "name", "")).startswith(CLIENT_WORKSPACE_PREFIX)
+        for ref in (getattr(spec, "client_tools", None) or [])
+    )
+    tools = "both" if server and client else "server" if server else "client" if client else "none"
+    workspace = getattr(spec, "workspace", None)
+    return {"tools": tools, "scope": str(getattr(workspace, "scope", None) or "thread")}
 
 
 __all__ = [
@@ -155,4 +187,5 @@ __all__ = [
     "modalities_for",
     "model_catalog_entry",
     "supported_thinking_levels",
+    "workspace_summary",
 ]
