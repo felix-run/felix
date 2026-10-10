@@ -69,6 +69,7 @@ Copy `manifests/governed.yaml` when the agent needs governance — it is the ful
 | `tools_retrieval` | `tools/retrieval.py` (and `tools/decider_retrieval.py`), applied in `patterns/react.py` |
 | `mcp_servers` | `mcp/client.py:tools_from_mcp_servers` → `server__tool` |
 | `peers` | `a2a/peers.py:tools_from_peers` → `peer__name` |
+| `delegation` | `tools/delegation.py:make_task_tool` → `task`; children compiled beside `sub_agents` in `builder.py` (`schema.child_agent_names`), pinned in `manifests/pin.py`; refused alongside `sub_agents` |
 | `a2a` | the published agent card: `a2a/card.py`, served by `routes/well_known.py` |
 | `browser_tools` / `sandboxes` / `containers` / `queues` / `client_tools` | `tools/{browser,sandboxes,queues,client_bridge}.py` |
 | `shell_tools` / `workspace` | `tools/shell.py`, `shell_runner.py`, `security/shell_policy.py`; `tools/workspace_*.py` (and the outermost `apply_workspace_scope`); both have refusals in `manifests/governance.py` |

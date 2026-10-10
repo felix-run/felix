@@ -28,6 +28,7 @@ from felix.manifests.schema import (
     Limits,
     Manifest,
     Policy,
+    child_agent_names,
     guardrails_enabled,
     judges_enabled,
 )
@@ -85,6 +86,9 @@ class BuildDeps:
     # naming D, compiled D twice — and a tenant's A → 100 x B → 100 x C is 10^4 compiles, each
     # with object-store reads and an MCP `list_tools` per server, for one chat.
     compiled: dict[str, Agent] = field(default_factory=dict)
+    # The manifest each of those was compiled from, by name. A `task` call checks the child's
+    # own `spec.auth.inbound` against the caller, and a compiled `Agent` does not carry it.
+    compiled_manifests: dict[str, Manifest] = field(default_factory=dict)
     # The reply screen of the compile whose sub-agents are being built, so a child's own
     # screen chains to it (`ReplyScreen.parent`). Set and restored around the child compile.
     reply_screen: Any | None = None
@@ -106,10 +110,14 @@ def _compiling_children(deps: BuildDeps, name: str, **inherited: Any) -> Iterato
     Not `dataclasses.replace`: `compiled` and `compiling` must stay shared across the tree.
     """
     if name in deps.compiling:
-        raise ValueError(f"sub_agents form a cycle: {' -> '.join([*deps.compiling, name])}")
+        raise ValueError(
+            f"child agents (sub_agents, delegation) form a cycle: {' -> '.join([*deps.compiling, name])}"
+        )
     if len(deps.compiling) >= MAX_SUB_AGENT_DEPTH:
         chain = " -> ".join([*deps.compiling, name])
-        raise ValueError(f"sub_agents nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}")
+        raise ValueError(
+            f"child agents (sub_agents, delegation) nest deeper than {MAX_SUB_AGENT_DEPTH}: {chain}"
+        )
     saved = {field_name: getattr(deps, field_name) for field_name in inherited}
     deps.compiling.append(name)
     for field_name, value in inherited.items():
@@ -789,7 +797,7 @@ def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_i
         inner = tool.executor
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-            from felix.limits import check_budgets, trip
+            from felix.limits import check_budgets, tightest, trip
 
             req = try_get_context()
             if req is None:
@@ -806,13 +814,13 @@ def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_i
                 trip(ls, verdict.reason)
                 return deny_output(f"[limits] {verdict.reason}", "limits")
 
-            max_calls = limits.max_tool_calls
+            max_calls = tightest(limits, ls, "max_tool_calls")
             if max_calls is not None and ls.tool_calls >= max_calls:
                 return deny_output(
                     f"[limits] max_tool_calls ({max_calls}) exceeded",
                     "limits",
                 )
-            max_hops = limits.max_peer_hops
+            max_hops = tightest(limits, ls, "max_peer_hops")
             if (
                 max_hops is not None
                 and (tool.is_peer or tool.name.startswith("peer_"))
@@ -1658,6 +1666,7 @@ async def build_agent(
         deps.tools = tools
     if settings is not None:
         deps.settings = settings
+    deps.compiled_manifests[m.metadata.name] = m
 
     span = manifest_span(m.metadata.name, m.metadata.version)
     try:
@@ -1683,8 +1692,16 @@ async def build_agent(
         # children it forwards the thread to: their own screen adds to it, never replaces it.
         session_strategy = screen_session_strategy(deps.session_strategy, replay_screener(m, deps.settings))
 
+        if m.spec.delegation is not None and m.spec.sub_agents:
+            # `sub_agents` makes the pattern a composite that binds no tools of its own, so a
+            # `task` tool would compile and never be offered to a model.
+            raise ValueError(
+                f"spec.delegation needs an agent with tools; spec.sub_agents makes "
+                f"'{m.metadata.name}' a composite with none. Use one or the other."
+            )
         sub_agents: dict[str, Agent] = {}
-        if m.spec.sub_agents:
+        delegates: dict[str, Agent] = {}
+        if child_agent_names(m.spec):
             # A sub-agent inherits this compile's session store, so its own
             # `spec.memory.checkpointer` is not consulted. Most composites invoke a child
             # with `thread_id=None`, and each session guard in the react loop needs a thread
@@ -1700,10 +1717,22 @@ async def build_agent(
                 reply_screen=screen_chain,
                 session_strategy=session_strategy,
             ):
-                for name in m.spec.sub_agents:
+                for name in child_agent_names(m.spec):
                     if name not in deps.compiled:
                         deps.compiled[name] = await builder(name)
-                    sub_agents[name] = deps.compiled[name]
+                if m.spec.sub_agents:
+                    sub_agents = {name: deps.compiled[name] for name in m.spec.sub_agents}
+                if m.spec.delegation is not None:
+                    delegates = {ref.name: deps.compiled[ref.name] for ref in m.spec.delegation.agents}
+                    for ref_name, child in delegates.items():
+                        # `task` checks the child's inbound auth from `compiled_manifests`, keyed
+                        # by `metadata.name`. A child found under one name that calls itself
+                        # another would have the gate read some other manifest's door.
+                        if getattr(child, "manifest_id", ref_name) != ref_name:
+                            raise ValueError(
+                                f"delegate '{ref_name}' resolved to a manifest named "
+                                f"'{child.manifest_id}'; the names must match"
+                            )
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:
@@ -2066,6 +2095,31 @@ async def build_agent(
                 )
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
+
+        # Delegation → the `task` tool. Bound last of the spec's tools, so the collision check
+        # below sees every other one, and before the governance pipeline, so policies,
+        # approvals, limits and content screening wrap it like any other tool. Not in a
+        # try/except: a child that fails to compile already raised above, and a manifest asking
+        # for delegation must not compile without it.
+        if m.spec.delegation is not None:
+            from felix.tools.delegation import TASK_TOOL_NAME, make_task_tool
+
+            if any(t.name == TASK_TOOL_NAME for t in resolved):
+                # `_append_unique_tools` keeps the first of a name, so a provider or plugin tool
+                # called `task` would silently stand in for delegation.
+                raise ValueError(
+                    f"spec.delegation binds a tool named '{TASK_TOOL_NAME}', and '{m.metadata.name}' "
+                    f"already has one. Remove the other tool or the delegation block."
+                )
+            resolved.append(
+                make_task_tool(
+                    {
+                        ref.name: (delegates[ref.name], ref.description, deps.compiled_manifests[ref.name])
+                        for ref in m.spec.delegation.agents
+                    },
+                    ceiling=effective_limits(m.spec.limits),
+                )
+            )
 
         # A pattern that matches no bound tool gates nothing — a typo, a renamed MCP server,
         # or a glob written before its target existed. Logged rather than refused: the bound

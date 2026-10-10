@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any
 
-from felix.manifests.schema import Manifest
+from felix.manifests.schema import Manifest, child_agent_names
 
 
 class ManifestDriftError(ValueError):
@@ -66,7 +66,9 @@ async def sub_agents_hash(
     _seen: dict[str, list[Any]] | None = None,
     resolved_out: dict[str, Manifest | None] | None = None,
 ) -> str | None:
-    """A digest of every sub-agent this manifest compiles, as the tenant resolves them now.
+    """A digest of every child this manifest compiles, as the tenant resolves them now.
+
+    Children are `sub_agents` and `delegation.agents` alike (`child_agent_names`).
 
     `manifest_content_hash` covers the parent alone, which was a complete pin while children
     came from bundled YAML and changed only with a deploy. Since children resolve through the
@@ -83,7 +85,7 @@ async def sub_agents_hash(
     naming the same twenty) cost fan-out to the power of depth per turn while the compile
     stayed linear, on a process other tenants share.
     """
-    names = list(dict.fromkeys(manifest.spec.sub_agents))
+    names = child_agent_names(manifest.spec)
     if not names:
         return None
     from felix.manifests.builder import MAX_SUB_AGENT_DEPTH

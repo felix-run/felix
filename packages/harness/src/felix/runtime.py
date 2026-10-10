@@ -224,7 +224,8 @@ async def build_tenant_agent(
 def _tenant_sub_agent_builder(
     settings: Settings, tenant_id: str, deps: BuildDeps, checked: Mapping[str, Manifest | None]
 ) -> Any:
-    """Compile each `spec.sub_agents` name as this tenant would reach it by name.
+    """Compile each child agent -- `spec.sub_agents` and `spec.delegation` alike -- as this
+    tenant would reach it by name.
 
     Store, then object store, then bundled — the order a request resolves a manifest in. It
     used to be bundled YAML only, so a router whose children were the tenant's own agents

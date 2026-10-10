@@ -1096,6 +1096,35 @@ class GovernanceSpec(_Strict):
     retention_days: int | None = Field(default=None, ge=1, le=3650)
 
 
+class DelegateRef(_Strict):
+    """One agent the `task` tool may hand work to, named as a request would name it."""
+
+    name: str = Field(min_length=1)
+    # What the parent's model reads to decide when to delegate. A child's own manifest
+    # description is not used: it is written for whoever lists agents, not for this choice.
+    description: str = ""
+
+
+class DelegationSpec(_Strict):
+    """Binds a `task` tool: the model hands a self-contained job to a child agent.
+
+    Unlike `sub_agents`, which make the *pattern* a composite and leave it no tools of its
+    own, a delegating agent keeps its tools and decides at run time whether to delegate. Each
+    child compiles through the same path as a sub-agent -- the tenant's store first, cycles
+    and nesting refused -- and runs its own governance stack. Every `task` call also counts
+    against the run's `limits.max_peer_hops`, and the child spends the parent's budgets.
+    """
+
+    agents: list[DelegateRef] = Field(min_length=1, max_length=MAX_REFS)
+
+    @model_validator(mode="after")
+    def _names_unique(self) -> DelegationSpec:
+        names = [a.name for a in self.agents]
+        if len(set(names)) != len(names):
+            raise ValueError("delegation.agents names must be unique")
+        return self
+
+
 class Spec(_Strict):
     pattern: str = "react"
     model: ModelSpec = Field(default_factory=ModelSpec)
@@ -1156,6 +1185,8 @@ class Spec(_Strict):
     github_publish: GithubPublishSpec | None = None
     client_tools: list[ClientToolRef] = Field(default_factory=list, max_length=MAX_REFS)
     sub_agents: list[str] = Field(default_factory=list)
+    # Binds the `task` tool. Unset binds nothing.
+    delegation: DelegationSpec | None = None
     aggregator_prompt: str = ""
     #: Rounds for the multi-agent patterns — `groupchat`, `plan_execute` and friends. A `react`
     #: agent's loop is bounded by `recursion_limit` below and never reads this; setting it on
@@ -1335,6 +1366,18 @@ def any_limit(limits: Limits) -> bool:
     )
 
 
+def child_agent_names(spec: Spec) -> list[str]:
+    """Every manifest this one compiles as a child: `sub_agents`, then `delegation.agents`.
+
+    One list for the compile and the thread pin. A child the pin did not cover would reach a
+    thread pinned under `pin_compile` the turn after someone edited it.
+    """
+    names = list(spec.sub_agents)
+    if spec.delegation is not None:
+        names.extend(a.name for a in spec.delegation.agents)
+    return list(dict.fromkeys(names))
+
+
 def guardrails_enabled(g: Guardrails) -> bool:
     return bool(g.providers) or bool(g.judges)
 
@@ -1353,6 +1396,8 @@ __all__ = [
     "CommandScreening",
     "ContentScreening",
     "DeciderSpec",
+    "DelegateRef",
+    "DelegationSpec",
     "ExecutionSpec",
     "GovernanceSpec",
     "Greeting",
@@ -1367,6 +1412,7 @@ __all__ = [
     "Starter",
     "any_limit",
     "assert_valid_manifest_name",
+    "child_agent_names",
     "guardrails_enabled",
     "judges_enabled",
 ]

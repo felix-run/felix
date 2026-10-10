@@ -39,6 +39,25 @@ _OK = BudgetVerdict(False)
 def check_budgets(
     limits: Limits | EffectiveLimits | None, state: LimitState, *, now: int | None = None
 ) -> BudgetVerdict:
+    """`limits`, then every ceiling a delegating parent pushed (`LimitState.ceilings`)."""
+    for each in (limits, *state.ceilings):
+        verdict = _check_one(each, state, now=now)
+        if verdict.exceeded:
+            return verdict
+    return _OK
+
+
+def tightest(limits: Limits | EffectiveLimits | None, state: LimitState, name: str) -> int | None:
+    """The smallest cap on `name` (`max_tool_calls`, `max_peer_hops`) across `limits` and the
+    ceilings above it, or None when nothing caps it."""
+    caps = [getattr(each, name) for each in (limits, *state.ceilings) if each is not None]
+    caps = [int(c) for c in caps if c is not None]
+    return min(caps) if caps else None
+
+
+def _check_one(
+    limits: Limits | EffectiveLimits | None, state: LimitState, *, now: int | None = None
+) -> BudgetVerdict:
     """Evaluate every declared run budget against accumulated state.
 
     Checked before each tool call and at the top of each agent turn, so a run cannot
@@ -128,4 +147,4 @@ def effective_limits(limits: Limits | None) -> EffectiveLimits:
     )
 
 
-__all__ = ["BudgetVerdict", "EffectiveLimits", "check_budgets", "effective_limits", "trip"]
+__all__ = ["BudgetVerdict", "EffectiveLimits", "check_budgets", "effective_limits", "tightest", "trip"]

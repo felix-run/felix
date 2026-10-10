@@ -53,6 +53,11 @@ class LimitState:
     aborted: bool = False
     # Why the run was aborted, surfaced to the model and the caller.
     abort_reason: str = ""
+    # The limits of every agent above the one running now, pushed by the `task` tool while
+    # a child runs (`tools/delegation.py`). A child checks the shared counters against its
+    # own limits *and* these, so a parent's caps bound the work it delegates. `EffectiveLimits`;
+    # typed loosely because `felix.limits` imports this module.
+    ceilings: list[Any] = field(default_factory=list)
 
     def elapsed_ms(self, now: int | None = None) -> int:
         return (now if now is not None else int(time.time() * 1000)) - self.started_at_ms
