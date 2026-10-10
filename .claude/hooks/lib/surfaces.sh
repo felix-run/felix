@@ -43,8 +43,18 @@ surface_page() {
       echo "guide/getting-started.mdx (Python client usage: prompt/stream/steer/follow_up/fork/rewind/set_model)." ;;
     packages/harness/src/felix/skills/*|skills/*/SKILL.md)
       echo "guide/concepts.mdx (Agent Skills: progressive disclosure, spec.skills wiring)." ;;
-    apps/cli/src/felix_cli/main.py)
+    apps/cli/src/felix_cli/skills.py)
+      echo "guide/skill-import.mdx (the 'felix skills' subcommands and their flags) and guide/getting-started.mdx (the CLI command list must match 'felix --help')." ;;
+    apps/cli/src/felix_cli/*.py)
       echo "guide/getting-started.mdx + guide/deploy.mdx (the CLI command list must match 'felix --help')." ;;
+    packages/client/*)
+      echo "guide/getting-started.mdx (Python client usage) and the page of the surface the changed method wraps: guide/rest-api.mdx, guide/management-api.mdx or guide/skill-import.mdx. felix.sdk re-exports it." ;;
+    packages/harness/src/felix/a2a/card.py)
+      echo "guide/rest-api.mdx (the /.well-known/agent-card.json shape) and guide/manifest-reference.mdx (spec.a2a)." ;;
+    packages/harness/src/felix/durability/webhooks.py)
+      echo "guide/rest-api.mdx (Completion webhooks: payload, headers, signature, retry) and guide/manifest-reference.mdx (spec.execution.webhooks)." ;;
+    apps/api/src/felix_api/app.py|apps/api/src/felix_api/middleware.py|apps/api/src/felix_api/errors.py)
+      echo "guide/rest-api.mdx (error envelope, request id, security headers, body and rate limits) and internals/architecture.mdx if the middleware order changed." ;;
     *) return 1 ;;
   esac
 }

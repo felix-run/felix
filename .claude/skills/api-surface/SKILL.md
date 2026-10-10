@@ -8,8 +8,11 @@ allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*) Bash(curl:*)
 
 ## How a request is assembled
 
-`create_app()` (`apps/api/src/felix_api/app.py`) stacks middleware **body limit → rate limit →
-`AuthMiddleware`**, puts `settings` / `tools` / `plugins` on `app.state` (eagerly, so ASGI tests
+`create_app()` (`apps/api/src/felix_api/app.py`) stacks middleware **request id → security headers →
+body limit → rate limit → `AuthMiddleware`** (runtime order, outermost first; `add_middleware` inserts
+at the front, so the code registers them in reverse — the comment above the calls says why each sits
+where it does). All five are pure ASGI; `tests/unit/test_middleware_stack.py` fails a
+`@app.middleware("http")`. It puts `settings` / `tools` / `plugins` on `app.state` (eagerly, so ASGI tests
 work before lifespan runs), then mounts the route modules and any plugin routers.
 
 The chat path every surface shares:
@@ -34,7 +37,12 @@ pinning — that is a security bug, not a shortcut.
 | `mcp.py` | `/mcp` server surface |
 | `audit.py`, `approvals.py`, `plans.py`, `jobs.py`, `manifests.py`, `eval.py`, `usage.py` | management APIs |
 | `artifacts.py`, `files.py`, `documents.py`, `memory.py`, `skills.py`, `skill_library.py` | tenant data APIs, mounted at `/artifacts`, `/files`, `/documents`, `/memory`, `/skills`, `/skill-library`; each gates on its own `<name>:read` / `<name>:write` scope (`auth/mgmt.py`) |
+| `skill_import.py`, `skill_quality.py` | more of `/skill-library`: import/browse/upstream (`/-/browse`, `/{name}/-/upstream`) and feedback/evals (`/-/feedback`, `/{name}/evals`) |
+| `auth_github.py` | GitHub login under `/auth/github` (device, token, actions, authorize/callback/exchange), `/auth` methods, `/github/connection` (the caller's own) and `/github/connections` (`github:admin`) |
+| `repos.py` | `GET /github/repos` (the caller's repos, grouped by installation); a thread's repo checkout under `/chat/sessions` |
+| `push.py` | `/push` web-push subscriptions and the VAPID key (gated on `approvals:read`) |
 | `_sse.py`, `_streaming.py` | no routes: the SSE envelope and the session-log tail both stream loops share — never spell a frame by hand elsewhere |
+| `_skill_library_models.py`, `_skill_library_http.py` | no routes: `/skill-library` request/response models and the helpers its route modules share |
 | `internal.py` | `POST /internal/*` — requires `FELIX_CONSUMER_SHARED_SECRET` |
 
 ## Rules
@@ -49,6 +57,9 @@ pinning — that is a security bug, not a shortcut.
 3. **Durable runs** return `202` + `resume_token`, polled at `GET /chat/runs/{token}`. Don't invent
    a second async convention.
 4. Keep FastAPI response models accurate — `/openapi.json` and the docs are generated from them.
+   The checked-in wire contract (`schemas/openapi.json`, `schemas/sse-events.json`) must follow:
+   run `make contract` after touching a route, a response model or a frame, and read the diff;
+   `tests/unit/test_wire_contract.py` fails when either is stale.
 5. Body limits: core is 1 MiB (`CORE_BODY_LIMIT_BYTES`); plugins can raise it via
    `body_limit_bytes`.
 
@@ -57,6 +68,7 @@ pinning — that is a security bug, not a shortcut.
 ```bash
 ./scripts/test.sh tests/integration/test_http_surfaces.py tests/integration/test_health.py
 ./scripts/test.sh tests/unit/test_mgmt_rbac.py        # when scopes changed
+make contract-check                                   # wire contract still current
 make dev   # then curl the surface
 curl -s localhost:8080/openapi.json | jq '.paths | keys'
 ```

@@ -29,6 +29,7 @@ On the registry / plugin object:
 | Rate-limit keys | `plugin.rate_limit_key(request)` |
 | Body limits | `plugin.body_limit_bytes` |
 | Self-authenticating mounts | `plugin.self_authenticating_mounts` |
+| Model / decision providers | `registry.register_model_provider(name, factory)` / `register_decision_provider(name, factory)` → a `FELIX_MODEL_ROUTES` / `FELIX_DECISION_ROUTES` entry |
 | Audit / usage sinks | `registry.register_audit_sink(factory)` / `register_usage_sink(factory)` |
 | Startup hooks | `registry.register_startup_hook(hook)` (awaited in the API lifespan) |
 | Agent-loop hooks | `registry.register_before_turn` / `filter_history` / `before_compact` / `before_model` / `after_model` / `before_tool` / `after_tool` / `compact_failed` |
