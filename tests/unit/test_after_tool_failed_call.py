@@ -54,7 +54,7 @@ async def test_a_redacting_hook_redacts_a_failed_calls_message(fatal: bool, pref
     assert seen == [(f"{prefix}internal] connect failed: password={SECRET}", True)]
     # Exact, so an already-spelled failure is not prefixed a second time.
     assert messages[0].content == f"{prefix}internal] connect failed: password=***"
-    assert had_fatal is fatal
+    assert (had_fatal is not None) is fatal
 
 
 @pytest.mark.parametrize(
