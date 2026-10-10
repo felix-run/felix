@@ -90,7 +90,7 @@ in a fresh interpreter and fails if FastAPI, SQLAlchemy, pydantic or any Felix p
 
 | Module | Holds |
 |---|---|
-| `packages/client/src/felix_client/client.py` | `FelixClient`: chat (prompt, stream, steer, follow-up, fork, rewind, abort, continue, compact, thinking), sessions, leases, tool results, approvals, documents, skill import; `RUN_TERMINAL` and the durable-run poll pacing |
+| `packages/client/src/felix_client/client.py` | `FelixClient`, one method per route it wraps (chat and its controls, sessions, approvals, documents, skill import, …); `RUN_TERMINAL` and the durable-run poll pacing |
 | `packages/client/src/felix_client/login.py` | GitHub device and Actions login, and the per-server token file (`token_path`, `save_token`, `bearer_for`) behind `felix login` and `FelixClient.from_login` |
 | `packages/client/src/felix_client/docs_sync.py` | Markdown/MDX to the `/documents` corpus, with an opt-in prune; behind `felix ingest-docs` |
 | `packages/client/src/felix_client/__init__.py` | the public names: `FelixClient`, the `RUN_*` constants and the login API |

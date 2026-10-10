@@ -40,7 +40,7 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    `skills/loader.py:load_manifest_skills` when the manifest declares skills, enables authoring or
    `personal_skills`, or lists a skill tool. Precedence lives in one place,
    `skills/loader.py:_resolve_ref`: catalog, then host, then the library's live version — except
-   an explicit `version` pin that an operator upload holds wins over the library. `spec.skills_declared_only`
+   an explicit `version` pin that an operator upload holds wins over the library; with none of those, the operator's uploads (pinned, then unversioned). `spec.skills_declared_only`
    narrows which names load, never where a body comes from.
 5. **Prompt and tools.** `skills/loader.py:skill_catalog_xml` is appended to the system prompt;
    `skills/tools.py:make_skill_tools` binds `list_skills`, `activate_skill`, `deactivate_skill`,
@@ -68,7 +68,7 @@ without an approvals rule covering both `create_skill` and `update_skill`.
 | Imported description with injection markers withheld from the catalog | `types.py:Skill` (`listed_description`) | closed |
 | Agent copying imported text inherits its lineage | `library.py:_lineage_import`, `copy_rule.py` | closed |
 | Unknown version source treated as needing review | `sources.py:needs_review_when_agent_edits` | closed |
-| Import allowlist; malformed entry, or token with unbound/owner-globbed entries, refuses boot | `github.py:check_allowed`, `felix/config.py:_validate_skill_import` | closed |
+| Import allowlist; malformed entry, or a token with no list or with unbound/owner-globbed entries, refuses boot (outside a `make dev` box) | `github.py:check_allowed`, `felix/config.py:_validate_skill_import` | closed |
 | Import pinned to one commit, blobs checked by git id, egress-pinned client | `github.py` | closed |
 | First-seen cooldown on Felix's clock, never a commit date | `importer.py:cooldown_for`, `sighting_store.py` | closed: `too_recent` |
 | Per-tenant and deployment GitHub call budgets | `importer.py:github_call_budget` | closed: 429 `rate_limited` |
@@ -111,9 +111,9 @@ globals: `tests/conftest.py` resets them through `store.clear_memory`, `library_
 - `felix skills browse|add|outdated|diff|update|adopt` (`felix_cli/skills.py`) talks to a running
   server; it never reaches GitHub itself. `felix doctor` adds a note when upstream checks or update
   webhooks are on, since the worker needs the same settings as the API.
-- Worker (`felix_worker/tasks.py`): `skill_jobs` every minute (`jobs.py:run_skill_jobs`),
-  `skill_upstream_checks` every 10 minutes (no-op at `FELIX_SKILL_IMPORT_CHECK_HOURS=0`),
-  `skill_update_notifications` every minute.
+- Worker (`felix_worker/tasks.py`): `skill_jobs` (`jobs.py:run_skill_jobs`), `skill_upstream_checks`
+  (a no-op at `FELIX_SKILL_IMPORT_CHECK_HOURS=0`) and `skill_update_notifications`; schedules in
+  `EXPECTED_SCHEDULES` (`tests/unit/test_worker_cron_tasks.py`).
 
 ## Tests
 

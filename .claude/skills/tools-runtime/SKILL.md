@@ -14,9 +14,8 @@ must not break.
 
 ## From spec to executor
 
-- A `Tool` (`tools/types.py:Tool`) is a dataclass: name, schema, `executor`, plus `source`,
-  `fatal`, `replay_safe`, `prompt_guidance`, `approval_preview`, `approval_binding` and
-  `relays_untrusted`. The executor has a `transport` string and `execute(args, ctx)`.
+- A `Tool` (`tools/types.py:Tool`) is a dataclass: name, schema, `executor`, plus flags such as `source`, `replay_safe` and
+  `relays_untrusted` (the dataclass is the list). The executor has a `transport` string and `execute(args, ctx)`.
 - `tools/types.py:define_tool` wraps a handler (pydantic `args` validated first; a bad argument
   returns `[invalid args for …]`, not an exception). `define_tool_with_executor` takes a
   hand-written executor class — that is how every outbound family is built.
@@ -34,7 +33,7 @@ must not break.
   **Shell is the exception**: an operator-disallowed prefix raises `GovernanceError` and fails the
   compile. The governance wrappers are applied afterwards; their order lives in the
   governance-pipeline skill.
-- `allow_http` reaching every outbound binder is true only with `FELIX_ENVIRONMENT=development`
+- Every `allow_http` a binder receives is true only with `FELIX_ENVIRONMENT=development`
   and `FELIX_ALLOW_INSECURE`.
 - Failures are values: return `tools/errors.py:tool_error_output` with a `ToolErrorCode`. A plain
   `error: …` string reads as a success to `after_tool`, eval and audit unless it starts with one
@@ -57,9 +56,9 @@ ones content screening covers. So:
 
 | Family | Files | Non-obvious rule |
 |---|---|---|
-| Workspace (`list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`) | `tools/workspace.py`, `tools/workspace_backend.py`, `tools/workspace_local.py`, `tools/workspace_hosted.py`, `tools/workspace_scope.py` | Every path goes through `tools/workspace.py:workspace_root` (or the backend's `scope_root`): a thread's repo checkout if it has one, else the `spec.workspace.scope` directory (`thread` default, `tenant`, or `deployment` only for `FELIX_WORKSPACE_DEPLOYMENT_TENANTS`). The scope is a context var bound by `manifests/builder.py:apply_workspace_scope`; unbound means `thread`. Local walks use descriptors and never follow a symlink. `FELIX_WORKSPACE_BACKEND=hosted` sends the five tools to the gateway in `deploy/cloudflare/workspace-gateway` (`docs/WORKSPACE.md`); there, image `path` and `publish_commits` are refused for any scope but `deployment`. |
-| Shell (`spec.shell_tools`) | `tools/shell.py`, `shell_runner.py`, `security/shell_policy.py` | argv is exec'd, never a shell. Allowed = manifest prefix inside `FELIX_SHELL_ALLOWED_COMMANDS`, checked at write, at compile (`assert_shell_commands_allowed`) and per call (`assert_argv_allowed`, against the request's settings). Local exec only where `security/shell_policy.py:local_exec_allowed` (development and `FELIX_AUTH_MODE=none`); otherwise it needs `FELIX_SHELL_RUNNER_URL` and never falls back. Under `hosted` it runs in the scope's sandbox. The runner (`felix-shell-runner`) re-checks with its own settings and shares `tools/shell.py:exec_argv`. A thread checkout cannot use the remote runner. |
-| HTTP fetch (`spec.http_tools`) | `tools/http_fetch.py` | The model picks the URL. Needs `path_prefix` or explicit `allow_any_host`. Redirects are walked by hand (`MAX_REDIRECTS`), each hop re-checked against the prefix with `_within_prefix` (origin comparison, not `startswith`); egress goes through `security/egress.py:safe_async_client`. Every refusal is the same `egress_blocked` line so the model cannot probe internal addressing. Transport `http`, not replay-safe. |
+| Workspace (`list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`) | `tools/workspace.py`, `tools/workspace_backend.py`, `tools/workspace_local.py`, `tools/workspace_hosted.py`, `tools/workspace_scope.py` | Every path goes through `tools/workspace.py:workspace_root` (or the backend's `scope_root`): a thread's repo checkout if it has one, else the `spec.workspace.scope` directory (`thread` default, `tenant`, or `deployment` only for `FELIX_WORKSPACE_DEPLOYMENT_TENANTS`). The scope is a context var bound by `manifests/builder.py:apply_workspace_scope`; unbound means `thread`. Local walks use descriptors and never follow a symlink. `FELIX_WORKSPACE_BACKEND=hosted` sends the five tools — for every scope but `deployment`, which stays local — to the gateway in `deploy/cloudflare/workspace-gateway` (`docs/WORKSPACE.md`); there, image `path` and `publish_commits` are refused for any scope but `deployment`. |
+| Shell (`spec.shell_tools`) | `tools/shell.py`, `shell_runner.py`, `security/shell_policy.py` | argv is exec'd, never a shell. Allowed = manifest prefix inside `FELIX_SHELL_ALLOWED_COMMANDS`, checked at write, at compile (`assert_shell_commands_allowed`) and per call (`assert_argv_allowed`, against the request's settings). Local exec only where `security/shell_policy.py:local_exec_allowed` (development and `FELIX_AUTH_MODE=none`); otherwise it needs `FELIX_SHELL_RUNNER_URL` and never falls back. Under `hosted` it runs in the scope's sandbox, except the `deployment` scope, which takes the local or runner path above. The runner (`felix-shell-runner`) re-checks with its own settings and shares `tools/shell.py:exec_argv`. A thread checkout cannot use the remote runner. |
+| HTTP fetch (`spec.http_tools`) | `tools/http_fetch.py` | The model picks the URL. Needs `path_prefix` or explicit `allow_any_host`. Redirects are walked by hand (`MAX_REDIRECTS`), each hop re-checked against the prefix with `_within_prefix` (origin comparison, not `startswith`); egress goes through `security/egress.py:safe_async_client`. Every *egress* refusal is the same `egress_blocked` line so the model cannot probe internal addressing; a URL outside `path_prefix` is refused by name, since the prefix is already in the tool's description. Transport `http`, not replay-safe. |
 | Web search (`spec.search_tools`) | `tools/web_search.py`, `felix/search.py` | Operator endpoint (`FELIX_SEARCH_BACKEND`, `FELIX_SEARCH_URL`); bound even when unset, returning not-configured rather than vanishing. Transport `search`. |
 | Browser (`spec.browser_tools`) | `tools/browser.py` | Playwright extra. Every page request, redirects and subresources included, is re-checked by a route guard; hostnames are pattern-checked before they reach Chromium's `--host-resolver-rules`. |
 | Sandbox / container (`spec.sandboxes`, `spec.containers`) | `tools/sandboxes.py`, `tools/transports.py` | Images must be in `FELIX_SANDBOX_ALLOWED_IMAGES`. The Docker run is confined (no network, non-root, read-only, caps dropped) and runs via `asyncio.to_thread` so the timeout can fire. Container gateways are checked at bind and dialled through `safe_async_client`. |
@@ -67,7 +66,7 @@ ones content screening covers. So:
 | Client tools (`spec.client_tools`) | `tools/client_bridge.py`, `tools/client_requests.py` | The executor records the request (so a durable run's stream can announce it), emits `tool_request`, then waits on a waiter until `POST /chat/tool_result` answers or the timeout (default 120 s) ends it. `tool_call_id` over 256 chars is refused at once. A client-reported `error` stays a tool error. |
 | Outbound MCP (`spec.mcp_servers`) | `mcp/client.py`, `mcp/stdio.py` | Bound as `server__tool` (`mcp/client.py:_bind_remote_tool`), source `mcp:<server>`. A server's `tools:` allowlist accepts both bare and prefixed names. Discovery is cached for `DISCOVERY_TTL_S`; failures are not cached. Stdio needs `FELIX_MCP_STDIO_ALLOWED_COMMANDS`, re-checked at spawn in `mcp/stdio.py:stdio_rpc`, with a scrubbed child env. `mcp/server.py` is the inbound surface, not part of this. |
 | Document search (`spec.document_tools`) | `tools/document_search.py`, `documents/store.py` | Tenant fixed at bind; hybrid lexical + vector, vector skipped (not faked) without an embedder. Says "empty corpus" apart from "no match". Transport `documents`. |
-| GitHub publish (`spec.github_publish`) | `tools/github_publish.py`, `repos/checkouts.py` | `publish_commits` takes a branch and `head_sha`, not file contents; the token lives only in its HTTP client, git runs with an empty environment. `auth: person` binds `tool_from_thread_publish`, resolved per call against the thread's checkout. Checkouts sit outside `FELIX_WORKSPACE_ROOT` (`repos/checkouts.py:checkout_root` refuses nesting), are size-capped and swept by `sweep_expired`. |
+| GitHub publish (`spec.github_publish`) | `tools/github_publish.py`, `repos/checkouts.py` | `publish_commits` takes a branch and `head_sha`, not file contents; the token lives only in its HTTP client, git runs with a minimal environment built from nothing (no token, no inherited secrets). `auth: person` binds `tool_from_thread_publish`, resolved per call against the thread's checkout. Checkouts sit outside `FELIX_WORKSPACE_ROOT` (`repos/checkouts.py:checkout_root` refuses nesting), are size-capped and swept by `sweep_expired`. |
 | Image tools (`spec.image_tools`) | `tools/image_tools.py`, `tools/tool_images.py` | Only images in this thread can be named; workspace `path` only with `allow_path`. Images a tool returns are stored as attachments by `tools/tool_images.py:store_tool_images` (called from `patterns/tool_runner.py`), inline bytes only, per-call and per-run caps. |
 
 `ask_user` is a builtin whose handler lives in `ui/ask_user.py`: it puts a select, confirm or input
@@ -96,27 +95,19 @@ called from `patterns/react.py`.
 
 Read `.claude/skills/security-review/SKILL.md` before changing egress, shell, sandbox, stdio,
 the client bridge or checkouts. `.claude/hooks/pr-quality-gate.sh` asks for
-`felix-security-reviewer` when a changed path matches its control-path list, which covers
-`shell`, `workspace`, `sandbox`, `browser`, `stdio`, `transport`, `http_fetch`, `web_search`,
-`mcp/client`, `github`, `repos` and `client_bridge`. It does **not** match `artifacts.py`,
-`attachments.py`, `tool_images.py`, `image_tools.py`, `document_search.py`, `queues.py`,
-`client_requests.py` or `types.py` — ask for that review yourself when one of them changes a
-tenancy or containment check.
+`felix-security-reviewer` only when a changed path matches its control-path pattern, and that
+pattern does not name every file here that holds a tenancy or containment check (artifacts,
+attachments, tool images, queues among them). Read the pattern; when your change touches such a
+check in a file it misses, ask for the review yourself.
 
 ## Tests
 
-`tests/unit/` holds one file per family: `test_shell_tool.py`, `test_shell_isolation.py`,
-`test_shell_runner.py`, `test_workspace_tools.py`, `test_workspace_scopes.py`,
-`test_workspace_symlinks.py`, `test_workspace_hosted.py`, `test_http_fetch_tool.py`,
-`test_web_search_tool.py`, `test_egress_and_sandbox.py`, `test_browser_sandbox_procedural.py`,
-`test_client_bridge_approvals.py`, `test_client_requests.py`, `test_mcp_peers.py`,
-`test_mcp_tool_allowlist.py`, `test_stdio_mcp_policy.py`, `test_document_search_tool.py`,
-`test_publish_commits.py`, `test_thread_publish.py`, `test_repo_checkouts.py`,
-`test_image_tools.py`, `test_read_artifact_tool.py`, `test_artifact_ledger.py`,
-`test_attachment_upload.py`, `test_workspace_notes.py`, plus `test_tool_trust_boundary.py`,
-`test_tool_arity_dispatch.py` and `test_tool_errors_marked.py` for the runtime itself.
+One or more files per family under `tests/unit/`, named for it (the first command below lists
+them). The runtime itself: `test_tool_trust_boundary.py`, `test_tool_arity_dispatch.py`,
+`test_tool_errors_marked.py`.
 
 ```bash
+ls tests/unit | grep -E 'shell|workspace|http_fetch|web_search|browser|sandbox|client_|mcp|document_search|publish|checkout|image|artifact|attachment'
 ./scripts/test.sh tests/unit/test_shell_tool.py -q
 ./scripts/test.sh -k "workspace or http_fetch" -q
 ```

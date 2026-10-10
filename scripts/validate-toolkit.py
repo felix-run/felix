@@ -83,7 +83,7 @@ def frontmatter(path: Path) -> dict[str, str]:
     # Stdlib only (CI runs this with a bare python3), so this reads the subset of YAML
     # frontmatter uses: `key: value`, a folded continuation line, a `- item` list, which is
     # kept comma-joined so `skills:` reads the same in either spelling, and one nested level
-    # under a key with no value of its own (`metadata:` → `covers:`), read as `metadata.covers`.
+    # under `metadata:` (`metadata:` → `covers:`), read as `metadata.covers`.
     fields: dict[str, str] = {}
     last = parent = ""
     for line in match.group(1).splitlines():
@@ -92,7 +92,7 @@ def frontmatter(path: Path) -> dict[str, str]:
         if key:
             last = parent = key.group(1)
             fields[last] = key.group(2).strip()
-        elif nested and parent and not fields[parent]:
+        elif nested and parent == "metadata" and not fields[parent]:
             last = f"{parent}.{nested.group(1)}"
             fields[last] = nested.group(2).strip()
         elif last and (item := re.match(r"^\s+-\s+(.*)$", line)):
@@ -686,6 +686,9 @@ PACKAGE_ROOTS = {
     "felix_worker": "apps/worker/src/felix_worker",
 }
 OWNED_MIN_LINES = 300
+# Roots a skill may not claim whole. The others are claimed whole today (api-surface owns
+# `felix_api/`), so the check's force is inside the harness, where no one skill can own it all.
+UNCLAIMABLE_WHOLE = {"felix"}
 # Code no skill describes yet, and why that is acceptable for now. Like `KNOWN_OPEN` in
 # tests/unit/test_ordering_rule.py this only shrinks: an entry a skill now covers, or that
 # no longer exists, fails until it is removed.
@@ -700,7 +703,7 @@ def ownership_units() -> list[str]:
         if not root.is_dir():
             continue
         for entry in sorted(root.iterdir()):
-            if entry.is_dir() and any(entry.glob("*.py")):
+            if entry.is_dir() and any("__pycache__" not in p.parts for p in entry.rglob("*.py")):
                 units.append(f"{name}/{entry.name}/")
             elif entry.suffix == ".py" and entry.name != "__init__.py":
                 with entry.open(encoding="utf-8") as handle:
@@ -710,9 +713,12 @@ def ownership_units() -> list[str]:
 
 
 def owned_path(entry: str) -> Path | None:
-    """`felix/tools/` → the directory it names, or None when it names nothing."""
+    """`felix/tools/` → the directory it names, or None when it names nothing.
+
+    The smaller packages may be claimed whole (`felix_api/`); the harness may not, since one
+    bare `felix` entry would turn the check off where it has force."""
     head, _, tail = entry.partition("/")
-    if head not in PACKAGE_ROOTS:
+    if head not in PACKAGE_ROOTS or (head in UNCLAIMABLE_WHOLE and not tail.strip("/")):
         return None
     path = ROOT / PACKAGE_ROOTS[head] / tail
     return path if path.exists() else None

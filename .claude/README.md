@@ -165,7 +165,8 @@ metadata:
 ```
 
 or an entry in `UNOWNED` in the validator saying why none does yet. Paths are import-path
-spelling; a directory covers everything under it. A new package fails the validator until someone
+spelling; a directory covers everything under it. The smaller packages may be claimed whole
+(`felix_api/`); `felix` may not, since one entry would own every new harness package unread. A new package fails the validator until someone
 decides which skill describes it. `UNOWNED` only shrinks: an entry that a skill now covers, or that
 no longer exists, fails until it is removed. Owning code means the skill is where an agent learns
 how it works — and the one to re-read when it changes.

@@ -113,10 +113,9 @@ stored as `mode: durable` and a resend reattaches via `durable_run_gen`. The key
 No scheduler, no cron; no worker, nothing runs, `run_fiber_loop` included. Each task's schedule
 is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SCHEDULES` in
 `tests/unit/test_worker_cron_tasks.py` pins the whole table — read it there rather than from a copy.
-The fiber backstop (`fiber_scheduler`), `webhook_delivery` and `run_scheduled_jobs` run every minute.
 
 Plugin `cron_tasks` become `plugin_<name>` every minute via `_register_plugin_cron_tasks`, which only
-the worker's startup hook calls. Each task is wrapped in `_instrumented`. Jobs:
+the worker's startup hook calls. Each built-in task is wrapped in `_instrumented`; plugin runners are not. Jobs:
 `jobs/scheduler.py:run_due_jobs_all_tenants` binds each tenant with `rls_tenant`,
 `jobs/store.py:claim_run` compare-and-sets `next_run_at`, `fire_job` runs as `cron` with no scopes.
 `next_run_at_ms` reads seconds, `every:30s` / `@every 5m` and `*/N * * * *` only — any other cron
@@ -129,12 +128,9 @@ Fibers and webhook delivery use `_memory_fibers` (`reset_memory_fibers`); jobs `
 `tests/conftest.py` calls each reset. Idempotency, waiters, steer and notify go in-process when no
 Redis is in use — chosen by Redis, not the DB URL. No worker runs in tests: they call
 `resume_due_fibers` / `deliver_due_webhooks` (`tests/e2e/test_durable_resume.py`,
-`tests/e2e/test_completion_webhooks.py`). Unit tests: `test_fiber_*`, `test_durable_stream*`,
-`test_one_durable_run_per_thread`, `test_chat_idempotency`, `test_waiters`,
-`test_gated_waits_hear_the_record`, `test_push*`, `test_worker_*`, `test_cron_multi_tenant`.
-Conformance: `tests/conformance/test_fiber_store.py`, `tests/conformance/test_jobs_store.py`,
-`tests/conformance/test_idempotency_redis.py`, `tests/conformance/test_cross_replica_notify.py`
-(needs `FELIX_CONFORMANCE_REDIS_URL`).
+`tests/e2e/test_completion_webhooks.py`). Unit tests are named for the piece (`test_fiber_*`, `test_durable_stream*`, `test_chat_idempotency`,
+`test_waiters`, `test_push*`, `test_worker_*`); conformance has the fiber, jobs, idempotency and
+cross-replica notify arms in `tests/conformance/` (the last two need `FELIX_CONFORMANCE_REDIS_URL`).
 
 ## Changing durable execution
 

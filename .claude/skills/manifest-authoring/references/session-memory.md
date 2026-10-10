@@ -46,9 +46,11 @@ The strategies are listed in [spec-fields.md](spec-fields.md); `compacting` and
 | `memory.consolidate` | `memory/consolidation.py:consolidate_all_pools`, from the worker's `consolidate_memory` cron |
 | `procedural_memory` | `memory/procedural.py:make_remember_procedure_tool`; `retrieve_procedures` per turn in `patterns/react.py`, as transient guidance |
 
-Memory rows (`memory_vectors`) are content-addressed (`memory/store.py:memory_id`) and never deleted:
-superseded or forgotten, with `superseded_seq` letting `memory/store.py:as_of` rebuild what was known
-at a turn. Only an operator write (`/memory`) retires a fact by `topic_key`; an agent write lands beside
+Memory rows (`memory_vectors`) are content-addressed (`memory/store.py:memory_id`). An active row is
+never deleted, only superseded or forgotten; `superseded_seq` lets `memory/store.py:as_of` rebuild what
+was known at a turn, but `retention_sweep` deletes a superseded row after
+`jobs/retention.py:MEMORY_SUPERSEDED_GRACE_MS` (7 days), so that view only reaches back that far.
+Only an operator write (`/memory`) retires a fact by `topic_key`; an agent write lands beside
 it. The vector channel needs an embedder (`FELIX_MEMORY_EMBEDDER`, default `auto`, local only;
 `memory/embedder.py:register_embedder_backend`); without one recall skips it. `plans/store.py` backs the
 `deep` pattern's plan tools (`patterns/plan_tools.py`) and `/plans`; `prompts/templates.py` expands
@@ -64,7 +66,6 @@ Postgres ranks over `content_tsv` and falls back to `ILIKE`; the twin is a subst
 
 `tests/conformance/test_session_store.py` is the contract both arms run (ordering, dense `seq`,
 windows, reset, wake, secret masking, concurrent appends); a backend added to its `BACKENDS` inherits
-every assertion. Its siblings in `tests/conformance/` cover leases, `thread_state`, the turn leaf,
-search, the memory store, recall, consolidation and plans; the Postgres arm skips without
+every assertion. Its siblings in `tests/conformance/` hold the same contract for the other session and memory stores; the Postgres arm skips without
 `FELIX_CONFORMANCE_DATABASE_URL`. Unit coverage: `tests/unit/test_compaction_*.py`,
 `tests/unit/test_memory_*.py`, `tests/unit/test_side_question_read_only.py`.

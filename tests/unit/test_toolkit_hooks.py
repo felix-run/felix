@@ -923,9 +923,9 @@ def _a_module_of(lines: int) -> Callable[[pathlib.Path], None]:
     return lambda tree: (tree / "packages/harness/src/felix/sizeable.py").write_text("x = 1\n" * lines)
 
 
-def _a_subpackage(rel: str) -> Callable[[pathlib.Path], None]:
+def _a_subpackage(rel: str, *, parents: bool = False) -> Callable[[pathlib.Path], None]:
     def plant(tree: pathlib.Path) -> None:
-        (tree / rel).mkdir()
+        (tree / rel).mkdir(parents=parents)
         (tree / rel / "__init__.py").write_text("")
 
     return plant
@@ -935,6 +935,16 @@ _OWNERSHIP_PLANTS: dict[str, tuple[Callable[[pathlib.Path], None], str]] = {
     # name: (plant, the problem it must add)
     "new-subpackage": (_a_subpackage("packages/harness/src/felix/newthing"), "felix/newthing/ has no owner"),
     "module-at-the-floor": (_a_module_of(OWNED_FLOOR), "felix/sizeable.py has no owner"),
+    # A namespace directory: no `.py` of its own, real code one level down.
+    "code-only-in-a-nested-package": (
+        _a_subpackage("packages/harness/src/felix/ns/inner", parents=True),
+        "felix/ns/ has no owner",
+    ),
+    # One bare root claimed whole would own every new harness package silently.
+    "cover-of-the-whole-harness": (
+        lambda tree: _plant(tree, ".claude/skills/model-layer/SKILL.md", "covers: ", "covers: felix, "),
+        "covers 'felix', which names nothing",
+    ),
     "skill-drops-a-cover": (
         lambda tree: _plant(
             tree, ".claude/skills/durable-execution/SKILL.md", "covers: felix/durability/, ", "covers: "
