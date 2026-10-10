@@ -103,8 +103,14 @@ tests_note="felix-test-quality-reviewer is not needed — no tests changed."
 # governance wrapper order lives — matched nothing; anchoring did not cause that and does not fix
 # it, adding the token does. Prefixes rather than whole words, so `screen` reaches `screening.py`
 # and `polic` reaches both `policy.py` and `policies.py`.
+#
+# The second line is what an audit of the tree found the first one missing: everything that runs
+# a command or reaches outward on a manifest's behalf (shell, workspaces, fetch, search, MCP and
+# A2A clients, GitHub publish and import, repo checkouts, the client bridge) and the request-path
+# controls outside `auth/` (middleware, idempotency, limits). `db/models` is spelled with its
+# directory because a bare `models` would also take `_skill_library_models.py`.
 security_changed=$(printf '%s\n' "$changed" | grep -E \
-  '(^|[/_])(auth|security|governance|screen|secret|ssrf|egress|sandbox|polic|approval|browser|stdio|transport|rls|tenant|internal|builder|durability)' || true)
+  '(^|[/_])(auth|security|governance|screen|secret|ssrf|egress|sandbox|polic|approval|browser|stdio|transport|rls|tenant|internal|builder|durability|shell|workspace|http_fetch|web_search|mcp/client|peers|importer|github|repos|client_bridge|middleware|idempotency|limits|db/models)' || true)
 security_note="felix-security-reviewer is not needed — nothing changed on a control path."
 if [ -n "$security_changed" ]; then
   m=$(printf '%s\n' "$security_changed" | wc -l | tr -d ' ')

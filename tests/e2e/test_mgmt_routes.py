@@ -830,6 +830,40 @@ async def test_starting_an_eval_run_without_a_dataset_is_refused(boot: Any) -> N
         assert resp.json()["detail"] == "dataset_name_required"
 
 
+async def test_the_dataset_run_alias_still_starts_a_run_and_says_it_is_deprecated(boot: Any) -> None:
+    """`POST /eval/datasets/{name}/run` stays for a release behind `POST /eval/runs` (#247).
+
+    It scores the dataset its path names, over one the body names, as it did before it was
+    deprecated, and its answer tells the caller where to go instead.
+    """
+    items = [{"user_input": "say ok", "rubric": {"expect": "ok"}}]
+    async with boot([_answer("ok")], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+        await app.client.put("/eval/datasets/scored", json={"items": items}, headers=_as(ADMIN))
+
+        resp = await app.client.post(
+            "/eval/datasets/scored/run",
+            json={"dataset_name": "elsewhere", "candidate_manifest": "quick", "deterministic_judge": True},
+            headers=_as(WRITER),
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["dataset_name"] == "scored"
+    assert resp.json()["pass_count"] == 1, resp.json()
+    assert resp.headers["deprecation"] == "@1791504000", resp.headers
+    assert resp.headers["link"] == '</eval/runs>; rel="successor-version"'
+
+
+async def test_the_dataset_run_alias_says_it_is_deprecated_when_it_refuses(boot: Any) -> None:
+    """A caller without the scope learns of the move from the 403 it does get."""
+    async with boot([], env=_keys(reader=["eval:read"], writer=["eval:write"])) as app:
+        resp = await app.client.post(
+            "/eval/datasets/scored/run", json={"candidate_manifest": "quick"}, headers=_as(READER)
+        )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.headers["deprecation"] == "@1791504000", resp.headers
+
+
 async def test_audit_metrics_rolls_up_tool_calls_by_name(boot: Any) -> None:
     """The inspector's metrics panel, which reads a payload key nothing else asserts.
 

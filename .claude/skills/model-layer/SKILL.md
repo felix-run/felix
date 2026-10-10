@@ -67,7 +67,10 @@ is in both because it shares a credential, not an interface.
 
 Implement the `DecisionProvider` Protocol (`felix_ai/decide/types.py`): `decide()` takes typed
 questions and returns answers with a probability distribution and usage. Register it in
-`BUILTIN_DECISION_PROVIDERS` (`felix_ai/decide/__init__.py`) or from a plugin, add a route, and
+`BUILTIN_DECISION_PROVIDERS` (`felix_ai/decide/__init__.py`) when it needs nothing from the
+harness, or with `register_decision_provider` — from a plugin, or from
+`felix/decisions.py:register_builtin_deciders` as `llm` is, because it builds on harness model
+routes and so cannot live in `felix_ai`. Then add a route, and
 add the arm to `ARMS` in `tests/conformance/test_decision_provider.py`. Every call must go through
 `build_decider`, which wraps the provider in `MeteredDecider`; a decider built any other way is
 unmetered and bypasses the run's budgets.
@@ -75,7 +78,8 @@ unmetered and bypasses the run's budgets.
 ## The decider's consumers
 
 Each consumer opts in on its own and keeps its previous behaviour as the fallback when the decider
-errors or is below `spec.decider.min_confidence`. Turning a decider on never removes a path.
+errors or is below `spec.decider.min_confidence`. Turning a decider on never removes a path. Content
+screening is the exception, because it is a control: a decider outage there fails closed (see its row).
 
 | Consumer | Code | Manifest opt-in |
 |---|---|---|
@@ -84,6 +88,8 @@ errors or is below `spec.decider.min_confidence`. Turning a decider on never rem
 | reflect verifier | `patterns/delegating.py` | `reflect.decider` |
 | reply escalation | `patterns/model_composites.py` | `model.confidence_escalation.decider` |
 | judges (tool output, and the final reply via `governance/reply.py`) | `governance/judges.py` | `guardrails.judges[].decider` |
+| content screening (injection/jailbreak/exfiltration battery) | `governance/screening.py`, `governance/inbound.py` | `content_screening.decider` — the exception to the rule above: additive beside markers and `model`, not a fallback; `min_confidence` is not consulted, and a decider outage counts as screening unavailable, so `on_flag` decides (fail closed) |
+| skill suggestion (a one-line hint) | `skills/suggest.py`, read in `patterns/react.py` | `skill_suggestion.enabled` (`react`/`deep` only) |
 | eval rubrics | `eval/runner.py` | `judge_decider` in the rubric |
 
 A new consumer follows the same shape: a flag, the fallback kept, the call through

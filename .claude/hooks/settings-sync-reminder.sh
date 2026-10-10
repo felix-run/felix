@@ -21,7 +21,7 @@ case "$rel" in
   packages/harness/src/felix/config.py)
     emit "Settings changed: every new FELIX_ setting needs (1) a line in .env.example with a comment, (2) a row in the README table if it changes the lean/full story, (3) a validate_runtime() guard if an unsafe combination is now possible. Deploy surfaces that also carry env: deploy/docker/compose*.yml, deploy/helm/felix/values.yaml." ;;
   packages/harness/src/felix/manifests/schema.py)
-    emit "Manifest schema changed: a new spec field is inert until builder.py consumes it. Wire it in packages/harness/src/felix/manifests/builder.py (binder or apply_* wrapper), extend tests/unit/test_manifest_schema.py, and re-validate the bundled manifests ('uv run felix bundle-manifests'). If it is a governance control, also update deploy/GOVERNANCE.md and manifests/governed.yaml." ;;
+    emit "Manifest schema changed: a new spec field is inert until builder.py consumes it. Wire it in packages/harness/src/felix/manifests/builder.py (binder or apply_* wrapper), extend tests/unit/test_manifest_schema.py, and re-validate the bundled manifests ('uv run felix bundle-manifests'). Run 'make schema' to regenerate schemas/manifest.schema.json — the editor schema every manifest points at, which test_invariants.py fails when stale. If it is a governance control, also update deploy/GOVERNANCE.md and manifests/governed.yaml." ;;
   packages/harness/src/felix/manifests/builder.py)
     emit "Builder changed: the governance wrapper order defines precedence (each wrapper clones the tool with a new executor), and test_invariants.py pins it -- the order and how to add a control are in the governance-pipeline skill. Cover the new path in tests/unit/ and, if it changes what a request sees, in tests/e2e/." ;;
   packages/harness/src/felix/plugins.py|apps/api/src/felix_api/composition.py)
@@ -29,10 +29,16 @@ case "$rel" in
   packages/harness/src/felix/patterns/registry.py|packages/harness/src/felix/patterns/react.py)
     emit "Pattern layer changed: patterns register at import time via register_pattern(); nothing in core enumerates them. A new pattern needs a manifests/ example and a spec.pattern value that build_agent can resolve, or it fails with 'Unknown pattern'." ;;
   packages/harness/src/felix/db/models.py)
-    emit "ORM models changed: add a matching Alembic revision under migrations/versions/ (next 000N_ prefix, down_revision = current head) — the models are not auto-migrated. If the table is tenant-scoped, mirror the RLS policy pattern from 0006_tenant_rls.py, and give the store a memory:// twin plus a tests/conformance arm. See the postgres-migrations skill." ;;
+    emit "ORM models changed: add a matching Alembic revision under migrations/versions/ (next four-digit prefix after the head, down_revision = that head) — the models are not auto-migrated. If the table is tenant-scoped, mirror the RLS policy pattern from 0006_tenant_rls.py, and give the store a memory:// twin plus a tests/conformance arm. See the postgres-migrations skill." ;;
   packages/ai/src/felix_ai/*|packages/harness/src/felix/decisions.py|packages/harness/src/felix/patterns/model*.py)
     emit "Model layer changed: felix_ai may not import felix (test_invariants.py). A new or changed provider or decider must pass its conformance contract -- tests/conformance/test_model_provider.py or test_decision_provider.py, where a skip is a bug. Pricing lives in felix_ai/catalog.py. The model-layer skill has the procedure." ;;
-  apps/worker/src/felix_worker/tasks.py)
+  apps/api/src/felix_api/routes/*.py)
+    emit "Route module changed: the wire contract is checked in. Run 'make contract' to regenerate schemas/openapi.json and schemas/sse-events.json, and read the diff -- tests/unit/test_wire_contract.py fails when either is stale. An SSE frame whose name is not a string literal must be listed as a pass-through in scripts/gen-wire-contract.py." ;;
+  schemas/manifest.schema.json|schemas/openapi.json|schemas/sse-events.json)
+    emit "This file is generated: schemas/manifest.schema.json by 'make schema' (from manifests/schema.py), schemas/openapi.json and sse-events.json by 'make contract' (from the routes and frames). A hand edit is overwritten by the next regeneration and fails the staleness tests meanwhile -- change the source and regenerate." ;;
+  CHANGELOG.md)
+    emit "CHANGELOG.md is written by the release step (scripts/changelog.py cut) from merged PR descriptions. Put this change's entry in the PR description under '## Changelog' instead -- see CLAUDE.md Conventions." ;;
+  apps/worker/src/felix_worker/tasks.py|packages/harness/src/felix/jobs/scheduler.py)
     emit "Worker tasks changed: cron schedules are Taskiq labels on the task, so a new periodic job only runs when felix-scheduler is running alongside felix-worker. Check deploy/docker/compose.yml and deploy/helm/felix for the scheduler service before assuming it fires in a deployment." ;;
   pyproject.toml|packages/*/pyproject.toml|apps/*/pyproject.toml)
     emit "Dependency surface changed: keep the DEFAULT install lean — heavy deps (Playwright, sentence-transformers, DuckDB, Presidio, cloud SDKs) belong in an optional extra, imported lazily inside the function that needs them. Forward any new extra from the root pyproject [project.optional-dependencies], run 'uv lock', and note it in the README extras table." ;;
