@@ -14,13 +14,16 @@ and fails the second, and one that crashed passes neither.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
+import re
 import shutil
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 
 import pytest
 
@@ -575,3 +578,292 @@ def test_the_validator_catches_a_stale_citation(tmp_path: pathlib.Path) -> None:
     assert "<name>" not in found
     assert "`make check`" not in found
     assert "lib/real.sh" not in found
+
+
+# --- validate-toolkit: prose lists checked against the code they restate ----------------------
+#
+# Each case plants one disagreement in a copy of the real tree and asserts the validator names
+# it. The copy holds only what the enumeration check reads, so it fails other checks (cited
+# paths it did not copy); the assertion is on what the plant *adds* over the unplanted copy.
+
+_ENUM_INPUTS = [
+    "CLAUDE.md",
+    "README.md",
+    "Makefile",
+    "schemas/manifest.schema.json",
+    "tests/unit/test_invariants.py",
+    "apps/api/src/felix_api/app.py",
+    "apps/api/src/felix_api/routes",
+    "packages/harness/src/felix/session/strategies.py",
+    "apps/cli/src/felix_cli/main.py",
+    "skills/felix-architecture/SKILL.md",
+]
+
+
+def _enum_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    tree = tmp_path / "tree"
+    shutil.copytree(
+        ROOT / ".claude",
+        tree / ".claude",
+        ignore=shutil.ignore_patterns("worktrees", "logs", "settings.local.json"),
+    )
+    for rel in _ENUM_INPUTS:
+        source, target = ROOT / rel, tree / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            shutil.copy2(source, target)
+    return tree
+
+
+def _validator_problems(tree: pathlib.Path) -> set[str]:
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "validate-toolkit.py"), str(tree)],
+        capture_output=True,
+        text=True,
+    )
+    assert "Traceback" not in proc.stderr, proc.stderr
+    return {
+        line.strip().removeprefix("- ") for line in proc.stderr.splitlines() if line.strip().startswith("- ")
+    }
+
+
+def _enum_baseline(tree: pathlib.Path) -> set[str]:
+    before = _validator_problems(tree)
+    assert not [p for p in before if "toolkit:enum" in p or " list " in p], before
+    return before
+
+
+def _plant(tree: pathlib.Path, rel: str, old: str, new: str) -> None:
+    path = tree / rel
+    text = path.read_text()
+    assert old in text, f"the plant's anchor is gone from {rel}: {old!r}"
+    path.write_text(text.replace(old, new, 1))
+
+
+def _append(tree: pathlib.Path, rel: str, code: str) -> None:
+    path = tree / rel
+    path.write_text(path.read_text() + code)
+
+
+def _edit_schema(tree: pathlib.Path, edit: Callable[[dict], None]) -> None:
+    path = tree / "schemas/manifest.schema.json"
+    schema = json.loads(path.read_text())
+    edit(schema["$defs"])
+    path.write_text(json.dumps(schema, indent=2))
+
+
+def _marker_files(key: str) -> set[str]:
+    """Every file the validator expects to carry `key` -- each must notice a change in the code."""
+    source = (ROOT / "scripts" / "validate-toolkit.py").read_text()
+    table = ast.literal_eval(
+        re.search(r"EXPECTED_MARKERS: dict\[str, set\[str\]\] = (\{.*?\n\})", source, re.S)[1]
+    )
+    return {rel for rel, keys in table.items() if key in keys}
+
+
+@pytest.mark.parametrize(
+    ("rel", "old", "new", "expect"),
+    [
+        (
+            ".claude/rules/felix-invariants.md",
+            "judges → approvals",
+            "approvals → judges",
+            "where the code has 'judges'",
+        ),
+        ("CLAUDE.md", " → workspace scope", "", "has 9 elements; the code has 10"),
+        (
+            ".claude/hooks/compact-reminder.sh",
+            "judges -> approvals",
+            "approvals -> judges",
+            "where the code has 'judges'",
+        ),
+        (
+            ".claude/skills/governance-pipeline/SKILL.md",
+            "→ workspace scope\n",
+            "→ workspace scope\n → tool budget\n",
+            "has 11 elements; the code has 10",
+        ),
+        (
+            ".claude/skills/api-surface/SKILL.md",
+            "body limit → rate limit",
+            "rate limit → body limit",
+            "where the code has 'body limit'",
+        ),
+        # The last element replaced while its word survives later in the paragraph
+        # (`auth/mgmt.py`): a search for "auth" anywhere in it called this a match.
+        ("CLAUDE.md", "`AuthMiddleware`", "`CsrfMiddleware`", "where the code has 'auth'"),
+        (
+            ".claude/skills/api-surface/SKILL.md",
+            "| `mcp.py` |",
+            "| `mcp.py`, `ghost.py` |",
+            "names 'ghost', which the code does not define",
+        ),
+        (
+            ".claude/skills/manifest-authoring/SKILL.md",
+            "| `pattern` |",
+            "| `phantom` | nothing |\n| `pattern` |",
+            "names 'phantom', which the code does not define",
+        ),
+        # Dropped from the list while the paragraph names it again after the list ends.
+        (
+            "README.md",
+            "`compacting` (token-threshold), ",
+            "",
+            "session-strategies list does not name 'compacting'",
+        ),
+        (
+            ".claude/skills/manifest-authoring/references/spec-fields.md",
+            "| `windowed:N` |",
+            "| `ghost:N` | x |\n| `windowed:N` |",
+            "names 'ghost', which the code does not define",
+        ),
+        (
+            ".claude/skills/model-layer/SKILL.md",
+            "`content_screening.decider`",
+            "`content_screening`",
+            "does not name 'content_screening.decider'",
+        ),
+        (
+            ".claude/skills/model-layer/SKILL.md",
+            "`reflect.decider`",
+            "`reflect.decider`, `reflect.critic.decider`",
+            "names 'reflect.critic.decider', which the code does not define",
+        ),
+        ("CLAUDE.md", " | doctor |", " |", "cli-commands list does not name 'doctor'"),
+        (
+            "CLAUDE.md",
+            "<!-- toolkit:enum middleware-order -->\n",
+            "",
+            "lost its `toolkit:enum middleware-order` marker",
+        ),
+    ],
+    ids=[
+        "rules-wrapper-reordered",
+        "claude-md-wrapper-dropped",
+        "compact-reminder-wrapper-reordered",
+        "governance-pipeline-wrapper-extra",
+        "api-surface-middleware-reordered",
+        "claude-md-last-middleware-replaced",
+        "api-surface-route-that-does-not-exist",
+        "manifest-authoring-field-that-does-not-exist",
+        "readme-strategy-dropped-but-mentioned-later",
+        "spec-fields-strategy-that-does-not-exist",
+        "model-layer-decider-consumer-dropped",
+        "model-layer-decider-consumer-that-does-not-exist",
+        "claude-md-cli-command-dropped",
+        "claude-md-marker-removed",
+    ],
+)
+def test_the_validator_catches_prose_that_disagrees_with_the_code(
+    tmp_path: pathlib.Path, rel: str, old: str, new: str, expect: str
+) -> None:
+    tree = _enum_tree(tmp_path)
+    before = _enum_baseline(tree)
+    _plant(tree, rel, old, new)
+    added = _validator_problems(tree) - before
+    assert any(p.startswith(f"{rel}: ") and expect in p for p in added), (
+        f"{expect!r} not among {sorted(added)}"
+    )
+
+
+def _optional_decider(defs: dict) -> None:
+    defs["SkillSuggestionSpec"]["properties"]["decider"] = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+
+
+_CODE_PLANTS: dict[str, tuple[Callable[[pathlib.Path], None], str, str]] = {
+    # name: (plant, key, the problem every file carrying that key must now report)
+    "adds-a-wrapper": (
+        lambda tree: _plant(
+            tree,
+            "tests/unit/test_invariants.py",
+            "EXPECTED_WRAPPER_ORDER = [\n",
+            'EXPECTED_WRAPPER_ORDER = [\n    "apply_tool_budget",\n',
+        ),
+        "wrapper-order",
+        "the code has 11",
+    ),
+    "adds-a-middleware": (
+        lambda tree: _append(tree, "apps/api/src/felix_api/app.py", "\napp.add_middleware(GzipMiddleware)\n"),
+        "middleware-order",
+        "the code has 6",
+    ),
+    "adds-a-strategy": (
+        lambda tree: _plant(
+            tree, "packages/harness/src/felix/session/strategies.py", "frozenset({", 'frozenset({"fancy", '
+        ),
+        "session-strategies",
+        "does not name 'fancy'",
+    ),
+    "adds-a-command": (
+        lambda tree: _append(
+            tree, "apps/cli/src/felix_cli/main.py", '\n@app.command("frobnicate")\ndef _f() -> None: ...\n'
+        ),
+        "cli-commands",
+        "does not name 'frobnicate'",
+    ),
+    "adds-a-command-named-after-its-function": (
+        lambda tree: _append(
+            tree, "apps/cli/src/felix_cli/main.py", "\n@app.command()\ndef do_thing() -> None: ...\n"
+        ),
+        "cli-commands",
+        "does not name 'do-thing'",
+    ),
+    "adds-a-sub-app": (
+        lambda tree: _append(
+            tree, "apps/cli/src/felix_cli/main.py", '\napp.add_typer(object(), name="frob")\n'
+        ),
+        "cli-commands",
+        "does not name 'frob'",
+    ),
+    "adds-a-spec-field": (
+        lambda tree: _edit_schema(
+            tree, lambda defs: defs["Spec"]["properties"].update(brand_new={"type": "string"})
+        ),
+        "spec-fields",
+        "does not name 'brand_new'",
+    ),
+    "adds-a-decider-consumer": (
+        lambda tree: _edit_schema(
+            tree, lambda defs: defs["SkillSuggestionSpec"]["properties"].update(decider={"type": "boolean"})
+        ),
+        "decider-consumers",
+        "does not name 'skill_suggestion.decider'",
+    ),
+    # `bool | None` is `anyOf: [boolean, null]`; read as a type of None, it was skipped.
+    "adds-an-optional-decider-consumer": (
+        lambda tree: _edit_schema(tree, _optional_decider),
+        "decider-consumers",
+        "does not name 'skill_suggestion.decider'",
+    ),
+    # Newer syntax than the runner's python3 must be reported, not end the run in a traceback.
+    "stops-parsing": (
+        lambda tree: _append(tree, "apps/api/src/felix_api/app.py", "\ndef (:\n"),
+        "middleware-order",
+        "cannot check the middleware-order list",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_CODE_PLANTS))
+def test_every_copy_of_a_list_notices_when_the_code_changes(tmp_path: pathlib.Path, name: str) -> None:
+    """Every file carrying the key must report it: one copy noticing is not the check working,
+    since a marker that governs the wrong paragraph can still contain every name."""
+    plant, key, expect = _CODE_PLANTS[name]
+    tree = _enum_tree(tmp_path)
+    before = _enum_baseline(tree)
+    plant(tree)
+    added = _validator_problems(tree) - before
+    reporting = {p.split(": ", 1)[0] for p in added if expect in p}
+    assert reporting == _marker_files(key), sorted(added)
+
+
+def test_a_new_route_module_must_join_the_api_surface_table(tmp_path: pathlib.Path) -> None:
+    tree = _enum_tree(tmp_path)
+    before = _enum_baseline(tree)
+    (tree / "apps/api/src/felix_api/routes/new_surface.py").write_text("")
+    added = _validator_problems(tree) - before
+    assert (
+        ".claude/skills/api-surface/SKILL.md: the route-modules list does not name 'new_surface'" in added
+    ), added

@@ -34,6 +34,7 @@ next one.** A hostname checked against a DNS-name pattern was interpolated into
 past it. When a validated value crosses into a command line, a header, a URL, a query, or a log
 line, re-validate it against *that* grammar's separators. Details: the **security-review** skill.
 
+<!-- toolkit:enum wrapper-order -->
 - **Wrapper order in `manifests/builder.py` is load-bearing.** secret masking → policies → command
   screening → content screening → limits → guardrails → judges → approvals → artifact spill →
   workspace scope. Each wrapper clones the tool with a new executor, so order defines precedence.

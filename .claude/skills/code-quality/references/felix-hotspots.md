@@ -32,6 +32,7 @@ optional dependency as an unresolved import.
 
 ## Large by design — audit, do not refactor
 
+<!-- toolkit:enum wrapper-order -->
 - `packages/harness/src/felix/manifests/builder.py` — the compile pipeline. Its governance wrapper
   order (secret masking → policies → command screening → content screening → limits → guardrails →
   judges → approvals → artifact spill → workspace scope) is an invariant asserted by

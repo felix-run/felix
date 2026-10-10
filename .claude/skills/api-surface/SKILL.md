@@ -8,6 +8,7 @@ allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*) Bash(curl:*)
 
 ## How a request is assembled
 
+<!-- toolkit:enum middleware-order -->
 `create_app()` (`apps/api/src/felix_api/app.py`) stacks middleware **request id → security headers →
 body limit → rate limit → `AuthMiddleware`** (runtime order, outermost first; `add_middleware` inserts
 at the front, so the code registers them in reverse — the comment above the calls says why each sits
@@ -29,6 +30,7 @@ pinning — that is a security bug, not a shortcut.
 
 ## Route modules
 
+<!-- toolkit:enum route-modules -->
 | Module | Surface |
 |---|---|
 | `chat.py` | `/chat`, `/chat/stream`, runs, steer, abort/continue, thinking, sessions, fork/rewind, compact, export |

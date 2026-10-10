@@ -127,6 +127,30 @@ docs page. The toolkit is prose about the tree; that last check is what keeps it
 unnoticed, as it had (a migration list eleven revisions behind, and a tests directory for evals
 that was never there).
 
+A path that still exists can still be described wrongly, and that is the drift a citation check
+cannot see: six copies of the governance wrapper order fell one wrapper behind while every file
+they named stayed put. So **a list that restates something the code defines carries a marker** —
+`<!-- toolkit:enum KEY -->` on the line before it in Markdown, `# toolkit:enum KEY` before the line
+in a hook — and the validator compares it with the code:
+
+| Key | Compared with |
+|---|---|
+| `wrapper-order` | `EXPECTED_WRAPPER_ORDER` in `tests/unit/test_invariants.py` — every wrapper, in order, and no more |
+| `middleware-order` | the `add_middleware` calls in `apps/api/src/felix_api/app.py`, reversed into runtime order |
+| `route-modules` | `apps/api/src/felix_api/routes/*.py` — each named, none invented |
+| `spec-fields` | the `Spec` properties in `schemas/manifest.schema.json`, read from the table's first column |
+| `session-strategies` | `_BUILTIN_STRATEGY_PREFIXES` in `packages/harness/src/felix/session/strategies.py` |
+| `decider-consumers` | every boolean `decider` flag in the manifest schema, by dotted path |
+| `cli-commands` | the top-level commands and sub-apps in `apps/cli/src/felix_cli/main.py` |
+
+The marker governs the next fenced block, else the next paragraph or table (a blank line or a new
+list item ends it); in a hook, the next line. An inline list that runs on into other prose ends at
+`<!-- /toolkit:enum -->`, so a name the paragraph mentions again later cannot stand in for one the
+list dropped. Ordered lists are read element by element between the arrows; set lists both ways —
+nothing missing, nothing the code does not define. `EXPECTED_MARKERS` in the validator lists where each
+marker lives, so deleting one fails like a wrong list would. Writing a new copy of one of these
+lists? Mark it and add it there — or better, point at the existing one instead of copying it.
+
 Test a hook by feeding it its event JSON:
 
 ```bash

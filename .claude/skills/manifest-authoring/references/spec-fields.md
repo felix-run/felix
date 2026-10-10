@@ -31,6 +31,7 @@ the builder appends the skill tools when `spec.skills` is non-empty.
 
 ## Session strategies
 
+<!-- toolkit:enum session-strategies -->
 | Strategy | Behavior |
 |---|---|
 | `full_replay` | default; whole event log replayed |
@@ -110,6 +111,7 @@ which answers a typed choice with calibrated probabilities instead of generating
 keeps its previous behaviour as the fallback when the decider errors or is unsure — except content
 screening, a control, which fails closed (its row says how).
 
+<!-- toolkit:enum decider-consumers -->
 | Consumer | Opt-in | Falls back to |
 |---|---|---|
 | tool selection | `tools_retrieval.decider: true` (needs `tools_retrieval.enabled`) | embedding retrieval (`tools_retrieval.model`) |
