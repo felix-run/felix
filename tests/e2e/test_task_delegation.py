@@ -656,7 +656,9 @@ async def test_a_thread_may_have_only_so_many_background_children_in_flight(boot
     async with boot(script, manifests={"e2e-lead": lead, "e2e-researcher": RESEARCHER}) as app:
         assert (await _chat(app)).status_code == 200
         assert (await _chat(app, text="another")).status_code == 200
-        assert "1 background tasks are already running here" in _text(app.spy.prompts[3])
+        assert "1 background tasks are already running here; a slot frees when one finishes" in _text(
+            app.spy.prompts[3]
+        )
         assert len(F._memory_fibers) == 1
 
         app.spy.push(ScriptedTurn(content="first done"))

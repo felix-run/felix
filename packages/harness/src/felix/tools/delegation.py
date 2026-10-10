@@ -217,20 +217,25 @@ async def _start_in_background(
             ceilings=[residual(c, req.limit_state) for c in (*req.limit_state.ceilings, ceiling)],
             max_children=max_background,
         )
-        # Linked once the run exists, so a refused start leaves no orphan thread behind.
-        await claim_thread(
-            settings=settings, tenant_id=tenant_id, thread_id=child_thread, parent_session_id=parent
-        )
     except TooManyChildren as full:
         return tool_error_output(
             "rate_limited",
-            f"[task] {full.limit} background tasks are already running here; read one with "
-            f"{TASK_RESULT_TOOL_NAME} before starting another",
+            f"[task] {full.limit} background tasks are already running here; a slot frees when one "
+            f"finishes (wait on it with {TASK_RESULT_TOOL_NAME}), or do this one in the foreground",
         )
     except Exception:
         logger.warning("task_background_start_failed agent=%s", name, exc_info=True)
         return tool_error_output("provider_error", f"[task] could not start agent '{name}' in the background")
     task_id = str(run["resume_token"])
+    try:
+        # Linked once the run exists, so a refused start leaves no orphan thread behind. A failed
+        # link does not un-start the run: the model still gets its id, or it would hold a slot
+        # nothing could read.
+        await claim_thread(
+            settings=settings, tenant_id=tenant_id, thread_id=child_thread, parent_session_id=parent
+        )
+    except Exception:
+        logger.warning("task_background_link_failed agent=%s", name, exc_info=True)
     await emit_side_event(
         parent,
         "subagent_start",
