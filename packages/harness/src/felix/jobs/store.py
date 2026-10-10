@@ -148,8 +148,17 @@ async def put_job(
     """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar."""
     from felix.jobs.schedule import parse_schedule
 
-    parse_schedule(schedule)
+    parsed = parse_schedule(schedule)
     ts = now_ms()
+
+    def _next_run_at(existing_schedule: str | None, existing_next: int | None) -> int | None:
+        # A changed schedule fires at whichever comes first: the due time already held, or
+        # the new schedule's next slot. Keeping only the old one left a job moved from
+        # `@daily` to `*/5` waiting until tomorrow; taking only the new one would hide a run
+        # that is already overdue (`test_republishing_a_job_keeps_its_run_state`).
+        if existing_schedule is None or existing_schedule == schedule or existing_next is None:
+            return existing_next
+        return min(existing_next, parsed.next_after(ts))
 
     if _use_memory(settings):
         existing = _memory_jobs.get((tenant_id, name))
@@ -159,7 +168,9 @@ async def put_job(
             "schedule": schedule,
             "manifest_id": manifest_id,
             "last_run_at": existing.get("last_run_at") if existing else None,
-            "next_run_at": existing.get("next_run_at") if existing else None,
+            "next_run_at": _next_run_at(existing["schedule"], existing.get("next_run_at"))
+            if existing
+            else None,
             "last_status": existing.get("last_status", "") if existing else "",
             "last_error": existing.get("last_error", "") if existing else "",
             "created_at": existing["created_at"] if existing else ts,
@@ -184,6 +195,7 @@ async def put_job(
             )
             db.add(row)
         else:
+            row.next_run_at = _next_run_at(row.schedule, row.next_run_at)
             row.schedule = schedule
             row.manifest_id = manifest_id
             row.payload_json = deepcopy(payload) if payload else {}

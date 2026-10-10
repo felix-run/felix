@@ -157,11 +157,6 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
         next_run = job.get("next_run_at")
         if next_run is not None and next_run > ts:
             continue
-        # Claim the job *before* invoking it. touch_run used to run only after the
-        # invocation finished, so the every-minute cron re-fired the same job on every
-        # tick until the first run completed. And the claim is conditional on the due time
-        # this tick read, so a second worker -- or this worker's next tick, overlapping a
-        # slow one -- that read the same due job does not fire it again.
         try:
             following = next_run_at_ms(str(job.get("schedule") or ""), ts)
         except ScheduleError as exc:
@@ -179,6 +174,11 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
                     last_error=str(exc),
                 )
             continue
+        # Claim the job *before* invoking it. touch_run used to run only after the
+        # invocation finished, so the every-minute cron re-fired the same job on every
+        # tick until the first run completed. And the claim is conditional on the due time
+        # this tick read, so a second worker -- or this worker's next tick, overlapping a
+        # slow one -- that read the same due job does not fire it again.
         try:
             claimed = await jobs_store.claim_run(
                 settings,

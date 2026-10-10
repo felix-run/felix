@@ -14,8 +14,8 @@ Accepted:
 * a macro -- ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, ``@yearly``
 * five-field cron -- ``minute hour day-of-month month day-of-week``, each field ``*``, ``N``,
   ``A-B``, a ``/step`` on either, or a comma list of those. Day-of-week is 0-6 with Sunday as 0
-  (7 also means Sunday). When both day fields are restricted, a day matching *either* fires,
-  as in every cron since Vixie's.
+  (7 also means Sunday). When both day fields are restricted -- neither starts with ``*`` -- a
+  day matching *either* fires, as in every cron since Vixie's.
 """
 
 from __future__ import annotations
@@ -127,8 +127,10 @@ def _parse_cron(text: str) -> _Cron:
         days=days,
         months=months,
         weekdays=frozenset(d % 7 for d in weekdays),
-        days_restricted=fields[2] != "*",
-        weekdays_restricted=fields[4] != "*",
+        # Vixie's rule: a day field starting with `*` (`*/2` included) is unrestricted, so
+        # `0 0 */2 * 1` means odd days that are Mondays, not odd days or Mondays.
+        days_restricted=not fields[2].startswith("*"),
+        weekdays_restricted=not fields[4].startswith("*"),
     )
     # `0 0 30 2 *` parses and never fires. Refuse it here rather than store a job that sits
     # enabled forever.
