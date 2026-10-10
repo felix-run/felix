@@ -584,6 +584,47 @@
       "title": "DeciderSpec",
       "type": "object"
     },
+    "DelegateRef": {
+      "additionalProperties": false,
+      "description": "One agent the `task` tool may hand work to, named as a request would name it.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "DelegateRef",
+      "type": "object"
+    },
+    "DelegationSpec": {
+      "additionalProperties": false,
+      "description": "Binds a `task` tool: the model hands a self-contained job to a child agent.\n\nUnlike `sub_agents`, which make the *pattern* a composite and leave it no tools of its\nown, a delegating agent keeps its tools and decides at run time whether to delegate. Each\nchild compiles through the same path as a sub-agent -- the tenant's store first, cycles\nand nesting refused -- and runs its own governance stack. Every `task` call also counts\nagainst the run's `limits.max_peer_hops`, and the child spends the parent's budgets.",
+      "properties": {
+        "agents": {
+          "items": {
+            "$ref": "#/$defs/DelegateRef"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Agents",
+          "type": "array"
+        }
+      },
+      "required": [
+        "agents"
+      ],
+      "title": "DelegationSpec",
+      "type": "object"
+    },
     "DocumentSearchToolRef": {
       "additionalProperties": false,
       "description": "Retrieve from the corpus an operator ingested, scoped to the calling tenant.\n\nThe mildest of the three retrieval refs, and for a structural reason rather than a policy\none: `HttpFetchToolRef` needs a `path_prefix` because the model names a destination, and\n`SearchToolRef` needs none because the operator does \u2014 this one reaches no network at all,\nonly rows already in this deployment's own store. What comes back is still untrusted, since\na document is text somebody else wrote.",
@@ -2235,6 +2276,17 @@
           },
           "title": "Sub Agents",
           "type": "array"
+        },
+        "delegation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DelegationSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "aggregator_prompt": {
           "default": "",

@@ -28,6 +28,7 @@ from felix.manifests.schema import (
     Limits,
     Manifest,
     Policy,
+    child_agent_names,
     guardrails_enabled,
     judges_enabled,
 )
@@ -1683,8 +1684,16 @@ async def build_agent(
         # children it forwards the thread to: their own screen adds to it, never replaces it.
         session_strategy = screen_session_strategy(deps.session_strategy, replay_screener(m, deps.settings))
 
+        if m.spec.delegation is not None and m.spec.sub_agents:
+            # `sub_agents` makes the pattern a composite that binds no tools of its own, so a
+            # `task` tool would compile and never be offered to a model.
+            raise ValueError(
+                f"spec.delegation needs an agent with tools; spec.sub_agents makes "
+                f"'{m.metadata.name}' a composite with none. Use one or the other."
+            )
         sub_agents: dict[str, Agent] = {}
-        if m.spec.sub_agents:
+        delegates: dict[str, Agent] = {}
+        if child_agent_names(m.spec):
             # A sub-agent inherits this compile's session store, so its own
             # `spec.memory.checkpointer` is not consulted. Most composites invoke a child
             # with `thread_id=None`, and each session guard in the react loop needs a thread
@@ -1700,10 +1709,13 @@ async def build_agent(
                 reply_screen=screen_chain,
                 session_strategy=session_strategy,
             ):
-                for name in m.spec.sub_agents:
+                for name in child_agent_names(m.spec):
                     if name not in deps.compiled:
                         deps.compiled[name] = await builder(name)
-                    sub_agents[name] = deps.compiled[name]
+                if m.spec.sub_agents:
+                    sub_agents = {name: deps.compiled[name] for name in m.spec.sub_agents}
+                if m.spec.delegation is not None:
+                    delegates = {ref.name: deps.compiled[ref.name] for ref in m.spec.delegation.agents}
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:
@@ -1755,6 +1767,18 @@ async def build_agent(
                 _append_unique_tools(resolved, peer_tools)
             except Exception:
                 logger.warning("peer tool binding failed", exc_info=True)
+
+        # Delegation → the `task` tool. Bound here, before the governance pipeline, so policies,
+        # approvals, limits and content screening wrap it like any other tool. Not in a
+        # try/except: a child that fails to compile already raised above, and a manifest asking
+        # for delegation must not compile without it.
+        if m.spec.delegation is not None:
+            from felix.tools.delegation import make_task_tool
+
+            _append_unique_tools(
+                resolved,
+                [make_task_tool(delegates, {ref.name: ref.description for ref in m.spec.delegation.agents})],
+            )
 
         # Playwright browser tools (optional extra).
         if m.spec.browser_tools:

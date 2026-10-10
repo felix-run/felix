@@ -1047,9 +1047,12 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       and fired anything else — the docs' own `0 3 * * *` included — every 60 s. It is now real
       five-field cron plus macros, refused at write, and a stored unreadable schedule stops firing
       and records why. `limits.precount` (read by nothing) is retired through `compat.RETIRED`.
-- [ ] **W1 — delegation and planning.** A `task` tool the model calls to spawn a child agent
-      (compiled by `build_agent`, a child thread in `session/tree.py`, the full governance stack,
-      usage rolled up to the parent run); background children on durable fibers, with the
+- [~] **W1 — delegation and planning.** *Landed:* `spec.delegation` binds a `task` tool the
+      model calls to hand a job to a child agent — compiled beside `sub_agents` (store first,
+      cycles and depth refused, pinned), fresh context, governed as a tool and by its own stack,
+      untrusted output, the parent's budgets and `max_peer_hops`. *Next:* a child thread linked in
+      `session/tree.py` so its transcript is inspectable, and a `task` entry that names a peer so
+      local and A2A delegates share one tool; background children on durable fibers, with the
       `subagent_start`/`subagent_end` frames from *Headless / contract*; a `todo_write` tool for
       any pattern, lifted out of `deep`'s plan tools; plan mode as a permission mode.
 - [ ] **W2 — permissions, hooks, commands.** Per-session modes (`default | accept_edits | plan |

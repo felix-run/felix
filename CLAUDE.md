@@ -175,7 +175,8 @@ bundled YAML), enforces inbound auth and the compile pin, then compiles:
 
 1. Resolve system prompt, sub-agents, and base tools from the `ToolProvider`.
 2. Bind outbound tools from the spec: MCP servers → `server__tool`, A2A peers →
-   `peer__name`, browser/sandbox/container/queue/client tools, procedural-memory writer.
+   `peer__name`, `delegation` → `task` (children compiled beside `sub_agents`),
+   browser/sandbox/container/queue/client tools, procedural-memory writer.
 3. Wire Agent Skills (catalog XML appended to the prompt) and inject active memory facts.
    <!-- toolkit:enum wrapper-order -->
 4. **Wrap every tool in the governance stack, in a fixed order** — secret masking →
