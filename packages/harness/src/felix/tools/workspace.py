@@ -27,7 +27,7 @@ from felix.context import try_get_context
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider
 from felix.tools.types import ToolOutput, ToolOutputDict, define_tool
-from felix.tools.workspace_backend import EditRefused
+from felix.tools.workspace_backend import PANE_HIDDEN_PREFIX, EditRefused
 
 if TYPE_CHECKING:
     from felix.tools.workspace_backend import WorkspaceBackend, WorkspaceScope
@@ -56,7 +56,8 @@ _MAX_DIR_BATCH = 10_000
 # The temporary sibling an edit writes before renaming it over the target. Random, so a
 # directory or link planted under a predictable name cannot block every edit of a file, and
 # short and fixed-length, so a leaf near NAME_MAX still has a temporary name that fits.
-_EDIT_TMP_PREFIX = ".felix-edit-"
+# One spelling with the file pane's, which leaves these out of a listing.
+_EDIT_TMP_PREFIX = PANE_HIDDEN_PREFIX
 
 
 class PathArgs(BaseModel):
@@ -668,6 +669,11 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
         return _os_failed(exc)
 
 
+# The tools `register_workspace_tools` binds, by name: what a manifest's `spec.tools` lists to work
+# in the harness's workspace (`felix.usage.catalog.workspace_summary` reads it).
+WORKSPACE_TOOL_NAMES = frozenset({"list_dir", "read_file", "write_file", "edit_file", "search_files"})
+
+
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
     provider.register(
         "list_dir",
@@ -723,6 +729,7 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
 
 
 __all__ = [
+    "WORKSPACE_TOOL_NAMES",
     "EditFileArgs",
     "NotAFileError",
     "PathArgs",
