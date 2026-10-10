@@ -3,7 +3,7 @@
 
 The routes (`tests/e2e/test_workspace_files.py`) run on the local backend. Here the same walk and
 the same compare-then-write run against `local` and against `hosted` -- a fake gateway serving the
-real `felix-fs` helper (`tests/workspace_gateway_fake.py`) -- and must give the same answers, so a
+real `felix-fs` helper (`tests/support/workspace_gateway_fake.py`) -- and must give the same answers, so a
 pane cannot tell which backend served it. Plus what only a unit can reach: the depth and batch
 bounds of the local walk, and the SDK's three methods on the wire.
 """
@@ -25,8 +25,8 @@ from felix.tools.workspace_scope import SCOPES_DIR, thread_key
 from felix.usage.catalog import workspace_summary
 from felix_client import FelixClient
 
-from tests.unit.test_sdk_interrupts import _bind
-from tests.workspace_gateway_fake import TOKEN, URL, FakeGateway
+from tests.support.http_bind import bind_transport
+from tests.support.workspace_gateway_fake import TOKEN, URL, FakeGateway
 
 TENANT = "acme"
 THREAD = "acme:t1"
@@ -360,7 +360,7 @@ def _record(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
         seen.append(request)
         return httpx.Response(200, json={})
 
-    monkeypatch.setattr(httpx, "AsyncClient", _bind(httpx.MockTransport(handler)))
+    monkeypatch.setattr(httpx, "AsyncClient", bind_transport(httpx.MockTransport(handler)))
     return seen
 
 

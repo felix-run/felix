@@ -16,7 +16,7 @@ from felix.auth import github
 from felix_client import DeviceCode, LoginError, github_device_login
 from joserfc import jwk
 
-from tests.github_fake import FakeGitHub, org
+from tests.support.github_fake import FakeGitHub, org
 
 _KEY = jwk.RSAKey.generate_key(2048)
 _BASE = "http://felix.test"

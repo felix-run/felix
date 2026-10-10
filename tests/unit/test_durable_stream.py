@@ -18,7 +18,9 @@ from typing import Any
 
 import pytest
 from felix.config import Settings
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
+
+from tests.support.factories import app_client
 
 
 def _settings() -> Settings:
@@ -32,13 +34,6 @@ def _settings() -> Settings:
         stream_resume_poll_seconds=0.1,
         stream_resume_poll_max_seconds=0.1,
     )
-
-
-def _client(settings: Settings) -> AsyncClient:
-    from felix_api.app import create_app
-
-    app = create_app(settings=settings, plugins=[])
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30.0)
 
 
 def _frames(body: str) -> list[dict[str, Any]]:
@@ -112,7 +107,7 @@ async def test_a_durable_manifest_streams_the_run_instead_of_running_inline(
         "error": "",
     }
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _post_stream(client)
 
     events = [f.get("event") for f in _frames(body)]
@@ -131,7 +126,7 @@ async def test_the_first_frame_carries_the_resume_token(
     _force_durable(monkeypatch)
     durable["states"].append("completed")
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _post_stream(client)
 
     first = _frames(body)[0]
@@ -148,7 +143,7 @@ async def test_a_failed_run_reports_the_failure_rather_than_closing_quietly(
     durable["states"].append("failed")
     durable["runs"]["token-1"] = {"status": "pending", "final": {}, "error": "model_unavailable"}
 
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _post_stream(client)
 
     assert "event: error" in body, "a failed run closed the stream with no error frame"
@@ -160,7 +155,7 @@ async def test_a_transient_manifest_is_untouched() -> None:
     """The default path must not have moved: `quick` is transient, and it should still
     stream the agent rather than a run."""
     settings = _settings()
-    async with _client(settings) as client:
+    async with app_client(settings) as client:
         body = await _post_stream(client)
     assert "run_accepted" not in body, "a transient manifest was enqueued as durable"
 

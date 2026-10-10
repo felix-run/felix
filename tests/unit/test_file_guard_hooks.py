@@ -25,7 +25,7 @@ import subprocess
 
 import pytest
 
-from tests.git_fixture import git
+from tests.support.git_fixture import git
 
 HOOKS = pathlib.Path(__file__).resolve().parents[2] / ".claude" / "hooks"
 BLOCKED, ALLOWED = 2, 0
@@ -51,7 +51,7 @@ def repo(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     directory that merely looks like a worktree would prove nothing.
     """
     root = tmp_path_factory.mktemp("project")
-    run = lambda *a: git(root, *a)  # env-scrubbed; see tests/git_fixture.py
+    run = lambda *a: git(root, *a)  # env-scrubbed; see tests/support/git_fixture.py
     run("init", "-q", "-b", "main")
     run("config", "user.email", "t@example.com")
     run("config", "user.name", "t")
@@ -59,7 +59,7 @@ def repo(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     (root / "migrations" / "versions" / "0001_baseline.py").write_text("# applied\n")
     (root / "README.md").write_text("# project\n")
     # Committed before the worktree exists, so the worktree's HEAD carries it. Committing
-    # from *inside* a linked worktree is the thing to avoid here: `tests/git_fixture.py`
+    # from *inside* a linked worktree is the thing to avoid here: `tests/support/git_fixture.py`
     # pins `GIT_DIR` to `<repo>/.git`, which in a linked worktree is a file rather than a
     # directory — and an invariant (rightly) refuses a raw `subprocess.run(["git", …])`
     # that would dodge that scrubbing.

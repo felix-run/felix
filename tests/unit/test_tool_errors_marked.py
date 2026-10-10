@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
-from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.hooks import get_agent_hooks
 from felix.patterns import _plan_tools
 from felix.patterns import tool_runner as runner_mod
 from felix.patterns.tool_runner import ToolRunner
@@ -23,13 +23,6 @@ from felix.tools.builtins import register_builtin_tools
 from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.provider import InMemoryToolProvider
 from felix.tools.types import is_failure_content, tool_output_content
-
-
-@pytest.fixture(autouse=True)
-def _clean_hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 def _calculator():

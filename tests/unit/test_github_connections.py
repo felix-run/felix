@@ -30,7 +30,7 @@ from felix.auth.github_connections import (
 )
 from felix.config import Settings
 
-from tests.github_fake import FakeGitHub, app_grant
+from tests.support.github_fake import FakeGitHub, app_grant
 
 KEY = base64.b64encode(os.urandom(32)).decode()
 

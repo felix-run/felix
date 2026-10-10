@@ -19,7 +19,7 @@ from typing import Any
 
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.e2e.conftest import Booted
+from tests.support.e2e import Booted
 
 
 def _answer(text: str = "noted") -> ScriptedTurn:

@@ -17,11 +17,7 @@ from felix.jobs import scheduler
 from felix.jobs import store as jobs_store
 from felix.patterns.types import ChatMessage, InvokeInput, InvokeOutput
 
-
-def _settings() -> Settings:
-    return Settings(
-        database_url="memory://jobs", object_store="memory", auth_mode="none", allow_insecure=True
-    )
+from tests.support.factories import make_settings
 
 
 class _Recorder:
@@ -38,7 +34,7 @@ async def _fire_twice(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) 
 
     jobs_store._memory_jobs.clear()
     jobs_store._memory_runs.clear()
-    settings = _settings()
+    settings = make_settings()
     rec = _Recorder()
 
     async def _resolve(_s: Any, _t: Any, name: str, **k: Any) -> Any:

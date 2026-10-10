@@ -27,7 +27,7 @@ from collections.abc import Callable
 
 import pytest
 
-from tests.git_fixture import git
+from tests.support.git_fixture import git
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HOOKS = ROOT / ".claude" / "hooks"

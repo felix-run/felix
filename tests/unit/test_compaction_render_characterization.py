@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.hooks import get_agent_hooks
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 from felix.session.compaction import (
@@ -71,13 +71,6 @@ def _read_path(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) 
         from felix.session import store
 
         monkeypatch.delattr(store._MemorySession, "get_event_skeletons")
-
-
-@pytest.fixture(autouse=True)
-def _hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 def _shape(out: list[ChatMessage]) -> list[tuple[Any, ...]]:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._scripts import load_script
+from tests.support.scripts_loader import load_script
 
 boundary = load_script("felix_boundary")
 

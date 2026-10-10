@@ -10,7 +10,7 @@ import httpx
 import pytest
 from felix_client import FelixClient
 
-from tests.unit.test_sdk_interrupts import _bind
+from tests.support.http_bind import bind_transport
 
 
 def _record(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
@@ -20,7 +20,7 @@ def _record(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
         seen.append(request)
         return httpx.Response(200, json={"sessions": [], "items": [], "next_cursor": None})
 
-    monkeypatch.setattr(httpx, "AsyncClient", _bind(httpx.MockTransport(handler)))
+    monkeypatch.setattr(httpx, "AsyncClient", bind_transport(httpx.MockTransport(handler)))
     return seen
 
 

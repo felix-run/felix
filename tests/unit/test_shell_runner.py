@@ -13,7 +13,7 @@ anything, and each is pinned here:
   bounds and process-group kills are not a second, weaker implementation.
 
 The runner is exercised for real — its ASGI app in-process, real subprocesses — and the API's
-client against `tests/loopback_http.py` where the test needs a runner that misbehaves.
+client against `tests/support/loopback_http.py` where the test needs a runner that misbehaves.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.shell import MAX_OUTPUT_BYTES, exec_argv, tools_from_shell_refs
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 
-from tests.git_fixture import git
-from tests.loopback_http import Request, respond, serve
+from tests.support.git_fixture import git
+from tests.support.loopback_http import Request, respond, serve
 
 # Written against files at the workspace root; scope selection is test_workspace_scopes.py.
 pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")

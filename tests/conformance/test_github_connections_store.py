@@ -18,7 +18,7 @@ import pytest
 from felix.auth import github, github_connections
 from felix.auth.github import GitHubGrant
 
-from tests.github_fake import FakeGitHub, app_grant
+from tests.support.github_fake import FakeGitHub, app_grant
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("store_settings", BACKENDS, indirect=True)

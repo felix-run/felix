@@ -15,15 +15,7 @@ import pytest
 from felix.approvals import store as approvals_store
 from felix.config import Settings
 
-
-def _settings() -> Settings:
-    return Settings(
-        database_url="memory://approvals",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-    )
+from tests.support.factories import make_settings
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +44,7 @@ async def _grant(s: Settings, *, principal: str, sig: str = "abc") -> dict:
 @pytest.mark.asyncio
 async def test_grant_is_reusable_across_principals_when_unbound() -> None:
     """Documented behaviour when bind_principal is false — unchanged."""
-    s = _settings()
+    s = make_settings()
     await _grant(s, principal="alice")
     found = await approvals_store.find_approved(
         s, "t1", manifest_id="m", tool_name="shell", call_signature="abc"
@@ -63,7 +55,7 @@ async def test_grant_is_reusable_across_principals_when_unbound() -> None:
 @pytest.mark.asyncio
 async def test_bind_principal_blocks_a_different_principal() -> None:
     """The privilege escalation: B replaying A's approved call."""
-    s = _settings()
+    s = make_settings()
     await _grant(s, principal="alice")
     found = await approvals_store.find_approved(
         s,
@@ -78,7 +70,7 @@ async def test_bind_principal_blocks_a_different_principal() -> None:
 
 @pytest.mark.asyncio
 async def test_bind_principal_allows_the_original_principal() -> None:
-    s = _settings()
+    s = make_settings()
     await _grant(s, principal="alice")
     found = await approvals_store.find_approved(
         s,
@@ -96,7 +88,7 @@ async def test_bind_principal_allows_the_original_principal() -> None:
 
 @pytest.mark.asyncio
 async def test_one_shot_grant_is_spent_after_use() -> None:
-    s = _settings()
+    s = make_settings()
     row = await _grant(s, principal="alice")
 
     first = await approvals_store.find_approved(
@@ -114,7 +106,7 @@ async def test_one_shot_grant_is_spent_after_use() -> None:
 @pytest.mark.asyncio
 async def test_consume_is_single_winner() -> None:
     """Two concurrent identical calls must not both spend one grant."""
-    s = _settings()
+    s = make_settings()
     row = await _grant(s, principal="alice")
     first = await approvals_store.consume_approval(s, "t1", str(row["id"]))
     second = await approvals_store.consume_approval(s, "t1", str(row["id"]))
@@ -124,7 +116,7 @@ async def test_consume_is_single_winner() -> None:
 @pytest.mark.asyncio
 async def test_consumed_grant_still_visible_without_the_flag() -> None:
     """Consumption only gates one_shot rules; ordinary grants are unaffected."""
-    s = _settings()
+    s = make_settings()
     row = await _grant(s, principal="alice")
     await approvals_store.consume_approval(s, "t1", str(row["id"]))
     found = await approvals_store.find_approved(
@@ -161,7 +153,7 @@ async def test_command_require_approval_creates_a_real_approval() -> None:
         async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
             return f"ran:{args.get('command')}"
 
-    s = _settings()
+    s = make_settings()
     tools = apply_command_screening(
         [Tool(name="shell", description="run", args_schema={}, executor=_Exec())],
         CommandScreening(
@@ -221,7 +213,7 @@ async def test_a_second_principal_cannot_join_the_first_ones_pending_request() -
 
     rule = ApprovalRule(id="r1", tools=["deploy"], ttl_seconds=10, bind_principal=True, one_shot=True)
     (gated,) = apply_approvals([define_tool(name="deploy", description="d", handler=handler)], [rule], "m")
-    s = _settings()
+    s = make_settings()
 
     def req(principal: str) -> RequestContext:
         return RequestContext(

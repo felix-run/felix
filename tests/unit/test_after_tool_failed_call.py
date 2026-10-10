@@ -9,20 +9,13 @@ same hook worked on every successful call.
 from __future__ import annotations
 
 import pytest
-from felix.hooks import get_agent_hooks, reset_agent_hooks
+from felix.hooks import get_agent_hooks
 from felix.patterns.tool_runner import ToolRunner
 from felix.patterns.types import ToolCall
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, is_failure_content
 
 SECRET = "hunter2"
-
-
-@pytest.fixture(autouse=True)
-def _clean_hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 class _Leaks:

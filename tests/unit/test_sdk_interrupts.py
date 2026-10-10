@@ -18,16 +18,7 @@ import httpx
 import pytest
 from felix_client import FelixClient
 
-
-def _bind(transport: httpx.MockTransport) -> type[httpx.AsyncClient]:
-    real = httpx.AsyncClient
-
-    class _Bound(real):  # type: ignore[misc,valid-type]
-        def __init__(self, *a: Any, **k: Any) -> None:
-            k["transport"] = transport
-            super().__init__(*a, **k)
-
-    return _Bound
+from tests.support.http_bind import bind_transport
 
 
 @pytest.fixture
@@ -40,7 +31,7 @@ def server(monkeypatch: pytest.MonkeyPatch):
             seen.append(request)
             return httpx.Response(status_code, json=payload if payload is not None else {"ok": True})
 
-        monkeypatch.setattr(httpx, "AsyncClient", _bind(httpx.MockTransport(handler)))
+        monkeypatch.setattr(httpx, "AsyncClient", bind_transport(httpx.MockTransport(handler)))
         return seen
 
     return start

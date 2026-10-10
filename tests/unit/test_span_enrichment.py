@@ -29,7 +29,7 @@ from felix.observability.tracing import _identity_attrs, make_span
 from felix.patterns.model import _traced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 
-from tests.optional_deps import require_optional
+from tests.support.optional_deps import require_optional
 
 ROOT = Path(__file__).resolve().parents[2]
 ROUTE = ModelRoute(provider="anthropic", model="claude-sonnet-4-6")

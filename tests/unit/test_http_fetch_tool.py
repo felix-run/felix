@@ -39,10 +39,10 @@ from felix.tools.http_fetch import (
     tools_from_http_fetch_refs,
 )
 
-from tests.loopback_http import Request
-from tests.loopback_http import body_of as _body_of
-from tests.loopback_http import respond as _respond
-from tests.loopback_http import serve as _serve
+from tests.support.loopback_http import Request
+from tests.support.loopback_http import body_of as _body_of
+from tests.support.loopback_http import respond as _respond
+from tests.support.loopback_http import serve as _serve
 
 BLOCKED = "http_fetch_error: egress_blocked: destination not permitted"
 """The single line every egress refusal returns, whatever the layer or the reason."""

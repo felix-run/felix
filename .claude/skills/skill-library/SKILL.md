@@ -122,7 +122,7 @@ e2e in `tests/e2e/test_skill_import.py`, `test_skill_authoring.py`, `test_person
 `test_skill_quality_loop.py`, `test_skill_upstream.py`, `test_skill_suggestion.py`. Conformance:
 `tests/conformance/test_skill_library_store.py` (also sightings and upstream),
 `test_skill_quality_store.py`, `test_skill_caps.py` (exact caps under racing requests). Shared
-fakes: `tests/skill_import_fake.py` (GitHub at the transport) and `tests/skill_quality.py`.
+fakes: `tests/support/skill_import_fake.py` (GitHub at the transport) and `tests/support/skill_quality.py`.
 
 ```bash
 ./scripts/test.sh tests/unit -k skill -q

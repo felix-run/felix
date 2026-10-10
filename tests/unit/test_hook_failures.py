@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from felix import hooks as hooks_mod
-from felix.hooks import get_agent_hooks, reset_agent_hooks, run_after_model, run_before_tool
+from felix.hooks import get_agent_hooks, run_after_model, run_before_tool
 from felix.patterns.types import ChatMessage
 from prometheus_client import REGISTRY
 
@@ -29,13 +29,6 @@ KINDS = (
     "before_model",
     "after_model",
 )
-
-
-@pytest.fixture(autouse=True)
-def _clean_hooks():
-    reset_agent_hooks()
-    yield
-    reset_agent_hooks()
 
 
 def _failures(kind: str) -> float:

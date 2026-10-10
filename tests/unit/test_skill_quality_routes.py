@@ -16,7 +16,7 @@ from felix.config import Settings
 from felix.skills.library_keys import ORG_OWNER
 from httpx import ASGITransport, AsyncClient
 
-from tests.skill_quality import NAME, published
+from tests.support.skill_quality import NAME, published
 
 KEYS = json.dumps(
     {
@@ -270,7 +270,7 @@ async def test_an_evaluation_says_whether_it_counts_for_the_gate(app: App) -> No
     from felix.skills import library
     from felix.skills.eval_store import get_skill_eval_store
 
-    from tests.skill_quality import bundle, object_store
+    from tests.support.skill_quality import bundle, object_store
 
     operator = await published(
         app.settings, bundle(**{"evals/scenarios.json": '[{"name": "s", "prompt": "p"}]'})
@@ -363,7 +363,7 @@ def test_redaction_is_on_for_every_field_but_the_structural_ones() -> None:
 async def test_publish_and_rollback_can_require_the_live_version_the_page_showed(app: App) -> None:
     from felix.skills import library
 
-    from tests.skill_quality import bundle, object_store
+    from tests.support.skill_quality import bundle, object_store
 
     first = await published(app.settings)
     second = (

@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.git_fixture import git
+from tests.support.git_fixture import git
 
 HOOK = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "pr-quality-gate.sh"
 CREATE = "gh pr create --title t --body b"

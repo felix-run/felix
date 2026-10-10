@@ -17,7 +17,7 @@ import pytest
 from felix.auth import github
 from joserfc import jwk
 
-from tests.github_fake import FakeGitHub, org
+from tests.support.github_fake import FakeGitHub, org
 
 _KEY = jwk.RSAKey.generate_key(2048)
 

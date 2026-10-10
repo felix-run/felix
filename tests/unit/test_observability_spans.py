@@ -26,7 +26,7 @@ from felix.patterns.model import _traced, _TracedClient, _TracedStreamingClient
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 from prometheus_client import CollectorRegistry
 
-from tests.optional_deps import require_optional
+from tests.support.optional_deps import require_optional
 
 ROUTE = ModelRoute(provider="anthropic", model="claude-sonnet-4-6")
 

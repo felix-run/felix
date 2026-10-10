@@ -19,17 +19,14 @@ from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput
 from felix_api.app import create_app
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 BODY = {"model": "quick", "messages": [{"role": "user", "content": "hi"}], "stream": True}
 
 
 def _settings() -> Settings:
-    return Settings(
-        database_url="memory://v1-stream",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
+    return make_settings(
         host="127.0.0.1",
-        environment="development",
         # Every request here comes from one client; the per-IP limiter is not under test.
         rate_limit=100_000,
     )

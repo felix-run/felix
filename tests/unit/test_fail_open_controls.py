@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 
 import pytest
-from felix.config import Settings
 from felix.governance.inbound import (
     INJECTION_THRESHOLD,
     SCREEN_CHARS,
@@ -18,15 +17,7 @@ from felix.governance.inbound import (
     screen_for_injection,
 )
 
-
-def _settings() -> Settings:
-    return Settings(
-        database_url="memory://failopen",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-    )
-
+from tests.support.factories import make_settings
 
 # --- screening is tri-state -----------------------------------------------------
 
@@ -53,7 +44,7 @@ def test_high_score_flags() -> None:
 async def test_screener_outage_reports_unavailable(caplog: pytest.LogCaptureFixture) -> None:
     """A missing key, an expired credential, or a 429 must not read as clean."""
     with caplog.at_level(logging.ERROR, logger="felix.governance.screening"):
-        result = await screen_for_injection(_settings(), "hello", "no-such-model-id")
+        result = await screen_for_injection(make_settings(), "hello", "no-such-model-id")
     assert result.unavailable is True
     assert result.flagged is False
     assert "unavailable" in caplog.text
@@ -76,7 +67,7 @@ async def test_unparseable_reply_is_unavailable(monkeypatch: pytest.MonkeyPatch)
     import felix.patterns.model as model_mod
 
     monkeypatch.setattr(model_mod, "build_model", lambda *a, **k: _Model())
-    result = await screen_for_injection(_settings(), "hi", "m")
+    result = await screen_for_injection(make_settings(), "hi", "m")
     assert result.unavailable is True
 
 

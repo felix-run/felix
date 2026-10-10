@@ -6,9 +6,10 @@ import base64
 from typing import Any
 
 import pytest
-from felix.config import Settings
 from felix.tools.types import ToolInvocationCtx, ToolOutputDict, tool_output_content, tool_output_images
 from felix_ai.types import ImageAttachment
+
+from tests.support.factories import make_settings
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 PNG_B64 = base64.b64encode(PNG_BYTES).decode()
@@ -241,12 +242,6 @@ async def test_the_mcp_client_handler_returns_a_servers_images(monkeypatch: pyte
 # --- MCP server ----------------------------------------------------------------------------
 
 
-def _settings() -> Settings:
-    return Settings(
-        auth_mode="none", allow_insecure=True, object_store="memory", database_url="memory://mcp-images"
-    )
-
-
 async def _call_snap(images: Any, *, tenant: str = "default") -> list[dict[str, Any]]:
     """`tools/call` on Felix's MCP server for a tool returning `images()`, through `handle_rpc`."""
     from felix.context import AuthContext
@@ -256,7 +251,7 @@ async def _call_snap(images: Any, *, tenant: str = "default") -> list[dict[str, 
     from felix.tools.types import define_tool
     from felix_api.composition import compose
 
-    settings = _settings()
+    settings = make_settings()
 
     async def handler(args: dict[str, Any]) -> ToolOutputDict:
         return ToolOutputDict(content="snapped", attachments=await images())
@@ -306,7 +301,7 @@ async def test_the_mcp_server_sends_no_url_no_non_image_and_no_reference_it_did_
     from felix.storage import get_object_store
     from felix_ai.types import file_ref_url
 
-    settings = _settings()
+    settings = make_settings()
     uploaded = await put_attachment(
         get_object_store(settings),
         tenant_id="default",

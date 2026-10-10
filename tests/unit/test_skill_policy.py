@@ -28,7 +28,7 @@ from felix.skills.publish_gate import (
 )
 from felix.skills.quality_store import get_skill_policy_store
 
-from tests.skill_quality import NAME, TENANT, bundle, object_store
+from tests.support.skill_quality import NAME, TENANT, bundle, object_store
 
 _SETTINGS = {"skill_publish_min_quality": 30, "skill_publish_block_on_advisory": True}
 
