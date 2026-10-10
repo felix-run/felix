@@ -617,6 +617,18 @@
           "minItems": 1,
           "title": "Agents",
           "type": "array"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
+        },
+        "max_background": {
+          "default": 3,
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Max Background",
+          "type": "integer"
         }
       },
       "required": [

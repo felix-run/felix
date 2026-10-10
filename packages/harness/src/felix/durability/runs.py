@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Sequence
+from dataclasses import asdict
+from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
 from felix.context import try_get_context
@@ -11,7 +13,18 @@ from felix.durability.fibers import active_fiber_for_thread, create_fiber, get_f
 from felix.manifests.schema import ABSOLUTE_LIMITS, ExecutionSpec
 from felix.patterns.types import ChatMessage
 
+if TYPE_CHECKING:
+    from felix.limits import EffectiveLimits
+
 logger = logging.getLogger("felix.durability.runs")
+
+DURABLE_CHAT_KIND = "durable_chat"
+
+# Set by the worker on the request context it runs a durable run in (`fibers._run_fiber_step`).
+# `RUN_NOT_AFTER_EXTRA`: the run's own expiry, so a run it starts cannot outlive it -- the worker
+# has no token whose `exp` would clamp it. `BACKGROUND_CHILD_EXTRA`: the run is a background child.
+RUN_NOT_AFTER_EXTRA = "durable_run_not_after_ms"
+BACKGROUND_CHILD_EXTRA = "durable_background_child"
 
 
 def _ttl_seconds(settings: Settings, execution: ExecutionSpec) -> int:
@@ -54,8 +67,16 @@ async def start_durable_chat(
     model_id: str | None,
     execution: ExecutionSpec,
     pin: dict[str, Any] | None = None,
+    parent_thread_id: str | None = None,
+    ceilings: Sequence[EffectiveLimits] = (),
+    max_children: int | None = None,
 ) -> dict[str, Any]:
     """Enqueue an invoke fiber; the worker's fiber scheduler runs it.
+
+    `parent_thread_id`, `ceilings` and `max_children` are a background child's
+    (`tools/delegation.py`): the thread whose `task_result` may read this run; the `EffectiveLimits`
+    of every agent above it, which the resumed run is held to beside its own; and how many of that
+    thread's children may be in flight at once -- `TooManyChildren` past it.
 
     Raises `RunInProgress` when `thread_id` already has a durable run in flight: one run per
     thread, checked atomically with the enqueue (felix-run/felix#529).
@@ -78,6 +99,10 @@ async def start_durable_chat(
     }
     if pin:
         state["pin"] = pin
+    if parent_thread_id is not None:
+        state["parent_thread_id"] = parent_thread_id
+    if ceilings:
+        state["ceilings"] = [asdict(c) for c in ceilings]
 
     # Who asked for this run. Without it a resumed fiber runs with an empty scope set, so
     # `spec.policies` denies every policied tool and `auth.inbound.required_scopes` refuses the
@@ -98,7 +123,9 @@ async def start_durable_chat(
         # per-tenant fan-out job would write tenant A's scopes into tenant B's fiber, which
         # `_run_fiber_step` would then apply inside `rls_tenant(B)`.
         state["auth"] = {
-            "principal_sub": caller.auth.principal_sub,
+            # The person, not the worker: a run started from inside a durable run is the worker
+            # acting for someone, and the audit trail should keep naming that someone.
+            "principal_sub": caller.auth.on_behalf_of or caller.auth.principal_sub,
             "scopes": sorted(caller.auth.scopes),
             "anonymous": bool(caller.auth.anonymous),
             "scheme": caller.auth.scheme,
@@ -116,12 +143,19 @@ async def start_durable_chat(
         if isinstance(token_exp, (int, float)):
             expires_at = min(expires_at, int(token_exp) * 1000)
             state["expires_at"] = expires_at
+        # Started from inside a durable run, there is no token: the worker rebuilt the caller
+        # from state. That run's own expiry is the bound it inherited, and passing it down keeps
+        # "a fiber cannot outlive the token that started it" true through a chain of them.
+        not_after = caller.extras.get(RUN_NOT_AFTER_EXTRA)
+        if isinstance(not_after, int):
+            expires_at = min(expires_at, not_after)
+            state["expires_at"] = expires_at
     from felix.durability.webhooks import endpoints_for_run
 
     fiber = await create_fiber(
         settings,
         tenant_id,
-        kind="durable_chat",
+        kind=DURABLE_CHAT_KIND,
         status="pending",
         state=state,
         # Validated against the registry for this tenant before anything is written, so a
@@ -129,6 +163,7 @@ async def start_durable_chat(
         webhooks=endpoints_for_run(settings, tenant_id, list(execution.webhooks)),
         thread_id=thread_id,
         exclusive_on_thread=True,
+        max_children=max_children if parent_thread_id is not None else None,
     )
     return {
         "status": "accepted",
@@ -163,6 +198,36 @@ async def active_durable_run(settings: Settings, tenant_id: str, thread_id: str)
     }
 
 
+async def get_child_run(
+    settings: Settings, tenant_id: str, resume_token: str, parent_thread_id: str
+) -> dict[str, Any] | None:
+    """A background child's run, as `run_view` shows it -- only to the thread that started it.
+
+    The boundary `task_result` relies on. Anything else -- another thread's run, a run that is
+    not a child, an unknown id -- is None, indistinguishable from one that never existed.
+    """
+    row = await get_fiber(settings, tenant_id, resume_token)
+    if row is None or row.get("kind") != DURABLE_CHAT_KIND or not parent_thread_id:
+        return None
+    if dict(row.get("state_json") or {}).get("parent_thread_id") != parent_thread_id:
+        return None
+    return run_view(row)
+
+
+def restore_ceilings(state: dict[str, Any]) -> list[EffectiveLimits]:
+    """The caps a background child's run was enqueued under, for the worker to hold it to.
+
+    Written by the server, so a malformed entry is a bug rather than input -- but dropping one
+    would loosen the run, so it raises and fails the step instead.
+    """
+    from felix.limits import EffectiveLimits
+
+    raw = state.get("ceilings") or []
+    if not isinstance(raw, list):
+        raise ValueError("durable run ceilings is not a list")
+    return [EffectiveLimits(**dict(c)) for c in raw]
+
+
 def run_view(row: dict[str, Any]) -> dict[str, Any]:
     """What a caller is told about a durable run — the poll and the completion webhook both.
 
@@ -193,4 +258,14 @@ def _webhook_view(row: dict[str, Any]) -> dict[str, Any]:
     return {"webhooks": {name: str((ep or {}).get("status") or "pending") for name, ep in endpoints.items()}}
 
 
-__all__ = ["active_durable_run", "get_durable_run", "run_view", "start_durable_chat"]
+__all__ = [
+    "BACKGROUND_CHILD_EXTRA",
+    "DURABLE_CHAT_KIND",
+    "RUN_NOT_AFTER_EXTRA",
+    "active_durable_run",
+    "get_child_run",
+    "get_durable_run",
+    "restore_ceilings",
+    "run_view",
+    "start_durable_chat",
+]

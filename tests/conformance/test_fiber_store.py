@@ -207,3 +207,62 @@ async def test_concurrent_sends_start_exactly_one_run(fiber_settings: Any) -> No
 
     outcomes = await asyncio.gather(*(start() for _ in range(8)))
     assert sorted(outcomes) == ["refused"] * 7 + ["started"]
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_background_children_are_capped_per_parent_thread(fiber_settings: Any) -> None:
+    """Each child has its own thread, so one-run-per-thread never bounded how many a parent
+    could start; `max_children` does, and a finished child frees its slot. The Postgres arm reads
+    `state_json->>'parent_thread_id'`, which the memory twin reads as a dict."""
+
+    def child(parent: str) -> dict[str, Any]:
+        return {
+            "steps": [{"op": "complete"}],
+            "cursor": 0,
+            "expires_at": fibers.now_ms() + 60_000,
+            "parent_thread_id": parent,
+        }
+
+    for i in range(2):
+        await fibers.create_fiber(
+            fiber_settings, TENANT, state=child("conf:p"), thread_id=f"conf:p:task:{i}", max_children=2
+        )
+    with pytest.raises(fibers.TooManyChildren):
+        await fibers.create_fiber(
+            fiber_settings, TENANT, state=child("conf:p"), thread_id="conf:p:task:2", max_children=2
+        )
+    # Another parent's slots are its own.
+    await fibers.create_fiber(
+        fiber_settings, TENANT, state=child("conf:q"), thread_id="conf:q:task:0", max_children=2
+    )
+
+    assert await fibers.resume_due_fibers(fiber_settings) == 3  # `complete` ends each
+    await fibers.create_fiber(
+        fiber_settings, TENANT, state=child("conf:p"), thread_id="conf:p:task:3", max_children=2
+    )
+
+
+@parametrized
+@pytest.mark.asyncio
+async def test_concurrent_background_starts_respect_the_cap(fiber_settings: Any) -> None:
+    import asyncio
+
+    state = {
+        "steps": [{"op": "complete"}],
+        "cursor": 0,
+        "expires_at": fibers.now_ms() + 60_000,
+        "parent_thread_id": "conf:race-parent",
+    }
+
+    async def start(i: int) -> str:
+        try:
+            await fibers.create_fiber(
+                fiber_settings, TENANT, state=state, thread_id=f"conf:race-parent:task:{i}", max_children=3
+            )
+            return "started"
+        except fibers.TooManyChildren:
+            return "refused"
+
+    outcomes = await asyncio.gather(*(start(i) for i in range(8)))
+    assert sorted(outcomes) == ["refused"] * 5 + ["started"] * 3

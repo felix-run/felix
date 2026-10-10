@@ -1051,11 +1051,13 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       model calls to hand a job to a child agent — compiled beside `sub_agents` (store first,
       cycles and depth refused, pinned), fresh context, the child's own inbound auth checked per
       call, governed as a tool and by its own stack, untrusted output, held to the parent's caps
-      (`LimitState.ceilings`) and `max_peer_hops`. *Next:* a child thread linked in
-      `session/tree.py` so its transcript is inspectable, and a `task` entry that names a peer so
-      local and A2A delegates share one tool; background children on durable fibers, with the
-      `subagent_start`/`subagent_end` frames from *Headless / contract*; a `todo_write` tool for
-      any pattern, lifted out of `deep`'s plan tools; plan mode as a permission mode.
+      (`LimitState.ceilings`) and `max_peer_hops`. Background children (`delegation.background`):
+      a durable run per child on its own thread linked by `parent_session_id`, pinned, on what
+      is left of every budget above it, no nested background, `max_background` in flight per
+      thread, expiring with what started it, read with `task_result`; `subagent_start`/`subagent_end` frames
+      for `task`. *Next:* a `task` entry that names a peer so local and A2A delegates share one
+      tool; the same frames for router/parallel/groupchat (*Headless / contract*); a `todo_write`
+      tool for any pattern, lifted out of `deep`'s plan tools; plan mode as a permission mode.
 - [ ] **W2 — permissions, hooks, commands.** Per-session modes (`default | accept_edits | plan |
       bypass`) as one deliberate new governance slot ahead of approvals; declarative `spec.hooks`
       with `session_start`, `user_prompt_submit`, `stop` and `subagent_stop` events, delivered over
