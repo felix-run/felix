@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import hashlib
 import os
 import re
@@ -54,10 +55,12 @@ from felix.tools.workspace import (
 )
 from felix.tools.workspace_backend import (
     CheckedWriteResult,
+    DeleteResult,
     EditRefused,
     EditResult,
     ListResult,
     ReadResult,
+    RenameResult,
     SearchResult,
     TreeResult,
     WorkspaceChanged,
@@ -370,6 +373,77 @@ def _write_checked(root: Path, path: str, data: bytes, expected_sha256: str | No
     return rel
 
 
+def _source_state(root: Path, path: str, expected_sha256: str | None) -> tuple[str | None, int]:
+    """`(sha256, bytes)` of the regular file a delete or a rename is about to act on.
+
+    Missing is `FileNotFoundError` -- unlike a conditional write, which may create the file, these
+    have nothing to act on -- and a digest other than `expected_sha256` is `WorkspaceChanged`.
+    """
+    current, size, _mode = _current_state(root, path, digest=True)
+    if size is None:
+        raise FileNotFoundError(errno.ENOENT, "no such file", path)
+    if expected_sha256 is not None and current != expected_sha256:
+        raise WorkspaceChanged(current, size)
+    return current, size
+
+
+def _still_regular(parent: int, leaf: str, rel: str) -> None:
+    """The entry is still a regular file at the moment it is acted on: neither swapped for a
+    symlink nor for a directory since it was compared. `lstat`, so nothing is followed."""
+    mode = os.stat(leaf, dir_fd=parent, follow_symlinks=False).st_mode
+    if stat.S_ISLNK(mode):
+        raise SymlinkRefusedError(rel)
+    if not stat.S_ISREG(mode):
+        raise NotAFileError(rel)
+
+
+def _delete_checked(root: Path, path: str, expected_sha256: str | None) -> str:
+    """Compare, then unlink the one name: one synchronous call, under the path's lock. Returns the
+    path as the tools report it."""
+    _source_state(root, path, expected_sha256)
+    with open_workspace_parent(root, path) as (parent, leaf, rel):
+        if leaf is None:
+            raise NotAFileError(rel)
+        _still_regular(parent, leaf, rel)
+        os.unlink(leaf, dir_fd=parent)
+    return rel
+
+
+def _rename_checked(
+    root: Path, path: str, to_path: str, expected_sha256: str | None
+) -> tuple[str, str, str | None, int]:
+    """Compare, then move `path` to `to_path` without replacing anything at the destination.
+
+    Both ends are walked from the root's descriptor with no symlink followed, and the rename is
+    one `renameat` between the two directories' descriptors. The destination's missing directories
+    are made as a write makes them; a component on the way that is a file is not a place a file can
+    go (ValueError). Anything at the destination -- a file, a directory, a link, the source itself --
+    refuses the move with `FileExistsError`. Returns `(path, to_path, sha256, bytes)`.
+    """
+    current, size = _source_state(root, path, expected_sha256)
+    with contextlib.ExitStack() as stack:
+        src_dir, src_leaf, rel = stack.enter_context(open_workspace_parent(root, path))
+        if src_leaf is None:
+            raise NotAFileError(rel)
+        try:
+            dst_dir, dst_leaf, to_rel = stack.enter_context(open_workspace_parent(root, to_path, create=True))
+        except NotADirectoryError:
+            raise ValueError("the destination's directory is a file") from None
+        if dst_leaf is None:
+            raise NotAFileError(to_rel)
+        _still_regular(src_dir, src_leaf, rel)
+        try:
+            there = os.stat(dst_leaf, dir_fd=dst_dir, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            there = None
+        if there is not None and stat.S_ISLNK(there):
+            raise SymlinkRefusedError(to_rel)
+        if there is not None:
+            raise FileExistsError(errno.EEXIST, "the destination exists", to_rel)
+        os.rename(src_leaf, dst_leaf, src_dir_fd=src_dir, dst_dir_fd=dst_dir)
+    return rel, to_rel, current, size
+
+
 class LocalBackend:
     """The workspace on this host's filesystem. Stateless: the locks are module-level, so two
     instances order their writes against each other as one would."""
@@ -504,6 +578,38 @@ class LocalBackend:
         async with _write_lock(_lock_key(root, rel)):
             rel = await asyncio.to_thread(_write_checked, root, path, data, expected_sha256)
         return CheckedWriteResult(path=rel, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+
+    async def delete_file(
+        self, scope: WorkspaceScope | None, path: str, *, expected_sha256: str | None = None
+    ) -> DeleteResult:
+        """The compare and the unlink on a worker thread under the path's lock, as a checked write."""
+        root = self._root(scope)
+        rel = "/".join(workspace_parts(path)) or "."
+        async with _write_lock(_lock_key(root, rel)):
+            rel = await asyncio.to_thread(_delete_checked, root, path, expected_sha256)
+        return DeleteResult(path=rel)
+
+    async def rename_file(
+        self,
+        scope: WorkspaceScope | None,
+        path: str,
+        to_path: str,
+        *,
+        expected_sha256: str | None = None,
+    ) -> RenameResult:
+        """Under both paths' locks, taken in one order whatever the direction of the move, so two
+        renames that cross each other cannot each hold one and wait for the other."""
+        root = self._root(scope)
+        # A set: renaming a file onto itself takes its one lock once (asyncio's lock is not
+        # reentrant), and is then refused as a destination that exists.
+        targets = {_lock_key(root, "/".join(workspace_parts(p)) or ".") for p in (path, to_path)}
+        async with contextlib.AsyncExitStack() as stack:
+            for target in sorted(targets, key=str):
+                await stack.enter_async_context(_write_lock(target))
+            rel, to_rel, sha, size = await asyncio.to_thread(
+                _rename_checked, root, path, to_path, expected_sha256
+            )
+        return RenameResult(path=rel, to_path=to_rel, bytes=size, sha256=sha)
 
     async def search(
         self, scope: WorkspaceScope | None, path: str, query: str, regex: bool, max_hits: int

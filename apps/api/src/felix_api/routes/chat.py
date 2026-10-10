@@ -221,6 +221,63 @@ class WorkspaceWriteRequest(BaseModel):
         return _one_line_path(value) or value
 
 
+class WorkspaceDeleteRequest(BaseModel):
+    """Remove one workspace file, from the file pane."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path of the file to delete.")
+    expected_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="The digest `GET /chat/workspace/file` returned. When set, the delete is refused "
+        "(409 `workspace_changed`) unless the file still has it.",
+    )
+    manifest: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="The manifest a thread that has never run will run under. Ignored once it has.",
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        return _one_line_path(value) or value
+
+
+class WorkspaceRenameRequest(BaseModel):
+    """Move one workspace file to another path in the same workspace, from the file pane."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path of the file to move.")
+    to_path: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Where it goes. Must not exist; missing directories on the way are made.",
+    )
+    expected_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="The digest `GET /chat/workspace/file` returned. When set, the rename is refused "
+        "(409 `workspace_changed`) unless the file still has it.",
+    )
+    manifest: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="The manifest a thread that has never run will run under. Ignored once it has.",
+    )
+
+    @field_validator("path", "to_path")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        return _one_line_path(value) or value
+
+
 class WorkspaceTreeEntryOut(BaseModel):
     path: str
     type: Literal["file", "dir"]
@@ -258,6 +315,27 @@ class WorkspaceWriteOut(BaseModel):
     path: str = Field(description="The path written, normalised as the workspace tools report it.")
     bytes: int
     sha256: str
+    event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
+
+
+class WorkspaceDeleteOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="Where the delete note went: as `/workspace/edited`."
+    )
+    path: str = Field(description="The path deleted, normalised as the workspace tools report it.")
+    event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
+
+
+class WorkspaceRenameOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="Where the rename note went: as `/workspace/edited`."
+    )
+    path: str = Field(description="The path the file was at, normalised as the workspace tools report it.")
+    to_path: str = Field(description="The path it is at now, normalised the same way.")
+    sha256: str | None = Field(
+        description="Of the file's bytes, which the move did not change: send it back as `expected_sha256` "
+        "at the new path. Null for a file over the 512,000-byte read cap."
+    )
     event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
 
 
@@ -1378,8 +1456,8 @@ async def _deliver_workspace_note(
 ) -> tuple[Literal["queued", "recorded"], str | None]:
     """Queue `note` for the run in flight on `thread`, or append it for the next one.
 
-    The one path both `/workspace/edited` and `/workspace/write` take, so a save from the file
-    pane reaches the agent exactly as a client's own report of an edit does.
+    The one path `/workspace/edited` and the file pane's write, delete and rename all take, so a
+    change from the pane reaches the agent exactly as a client's own report of one does.
     """
     from felix.session.tree import annotate_and_append
     from felix.session.types import AppendableEvent
@@ -1604,7 +1682,6 @@ async def chat_workspace_write(
     for the next run (`status: recorded`). Audited as `workspace_write`. Lease-guarded like
     `/chat/steer`.
     """
-    from felix.audit import store as audit_store
     from felix.tools.workspace_backend import WorkspaceChanged, get_workspace_backend
     from felix.workspace_notes import WorkspaceNote
 
@@ -1637,22 +1714,168 @@ async def chat_workspace_write(
 
     note = WorkspaceNote(path=written.path, op="write", bytes=written.bytes)
     status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
-    audit_store.record_event(
-        settings,
-        auth.tenant_id,
+    _audit_workspace_change(
+        request,
+        auth,
         "workspace_write",
-        principal_subj=auth.principal_sub or "",
-        manifest_id=workspace.manifest or "",
-        status="ok",
-        payload={
-            "thread_id": thread,
-            "path": written.path,
-            "bytes": written.bytes,
-            "manifest": workspace.manifest,
-        },
+        workspace,
+        {"thread_id": thread, "path": written.path, "bytes": written.bytes},
     )
     return WorkspaceWriteOut(
         status=status, path=written.path, bytes=written.bytes, sha256=written.sha256, event_id=event_id
+    )
+
+
+def _audit_workspace_change(
+    request: Request, auth: AuthContext, kind: str, workspace: Any, payload: dict[str, Any]
+) -> None:
+    from felix.audit import store as audit_store
+
+    audit_store.record_event(
+        request.app.state.settings,
+        auth.tenant_id,
+        kind,
+        principal_subj=auth.principal_sub or "",
+        manifest_id=workspace.manifest or "",
+        status="ok",
+        payload={**payload, "manifest": workspace.manifest},
+    )
+
+
+_WORKSPACE_CHANGE_CONFLICTS = (
+    "`workspace_changed` (body carries the file's `sha256` and `bytes` now): `expected_sha256` no "
+    "longer matches. Also `workspace_unavailable` as on the reads, and the lease refusals "
+    "(`lease_read_only`, `lease_held`) as on `/chat/steer`."
+)
+
+
+@router.post(
+    "/workspace/delete",
+    response_model=WorkspaceDeleteOut,
+    responses={
+        **_WORKSPACE_READ_ERRORS,
+        409: {
+            "model": WorkspaceChangedOut,
+            "description": f"{_WORKSPACE_CHANGE_CONFLICTS} Nothing was deleted.",
+        },
+    },
+)
+async def chat_workspace_delete(
+    body: WorkspaceDeleteRequest, request: Request, lease_token: LeaseToken = None
+) -> Any:
+    """Delete one workspace file, and tell the agent.
+
+    The workspace is the one `GET /chat/workspace/tree` lists. Files only: a directory is
+    `400 not_a_file`, a symlink `400 invalid_path`, and a missing file `404 not_found`. With
+    `expected_sha256` the delete is conditional, compared under the same per-path lock the agent's
+    own writes take in this process, and refused with `409 workspace_changed` when the file is not
+    what the caller read.
+
+    Then the agent is told as `POST /chat/workspace/edited` would tell it (`op: delete`). Audited
+    as `workspace_delete`. Lease-guarded like `/chat/steer`.
+    """
+    from felix.tools.workspace_backend import WorkspaceChanged, get_workspace_backend
+    from felix.workspace_notes import WorkspaceNote
+
+    settings = request.app.state.settings
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    _pane_parts(body.path)
+    auth, workspace = await _thread_workspace(request, body.thread_id, body.manifest)
+    backend = get_workspace_backend(settings)
+    expected = body.expected_sha256.lower() if body.expected_sha256 else None
+    # Its own request context, as a write has, so the hosted backend backs up the scope it changed.
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=workspace.manifest or "", thread_id=thread)
+    try:
+        async with async_run_with_context(ctx):
+            deleted = await backend.delete_file(workspace.scope, body.path, expected_sha256=expected)
+    except WorkspaceChanged as exc:
+        return JSONResponse(status_code=409, content=exc.detail)
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from None
+
+    note = WorkspaceNote(path=deleted.path, op="delete")
+    status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
+    _audit_workspace_change(
+        request, auth, "workspace_delete", workspace, {"thread_id": thread, "path": deleted.path}
+    )
+    return WorkspaceDeleteOut(status=status, path=deleted.path, event_id=event_id)
+
+
+@router.post(
+    "/workspace/rename",
+    response_model=WorkspaceRenameOut,
+    responses={
+        **_WORKSPACE_READ_ERRORS,
+        409: {
+            "model": WorkspaceChangedOut | WorkspaceErrorOut,
+            "description": f"`target_exists`: something is already at `to_path` (the file itself "
+            f"included). {_WORKSPACE_CHANGE_CONFLICTS} Nothing was moved.",
+        },
+    },
+)
+async def chat_workspace_rename(
+    body: WorkspaceRenameRequest, request: Request, lease_token: LeaseToken = None
+) -> Any:
+    """Move one workspace file to another path in the same workspace, and tell the agent.
+
+    Never replaces anything: when `to_path` exists the move is refused with `409 target_exists`.
+    Directories `to_path` needs are made, as a write makes them. Files only, refused as
+    `POST /chat/workspace/delete` refuses them; both paths are held to the same rules as a write's
+    (`invalid_path`, `reserved_path`), and a directory on the way to `to_path` that is a file is
+    `400 invalid_path`. With `expected_sha256` the move is conditional, compared under both paths'
+    locks.
+
+    Then the agent is told as `POST /chat/workspace/edited` would tell it (`op: rename`, with
+    `to_path`). Audited as `workspace_rename`. Lease-guarded like `/chat/steer`.
+    """
+    from felix.tools.workspace_backend import WorkspaceChanged, get_workspace_backend
+    from felix.workspace_notes import WorkspaceNote
+
+    settings = request.app.state.settings
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    _pane_parts(body.path)
+    _pane_parts(body.to_path)
+    auth, workspace = await _thread_workspace(request, body.thread_id, body.manifest)
+    backend = get_workspace_backend(settings)
+    expected = body.expected_sha256.lower() if body.expected_sha256 else None
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=workspace.manifest or "", thread_id=thread)
+    try:
+        async with async_run_with_context(ctx):
+            moved = await backend.rename_file(
+                workspace.scope, body.path, body.to_path, expected_sha256=expected
+            )
+    except WorkspaceChanged as exc:
+        return JSONResponse(status_code=409, content=exc.detail)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="target_exists") from None
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from None
+
+    note = WorkspaceNote(path=moved.path, op="rename", to_path=moved.to_path)
+    status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
+    _audit_workspace_change(
+        request,
+        auth,
+        "workspace_rename",
+        workspace,
+        {"thread_id": thread, "path": moved.path, "to_path": moved.to_path},
+    )
+    return WorkspaceRenameOut(
+        status=status, path=moved.path, to_path=moved.to_path, sha256=moved.sha256, event_id=event_id
     )
 
 

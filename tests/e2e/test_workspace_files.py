@@ -592,3 +592,290 @@ async def test_the_http_entry_cannot_reach_past_the_walk(
             assert (write.status_code, write.json()) == (400, {"detail": "invalid_path"}), write.text
         assert (outside / "secret.txt").read_text() == "not yours"
         assert sorted(p.name for p in outside.iterdir()) == ["secret.txt"]
+
+
+# --- deleting and renaming ----------------------------------------------------------------------
+
+
+async def _note(app: Any, thread: str, event_id: str) -> dict[str, Any]:
+    snap = (await app.client.get(f"/chat/sessions/{thread}")).json()
+    return next(e for e in snap["transcript"] if e["id"] == event_id)
+
+
+async def _audit(app: Any, event_type: str) -> list[tuple[Any, str, str]]:
+    from felix.flush import flush_all
+
+    await flush_all(app.settings)
+    resp = await app.client.get("/audit", params={"event_type": event_type})
+    assert resp.status_code == 200, resp.text
+    return [(r["payload_json"], r["manifest_id"], r["status"]) for r in resp.json()["items"]]
+
+
+async def test_a_delete_removes_the_file_and_the_next_turn_is_told(boot: Any, root: Path) -> None:
+    thread = "pane-delete"
+    async with boot([], env=_env(root)) as app:
+        await _run(app, thread)
+        target = _scope_dir(root, thread) / "notes" / "plan.md"
+        target.parent.mkdir()
+        target.write_text("old plan")
+        resp = await app.client.post(
+            "/chat/workspace/delete",
+            json={
+                "thread_id": thread,
+                "path": "notes/./plan.md",
+                "expected_sha256": hashlib.sha256(b"old plan").hexdigest(),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        out = resp.json()
+        assert (out["status"], out["path"]) == ("recorded", "notes/plan.md")
+        assert not target.exists()
+        assert target.parent.is_dir()
+
+        entry = await _note(app, thread, out["event_id"])
+        assert (entry["metadata"]["type"], entry["metadata"]["op"], entry["metadata"]["path"]) == (
+            "workspace_edit",
+            "delete",
+            "notes/plan.md",
+        )
+        assert entry["content"].startswith("The operator deleted `notes/plan.md` from the workspace.")
+        assert await _audit(app, "workspace_delete") == [
+            ({"thread_id": f"{TENANT}:{thread}", "path": "notes/plan.md", "manifest": "quick"}, "quick", "ok")
+        ]
+
+
+async def test_a_rename_moves_the_file_into_a_new_directory_and_the_next_turn_is_told(
+    boot: Any, root: Path
+) -> None:
+    thread = "pane-rename"
+    async with boot([], env=_env(root)) as app:
+        await _run(app, thread)
+        here = _scope_dir(root, thread)
+        (here / "draft.md").write_text("draft")
+        digest = hashlib.sha256(b"draft").hexdigest()
+        resp = await app.client.post(
+            "/chat/workspace/rename",
+            json={
+                "thread_id": thread,
+                "path": "draft.md",
+                "to_path": "docs/final/plan.md",
+                "expected_sha256": digest.upper(),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        out = resp.json()
+        assert {k: out[k] for k in ("status", "path", "to_path", "sha256")} == {
+            "status": "recorded",
+            "path": "draft.md",
+            "to_path": "docs/final/plan.md",
+            "sha256": digest,
+        }
+        assert not (here / "draft.md").exists()
+        assert (here / "docs" / "final" / "plan.md").read_text() == "draft"
+
+        read = (
+            await app.client.get(
+                "/chat/workspace/file", params={"thread_id": thread, "path": "docs/final/plan.md"}
+            )
+        ).json()
+        assert read["sha256"] == out["sha256"]
+
+        entry = await _note(app, thread, out["event_id"])
+        md = entry["metadata"]
+        assert (md["op"], md["path"], md["to_path"]) == ("rename", "draft.md", "docs/final/plan.md")
+        assert entry["content"].startswith(
+            "The operator renamed `draft.md` to `docs/final/plan.md` in the workspace."
+        )
+        assert await _audit(app, "workspace_rename") == [
+            (
+                {
+                    "thread_id": f"{TENANT}:{thread}",
+                    "path": "draft.md",
+                    "to_path": "docs/final/plan.md",
+                    "manifest": "quick",
+                },
+                "quick",
+                "ok",
+            )
+        ]
+
+
+async def test_a_rename_during_a_run_is_queued_for_its_next_model_call(boot: Any, root: Path) -> None:
+    from felix.workspace_notes import drain, mark_run_active, mark_run_idle
+
+    thread = "pane-rename-live"
+    scoped = f"{TENANT}:{thread}"
+    async with boot([], env=_env(root)) as app:
+        (_scope_dir(root, thread) / "a.md").write_text("a")
+        await mark_run_active(TENANT, scoped)
+        try:
+            resp = await app.client.post(
+                "/chat/workspace/rename", json={"thread_id": thread, "path": "a.md", "to_path": "b.md"}
+            )
+            assert resp.status_code == 200, resp.text
+            assert (resp.json()["status"], resp.json()["event_id"]) == ("queued", None)
+            notes = await drain(TENANT, scoped)
+            assert [(n.path, n.op, n.to_path) for n in notes] == [("a.md", "rename", "b.md")]
+        finally:
+            await mark_run_idle(TENANT, scoped)
+
+
+@pytest.mark.parametrize(
+    ("route", "extra", "status", "detail"),
+    [
+        ("delete", {"path": "missing.md"}, 404, "not_found"),
+        ("delete", {"path": "file.txt/under"}, 404, "not_found"),
+        ("delete", {"path": "docs"}, 400, "not_a_file"),
+        ("delete", {"path": "link.txt"}, 400, "invalid_path"),
+        ("delete", {"path": "escape/secret.txt"}, 400, "invalid_path"),
+        ("delete", {"path": "../outside/secret.txt"}, 400, "invalid_path"),
+        ("delete", {"path": "/etc/passwd"}, 400, "invalid_path"),
+        ("delete", {"path": "x" * 256}, 400, "invalid_path"),
+        ("delete", {"path": ".git/config"}, 400, "reserved_path"),
+        ("delete", {"path": ".felix-scopes/x"}, 400, "reserved_path"),
+        ("rename", {"path": "missing.md", "to_path": "new.md"}, 404, "not_found"),
+        ("rename", {"path": "file.txt", "to_path": "other.txt"}, 409, "target_exists"),
+        ("rename", {"path": "file.txt", "to_path": "docs"}, 409, "target_exists"),
+        ("rename", {"path": "file.txt", "to_path": "./file.txt"}, 409, "target_exists"),
+        ("rename", {"path": "docs", "to_path": "docs2"}, 400, "not_a_file"),
+        ("rename", {"path": "link.txt", "to_path": "new.md"}, 400, "invalid_path"),
+        ("rename", {"path": "file.txt", "to_path": "link.txt"}, 400, "invalid_path"),
+        ("rename", {"path": "file.txt", "to_path": "escape/stolen.txt"}, 400, "invalid_path"),
+        ("rename", {"path": "file.txt", "to_path": "../outside/stolen.txt"}, 400, "invalid_path"),
+        ("rename", {"path": "file.txt", "to_path": "other.txt/inside.txt"}, 400, "invalid_path"),
+        ("rename", {"path": "file.txt", "to_path": "y" * 256}, 400, "invalid_path"),
+        ("rename", {"path": "file.txt", "to_path": ".git/hooks/pre-commit"}, 400, "reserved_path"),
+        ("rename", {"path": ".git/config", "to_path": "config"}, 400, "reserved_path"),
+        ("rename", {"path": "file.txt", "to_path": "a/.felix-edit-0123456789abcdef"}, 400, "reserved_path"),
+    ],
+)
+async def test_a_delete_or_rename_that_cannot_be_made_changes_nothing(
+    boot: Any, root: Path, tmp_path: Path, route: str, extra: dict[str, Any], status: int, detail: str
+) -> None:
+    thread = "pane-bad-change"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not yours")
+        (here / "docs").mkdir()
+        (here / "file.txt").write_text("a file")
+        (here / "other.txt").write_text("another")
+        (here / ".git").mkdir()
+        (here / ".git" / "config").write_text("[core]")
+        os.symlink(outside / "secret.txt", here / "link.txt")
+        os.symlink(outside, here / "escape")
+        before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
+        resp = await app.client.post(f"/chat/workspace/{route}", json={"thread_id": thread, **extra})
+        assert (resp.status_code, resp.json()) == (status, {"detail": detail}), resp.text
+        assert sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")) == before
+        assert (here / "file.txt").read_text() == "a file"
+        assert (here / "other.txt").read_text() == "another"
+        assert (outside / "secret.txt").read_text() == "not yours"
+        assert (await app.client.get(f"/chat/sessions/{thread}")).json()["transcript"] == []
+
+
+@pytest.mark.parametrize("route", ["delete", "rename"])
+async def test_a_stale_hash_refuses_the_change_and_leaves_the_file(boot: Any, root: Path, route: str) -> None:
+    thread = f"pane-stale-{route}"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        target = here / "plan.md"
+        target.write_text("what the operator read")
+        read = (
+            await app.client.get("/chat/workspace/file", params={"thread_id": thread, "path": "plan.md"})
+        ).json()
+        target.write_text("what the agent wrote since")
+        body: dict[str, Any] = {"thread_id": thread, "path": "plan.md", "expected_sha256": read["sha256"]}
+        if route == "rename":
+            body["to_path"] = "moved/plan.md"
+        resp = await app.client.post(f"/chat/workspace/{route}", json=body)
+        now = b"what the agent wrote since"
+        assert (resp.status_code, resp.json()) == (
+            409,
+            {"detail": "workspace_changed", "sha256": hashlib.sha256(now).hexdigest(), "bytes": len(now)},
+        )
+        assert target.read_bytes() == now
+        assert not (here / "moved").exists()
+        assert (await app.client.get(f"/chat/sessions/{thread}")).json()["transcript"] == []
+
+
+@pytest.mark.parametrize(
+    ("route", "body"),
+    [
+        ("delete", {"path": "a.md", "content": "x"}),
+        ("delete", {"path": "a.md", "op": "delete"}),
+        ("delete", {"path": "a.md", "expected_sha256": "nothex"}),
+        ("delete", {"path": "a\nb.md"}),
+        ("rename", {"path": "a.md"}),
+        ("rename", {"path": "a.md", "to_path": "b.md", "overwrite": True}),
+        ("rename", {"path": "a.md", "to_path": "b\n.md"}),
+        ("rename", {"path": "a.md", "to_path": ""}),
+    ],
+)
+async def test_a_malformed_change_is_a_422(boot: Any, root: Path, route: str, body: dict[str, Any]) -> None:
+    thread = "pane-422"
+    async with boot([], env=_env(root)) as app:
+        (_scope_dir(root, thread) / "a.md").write_text("kept")
+        resp = await app.client.post(f"/chat/workspace/{route}", json={"thread_id": thread, **body})
+        assert resp.status_code == 422, resp.text
+        assert (_scope_dir(root, thread) / "a.md").read_text() == "kept"
+
+
+async def test_an_observer_may_not_delete_or_rename(boot: Any, root: Path) -> None:
+    from felix_api.routes.chat import LEASE_TOKEN_HEADER
+
+    thread = "pane-lease-change"
+    async with boot([], env=_env(root)) as app:
+        await app.client.post(
+            "/chat/sessions/lease", json={"thread_id": thread, "holder_id": "tab-a", "mode": "exclusive"}
+        )
+        observer = await app.client.post(
+            "/chat/sessions/lease", json={"thread_id": thread, "holder_id": "tab-b", "mode": "shared"}
+        )
+        headers = {LEASE_TOKEN_HEADER: observer.json()["token"]}
+        here = _scope_dir(root, thread)
+        (here / "a.md").write_text("as it was")
+        for route, extra in (("delete", {}), ("rename", {"to_path": "b.md"})):
+            refused = await app.client.post(
+                f"/chat/workspace/{route}",
+                json={"thread_id": thread, "path": "a.md", **extra},
+                headers=headers,
+            )
+            assert (refused.status_code, refused.json()["detail"]) == (409, "lease_read_only"), route
+        assert sorted(p.name for p in here.iterdir()) == ["a.md"]
+
+
+async def test_a_thread_with_a_checkout_deletes_and_renames_in_the_checkout(
+    boot: Any, root: Path, tmp_path: Path
+) -> None:
+    from felix.config import get_settings
+    from felix.repos.checkouts import REPO_DIR, STATE_FILE, thread_dir
+
+    thread = "pane-repo-change"
+    checkouts = tmp_path / "checkouts"
+    async with boot([], env=_env(root, FELIX_REPO_CHECKOUT_ROOT=str(checkouts))) as app:
+        directory = thread_dir(get_settings(), TENANT, f"{TENANT}:{thread}")
+        repo = directory / REPO_DIR
+        (repo / "pkg").mkdir(parents=True)
+        (repo / "pkg" / "old.py").write_text("old")
+        (repo / "pkg" / "gone.py").write_text("gone")
+        (directory / STATE_FILE).write_text(json.dumps({"state": "ready", "repo": "acme/widgets"}))
+        scoped = _scope_dir(root, thread)
+        (scoped / "pkg").mkdir()
+        (scoped / "pkg" / "gone.py").write_text("the scoped copy")
+
+        renamed = await app.client.post(
+            "/chat/workspace/rename",
+            json={"thread_id": thread, "path": "pkg/old.py", "to_path": "pkg/new.py"},
+        )
+        assert renamed.status_code == 200, renamed.text
+        assert (repo / "pkg" / "new.py").read_text() == "old"
+        assert not (repo / "pkg" / "old.py").exists()
+
+        deleted = await app.client.post(
+            "/chat/workspace/delete", json={"thread_id": thread, "path": "pkg/gone.py"}
+        )
+        assert deleted.status_code == 200, deleted.text
+        assert not (repo / "pkg" / "gone.py").exists()
+        assert (scoped / "pkg" / "gone.py").read_text() == "the scoped copy"

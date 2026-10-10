@@ -35,6 +35,8 @@ _STATUS = {
     "edit_refused": 422,
     "io_error": 500,
     "conflict": 409,
+    "workspace_changed": 409,
+    "target_exists": 409,
     "clone_failed": 502,
     "unavailable": 503,
     "timeout": 504,
@@ -99,7 +101,7 @@ class FakeGateway:
             helper.ROOT = previous
         if answer["ok"]:
             return httpx.Response(200, json={"result": answer["result"]})
-        refusal = {k: answer[k] for k in ("error", "message", "kind") if k in answer}
+        refusal = {k: answer[k] for k in ("error", "message", "kind", "sha256", "bytes") if k in answer}
         return httpx.Response(_STATUS[answer["error"]], json=refusal)
 
     async def _clone(self, directory: Path, body: dict[str, Any]) -> httpx.Response:
