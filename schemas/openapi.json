@@ -86,6 +86,34 @@
         "title": "AdoptIn",
         "type": "object"
       },
+      "AskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "manifest": {
+            "minLength": 1,
+            "title": "Manifest",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "manifest",
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
       "AuthMethodsOut": {
         "description": "How a caller can get a credential here, and whether it needs one.",
         "properties": {
@@ -7725,6 +7753,50 @@
           }
         },
         "summary": "Chat Abort",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/ask": {
+      "post": {
+        "description": "Answer one question from a thread's context, leaving the thread exactly as it was.\n\nRead-only: no session event, no steer or follow-up, no phase change, and no lease check \u2014 a\nquestion is most useful while a run or another tab holds the thread. One model call, no\ntools, metered under `manifest` like `/chat/compact`. `status` is `not_in_context` when the\nconversation does not hold the answer.",
+        "operationId": "chat_ask_chat_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat Ask Chat Ask Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Ask",
         "tags": [
           "Threads"
         ]

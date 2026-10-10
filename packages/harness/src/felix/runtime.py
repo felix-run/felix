@@ -127,6 +127,55 @@ def _route_window(model_id: str, settings: Settings) -> int:
     return entry_for(route.model if route is not None else model_id).context_window
 
 
+def session_plumbing(settings: Settings, manifest: Any, tenant_id: str) -> tuple[Any | None, Any]:
+    """The session store and strategy a turn of `manifest` reads its history through.
+
+    One place, so anything that renders a thread the way its next turn will (`POST /chat/ask`)
+    does it with the same checkpointer, strategy and budgets, not a second copy of them. The
+    store is None for `checkpointer: none`, which runs the agent with no session state.
+    """
+    spec = getattr(manifest, "spec", None)
+    checkpointer = str(getattr(getattr(spec, "memory", None), "checkpointer", "postgres") or "postgres")
+    strategy_spec = getattr(spec, "session", None)
+    strategy_name = getattr(strategy_spec, "strategy", "full_replay") if strategy_spec else "full_replay"
+    memory_spec = getattr(spec, "memory", None)
+    validate_checkpointer_config(
+        checkpointer,
+        session_strategy=strategy_name,
+        compact_after_turn=bool(getattr(strategy_spec, "compact_after_turn", False)),
+        memory_capture=bool(getattr(getattr(memory_spec, "capture", None), "enabled", False)),
+        memory_recall_tools=bool(getattr(getattr(memory_spec, "recall", None), "tools", False)),
+    )
+    session_store = build_checkpointer(checkpointer, settings, tenant_id=tenant_id)
+    strategy = get_session_strategy(
+        strategy_name,
+        reserve_tokens=int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384),
+        keep_recent_tokens=int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000),
+        context_window_tokens=_context_window_for_manifest(manifest, strategy_spec, settings),
+        compaction_enabled=bool(getattr(strategy_spec, "compaction_enabled", True)),
+    )
+    return session_store, strategy
+
+
+def default_object_store(settings: Settings) -> Any | None:
+    """The deployment's object store, or None — logged — when it cannot be opened."""
+    try:
+        from felix.storage import get_object_store
+
+        # Cached, not built per request: S3ObjectStore opens a client it never
+        # closed, so a fresh store per chat leaked one every time.
+        return get_object_store(settings)
+    except Exception:
+        # Silently swallowing this meant SYSTEM.md, AGENTS.md, instruction files and
+        # object-store skills all vanished and the agent fell back to
+        # f"You are {name}." — a misconfigured bucket quietly removed the prompt.
+        logger.error(
+            "object store unavailable; system prompt files and object-store skills will not be loaded",
+            exc_info=True,
+        )
+        return None
+
+
 async def build_tenant_agent(
     settings: Settings,
     *,
@@ -152,55 +201,14 @@ async def build_tenant_agent(
     the sub-agents its pin verified rather than whatever resolves a moment later;
     `tests/unit/test_invariants.py` holds the call sites to it.
     """
-    spec = getattr(manifest, "spec", None)
-    checkpointer = str(getattr(getattr(spec, "memory", None), "checkpointer", "postgres") or "postgres")
-    strategy_spec = getattr(spec, "session", None)
-    strategy_name = getattr(strategy_spec, "strategy", "full_replay") if strategy_spec else "full_replay"
-    memory_spec = getattr(spec, "memory", None)
-    validate_checkpointer_config(
-        checkpointer,
-        session_strategy=strategy_name,
-        compact_after_turn=bool(getattr(strategy_spec, "compact_after_turn", False)),
-        memory_capture=bool(getattr(getattr(memory_spec, "capture", None), "enabled", False)),
-        memory_recall_tools=bool(getattr(getattr(memory_spec, "recall", None), "tools", False)),
-    )
-    # `None` here is a supported outcome, not a failure: `checkpointer: none` runs
-    # the agent with no session state, which the loop already handles.
-    session_store = build_checkpointer(checkpointer, settings, tenant_id=tenant_id)
-    reserve = int(getattr(strategy_spec, "reserve_tokens", 16384) or 16384)
-    keep_recent = int(getattr(strategy_spec, "keep_recent_tokens", 20000) or 20000)
-    context_window = _context_window_for_manifest(manifest, strategy_spec, settings)
-    compaction_enabled = bool(getattr(strategy_spec, "compaction_enabled", True))
-
-    store = object_store
-    if store is None:
-        try:
-            from felix.storage import get_object_store
-
-            # Cached, not built per request: S3ObjectStore opens a client it never
-            # closed, so a fresh store per chat leaked one every time.
-            store = get_object_store(settings)
-        except Exception:
-            # Silently swallowing this meant SYSTEM.md, AGENTS.md, instruction files and
-            # object-store skills all vanished and the agent fell back to
-            # f"You are {name}." — a misconfigured bucket quietly removed the prompt.
-            logger.error(
-                "object store unavailable; system prompt files and object-store skills will not be loaded",
-                exc_info=True,
-            )
-            store = None
+    session_store, session_strategy = session_plumbing(settings, manifest, tenant_id)
+    store = object_store if object_store is not None else default_object_store(settings)
 
     deps = BuildDeps(
         tools=tools,
         settings=settings,
         session_store=session_store,
-        session_strategy=get_session_strategy(
-            strategy_name,
-            reserve_tokens=reserve,
-            keep_recent_tokens=keep_recent,
-            context_window_tokens=context_window,
-            compaction_enabled=compaction_enabled,
-        ),
+        session_strategy=session_strategy,
         object_store=store,
         tenant_id=tenant_id,
         skill_owner=skill_owner,
@@ -238,4 +246,10 @@ def _tenant_sub_agent_builder(
     return build
 
 
-__all__ = ["build_tenant_agent", "prepare_tenant_invoke", "resolve_tenant_manifest"]
+__all__ = [
+    "build_tenant_agent",
+    "default_object_store",
+    "prepare_tenant_invoke",
+    "resolve_tenant_manifest",
+    "session_plumbing",
+]

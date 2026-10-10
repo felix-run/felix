@@ -210,6 +210,14 @@ class CompactRequest(BaseModel):
     instructions: str | None = None
 
 
+class AskRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    manifest: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=8000)
+
+
 class LabelRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -1910,6 +1918,41 @@ async def chat_thinking(
         sync=True,
     )
     return {"ok": True, "thread_id": thread, "thinking_level": level}
+
+
+@router.post("/ask")
+async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
+    """Answer one question from a thread's context, leaving the thread exactly as it was.
+
+    Read-only: no session event, no steer or follow-up, no phase change, and no lease check — a
+    question is most useful while a run or another tab holds the thread. One model call, no
+    tools, metered under `manifest` like `/chat/compact`. `status` is `not_in_context` when the
+    conversation does not hold the answer.
+    """
+    from felix.session.side_question import answer_side_question
+
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    try:
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
+    except (LookupError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
+    try:
+        return await answer_side_question(
+            settings,
+            manifest=resolved.manifest,
+            manifest_id=body.manifest,
+            tenant_id=auth.tenant_id,
+            thread_id=thread,
+            question=body.question,
+            tools=request.app.state.tools,
+        )
+    except ModelGatewayError as exc:
+        log_gateway_error(logger, exc)
+        raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
 
 
 @router.post("/compact", responses=LEASE_REFUSALS)
