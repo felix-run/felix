@@ -49,6 +49,7 @@ def build_snapshot(
     parent_session_id: str | None = None,
     labels: dict[str, str] | None = None,
     feedback: dict[str, dict[str, Any]] | None = None,
+    todos: list[dict[str, Any]] | None = None,
     queued_steer: list[dict[str, Any]] | None = None,
     attached: bool = False,
     locked: bool = False,
@@ -91,6 +92,9 @@ def build_snapshot(
         # A person's rating of an assistant turn, keyed by its event id:
         # `{"rating": "up" | "down", "note": str, "at": epoch ms}`.
         "feedback": feedback or {},
+        # The agent's checklist (`todo_write`), as the last successful write on the current
+        # branch left it: `[{id, content, status: pending | in_progress | completed, active_form}]`.
+        "todos": todos or [],
         "transcript": transcript,
         # The durable run in flight on this thread, or null. `phase` cannot say so -- a durable
         # run's agent is in the worker, which writes no thread phase -- and the run's token was
@@ -157,8 +161,9 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
     from felix.session.lease import lease_status
     from felix.session.store import get_session_store
     from felix.session.thread_state import get_thread_meta
-    from felix.session.tree import stored_leaf
+    from felix.session.tree import active_branch_events, stored_leaf
     from felix.steer import peek_steer_count
+    from felix.tools.todos import todos_on_branch
 
     store = get_session_store(settings, tenant_id=tenant_id)
     # Six reads against five different stores, none of which depends on another. They
@@ -191,6 +196,7 @@ async def gather_thread_snapshot(*, settings: Any, tenant_id: str, thread: str) 
         parent_session_id=meta.get("parent_session_id"),
         labels=dict(meta.get("labels") or {}),
         feedback=dict(meta.get("feedback") or {}),
+        todos=todos_on_branch(active_branch_events(events, leaf_id=leaf)),
         queued_steer=[{"placeholder": True}] * steer_n if steer_n else [],
         revision=int(meta.get("revision") or 0),
         attached=bool(lease.get("attached")),
