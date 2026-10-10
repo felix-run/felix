@@ -75,11 +75,14 @@ async def test_cowork_manifest_loads() -> None:
     assert m.metadata.name == "cowork"
     # The user's folder is the workspace: bound beside the server's `list_dir`, the model
     # listed the server's empty one and told the user theirs was empty.
-    assert not {"list_dir", "read_file", "write_file", "edit_file", "search_files"} & set(m.spec.tools)
+    from felix.tools.workspace import WORKSPACE_TOOL_NAMES
+
+    assert not WORKSPACE_TOOL_NAMES & set(m.spec.tools)
     client = {t.name for t in m.spec.client_tools}
-    assert {"local_list", "local_read", "local_search", "local_write", "local_edit", "local_shell"} <= client
+    changes = {"local_write", "local_edit", "local_delete", "local_rename"}
+    assert {"local_list", "local_read", "local_search", "local_shell"} | changes <= client
     gated = {tool for rule in m.spec.approvals for tool in rule.tools}
-    assert {"local_write", "local_edit", "local_shell"} <= gated, "a write to the user's disk ran ungated"
+    assert changes | {"local_shell"} <= gated, "a change to the user's disk ran ungated"
     assert m.spec.execution.mode == "durable"
 
 

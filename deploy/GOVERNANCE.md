@@ -956,7 +956,8 @@ What is true there now, and what is not:
   namespace). It stops other containers calling `/run`; it grants that code nothing new.
 - The workspace is still shared, and code in `shell` can change it while the API is using it —
   from a process that outlives the tool call. Anything the API does *with* the checkout must
-  treat it as agent-written. `read_file`, `write_file`, `edit_file`, `list_dir`, `search_files`,
+  treat it as agent-written. `read_file`, `write_file`, `edit_file`, `delete_file`, `rename_file`,
+  `list_dir`, `search_files`,
   context-file loading (`AGENTS.md`, `system_prompt.files`) and the shell tool's `cwd` check
   never open a workspace path by name: they walk it from a descriptor of the root, one
   component at a time with `O_NOFOLLOW`, and refuse a symlink at any component, pointing out of

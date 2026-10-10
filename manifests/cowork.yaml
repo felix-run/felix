@@ -8,7 +8,7 @@ metadata:
   tags: [react, workspace, durable]
   greeting:
     headline: "What should we do in this folder?"
-    subtitle: "cowork reads your folder without asking, and asks before it writes a file or runs a command."
+    subtitle: "cowork reads your folder without asking, and asks before it changes a file or runs a command."
   starters:
     - title: "List the workspace"
       prompt: "List the top-level files and folders in the workspace."
@@ -31,9 +31,11 @@ spec:
       You are Felix, a workspace agent.
       The workspace is the user's own folder, open in their browser or terminal.
       Reach it only through the local_* tools: local_list, local_read and
-      local_search to look, local_write and local_edit to change files, and
+      local_search to look, local_write and local_edit to change files,
+      local_rename to move or rename one, local_delete to remove one, and
       local_shell for commands. Paths are relative to the folder's root.
-      Writes and commands pause for the user's approval.
+      Writes, renames, deletes and commands pause for the user's approval.
+      A delete cannot be undone: delete only a file the user asked you to.
       Prefer small, reversible changes. Summarize what you did when finished.
       Always refer to yourself as Felix, never as Claude or any other name.
 
@@ -143,6 +145,33 @@ spec:
         required: [path, old_string, new_string]
         additionalProperties: false
       timeout_seconds: 300
+    - name: local_delete
+      description: Delete one file from the user's folder. Files only, never a folder. There is no undo.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+        required: [path]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_rename
+      description: >-
+        Move or rename one file in the user's folder. Never overwrites: refused when to_path
+        already exists. Folders on the way to to_path are created.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: The file to move, relative to the folder's root.
+          to_path:
+            type: string
+            description: Its new path, relative to the folder's root. Must not exist yet.
+        required: [path, to_path]
+        additionalProperties: false
+      timeout_seconds: 300
     - name: local_shell
       description: Run a shell command in the user's local environment.
       args_schema:
@@ -173,9 +202,11 @@ spec:
     - name: calculator-help
 
   approvals:
+    # Every tool that changes a file in the user's folder. A delete is never gated less than a
+    # write: it cannot be undone, and a rename can take a file out from under its name.
     - id: workspace-write
-      description: Confirm writes to your folder
-      tools: [local_write, local_edit]
+      description: Confirm changes to files in your folder
+      tools: [local_write, local_edit, local_delete, local_rename]
       ttl_seconds: 600
     - id: client-shell
       description: Confirm local shell commands
