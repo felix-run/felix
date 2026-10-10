@@ -521,6 +521,20 @@ async def _invoke_resume_point(
     return "fresh", None
 
 
+def _stored_ceilings(state: dict[str, Any]) -> list[Any]:
+    """The `EffectiveLimits` a background child's run was enqueued under (`runs.start_durable_chat`).
+
+    Written by the server, so a malformed entry is a bug rather than input -- but dropping one
+    would loosen the run, so it fails the step instead.
+    """
+    from felix.limits import EffectiveLimits
+
+    raw = state.get("ceilings") or []
+    if not isinstance(raw, list):
+        raise ValueError("fiber state ceilings is not a list")
+    return [EffectiveLimits(**dict(c)) for c in raw]
+
+
 async def _run_fiber_step(
     settings: Settings, row: dict[str, Any], *, hold_claim: bool = False
 ) -> dict[str, Any]:
@@ -635,6 +649,9 @@ async def _run_fiber_step(
                     manifest_id=manifest_id,
                     thread_id=thread,
                 )
+                # A background child's run carries the caps of every agent above it; the
+                # parent may be long finished, and its limits still bound what it delegated.
+                req_ctx.limit_state.ceilings = _stored_ceilings(state)
                 if isinstance(raw_messages, list) and raw_messages:
                     messages = [
                         m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m)

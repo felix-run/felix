@@ -1116,6 +1116,9 @@ class DelegationSpec(_Strict):
     """
 
     agents: list[DelegateRef] = Field(min_length=1, max_length=MAX_REFS)
+    # Lets the model start a child as a durable run and read it later with `task_result`.
+    # Needs `felix-worker` (and `felix-scheduler`): nothing in the API process runs durable runs.
+    background: bool = False
 
     @model_validator(mode="after")
     def _names_unique(self) -> DelegationSpec:

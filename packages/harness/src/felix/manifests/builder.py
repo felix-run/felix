@@ -2102,13 +2102,19 @@ async def build_agent(
         # try/except: a child that fails to compile already raised above, and a manifest asking
         # for delegation must not compile without it.
         if m.spec.delegation is not None:
-            from felix.tools.delegation import TASK_TOOL_NAME, make_task_tool
+            from felix.tools.delegation import (
+                TASK_RESULT_TOOL_NAME,
+                TASK_TOOL_NAME,
+                make_task_result_tool,
+                make_task_tool,
+            )
 
-            if any(t.name == TASK_TOOL_NAME for t in resolved):
+            binds = [TASK_TOOL_NAME, *([TASK_RESULT_TOOL_NAME] if m.spec.delegation.background else [])]
+            for taken in (t.name for t in resolved if t.name in binds):
                 # `_append_unique_tools` keeps the first of a name, so a provider or plugin tool
                 # called `task` would silently stand in for delegation.
                 raise ValueError(
-                    f"spec.delegation binds a tool named '{TASK_TOOL_NAME}', and '{m.metadata.name}' "
+                    f"spec.delegation binds a tool named '{taken}', and '{m.metadata.name}' "
                     f"already has one. Remove the other tool or the delegation block."
                 )
             resolved.append(
@@ -2118,8 +2124,11 @@ async def build_agent(
                         for ref in m.spec.delegation.agents
                     },
                     ceiling=effective_limits(m.spec.limits),
+                    background=m.spec.delegation.background,
                 )
             )
+            if m.spec.delegation.background:
+                resolved.append(make_task_result_tool())
 
         # A pattern that matches no bound tool gates nothing — a typo, a renamed MCP server,
         # or a glob written before its target existed. Logged rather than refused: the bound

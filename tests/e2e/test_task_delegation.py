@@ -262,3 +262,175 @@ async def test_a_delegate_stored_under_another_name_is_refused(boot: Any) -> Non
         await put_version(app.settings, "default", "e2e-researcher", _agent("e2e-impostor"))
         with pytest.raises(ValueError, match="names must match"):
             await _chat(app)
+
+
+# --- the stream, and background children ------------------------------------------------------
+
+
+def _frames(body: str) -> list[dict[str, Any]]:
+    import json
+
+    return [
+        json.loads(line[len("data: ") :])
+        for line in body.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+
+
+async def test_the_stream_marks_where_a_child_starts_and_ends(boot: Any) -> None:
+    """Without these a child's work reads as the parent's: one flat turn."""
+    script = [
+        ScriptedTurn(tool_calls=[_task("c1", "job")]),
+        ScriptedTurn(content="child answer"),
+        ScriptedTurn(content="done"),
+    ]
+    async with boot(script, manifests={"e2e-lead": _lead(), "e2e-researcher": RESEARCHER}) as app:
+        resp = await app.client.post(
+            "/chat/stream",
+            json={
+                "manifest": "e2e-lead",
+                "thread_id": "e2e-task",
+                "messages": [{"role": "user", "content": "go"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        frames = [(f.get("event"), f.get("data") or {}) for f in _frames(resp.text)]
+        names = [name for name, _ in frames]
+        start, end, tool_end = (
+            names.index("subagent_start"),
+            names.index("subagent_end"),
+            names.index("tool_end"),
+        )
+        assert start < end < tool_end, names
+        assert frames[start][1] == {"agent": "e2e-researcher", "background": False}
+        assert frames[end][1] == {"agent": "e2e-researcher", "outcome": "ok"}
+
+
+def _bg(call_id: str, prompt: str) -> ToolCall:
+    return ToolCall(
+        id=call_id, name="task", args={"agent": "e2e-researcher", "prompt": prompt, "background": True}
+    )
+
+
+def _result(call_id: str, task_id: str, wait: int = 0) -> ToolCall:
+    return ToolCall(id=call_id, name="task_result", args={"task_id": task_id, "wait_seconds": wait})
+
+
+def _bg_lead(**spec: Any) -> Any:
+    return _agent(
+        "e2e-lead",
+        system_prompt={"inline": "You lead."},
+        delegation={"background": True, "agents": [{"name": "e2e-researcher", "description": "Looks."}]},
+        **spec,
+    )
+
+
+def _task_id(app: Any) -> str:
+    """The id the `task` tool handed the lead, read from what the lead's model was shown."""
+    import re
+
+    text = _text(app.spy.prompts[1])
+    match = re.search(r"as task (\S+)\.", text)
+    assert match, text
+    return match.group(1)
+
+
+async def test_a_background_child_runs_in_the_worker_and_its_answer_is_read_later(boot: Any) -> None:
+    from felix.durability import fibers as F
+    from felix.session.thread_state import get_thread_meta
+
+    script = [
+        ScriptedTurn(tool_calls=[_bg("c1", "Survey the field.")]),
+        ScriptedTurn(content="Started it."),
+    ]
+    async with boot(script, manifests={"e2e-lead": _bg_lead(), "e2e-researcher": RESEARCHER}) as app:
+        assert (await _chat(app)).status_code == 200
+        task_id = _task_id(app)
+        run = F._memory_fibers[("default", task_id)]
+        child_thread = run["thread_id"]
+        # Thread ids are tenant-namespaced by the route; the child's hangs off the parent's.
+        assert child_thread.startswith("default:e2e-task:task:")
+        meta = await get_thread_meta(settings=app.settings, tenant_id="default", thread_id=child_thread)
+        assert meta["parent_session_id"] == "default:e2e-task"
+
+        # Nothing in the API process runs it: the worker does.
+        app.spy.push(ScriptedTurn(content="The field is crowded."))
+        await F.resume_due_fibers(app.settings)
+        child = _text(app.spy.prompts[2])
+        assert "Survey the field." in child and "how tall is the tower?" not in child
+
+        app.spy.push(ScriptedTurn(tool_calls=[_result("c2", task_id)]), ScriptedTurn(content="Crowded."))
+        assert (await _chat(app, text="what did it find?")).status_code == 200
+        assert "The field is crowded." in _text(app.spy.prompts[-1])
+
+
+async def test_another_thread_cannot_read_a_background_task(boot: Any) -> None:
+    from felix.durability import fibers as F
+
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "job")]), ScriptedTurn(content="started")]
+    async with boot(script, manifests={"e2e-lead": _bg_lead(), "e2e-researcher": RESEARCHER}) as app:
+        assert (await _chat(app)).status_code == 200
+        task_id = _task_id(app)
+        app.spy.push(ScriptedTurn(content="secret answer"))
+        await F.resume_due_fibers(app.settings)
+
+        app.spy.push(ScriptedTurn(tool_calls=[_result("c2", task_id)]), ScriptedTurn(content="no"))
+        resp = await app.client.post(
+            "/chat",
+            json={
+                "manifest": "e2e-lead",
+                "thread_id": "e2e-other",
+                "messages": [{"role": "user", "content": "x"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        last = _text(app.spy.prompts[-1])
+        assert f"no background task '{task_id}' here" in last
+        assert "secret answer" not in last
+
+
+async def test_a_background_child_is_held_to_the_parents_caps_in_the_worker(boot: Any) -> None:
+    """The parent's run may be over; its caps still bound what it delegated."""
+    from felix.durability import fibers as F
+
+    calc = [ToolCall(id=f"k{i}", name="calculator", args={"expression": "1+1"}) for i in range(2)]
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "add")]), ScriptedTurn(content="started")]
+    child = _agent("e2e-researcher", system_prompt={"inline": "You research."}, tools=["calculator"])
+    lead = _bg_lead(limits={"max_tool_calls": 1})
+    async with boot(script, manifests={"e2e-lead": lead, "e2e-researcher": child}) as app:
+        assert (await _chat(app)).status_code == 200
+        app.spy.push(
+            ScriptedTurn(tool_calls=[calc[0]]), ScriptedTurn(tool_calls=[calc[1]]), ScriptedTurn(content="x")
+        )
+        await F.resume_due_fibers(app.settings)
+        assert "max_tool_calls (1) exceeded" in _text(app.spy.prompts[4])
+
+
+async def test_a_child_edited_before_the_worker_runs_it_does_not_run(boot: Any) -> None:
+    """The run carries the caller's scopes, so it is pinned to the manifest the parent compiled."""
+    from felix.durability import fibers as F
+    from felix.manifests.store import activate_version, put_version
+
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "job")]), ScriptedTurn(content="started")]
+    async with boot(script, manifests={"e2e-lead": _bg_lead(), "e2e-researcher": RESEARCHER}) as app:
+        assert (await _chat(app)).status_code == 200
+        task_id = _task_id(app)
+        await put_version(
+            app.settings,
+            "default",
+            "e2e-researcher",
+            _agent("e2e-researcher", system_prompt={"inline": "v2"}),
+        )
+        await activate_version(app.settings, "default", "e2e-researcher", version=2)
+        calls_before = len(app.spy.prompts)
+        await F.resume_due_fibers(app.settings)
+        assert len(app.spy.prompts) == calls_before, "the edited child never reached a model"
+        assert F._memory_fibers[("default", task_id)]["status"] in {"failed", "dead"}
+
+
+async def test_background_is_refused_unless_the_manifest_enables_it(boot: Any) -> None:
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "job")]), ScriptedTurn(content="ok")]
+    async with boot(script, manifests={"e2e-lead": _lead(), "e2e-researcher": RESEARCHER}) as app:
+        assert (await _chat(app)).status_code == 200
+        assert "background is not enabled" in _text(app.spy.prompts[1])
+        assert "task_result" not in app.spy.tools[0]

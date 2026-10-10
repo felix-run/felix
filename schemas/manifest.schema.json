@@ -617,6 +617,11 @@
           "minItems": 1,
           "title": "Agents",
           "type": "array"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
         }
       },
       "required": [

@@ -54,8 +54,14 @@ async def start_durable_chat(
     model_id: str | None,
     execution: ExecutionSpec,
     pin: dict[str, Any] | None = None,
+    parent_thread_id: str | None = None,
+    ceilings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Enqueue an invoke fiber; the worker's fiber scheduler runs it.
+
+    `parent_thread_id` and `ceilings` are a background child's (`tools/delegation.py`): the thread
+    whose `task_result` may read this run, and the `EffectiveLimits` of every agent above it,
+    which the resumed run is held to beside its own.
 
     Raises `RunInProgress` when `thread_id` already has a durable run in flight: one run per
     thread, checked atomically with the enqueue (felix-run/felix#529).
@@ -78,6 +84,10 @@ async def start_durable_chat(
     }
     if pin:
         state["pin"] = pin
+    if parent_thread_id is not None:
+        state["parent_thread_id"] = parent_thread_id
+    if ceilings:
+        state["ceilings"] = ceilings
 
     # Who asked for this run. Without it a resumed fiber runs with an empty scope set, so
     # `spec.policies` denies every policied tool and `auth.inbound.required_scopes` refuses the
