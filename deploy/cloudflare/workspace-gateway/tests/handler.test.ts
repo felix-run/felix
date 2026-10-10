@@ -242,7 +242,7 @@ describe('workspace gateway', () => {
   });
 
   it('takes only its operations, and only by POST', async () => {
-    expect((await send(post(`/v1/workspaces/acme/shared/delete`, {}))).status).toBe(404);
+    expect((await send(post(`/v1/workspaces/acme/shared/chmod`, {}))).status).toBe(404);
     const get = new Request(`${BASE}/v1/workspaces/acme/shared/list`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
@@ -257,6 +257,10 @@ describe('workspace gateway', () => {
       ['read', {}],
       ['write', { path: 'a', data: 1 }],
       ['edit', { path: 'a', old: '', new: 'b' }],
+      ['delete', {}],
+      ['delete', { path: 'a', expected_sha256: 'F'.repeat(64) }],
+      ['rename', { path: 'a' }],
+      ['rename', { path: 'a', to_path: 'b', expected_sha256: 'abc' }],
       ['search', { query: 'x'.repeat(513) }],
       ['search', { query: 'x', max_hits: 51 }],
       ['list', []],
@@ -290,6 +294,54 @@ describe('workspace gateway', () => {
       error: 'edit_refused',
       message: 'old_string not found in a.txt',
     });
+  });
+
+  it('sends a delete and a rename to the scope’s sandbox, with no digest unless given one', async () => {
+    await send(post(`/v1/workspaces/acme/shared/delete`, { path: 'a.txt' }));
+    await send(
+      post(`/v1/workspaces/acme/${THREAD}/rename`, {
+        path: 'a.txt',
+        to_path: 'b/a.txt',
+        expected_sha256: 'f'.repeat(64),
+      }),
+    );
+    expect(calls).toEqual([
+      {
+        name: 'acme/shared',
+        scope: 'acme/shared',
+        request: { op: 'delete', path: 'a.txt', expected_sha256: null },
+      },
+      {
+        name: `acme/${THREAD}`,
+        scope: `acme/${THREAD}`,
+        request: { op: 'rename', path: 'a.txt', to_path: 'b/a.txt', expected_sha256: 'f'.repeat(64) },
+      },
+    ]);
+  });
+
+  it('returns a changed file’s digest and size with the refusal, and only then', async () => {
+    answer = async () => ({
+      ok: false,
+      error: 'workspace_changed',
+      message: 'the file is not the one the caller read',
+      sha256: 'e'.repeat(64),
+      bytes: 12,
+    });
+    const changed = await send(
+      post(`/v1/workspaces/acme/shared/delete`, { path: 'a.txt', expected_sha256: 'f'.repeat(64) }),
+    );
+    expect(changed.status).toBe(409);
+    expect(await changed.json()).toEqual({
+      error: 'workspace_changed',
+      message: 'the file is not the one the caller read',
+      sha256: 'e'.repeat(64),
+      bytes: 12,
+    });
+
+    answer = async () => ({ ok: false, error: 'target_exists', message: 'b.txt', sha256: 'x' });
+    const taken = await send(post(`/v1/workspaces/acme/shared/rename`, { path: 'a', to_path: 'b.txt' }));
+    expect(taken.status).toBe(409);
+    expect(await taken.json()).toEqual({ error: 'target_exists', message: 'b.txt' });
   });
 
   it('says the sandbox is unavailable when its Durable Object fails', async () => {

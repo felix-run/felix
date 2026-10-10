@@ -119,6 +119,24 @@ is one gateway `list` per directory and the compare is a `read` before the `writ
 lock in the requesting process: a tool call writing the same file from another replica or the worker
 between the two is not seen. Moving the compare into the helper closes that.
 
+Two more joined it for the pane's delete and rename: `delete_file(scope, path, *, expected_sha256)`
+and `rename_file(scope, path, to_path, *, expected_sha256)`. Regular files only -- a directory is
+`NotAFileError`, a symlink refused as everywhere -- and a missing source is `FileNotFoundError`
+rather than the `WorkspaceChanged` a conditional write gives, since there is nothing to act on.
+Locally the compare and the `unlinkat` or `renameat` run in one call on a worker thread under the
+path's lock (a rename takes both paths' locks, in one order whatever the direction, so two crossing
+renames cannot deadlock), both ends walked from the root's descriptor with no link followed. A
+rename never replaces anything: anything at the destination is `FileExistsError` (409
+`target_exists`), and directories it needs are made as a write makes them. `os.rename` replaces a
+file at its destination, so the no-replace rule is a check before it, under the locks; a writer in
+another process that creates the destination in the microseconds between the check and the rename
+is not seen, the same window the conditional write has. On `hosted` these are the helper's own
+`delete` and `rename` operations: the compare and the change run in one helper process, and the
+gateway runs a scope's changing operations one at a time, so -- unlike the hosted write -- no other
+gateway call can land between them. The helper's copy is ported from `workspace_local.py` and held
+to it by `PortedCodeTests`; a gateway deployed before these operations answers them `404`, which the
+harness reports as `503 workspace_unavailable`.
+
 ### Scope
 
 `WorkspaceScope` is `(tenant_id, key)`, taken from the request context the tools already run in.
@@ -492,8 +510,8 @@ and a `scope: thread` workspace starts empty. So:
 6. **Reading a workspace from chat-ui.** ~~The web client's "Touched this session" list is derived from
    tool arguments today. The export route in phase 4 is the natural source for a real file list, and
    the client should wait for it rather than invent one.~~ Answered by `GET /chat/workspace/tree`,
-   `GET /chat/workspace/file` and `POST /chat/workspace/write` (the file pane, above). Delete and
-   rename are not there yet: the backend has neither operation.
+   `GET /chat/workspace/file`, `POST /chat/workspace/write`, `POST /chat/workspace/delete` and
+   `POST /chat/workspace/rename` (the file pane, above).
 
 ## Review checklist for each phase
 

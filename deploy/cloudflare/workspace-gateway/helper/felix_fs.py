@@ -10,11 +10,13 @@ operations a model can drive are done here instead, with the harness's local bac
   `O_NOFOLLOW` -- a symlink anywhere in a path is refused, never followed;
 - a read returns at most the asked window of a file, whatever its size;
 - an edit is written to a random sibling and renamed over the original;
-- a search holds one descriptor per level, stops at a depth, a hit cap and a deadline.
+- a search holds one descriptor per level, stops at a depth, a hit cap and a deadline;
+- the file pane's delete and rename compare the file's digest and act in this one process, and a
+  rename never replaces what is at its destination.
 
 The functions between the PORTED markers are copied from the harness (`felix/tools/workspace.py`,
-`felix/tools/workspace_local.py`, `felix/tools/shell.py` and `felix/tools/github_publish.py`) and
-must stay the same code:
+`felix/tools/workspace_local.py`, `felix/tools/workspace_backend.py`, `felix/tools/shell.py` and
+`felix/tools/github_publish.py`) and must stay the same code:
 `tests/unit/test_workspace_gateway_helper.py` compares them with their source as syntax trees, so
 a change to either fails until the other matches. The image runs the harness's Python, 3.14, so the
 copy is the harness's code as it is.
@@ -32,6 +34,7 @@ import asyncio
 import base64
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import re
@@ -454,6 +457,127 @@ def _search(root: Path, args: SearchFilesArgs, pattern: re.Pattern[str] | None) 
     return hits
 
 
+class WorkspaceChanged(Exception):
+    """A conditional write found the file other than the caller last read it.
+
+    `sha256` is the file's digest now, or None when it is missing -- or, with `bytes` set, when it
+    is over the read cap and so was never something the caller could have read and hashed.
+    """
+
+    def __init__(self, sha256: str | None, bytes: int | None = None) -> None:
+        super().__init__("workspace_changed")
+        self.sha256 = sha256
+        self.bytes = bytes
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        """The refusal as a client reads it (`409` on `POST /chat/workspace/write`): a code, a
+        digest and a size, and nothing else -- it is built for display, unlike `str()`."""
+        return {"detail": "workspace_changed", "sha256": self.sha256, "bytes": self.bytes}
+
+
+def _current_state(root: Path, path: str, *, digest: bool) -> tuple[str | None, int | None, int | None]:
+    """`(sha256, bytes, mode)` of the regular file at `path`: all None when it is missing.
+
+    The digest is taken only when asked for, and only of a file within the read cap: one larger
+    than that was never readable through the file pane, so no caller can hold its hash, and it is
+    reported by size alone (`sha256` None, `bytes` set). Raises as the other operations do for a
+    path naming a directory, a symlink or something else that is not a regular file.
+    """
+    try:
+        with open_workspace_parent(root, path) as (parent, leaf, rel):
+            if leaf is None:
+                raise NotAFileError(rel)
+            try:
+                fd = open_regular(parent, leaf, os.O_RDONLY, rel)
+            except FileNotFoundError:
+                return None, None, None
+            try:
+                st = os.fstat(fd)
+                mode = stat.S_IMODE(st.st_mode)
+                if not digest:
+                    return None, st.st_size, mode
+                raw = _pread(fd, _MAX_READ_BYTES + 1, 0)
+            finally:
+                os.close(fd)
+    except FileNotFoundError:
+        return None, None, None  # a directory on the way is missing: so is the file
+    if len(raw) > _MAX_READ_BYTES:
+        return None, max(len(raw), st.st_size), mode
+    return hashlib.sha256(raw).hexdigest(), len(raw), mode
+
+
+def _source_state(root: Path, path: str, expected_sha256: str | None) -> tuple[str | None, int]:
+    """`(sha256, bytes)` of the regular file a delete or a rename is about to act on.
+
+    Missing is `FileNotFoundError` -- unlike a conditional write, which may create the file, these
+    have nothing to act on -- and a digest other than `expected_sha256` is `WorkspaceChanged`.
+    """
+    current, size, _mode = _current_state(root, path, digest=True)
+    if size is None:
+        raise FileNotFoundError(errno.ENOENT, "no such file", path)
+    if expected_sha256 is not None and current != expected_sha256:
+        raise WorkspaceChanged(current, size)
+    return current, size
+
+
+def _still_regular(parent: int, leaf: str, rel: str) -> None:
+    """The entry is still a regular file at the moment it is acted on: neither swapped for a
+    symlink nor for a directory since it was compared. `lstat`, so nothing is followed."""
+    mode = os.stat(leaf, dir_fd=parent, follow_symlinks=False).st_mode
+    if stat.S_ISLNK(mode):
+        raise SymlinkRefusedError(rel)
+    if not stat.S_ISREG(mode):
+        raise NotAFileError(rel)
+
+
+def _delete_checked(root: Path, path: str, expected_sha256: str | None) -> str:
+    """Compare, then unlink the one name: one synchronous call, under the path's lock. Returns the
+    path as the tools report it."""
+    _source_state(root, path, expected_sha256)
+    with open_workspace_parent(root, path) as (parent, leaf, rel):
+        if leaf is None:
+            raise NotAFileError(rel)
+        _still_regular(parent, leaf, rel)
+        os.unlink(leaf, dir_fd=parent)
+    return rel
+
+
+def _rename_checked(
+    root: Path, path: str, to_path: str, expected_sha256: str | None
+) -> tuple[str, str, str | None, int]:
+    """Compare, then move `path` to `to_path` without replacing anything at the destination.
+
+    Both ends are walked from the root's descriptor with no symlink followed, and the rename is
+    one `renameat` between the two directories' descriptors. The destination's missing directories
+    are made as a write makes them; a component on the way that is a file is not a place a file can
+    go (ValueError). Anything at the destination -- a file, a directory, a link, the source itself --
+    refuses the move with `FileExistsError`. Returns `(path, to_path, sha256, bytes)`.
+    """
+    current, size = _source_state(root, path, expected_sha256)
+    with contextlib.ExitStack() as stack:
+        src_dir, src_leaf, rel = stack.enter_context(open_workspace_parent(root, path))
+        if src_leaf is None:
+            raise NotAFileError(rel)
+        try:
+            dst_dir, dst_leaf, to_rel = stack.enter_context(open_workspace_parent(root, to_path, create=True))
+        except NotADirectoryError:
+            raise ValueError("the destination's directory is a file") from None
+        if dst_leaf is None:
+            raise NotAFileError(to_rel)
+        _still_regular(src_dir, src_leaf, rel)
+        try:
+            there = os.stat(dst_leaf, dir_fd=dst_dir, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            there = None
+        if there is not None and stat.S_ISLNK(there):
+            raise SymlinkRefusedError(to_rel)
+        if there is not None:
+            raise FileExistsError(errno.EEXIST, "the destination exists", to_rel)
+        os.rename(src_leaf, dst_leaf, src_dir_fd=src_dir, dst_dir_fd=dst_dir)
+    return rel, to_rel, current, size
+
+
 # --- end of PORTED ---------------------------------------------------------------------------
 
 
@@ -796,6 +920,27 @@ def op_edit(req: dict[str, Any]) -> dict[str, Any]:
     return {"path": rel, "replacements": found, "bytes": len(payload)}
 
 
+def _expected_sha256(req: dict[str, Any]) -> str | None:
+    """The caller's digest of the file, or None for an unconditional delete or rename."""
+    raw = req.get("expected_sha256")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not re.fullmatch(r"[0-9a-f]{64}", raw):
+        raise KeyError("expected_sha256")
+    return raw
+
+
+def op_delete(req: dict[str, Any]) -> dict[str, Any]:
+    """The file pane's delete: `LocalBackend.delete_file`'s compare and unlink."""
+    return {"path": _delete_checked(ROOT, req["path"], _expected_sha256(req))}
+
+
+def op_rename(req: dict[str, Any]) -> dict[str, Any]:
+    """The file pane's rename: `LocalBackend.rename_file`'s compare and no-replace move."""
+    rel, to_rel, sha, size = _rename_checked(ROOT, req["path"], req["to_path"], _expected_sha256(req))
+    return {"path": rel, "to_path": to_rel, "sha256": sha, "bytes": size}
+
+
 def op_search(req: dict[str, Any]) -> dict[str, Any]:
     query = str(req["query"])
     if not 1 <= len(query) <= _MAX_QUERY_CHARS:
@@ -885,6 +1030,8 @@ OPS = {
     "read": op_read,
     "write": op_write,
     "edit": op_edit,
+    "delete": op_delete,
+    "rename": op_rename,
     "search": op_search,
     "exec": op_exec,
     "git": op_git,
@@ -901,6 +1048,15 @@ def run(req: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "result": op(req)}
     except EditRefused as exc:
         return {"ok": False, "error": "edit_refused", "message": str(exc)}
+    except WorkspaceChanged as exc:
+        # A delete or rename whose `expected_sha256` the file no longer has: what it has now.
+        return {
+            "ok": False,
+            "error": "workspace_changed",
+            "message": "the file is not the one the caller read",
+            "sha256": exc.sha256,
+            "bytes": exc.bytes,
+        }
     except NotAFileError as exc:
         return {"ok": False, "error": "not_a_file", "message": str(exc)}
     except re.error as exc:
@@ -914,6 +1070,9 @@ def run(req: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "not_found", "message": str(exc)}
     except NotADirectoryError as exc:
         return {"ok": False, "error": "not_a_directory", "message": str(exc)}
+    except FileExistsError as exc:
+        # A rename's destination is taken; nothing was moved.
+        return {"ok": False, "error": "target_exists", "message": str(exc)}
     except PermissionError as exc:
         return {"ok": False, "error": "permission_denied", "message": str(exc), "kind": type(exc).__name__}
     except OSError as exc:

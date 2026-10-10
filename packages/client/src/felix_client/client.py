@@ -355,6 +355,73 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def workspace_delete(
+        self,
+        path: str,
+        *,
+        expected_sha256: str | None = None,
+        thread_id: str | None = None,
+        manifest: str | None = None,
+        lease_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a workspace file and tell the agent (`POST /chat/workspace/delete`).
+
+        Returns `{"status": "queued" | "recorded", "path", "event_id"}`. Files only: a directory is
+        a 400 `not_a_file`, a missing file a 404 `not_found`. With `expected_sha256` the delete is
+        refused, as a 409 `{"detail": "workspace_changed", "sha256", "bytes"}`, when the file is no
+        longer what was read. `lease_token` is sent as `X-Felix-Lease-Token`.
+        """
+        body: dict[str, Any] = {
+            "thread_id": self._workspace_thread(thread_id, "workspace_delete"),
+            "path": path,
+        }
+        return await self._workspace_change("delete", body, expected_sha256, manifest, lease_token)
+
+    async def workspace_rename(
+        self,
+        path: str,
+        to_path: str,
+        *,
+        expected_sha256: str | None = None,
+        thread_id: str | None = None,
+        manifest: str | None = None,
+        lease_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a workspace file to `to_path` and tell the agent (`POST /chat/workspace/rename`).
+
+        Returns `{"status": "queued" | "recorded", "path", "to_path", "sha256", "event_id"}`. Never
+        replaces anything: a `to_path` that exists is a 409 `{"detail": "target_exists"}`.
+        `expected_sha256` and `lease_token` as on `workspace_delete`.
+        """
+        body: dict[str, Any] = {
+            "thread_id": self._workspace_thread(thread_id, "workspace_rename"),
+            "path": path,
+            "to_path": to_path,
+        }
+        return await self._workspace_change("rename", body, expected_sha256, manifest, lease_token)
+
+    async def _workspace_change(
+        self,
+        op: str,
+        body: dict[str, Any],
+        expected_sha256: str | None,
+        manifest: str | None,
+        lease_token: str | None,
+    ) -> dict[str, Any]:
+        if expected_sha256 is not None:
+            body["expected_sha256"] = expected_sha256
+        if manifest is not None:
+            body["manifest"] = manifest
+        headers = self._headers()
+        if lease_token:
+            headers["x-felix-lease-token"] = lease_token
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                f"{self.base_url.rstrip('/')}/chat/workspace/{op}", headers=headers, json=body
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def fork(
         self,
         new_thread_id: str,

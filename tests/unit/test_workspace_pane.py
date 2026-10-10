@@ -1,4 +1,5 @@
-"""The file pane's two backend operations, `tree` and `write_file_checked`, held to one behaviour.
+"""The file pane's backend operations -- `tree`, `write_file_checked`, `delete_file` and
+`rename_file` -- held to one behaviour.
 
 The routes (`tests/e2e/test_workspace_files.py`) run on the local backend. Here the same walk and
 the same compare-then-write run against `local` and against `hosted` -- a fake gateway serving the
@@ -141,6 +142,143 @@ async def test_a_hosted_write_from_the_pane_is_checkpointed(tmp_path: Path, gate
     assert gateway.checkpoints == [f"{TENANT}/{thread_key(TENANT, THREAD)}"]
 
 
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("backend", ["local", "hosted"])
+async def test_both_backends_delete_a_file_and_only_a_file(
+    tmp_path: Path, gateway: FakeGateway, backend: str
+) -> None:
+    from felix.tools.workspace import NotAFileError
+
+    settings = _settings(tmp_path, backend)
+    here = _scope_dir(tmp_path, backend)
+    backend_ = get_workspace_backend(settings)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("not yours")
+    (here / "notes").mkdir()
+    (here / "notes" / "plan.md").write_bytes(b"read\n")
+    os.symlink(outside / "secret.txt", here / "link.txt")
+    os.symlink(outside, here / "escape")
+
+    with pytest.raises(WorkspaceChanged) as stale:
+        await backend_.delete_file(SCOPE, "notes/plan.md", expected_sha256=_sha(b"other"))
+    assert (stale.value.sha256, stale.value.bytes) == (_sha(b"read\n"), 5)
+    assert (here / "notes" / "plan.md").read_bytes() == b"read\n"
+
+    with pytest.raises(NotAFileError):
+        await backend_.delete_file(SCOPE, "notes")
+    for refused in ("link.txt", "escape/secret.txt", "../outside/secret.txt"):
+        with pytest.raises(ValueError):
+            await backend_.delete_file(SCOPE, refused)
+    assert (outside / "secret.txt").read_text() == "not yours"
+    assert os.path.islink(here / "link.txt")
+    for missing in ("nope.md", "notes/nope.md", "nowhere/plan.md"):
+        with pytest.raises(FileNotFoundError):
+            await backend_.delete_file(SCOPE, missing, expected_sha256=_sha(b"read\n"))
+
+    done = await backend_.delete_file(SCOPE, "notes/./plan.md", expected_sha256=_sha(b"read\n"))
+    assert done.path == "notes/plan.md"
+    assert not (here / "notes" / "plan.md").exists()
+    assert (here / "notes").is_dir(), "a delete removes the file, never its directory"
+
+    (here / "loose.txt").write_text("x")
+    assert (await backend_.delete_file(SCOPE, "loose.txt")).path == "loose.txt"
+    assert not (here / "loose.txt").exists()
+
+
+@pytest.mark.parametrize("backend", ["local", "hosted"])
+async def test_both_backends_rename_without_replacing_anything(
+    tmp_path: Path, gateway: FakeGateway, backend: str
+) -> None:
+    from felix.tools.workspace import NotAFileError
+
+    settings = _settings(tmp_path, backend)
+    here = _scope_dir(tmp_path, backend)
+    backend_ = get_workspace_backend(settings)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (here / "a.txt").write_bytes(b"alpha")
+    (here / "b.txt").write_bytes(b"bravo")
+    (here / "dir").mkdir()
+    os.chmod(here / "a.txt", 0o640)
+    os.symlink(outside / "nothing", here / "dangling")
+    os.symlink(outside, here / "escape")
+
+    for taken in ("b.txt", "dir", "a.txt", "./a.txt"):
+        with pytest.raises(FileExistsError):
+            await backend_.rename_file(SCOPE, "a.txt", taken)
+    for refused in ("dangling", "escape/a.txt", "../outside/a.txt", "a.txt/inside", "b.txt/c.txt"):
+        with pytest.raises(ValueError):
+            await backend_.rename_file(SCOPE, "a.txt", refused)
+    with pytest.raises(WorkspaceChanged) as stale:
+        await backend_.rename_file(SCOPE, "a.txt", "c.txt", expected_sha256=_sha(b"other"))
+    assert (stale.value.sha256, stale.value.bytes) == (_sha(b"alpha"), 5)
+    assert ((here / "a.txt").read_bytes(), (here / "b.txt").read_bytes()) == (b"alpha", b"bravo")
+    assert not (here / "c.txt").exists()
+    assert list(outside.iterdir()) == []
+
+    with pytest.raises(NotAFileError):
+        await backend_.rename_file(SCOPE, "dir", "dir2")
+    with pytest.raises(ValueError):
+        await backend_.rename_file(SCOPE, "dangling", "d2")
+    with pytest.raises(FileNotFoundError):
+        await backend_.rename_file(SCOPE, "nope.txt", "c.txt")
+    assert not (here / "dir2").exists() and not (here / "d2").exists()
+
+    moved = await backend_.rename_file(SCOPE, "a.txt", "archive/2026/./a.txt", expected_sha256=_sha(b"alpha"))
+    assert (moved.path, moved.to_path, moved.bytes, moved.sha256) == (
+        "a.txt",
+        "archive/2026/a.txt",
+        5,
+        _sha(b"alpha"),
+    )
+    assert not (here / "a.txt").exists()
+    assert (here / "archive" / "2026" / "a.txt").read_bytes() == b"alpha"
+    assert os.stat(here / "archive" / "2026" / "a.txt").st_mode & 0o777 == 0o640
+
+    (here / "big.bin").write_bytes(b"b" * 512_001)
+    big = await backend_.rename_file(SCOPE, "big.bin", "big2.bin")
+    assert (big.sha256, big.bytes) == (None, 512_001)
+
+
+async def test_hosted_deletes_and_renames_are_checkpointed(tmp_path: Path, gateway: FakeGateway) -> None:
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+
+    settings = _settings(tmp_path, "hosted")
+    here = _scope_dir(tmp_path, "hosted")
+    (here / "a.md").write_text("a")
+    (here / "b.md").write_text("b")
+    ctx = RequestContext(settings=settings, auth=AuthContext(tenant_id=TENANT), thread_id=THREAD)
+    async with async_run_with_context(ctx):
+        await get_workspace_backend(settings).delete_file(SCOPE, "a.md")
+        await get_workspace_backend(settings).rename_file(SCOPE, "b.md", "c.md")
+    assert gateway.checkpoints == [f"{TENANT}/{thread_key(TENANT, THREAD)}"]
+    assert [op for _, op in gateway.calls] == ["delete", "rename", "checkpoint"]
+
+
+async def test_crossing_local_renames_take_their_locks_in_one_order(tmp_path: Path) -> None:
+    """`x -> y` and `y -> x` at once: each needs both locks, and taking them in argument order
+    would let each hold one and wait on the other forever."""
+    import asyncio
+
+    here = _scope_dir(tmp_path, "local")
+    (here / "x").write_text("x")
+    backend_ = get_workspace_backend(_settings(tmp_path, "local"))
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            backend_.rename_file(SCOPE, "x", "y"),
+            backend_.rename_file(SCOPE, "y", "x"),
+            return_exceptions=True,
+        ),
+        timeout=10,
+    )
+    assert sorted(p.name for p in here.iterdir()) in (["x"], ["y"])
+    assert any(not isinstance(r, BaseException) for r in results)
+
+
 async def test_the_local_walk_stops_at_its_depth_and_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -260,6 +398,26 @@ async def test_the_sdk_writes_with_its_hash_and_lease(monkeypatch: pytest.Monkey
         "expected_sha256": "f" * 64,
     }
     assert request.headers["x-felix-lease-token"] == "tok"
+
+
+async def test_the_sdk_deletes_and_renames_with_its_hash_and_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _record(monkeypatch)
+    client = FelixClient(base_url="http://felix")
+    client.set_thread("t1")
+    await client.workspace_delete("a.md", expected_sha256="f" * 64, lease_token="tok")
+    await client.workspace_rename("a.md", "b/a.md", thread_id="t2", manifest="cowork")
+    delete, rename = seen
+    assert (delete.method, delete.url.path) == ("POST", "/chat/workspace/delete")
+    assert json.loads(delete.content) == {"thread_id": "t1", "path": "a.md", "expected_sha256": "f" * 64}
+    assert delete.headers["x-felix-lease-token"] == "tok"
+    assert (rename.method, rename.url.path) == ("POST", "/chat/workspace/rename")
+    assert json.loads(rename.content) == {
+        "thread_id": "t2",
+        "path": "a.md",
+        "to_path": "b/a.md",
+        "manifest": "cowork",
+    }
+    assert "x-felix-lease-token" not in rename.headers
 
 
 async def test_the_sdk_needs_a_thread(monkeypatch: pytest.MonkeyPatch) -> None:

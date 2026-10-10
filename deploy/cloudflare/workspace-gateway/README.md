@@ -32,7 +32,10 @@ harness ──HTTPS, bearer──▶ gateway Worker ──getByName(tenant/key)�
 ## Wire contract
 
 `POST /v1/workspaces/{tenant}/{key}/{op}` with `Authorization: Bearer <WORKSPACE_GATEWAY_TOKEN>`,
-`op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `exec` (a
+`op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `delete` and
+`rename` (the operator's file pane: each compares the file's digest when sent `expected_sha256` and
+refuses `409 workspace_changed` with the file's `sha256` and `bytes` now; a rename never replaces
+anything, `409 target_exists`), `exec` (a
 `shell_tools` command, run by the shell tool's own exec path in the sandbox), `clone` (a thread's
 repository, into its empty `/workspace`, through the `github.com` intercept in `src/github.ts`,
 which adds the person's token outside the container and allows only that one repository's fetch),

@@ -37,10 +37,16 @@ export const MIN_TOKEN_CHARS = 32;
 
 const ROUTE = /^\/v1\/workspaces\/([^/]+)\/([^/]+)\/([^/]+)$/;
 
-function refuse(error: ErrorCode, message: string, kind?: string): Response {
+function refuse(
+  error: ErrorCode,
+  message: string,
+  kind?: string,
+  current?: { sha256: string | null; bytes: number | null },
+): Response {
   // `kind` (the helper's exception name, for a filesystem failure) lets the harness raise the same
-  // exception the local backend would, so a tool words the failure the same on both.
-  return Response.json(kind ? { error, message, kind } : { error, message }, {
+  // exception the local backend would, so a tool words the failure the same on both. `current` is
+  // a `workspace_changed` refusal's file as it is now, which the harness returns to its caller.
+  return Response.json({ error, message, ...(kind ? { kind } : {}), ...(current ?? {}) }, {
     status: STATUS[error],
   });
 }
@@ -127,6 +133,13 @@ export default {
     }
     return answer.ok
       ? Response.json({ result: answer.result })
-      : refuse(answer.error, answer.message, answer.kind);
+      : refuse(
+          answer.error,
+          answer.message,
+          answer.kind,
+          answer.error === 'workspace_changed'
+            ? { sha256: answer.sha256 ?? null, bytes: answer.bytes ?? null }
+            : undefined,
+        );
   },
 };

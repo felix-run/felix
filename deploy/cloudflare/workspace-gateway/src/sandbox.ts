@@ -128,7 +128,14 @@ export class WorkspaceSandbox extends DurableObject<Env> {
       }
     }
     const answer = await this.#helper(scope, request);
-    if (answer.ok && (request.op === 'write' || request.op === 'edit' || request.op === 'exec')) {
+    if (
+      answer.ok &&
+      (request.op === 'write' ||
+        request.op === 'edit' ||
+        request.op === 'delete' ||
+        request.op === 'rename' ||
+        request.op === 'exec')
+    ) {
       this.ctx.storage.kv.put(DIRTY_KEY, true);
     }
     return answer;

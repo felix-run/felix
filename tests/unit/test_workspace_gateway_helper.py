@@ -279,6 +279,7 @@ class PortedCodeTests(unittest.TestCase):
     SOURCES = (
         "packages/harness/src/felix/tools/workspace.py",
         "packages/harness/src/felix/tools/workspace_local.py",
+        "packages/harness/src/felix/tools/workspace_backend.py",
         "packages/harness/src/felix/tools/shell.py",
         "packages/harness/src/felix/tools/github_publish.py",
     )
@@ -303,6 +304,14 @@ class PortedCodeTests(unittest.TestCase):
         "_scan_file",
         "_scan_tree",
         "_search",
+        # The file pane's delete and rename, which the helper answers in one process so the compare
+        # and the change cannot be split by another call to the sandbox.
+        "WorkspaceChanged",
+        "_current_state",
+        "_source_state",
+        "_still_regular",
+        "_delete_checked",
+        "_rename_checked",
         # shell.py: the one exec path, so a sandboxed command is bounded and killed the same way.
         # `_child_env` is deliberately not here: the sandbox has no harness environment to scrub.
         "_Stream",

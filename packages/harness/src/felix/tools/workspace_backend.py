@@ -98,6 +98,21 @@ class CheckedWriteResult:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class DeleteResult:
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
+class RenameResult:
+    path: str
+    to_path: str
+    bytes: int
+    # Of the file's bytes, which a rename does not change; None for a file over the read cap, which
+    # the pane could never have opened and so has no digest to compare against.
+    sha256: str | None
+
+
 class EditRefused(Exception):
     """An edit the model can correct: no match, several, identical strings, over a size cap."""
 
@@ -172,6 +187,35 @@ class WorkspaceBackend(Protocol):
         """
         ...
 
+    async def delete_file(
+        self, scope: WorkspaceScope | None, path: str, *, expected_sha256: str | None = None
+    ) -> DeleteResult:
+        """Remove the regular file at `path`, for the operator's file pane.
+
+        Refuses a directory (`NotAFileError`) and a symlink (ValueError) as every operation does,
+        and a missing file with `FileNotFoundError`. With `expected_sha256`, the file's digest is
+        compared under the path's lock first and a mismatch raises `WorkspaceChanged`, removing
+        nothing.
+        """
+        ...
+
+    async def rename_file(
+        self,
+        scope: WorkspaceScope | None,
+        path: str,
+        to_path: str,
+        *,
+        expected_sha256: str | None = None,
+    ) -> RenameResult:
+        """Move the regular file at `path` to `to_path` in the same scope, for the file pane.
+
+        Never replaces anything: a destination that exists (a file, a directory, or `path` itself)
+        raises `FileExistsError` and moves nothing. Missing directories on the way to `to_path` are
+        made, as a write makes them; one of them being a file is ValueError. The source is refused
+        as `delete_file` refuses it, and compared the same way under both paths' locks.
+        """
+        ...
+
 
 def current_workspace_scope() -> tuple[Settings, WorkspaceScope | None]:
     """This call's settings and scope, from the request context; scope None outside a request."""
@@ -200,10 +244,12 @@ def get_workspace_backend(settings: Settings) -> WorkspaceBackend:
 __all__ = [
     "PANE_HIDDEN_DIRS",
     "CheckedWriteResult",
+    "DeleteResult",
     "EditRefused",
     "EditResult",
     "ListResult",
     "ReadResult",
+    "RenameResult",
     "SearchResult",
     "TreeResult",
     "WorkspaceBackend",
