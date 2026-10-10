@@ -17,14 +17,11 @@ from typing import Any
 import pytest
 from felix.skills.library_keys import ORG_OWNER
 
+from tests.support.skill_bodies import INVOICE_TRIAGE_ROUTED as BODY
 from tests.support.skill_import_fake import FakeRepos, skill_md
 
 NAME = "invoice-triage"
 SOURCE = f"github:acme/skills/skills/{NAME}"
-BODY = (
-    "# Invoice triage\n\nUse this when an invoice arrives.\n\n## Steps\n\n"
-    "1. Read the vendor and the amount.\n2. Route amounts over 500 to the finance queue.\n"
-)
 # Long enough for `collected_secret_values` (8+), and shaped like no credential a scanner knows.
 SHARED = "plain-upstream-value-5678"
 ENV = {"FELIX_SKILL_IMPORT_SOURCES": "github:acme/*", "FELIX_CONSUMER_SHARED_SECRET": SHARED}

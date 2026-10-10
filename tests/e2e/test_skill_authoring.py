@@ -17,11 +17,9 @@ from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
+from tests.support.skill_bodies import INVOICE_TRIAGE_ROUTED as BODY
+
 NAME = "invoice-triage"
-BODY = (
-    "# Invoice triage\n\nUse this when an invoice arrives.\n\n## Steps\n\n"
-    "1. Read the vendor and the amount.\n2. Route amounts over 500 to the finance queue.\n"
-)
 
 
 def _manifest() -> Any:

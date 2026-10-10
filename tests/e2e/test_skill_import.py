@@ -20,14 +20,11 @@ from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
+from tests.support.skill_bodies import INVOICE_TRIAGE_ROUTED as BODY
 from tests.support.skill_import_fake import FakeRepos, skill_md
 
 NAME = "invoice-triage"
 SOURCE = f"github:acme/skills/skills/{NAME}"
-BODY = (
-    "# Invoice triage\n\nUse this when an invoice arrives.\n\n## Steps\n\n"
-    "1. Read the vendor and the amount.\n2. Route amounts over 500 to the finance queue.\n"
-)
 ENV = {"FELIX_SKILL_IMPORT_SOURCES": "github:acme/*"}
 
 
