@@ -674,12 +674,15 @@ class CompactingSessionStrategy:
         if request.stored_only:
             # The cut a pass would make, without the pass: what the cut drops since the last
             # summary is left out rather than summarised, and the frame says so.
-            opening = [chat_message_from_parts(**plan.opening)] if plan.opening else []
+            # The lead a pass would put ahead of the kept window, from what is already stored: the
+            # cut turn's opening and its earlier summarised steps. A carried lead whose turn the
+            # cut has moved past is in `older`, and is left out with it.
+            lead = _TurnLead(opening=plan.opening, prefix=plan.prior_prefix).messages() if plan.splits else []
             note = ChatMessage(
                 role="system",
                 content=f"[session] {len(older)} older event(s) since the last summary are not shown.",
             )
-            return _degraded_frame(request, summary_msg, lead_msgs or opening, [*pinned, *kept], note)
+            return _degraded_frame(request, summary_msg, lead, [*pinned, *kept], note)
 
         pass_ = _Pass(
             request=request,

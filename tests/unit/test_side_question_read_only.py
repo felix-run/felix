@@ -27,6 +27,7 @@ class _Summarizer:
         self.calls = 0
 
     async def chat(self, messages: list[ChatMessage], tools: list[Any], opts: Any = None) -> ModelChatResult:
+        self.calls += 1
         return ModelChatResult(
             message=ChatMessage(role="assistant", content="summary"),
             stop_reason="end_turn",
@@ -101,3 +102,21 @@ async def test_a_compacting_render_over_budget_appends_nothing_through_the_read_
 )
 def test_only_the_sentinel_alone_reads_not_in_context(reply: str, status: str) -> None:
     assert _read_answer(reply)[0] == status
+
+
+@pytest.mark.asyncio
+async def test_the_summarizing_strategy_shows_its_stored_summary_without_a_new_one() -> None:
+    from felix.session.strategies import SummarizingSessionStrategy
+
+    session = await _long_session()
+    model = _Summarizer()
+    readonly = _ReadOnlySession(session)
+
+    rendered = await SummarizingSessionStrategy(keep=3).render(
+        readonly,
+        [ChatMessage(role="user", content="q")],
+        {"system_prompt": "sys", "model": model, "stored_summary_only": True},
+    )
+
+    assert (model.calls, readonly.dropped_writes) == (0, 0)
+    assert any("stored summary only" in (m.content or "") for m in rendered)

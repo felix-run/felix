@@ -1931,7 +1931,7 @@ async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
     when a final-response judge refused it.
     """
     from felix.manifests.governance import GovernanceError
-    from felix.session.side_question import UnknownThreadError, answer_side_question
+    from felix.session.side_question import UnknownManifestError, UnknownThreadError, answer_side_question
 
     auth = _auth_from_request(request)
     settings = request.app.state.settings
@@ -1949,6 +1949,9 @@ async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
         )
     except UnknownThreadError as exc:
         raise HTTPException(status_code=404, detail="unknown_thread") from exc
+    except UnknownManifestError as exc:
+        # The manifest the thread last ran under no longer resolves.
+        raise HTTPException(status_code=404, detail="unknown_manifest") from exc
     except ModelGatewayError as exc:
         log_gateway_error(logger, exc)
         raise HTTPException(status_code=502, detail=client_safe_message(exc)) from exc
@@ -1958,9 +1961,6 @@ async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
         http = _http_from_invoke_prep(exc)
         if http is not None:
             raise http from exc
-        if isinstance(exc, LookupError):
-            # The manifest the thread last ran under no longer resolves.
-            raise HTTPException(status_code=404, detail="unknown_manifest") from exc
         raise
 
 

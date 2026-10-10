@@ -34,6 +34,7 @@ from felix.context import async_run_with_context, get_context
 from felix.hooks import chat_with_model_hooks, model_hook_context, run_filter_history
 from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage
+from felix.session.compaction import _UNTRUSTED_NOTICE, fence_untrusted
 from felix.session.types import GetEventsOpts, Session, SessionEvent, WakeState
 
 logger = logging.getLogger("felix.session.side_question")
@@ -49,9 +50,17 @@ _INSTRUCTION = (
     f"contain the answer, reply with exactly {NOT_IN_CONTEXT} and nothing else; do not guess."
 )
 
+# The prompt a manifest with sub-agents is asked under. Its own prompt is a router's or a
+# planner's — "choose exactly one of these routes" — which answers a side question with a route.
+_COMPOSITE_PROMPT = "You answer questions about a conversation an agent team has been having."
+
 
 class UnknownThreadError(LookupError):
     """The thread has no recorded manifest: it has never had a turn, so there is nothing to ask."""
+
+
+class UnknownManifestError(LookupError):
+    """The manifest the thread last ran under no longer resolves."""
 
 
 class _ReadOnlySession:
@@ -153,12 +162,20 @@ async def _manifest_of(settings: Settings, tenant_id: str, thread_id: str) -> st
 
 
 async def _rendered(
-    settings: Settings, manifest: Any, tenant_id: str, thread_id: str, *, system_prompt: str, model: Any
+    settings: Settings,
+    manifest: Any,
+    tenant_id: str,
+    thread_id: str,
+    *,
+    question: str,
+    system_prompt: str,
+    model: Any,
 ) -> list[ChatMessage]:
     """The thread as its next turn would read it, less any summary that turn would write.
 
-    The incoming turn handed to the strategy is a placeholder, dropped from what is returned:
-    a `semantic:N` strategy ranks history against it, and the instruction is not what to rank by.
+    The question is handed to the strategy as the incoming turn, because a `semantic:N`
+    strategy ranks history against it, and dropped from what is returned: it reaches the model
+    once, outside the fenced transcript.
     """
     from felix.governance.image_screening import screen_session_strategy
     from felix.governance.inbound import replay_screener
@@ -171,7 +188,7 @@ async def _rendered(
     strategy = screen_session_strategy(strategy, replay_screener(manifest, settings))
     session = session_store.open(thread_id)
     readonly = _ReadOnlySession(session)
-    placeholder = ChatMessage(role="user", content="")
+    placeholder = ChatMessage(role="user", content=question)
     set_leaf(readonly.id, await stored_leaf(session))
     try:
         rendered = await strategy.render(
@@ -199,7 +216,10 @@ async def _admitted(settings: Settings, auth: Any, tenant_id: str, thread_id: st
     from felix.runtime import resolve_tenant_manifest
 
     manifest_id = await _manifest_of(settings, tenant_id, thread_id)
-    resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread_id)
+    try:
+        resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread_id)
+    except (LookupError, ValueError) as exc:
+        raise UnknownManifestError(manifest_id) from exc
     manifest = resolved.manifest
     enforce_inbound_auth(manifest, auth)
     await check_thread_pin(
@@ -218,8 +238,9 @@ async def _admitted(settings: Settings, auth: Any, tenant_id: str, thread_id: st
 async def _screened_answer(
     settings: Settings, manifest: Any, manifest_id: str, reply: str
 ) -> tuple[str, str]:
-    """`(status, answer)`, through the reply controls a turn's answer passes through: PII redacted
-    or blocked, and `withheld` with the denial when a final-response judge refuses it."""
+    """`(status, answer)`, through the reply controls a turn's answer passes through: PII redacted,
+    or `withheld` with the notice when PII blocks it or a final-response judge refuses it."""
+    from felix.governance.reply import PII_BLOCKED_REPLY
     from felix.manifests.builder import bind_decider, reply_screen_for
 
     status, answer = _read_answer(reply)
@@ -229,8 +250,35 @@ async def _screened_answer(
     if screen is None or not answer:
         return status, answer
     answer = await screen.redact_async(answer)
+    if answer == PII_BLOCKED_REPLY:
+        return "withheld", answer
     denial = await screen.judge(answer)
     return ("withheld", denial) if denial is not None else (status, answer)
+
+
+async def _system_prompt(settings: Settings, manifest: Any, tenant_id: str, tools: Any) -> str:
+    """The manifest's prompt as a turn resolves it, less what only matters with tools bound."""
+    from felix.manifests.builder import BuildDeps, _resolve_system_prompt
+    from felix.manifests.governance import apply_transparency_notice
+    from felix.runtime import default_object_store
+
+    if manifest.spec.sub_agents:
+        prompt = _COMPOSITE_PROMPT
+    else:
+        prompt = await _resolve_system_prompt(
+            manifest,
+            BuildDeps(
+                tools=tools,
+                settings=settings,
+                object_store=default_object_store(settings),
+                tenant_id=tenant_id,
+                workspace_root=getattr(settings, "workspace_root", None) or None,
+                load_agents_md=bool(getattr(settings, "load_agents_md", False)),
+            ),
+        )
+    if manifest.spec.governance.transparency_notice:
+        prompt = apply_transparency_notice(prompt or "", manifest.metadata.name)
+    return prompt
 
 
 async def answer_side_question(
@@ -244,15 +292,12 @@ async def answer_side_question(
 ) -> dict[str, Any]:
     """Answer `question` from `thread_id`, as the thread's manifest, leaving the thread as it was.
 
-    Raises `UnknownThreadError` for a thread with no turns, and what a turn's admission raises
-    for the rest: `LookupError` for a manifest that no longer resolves, `InboundAuthError`,
+    Raises `UnknownThreadError` for a thread with no turns, `UnknownManifestError` for a manifest
+    that no longer resolves, and what a turn's admission raises for the rest: `InboundAuthError`,
     `ManifestDriftError`, `GovernanceError`, `InboundScreeningError`.
     """
     from felix.governance.inbound import apply_inbound_screening, inbound_controls_enabled
-    from felix.manifests.builder import BuildDeps, _resolve_system_prompt
-    from felix.manifests.governance import apply_transparency_notice
     from felix.patterns.model import build_model, record_model_usage
-    from felix.runtime import default_object_store
 
     manifest_id, manifest = await _admitted(settings, auth, tenant_id, thread_id)
 
@@ -263,22 +308,16 @@ async def answer_side_question(
                 manifest, [ChatMessage(role="user", content=question)], settings
             )
             question = screened[-1].content or ""
-        system_prompt = await _resolve_system_prompt(
-            manifest,
-            BuildDeps(
-                tools=tools,
-                settings=settings,
-                object_store=default_object_store(settings),
-                tenant_id=tenant_id,
-                workspace_root=getattr(settings, "workspace_root", None) or None,
-                load_agents_md=bool(getattr(settings, "load_agents_md", False)),
-            ),
-        )
-        if manifest.spec.governance.transparency_notice:
-            system_prompt = apply_transparency_notice(system_prompt or "", manifest.metadata.name)
+        system_prompt = await _system_prompt(settings, manifest, tenant_id, tools)
         model = build_model(settings, manifest.spec.model)
         history = await _rendered(
-            settings, manifest, tenant_id, thread_id, system_prompt=system_prompt, model=model
+            settings,
+            manifest,
+            tenant_id,
+            thread_id,
+            question=question,
+            system_prompt=system_prompt,
+            model=model,
         )
         hook_ctx = model_hook_context(model, manifest_id=manifest_id, thread_id=thread_id, purpose="ask")
         history = await run_filter_history(history, context=hook_ctx)
@@ -286,8 +325,10 @@ async def answer_side_question(
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(
                 role="user",
+                # Fenced as a summariser's transcript is: it carries tool output, which may be
+                # written to read as a closing tag and a question of its own.
                 content=(
-                    f"{_INSTRUCTION}\n\n<transcript>\n{_transcript(history[1:])}\n</transcript>\n\n"
+                    f"{_INSTRUCTION}{_UNTRUSTED_NOTICE}\n{fence_untrusted(_transcript(history[1:]))}\n\n"
                     f"Side question: {question}"
                 ),
             ),
@@ -304,4 +345,4 @@ async def answer_side_question(
     return _side_answer_dict(thread_id, manifest_id=manifest_id, status=status, answer=answer, usage=usage)
 
 
-__all__ = ["NOT_IN_CONTEXT", "UnknownThreadError", "answer_side_question"]
+__all__ = ["NOT_IN_CONTEXT", "UnknownManifestError", "UnknownThreadError", "answer_side_question"]
