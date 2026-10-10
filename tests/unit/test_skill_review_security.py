@@ -2,7 +2,7 @@
 
 The cases here pin what a refactor could silently lose: every check's id and weight, the
 half-up rounding, every rule in every scan family, and the status/score arithmetic. The
-fixture scores are fixed expectations over the bundles in `fixtures/skills/`.
+fixture scores are fixed expectations over the bundles in `tests/fixtures/skills/`.
 """
 
 from __future__ import annotations
@@ -30,7 +30,9 @@ from felix.skills.security import (
     scan_skill_security,
 )
 
-FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "skills"
+from tests.support import paths
+
+FIXTURES = paths.FIXTURES / "skills"
 
 _BODY = """
 # Roll dice
