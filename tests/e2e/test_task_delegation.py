@@ -635,3 +635,32 @@ async def test_a_durable_parent_cannot_give_its_background_child_a_longer_life(b
         [child_token] = [t for t in runs if t != parent_token]
         parent_expiry = runs[parent_token]["state_json"]["expires_at"]
         assert runs[child_token]["state_json"]["expires_at"] <= parent_expiry
+
+
+async def test_a_thread_may_have_only_so_many_background_children_in_flight(boot: Any) -> None:
+    """Each child runs on what was left of the budget, so the in-flight cap is what bounds a
+    thread's total exposure -- across turns as well as within one."""
+    from felix.durability import fibers as F
+
+    lead = _agent(
+        "e2e-lead",
+        system_prompt={"inline": "You lead."},
+        delegation={"background": True, "max_background": 1, "agents": [{"name": "e2e-researcher"}]},
+    )
+    script = [
+        ScriptedTurn(tool_calls=[_bg("c1", "first")]),
+        ScriptedTurn(content="started one"),
+        ScriptedTurn(tool_calls=[_bg("c2", "second")]),
+        ScriptedTurn(content="could not"),
+    ]
+    async with boot(script, manifests={"e2e-lead": lead, "e2e-researcher": RESEARCHER}) as app:
+        assert (await _chat(app)).status_code == 200
+        assert (await _chat(app, text="another")).status_code == 200
+        assert "1 background tasks are already running here" in _text(app.spy.prompts[3])
+        assert len(F._memory_fibers) == 1
+
+        app.spy.push(ScriptedTurn(content="first done"))
+        await F.resume_due_fibers(app.settings)
+        app.spy.push(ScriptedTurn(tool_calls=[_bg("c3", "third")]), ScriptedTurn(content="started again"))
+        assert (await _chat(app, text="and now?")).status_code == 200
+        assert len(F._memory_fibers) == 2, "a finished child frees its slot"

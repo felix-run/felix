@@ -1119,6 +1119,10 @@ class DelegationSpec(_Strict):
     # Lets the model start a child as a durable run and read it later with `task_result`.
     # Needs `felix-worker` (and `felix-scheduler`): nothing in the API process runs durable runs.
     background: bool = False
+    # How many background children one conversation may have in flight; the next start is
+    # refused until one ends. Each child runs on what was left of the budget when it started, so
+    # this is what bounds a thread's total exposure -- across turns, too.
+    max_background: int = Field(default=3, ge=1, le=16)
 
     @model_validator(mode="after")
     def _names_unique(self) -> DelegationSpec:

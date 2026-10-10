@@ -69,12 +69,14 @@ async def start_durable_chat(
     pin: dict[str, Any] | None = None,
     parent_thread_id: str | None = None,
     ceilings: Sequence[EffectiveLimits] = (),
+    max_children: int | None = None,
 ) -> dict[str, Any]:
     """Enqueue an invoke fiber; the worker's fiber scheduler runs it.
 
-    `parent_thread_id` and `ceilings` are a background child's (`tools/delegation.py`): the thread
-    whose `task_result` may read this run, and the `EffectiveLimits` of every agent above it,
-    which the resumed run is held to beside its own.
+    `parent_thread_id`, `ceilings` and `max_children` are a background child's
+    (`tools/delegation.py`): the thread whose `task_result` may read this run; the `EffectiveLimits`
+    of every agent above it, which the resumed run is held to beside its own; and how many of that
+    thread's children may be in flight at once -- `TooManyChildren` past it.
 
     Raises `RunInProgress` when `thread_id` already has a durable run in flight: one run per
     thread, checked atomically with the enqueue (felix-run/felix#529).
@@ -161,6 +163,7 @@ async def start_durable_chat(
         webhooks=endpoints_for_run(settings, tenant_id, list(execution.webhooks)),
         thread_id=thread_id,
         exclusive_on_thread=True,
+        max_children=max_children if parent_thread_id is not None else None,
     )
     return {
         "status": "accepted",

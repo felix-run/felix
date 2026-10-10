@@ -1052,8 +1052,9 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       cycles and depth refused, pinned), fresh context, the child's own inbound auth checked per
       call, governed as a tool and by its own stack, untrusted output, held to the parent's caps
       (`LimitState.ceilings`) and `max_peer_hops`. Background children (`delegation.background`):
-      a durable run per child on its own thread linked by `parent_session_id`, pinned, caps
-      carried in the run's state, read with `task_result`; `subagent_start`/`subagent_end` frames
+      a durable run per child on its own thread linked by `parent_session_id`, pinned, on what
+      is left of every budget above it, no nested background, `max_background` in flight per
+      thread, expiring with what started it, read with `task_result`; `subagent_start`/`subagent_end` frames
       for `task`. *Next:* a `task` entry that names a peer so local and A2A delegates share one
       tool; the same frames for router/parallel/groupchat (*Headless / contract*); a `todo_write`
       tool for any pattern, lifted out of `deep`'s plan tools; plan mode as a permission mode.

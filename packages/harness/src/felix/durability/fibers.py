@@ -113,6 +113,14 @@ class RunInProgress(Exception):
         self.resume_token = resume_token
 
 
+class TooManyChildren(Exception):
+    """A parent thread already has `limit` background children in flight (`create_fiber`)."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"too_many_background_children:{limit}")
+        self.limit = limit
+
+
 def run_in_flight(row: dict[str, Any], now: int) -> bool:
     """Whether a fiber still holds its thread.
 
@@ -172,6 +180,7 @@ async def create_fiber(
     webhooks: list[str] | None = None,
     thread_id: str | None = None,
     exclusive_on_thread: bool = False,
+    max_children: int | None = None,
 ) -> dict[str, Any]:
     """Create a fiber. `webhooks` are endpoint ids announced when it reaches a terminal status
     (see `felix.durability.webhooks`); already validated by the caller.
@@ -180,6 +189,11 @@ async def create_fiber(
     (`active_fiber_for_thread`). With `exclusive_on_thread`, raises `RunInProgress` instead of
     creating a second fiber on a thread that already has one in flight -- checked and inserted
     under one per-thread lock, so two concurrent sends cannot both pass the check.
+
+    `max_children` does the same for a background child (`state["parent_thread_id"]`): raises
+    `TooManyChildren` when that parent thread already has that many in flight. Each child has a
+    thread of its own, so the one-run-per-thread rule alone never bounded how many a parent
+    could start.
     """
     from felix.secrets import redact_json
 
@@ -211,12 +225,23 @@ async def create_fiber(
         },
     }
     exclusive = bool(thread_id) and exclusive_on_thread
+    parent = str(row["state_json"].get("parent_thread_id") or "") if max_children is not None else ""
     if _use_memory(settings):
         # No await between the check and the insert, so the event loop is the lock.
         if exclusive:
             active = _active_memory_fiber(tenant_id, str(thread_id), ts)
             if active is not None:
                 raise RunInProgress(active["id"])
+        if parent and max_children is not None:
+            children = [
+                r
+                for (tenant, _), r in _memory_fibers.items()
+                if tenant == tenant_id
+                and (r.get("state_json") or {}).get("parent_thread_id") == parent
+                and run_in_flight(r, ts)
+            ]
+            if len(children) >= max_children:
+                raise TooManyChildren(max_children)
         _memory_fibers[(tenant_id, fiber_id)] = row
         return _fiber_dict(row)
 
@@ -237,6 +262,21 @@ async def create_fiber(
             active = await _active_postgres_fiber(db, tenant_id, str(thread_id), ts)
             if active is not None:
                 raise RunInProgress(active["id"])
+        if parent and max_children is not None:
+            # The same race as the thread check, so the same remedy: one lock per parent thread.
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": f"fiber-children:{tenant_id}:{parent}"},
+            )
+            result = await db.execute(
+                select(Fiber).where(
+                    Fiber.tenant_id == tenant_id,
+                    Fiber.status.not_in(sorted(FIBER_TERMINAL_STATUSES)),
+                    Fiber.state_json["parent_thread_id"].astext == parent,
+                )
+            )
+            if sum(1 for f in result.scalars() if run_in_flight(_fiber_dict(f), ts)) >= max_children:
+                raise TooManyChildren(max_children)
         db.add(Fiber(**row))
         await db.commit()
         return row
@@ -1347,6 +1387,7 @@ save_fiber = _save_fiber
 
 __all__ = [
     "RunInProgress",
+    "TooManyChildren",
     "active_fiber_for_thread",
     "advance_fiber",
     "create_fiber",

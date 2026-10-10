@@ -2125,6 +2125,7 @@ async def build_agent(
                     },
                     ceiling=effective_limits(m.spec.limits),
                     background=m.spec.delegation.background,
+                    max_background=m.spec.delegation.max_background,
                 )
             )
             if m.spec.delegation.background:

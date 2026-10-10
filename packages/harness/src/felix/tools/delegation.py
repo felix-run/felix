@@ -80,6 +80,7 @@ def make_task_tool(
     *,
     ceiling: EffectiveLimits,
     background: bool = False,
+    max_background: int = 3,
 ) -> Tool:
     """`task(agent, prompt)` over `children`: manifest name -> (compiled agent, description, the
     manifest it compiled from), in declaration order. `ceiling` is the delegating agent's own
@@ -136,7 +137,9 @@ def make_task_tool(
         # route screened. The child screens what it is handed.
         req.extras.pop(INBOUND_SCREENED_EXTRA, None)
         if args["background"]:
-            return await _start_in_background(req, name, manifest, str(args["prompt"]), ceiling)
+            return await _start_in_background(
+                req, name, manifest, str(args["prompt"]), ceiling, max_background
+            )
         await emit_side_event(req.thread_id, "subagent_start", {"agent": name, "background": False})
         outcome = "error"
         req.limit_state.ceilings.append(ceiling)
@@ -172,9 +175,15 @@ def make_task_tool(
 
 
 async def _start_in_background(
-    req: RequestContext, name: str, manifest: Manifest, prompt: str, ceiling: EffectiveLimits
+    req: RequestContext,
+    name: str,
+    manifest: Manifest,
+    prompt: str,
+    ceiling: EffectiveLimits,
+    max_background: int,
 ) -> ToolOutput:
     """Enqueue the child as a durable run on a thread of its own, and say how to read it."""
+    from felix.durability.fibers import TooManyChildren
     from felix.durability.runs import BACKGROUND_CHILD_EXTRA, start_durable_chat
     from felix.limits import residual
     from felix.manifests.pin import pin_fields_for
@@ -193,9 +202,6 @@ async def _start_in_background(
         return tool_error_output("invalid_arguments", "[task] a background task needs a conversation thread")
     child_thread = f"{parent}:task:{uuid.uuid4().hex[:16]}"
     try:
-        await claim_thread(
-            settings=settings, tenant_id=tenant_id, thread_id=child_thread, parent_session_id=parent
-        )
         run = await start_durable_chat(
             settings,
             tenant_id,
@@ -209,6 +215,17 @@ async def _start_in_background(
             pin=await pin_fields_for(settings, tenant_id, manifest),
             parent_thread_id=parent,
             ceilings=[residual(c, req.limit_state) for c in (*req.limit_state.ceilings, ceiling)],
+            max_children=max_background,
+        )
+        # Linked once the run exists, so a refused start leaves no orphan thread behind.
+        await claim_thread(
+            settings=settings, tenant_id=tenant_id, thread_id=child_thread, parent_session_id=parent
+        )
+    except TooManyChildren as full:
+        return tool_error_output(
+            "rate_limited",
+            f"[task] {full.limit} background tasks are already running here; read one with "
+            f"{TASK_RESULT_TOOL_NAME} before starting another",
         )
     except Exception:
         logger.warning("task_background_start_failed agent=%s", name, exc_info=True)
