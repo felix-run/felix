@@ -40,7 +40,13 @@ class FatalCall:
     """The call whose failure ended a run, for the run's `final_response` row."""
 
     tool_call_id: str
-    error_code: str
+    error_code: ToolErrorCode
+
+
+def _call_row(call: ToolCall, thread_id: str | None, **extra: Any) -> dict[str, Any]:
+    """A `tool_call` or `policy_deny` row's payload. One builder for every path — a raise, a
+    returned failure, a refusal — so a field added to one cannot miss the others."""
+    return {"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id, **extra}
 
 
 def _applied_hook_content(replacement: Any, original: str, tool_name: str) -> str:
@@ -127,13 +133,7 @@ class ToolRunner:
                 "policy_deny",
                 status="denied",
                 manifest_id=self.manifest_id,
-                payload={
-                    "tool": call.name,
-                    "tool_call_id": call.id,
-                    "thread_id": thread_id,
-                    "control": "hook",
-                    "hook": str(preflight.get("hook") or "?"),
-                },
+                payload=_call_row(call, thread_id, control="hook", hook=str(preflight.get("hook") or "?")),
             )
             return (
                 None,
@@ -210,12 +210,7 @@ class ToolRunner:
                     "tool_call",
                     status="error",
                     manifest_id=self.manifest_id,
-                    payload={
-                        "tool": call.name,
-                        "tool_call_id": call.id,
-                        "thread_id": thread_id,
-                        "error_code": code.value,
-                    },
+                    payload=_call_row(call, thread_id, error_code=code.value),
                 )
                 if tool.fatal:
                     text = f"[fatal/{code.value}] {exc}"
@@ -339,7 +334,7 @@ class ToolRunner:
                     "manifest_id": self.manifest_id,
                 },
             )
-            payload: dict[str, Any] = {"tool": call.name, "tool_call_id": call.id, "thread_id": thread_id}
+            payload = _call_row(call, thread_id)
             if status == "denied":
                 # Every wrapper deny used to land here as one undifferentiated `policy_deny`;
                 # which control refused existed only in the tool message. The source has been
@@ -423,7 +418,7 @@ class ToolRunner:
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
                 if code is not None and fatal is None:
-                    fatal = FatalCall(tool_call_id=call.id, error_code=code.value)
+                    fatal = FatalCall(tool_call_id=call.id, error_code=code)
                 if denied:
                     denied_calls += 1
         else:
@@ -442,7 +437,7 @@ class ToolRunner:
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
                 if code is not None:
-                    fatal = FatalCall(tool_call_id=call.id, error_code=code.value)
+                    fatal = FatalCall(tool_call_id=call.id, error_code=code)
                     break
                 if denied:
                     denied_calls += 1

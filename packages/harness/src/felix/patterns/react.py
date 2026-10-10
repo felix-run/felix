@@ -728,7 +728,7 @@ class _ReactAgent:
         }
         if fatal is not None:
             reasons.append("fatal")
-            payload["fatal_call"] = {"tool_call_id": fatal.tool_call_id, "error_code": fatal.error_code}
+            payload["fatal_call"] = {"tool_call_id": fatal.tool_call_id, "error_code": fatal.error_code.value}
         if ended_denied:
             reasons.append("denied")
         if isinstance(died, (asyncio.CancelledError, GeneratorExit)):
