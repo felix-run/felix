@@ -37,6 +37,8 @@ from felix_ai.wire.anthropic_messages import (
 )
 from felix_ai.wire.openai_completions import openai_response_format
 
+from tests.support.factories import make_settings
+
 STRICT: dict[str, Any] = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},
@@ -475,9 +477,8 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 
 def _settings() -> Any:
-    from felix.config import Settings
 
-    return Settings(database_url="memory://output-schema", object_store="memory", auth_mode="none")
+    return make_settings()
 
 
 def _spec(pattern: str) -> dict[str, Any]:

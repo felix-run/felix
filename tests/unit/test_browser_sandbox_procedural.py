@@ -25,14 +25,11 @@ from felix.tools.browser import tools_from_browser_refs
 from felix.tools.sandboxes import tools_from_containers, tools_from_sandboxes
 from felix.tools.types import ToolInvocationCtx
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(
-        database_url="memory://browser-sandbox-proc",
-        object_store="memory",
-        allow_insecure=True,
-        environment="development",
-    )
+    return make_settings()
 
 
 @pytest.mark.asyncio

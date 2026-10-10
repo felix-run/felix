@@ -7,14 +7,12 @@ from felix.a2a.server import handle_rpc
 from felix.config import Settings
 from felix.tools.provider import InMemoryToolProvider
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        auth_mode="none",
-        allow_insecure=True,
-        object_store="memory",
-        database_url="memory://a2a",
+    return make_settings(
         default_manifest="quick",
     )
 

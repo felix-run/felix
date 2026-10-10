@@ -11,18 +11,14 @@ import pytest
 from felix.config import Settings
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 ID = "0" * 32
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://artifacts",
-    )
+    return make_settings()
 
 
 @pytest.mark.asyncio

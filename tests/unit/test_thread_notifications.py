@@ -25,9 +25,11 @@ from felix.session import notify
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://notify", redis_url="")
+    return make_settings(redis_url="")
 
 
 @pytest.fixture(autouse=True)

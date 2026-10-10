@@ -25,6 +25,8 @@ from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 TENANT = "acme"
 NAME = "notes"
 ALICE = "api_key|alice"
@@ -37,7 +39,7 @@ EVALS = '[{"name": "files", "prompt": "the meeting ended"}]'
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://skill-promote")
+    return make_settings()
 
 
 @pytest.fixture

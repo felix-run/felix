@@ -17,10 +17,12 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns import _plan_tools
 from felix.plans import store as plans_store
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://plan-writes")
+    return make_settings()
 
 
 def _id() -> str:

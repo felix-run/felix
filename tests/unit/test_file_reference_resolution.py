@@ -19,12 +19,14 @@ from felix.config import Settings
 from felix.storage import get_object_store
 from felix_ai.types import ChatMessage, file_ref_url
 
+from tests.support.factories import make_settings
+
 PNG = b"\x89PNG\r\n\x1a\n" + b"payload" * 8
 GIF = b"GIF89a" + b"payload" * 8
 
 
 def _settings() -> Settings:
-    return Settings(object_store="memory", database_url="memory://refs", allow_insecure=True)
+    return make_settings()
 
 
 async def _stored(settings, tenant_id: str, raw: bytes, media_type: str) -> str:

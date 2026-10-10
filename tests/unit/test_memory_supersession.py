@@ -14,6 +14,8 @@ from felix.config import Settings
 from felix.memory import store as memory_store
 from felix.memory.store import ACTIVE, FORGOTTEN, SUPERSEDED
 
+from tests.support.factories import make_settings
+
 TENANT = "t-mem"
 # Only an operator retires a memory by its topic_key; an agent write is stored alongside.
 OPERATOR = {"source": "management_api"}
@@ -26,7 +28,7 @@ def _clean() -> None:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://test")
+    return make_settings()
 
 
 async def _put(content: str, **kw):

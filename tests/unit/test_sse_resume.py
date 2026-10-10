@@ -25,7 +25,7 @@ from felix.session.types import AppendableEvent
 from felix.thread_ids import effective_thread_id
 from httpx import AsyncClient
 
-from tests.support.factories import app_client
+from tests.support.factories import app_client, make_settings
 
 
 @pytest.fixture
@@ -40,12 +40,7 @@ def thread(request: pytest.FixtureRequest) -> str:
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://resume",
+    return make_settings(
         host="127.0.0.1",
         # No Redis here; the snapshot path consults it for lease and steer state and
         # would otherwise spend the test retrying a refused port.

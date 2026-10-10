@@ -23,17 +23,14 @@ from felix.durability.fibers import (
 )
 from felix.durability.runs import get_durable_run
 
+from tests.support.factories import make_settings
+
 TENANT = "default"
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        database_url="memory://fiber-retry",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
+    return make_settings(
         fiber_max_attempts=3,
     )
 

@@ -14,6 +14,8 @@ from felix.manifests.schema import Manifest
 from felix.memory import store as memory_store
 from felix.memory.tools import MEMORY_TOOL_NAMES, make_memory_tools
 
+from tests.support.factories import make_settings
+
 TENANT = "t-tools"
 MANIFEST = "m"
 
@@ -24,7 +26,7 @@ def _clean() -> None:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://tools", object_store="memory", allow_insecure=True)
+    return make_settings()
 
 
 def _tools() -> dict[str, object]:

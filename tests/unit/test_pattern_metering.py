@@ -24,14 +24,11 @@ from felix.patterns.model import ModelChatResult, StreamDelta, TokenUsage
 from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput
 from felix.usage import store as usage_store
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(
-        database_url="memory://pattern-metering",
-        object_store="memory",
-        allow_insecure=True,
-        environment="development",
-    )
+    return make_settings()
 
 
 def _ctx() -> RequestContext:

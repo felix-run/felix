@@ -23,11 +23,13 @@ from felix.tools import client_bridge
 from felix.tools.errors import read_tool_error_code
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 
+from tests.support.factories import make_settings
+
 THREAD = "default:gated-wait"
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://gated-waits", object_store="memory", redis_url="")
+    return make_settings(redis_url="")
 
 
 def _req(settings: Settings) -> Any:

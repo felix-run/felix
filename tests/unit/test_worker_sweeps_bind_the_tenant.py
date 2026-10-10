@@ -24,9 +24,11 @@ import pytest
 from felix.config import Settings
 from felix.db.session import _rls_tenant
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://sweeps", object_store="memory")
+    return make_settings()
 
 
 @pytest.mark.asyncio

@@ -24,20 +24,18 @@ from felix.durability.fibers import RunInProgress, create_fiber, run_in_flight
 from felix.manifests.loader import load_bundled
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 THREAD = "th-529"
 KEYS = json.dumps({"sk-acme": {"tenant_id": "acme", "sub": "alice", "scopes": ["*"]}})
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
+    return make_settings(
         auth_mode="api_key",
         auth_api_keys=KEYS,
         host="127.0.0.1",
         rate_limit=100_000,
-        environment="development",
-        object_store="memory",
-        database_url="memory://one-run-per-thread",
         redis_url="",
         anthropic_api_key="",
         openai_api_key="",

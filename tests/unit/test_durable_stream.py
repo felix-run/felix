@@ -19,17 +19,12 @@ import pytest
 from felix.config import Settings
 from httpx import AsyncClient
 
-from tests.support.factories import app_client
+from tests.support.factories import app_client, make_settings
 from tests.support.sse import sse_payloads
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://durable",
+    return make_settings(
         redis_url="",
         stream_resume_poll_seconds=0.1,
         stream_resume_poll_max_seconds=0.1,

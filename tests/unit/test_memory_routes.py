@@ -13,6 +13,8 @@ from felix.config import Settings
 from felix.memory import store as memory_store
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 KEYS = (
     '{"sk-read":{"tenant_id":"acme","sub":"ops","scopes":["memory:read"]},'
     '"sk-write":{"tenant_id":"acme","sub":"ops","scopes":["memory:write"]},'
@@ -27,13 +29,9 @@ def _clean() -> None:
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
+    return make_settings(
         auth_mode="api_key",
         auth_api_keys=KEYS,
-        environment="development",
-        object_store="memory",
-        database_url="memory://mem-routes",
     )
 
 

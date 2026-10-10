@@ -10,15 +10,12 @@ from felix.jobs.retention import run_retention_sweep
 from felix.manifests import store as manifest_store
 from felix.manifests.loader import parse_manifest
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        auth_mode="none",
-        allow_insecure=True,
-        object_store="memory",
-        database_url="memory://hardening",
-    )
+    return make_settings()
 
 
 @pytest.mark.asyncio

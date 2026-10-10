@@ -22,11 +22,13 @@ from felix.documents import store as documents
 from felix.manifests.schema import DocumentSearchToolRef
 from felix.tools.document_search import EMPTY_CORPUS, tools_from_document_refs
 
+from tests.support.factories import make_settings
+
 TENANT = "acme"
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://documents-tool", object_store="memory")
+    return make_settings()
 
 
 async def _ingest(settings: Settings, tenant: str, title: str, body: str) -> None:

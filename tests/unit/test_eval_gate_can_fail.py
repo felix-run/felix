@@ -31,6 +31,8 @@ from felix.config import Settings
 from felix.eval import store as eval_store
 from felix.eval.runner import start_run
 
+from tests.support.factories import make_settings
+
 FIXTURES = pathlib.Path(__file__).resolve().parents[2] / "fixtures" / "eval"
 
 
@@ -48,7 +50,7 @@ def _isolate_process_settings() -> Any:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://eval-gate", object_store="memory")
+    return make_settings()
 
 
 def _scorer_rule_names() -> set[str]:

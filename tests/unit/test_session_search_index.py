@@ -16,11 +16,12 @@ from felix.session.search import _memory_index, drop_thread_index, search_sessio
 from felix.session.store import InMemorySessionStore
 from felix.session.types import AppendableEvent
 
+from tests.support.factories import make_settings
+
 
 def _settings():
-    from felix.config import Settings
 
-    return Settings(database_url="memory://search-index", object_store="memory")
+    return make_settings()
 
 
 async def _append(tenant: str, thread: str, text: str) -> None:

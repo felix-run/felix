@@ -16,15 +16,13 @@ from felix.manifests.loader import parse_manifest
 from felix.usage.catalog import catalog_from_manifest
 from felix.usage.pricing import _lookup_price
 
+from tests.support.factories import make_settings
+
 TEXT_ONLY = "@cf/openai/gpt-oss-120b"  # vouched `text_only` in the catalog
 
 
 def _settings(**routes: dict[str, Any]) -> Settings:
-    return Settings(  # type: ignore[arg-type]
-        database_url="memory://listing",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
+    return make_settings(  # type: ignore[arg-type]
         model_routes=json.dumps(routes),
     )
 

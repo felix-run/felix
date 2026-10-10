@@ -25,12 +25,14 @@ from felix.skills.tools import make_skill_tools
 from felix.storage import MemoryObjectStore
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 
+from tests.support.factories import make_settings
+
 ALICE, BOB = "iss|alice", "iss|bob"
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://personal-skills")
+    return make_settings()
 
 
 @pytest.fixture

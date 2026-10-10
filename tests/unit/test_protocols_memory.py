@@ -6,15 +6,12 @@ import pytest
 from felix.config import Settings
 from felix_api.composition import compose
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        auth_mode="none",
-        allow_insecure=True,
-        object_store="memory",
-        database_url="memory://test",
-    )
+    return make_settings()
 
 
 @pytest.mark.asyncio

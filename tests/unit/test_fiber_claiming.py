@@ -23,16 +23,12 @@ from felix.durability.fibers import (
     resume_due_fibers,
 )
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        database_url="memory://fibers",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-    )
+    return make_settings()
 
 
 @pytest.fixture(autouse=True)

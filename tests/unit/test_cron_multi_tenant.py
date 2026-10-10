@@ -14,16 +14,12 @@ from felix.config import Settings
 from felix.jobs import store as jobs_store
 from felix.jobs.scheduler import run_due_jobs, run_due_jobs_all_tenants
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        database_url="memory://cron",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-    )
+    return make_settings()
 
 
 @pytest.fixture(autouse=True)

@@ -17,12 +17,14 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns import _plan_tools
 from felix.plans import store as plans_store
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    # Its own memory database, and its own tenant per test: the memory store is a
-    # module-level dict shared by the whole run, and these tests list by tenant.
-    return Settings(database_url="memory://plan-threads")
+    # Its own tenant per test: the memory store is a module-level dict shared by every
+    # `memory://` URL, whatever its name, and these tests list by tenant.
+    return make_settings()
 
 
 def _tenant() -> str:

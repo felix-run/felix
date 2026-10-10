@@ -13,16 +13,12 @@ from felix.config import Settings
 from felix.manifests.resolver import pick_variant
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://variant",
-    )
+    return make_settings()
 
 
 def _threads_on_each_side(tenant: str, name: str, weight: int) -> tuple[str, str]:

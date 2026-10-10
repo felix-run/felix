@@ -17,6 +17,8 @@ from felix.config import Settings
 from felix.eval import store as eval_store
 from felix.eval.validation import RUBRIC_RULE_KEYS, read_item, validate_items
 
+from tests.support.factories import make_settings
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "fixtures" / "eval"
 
@@ -31,7 +33,7 @@ def _isolate_process_settings() -> Any:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://eval-validation", object_store="memory")
+    return make_settings()
 
 
 def _fixture(name: str) -> dict[str, Any]:

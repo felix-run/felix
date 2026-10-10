@@ -14,14 +14,11 @@ from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput
 from felix.tools.queues import enqueue_message, tools_from_queues
 from felix.tools.types import ToolInvocationCtx, define_tool
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(
-        database_url="memory://queues-stream",
-        object_store="memory",
-        allow_insecure=True,
-        environment="development",
-    )
+    return make_settings()
 
 
 class _FakeStreamAgent:

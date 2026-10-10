@@ -32,6 +32,8 @@ from felix.memory.extraction import (
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 
+from tests.support.factories import make_settings
+
 TENANT = "t-extract"
 MANIFEST = "m"
 
@@ -50,7 +52,7 @@ def _clean() -> None:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://extract", object_store="memory", allow_insecure=True)
+    return make_settings()
 
 
 class _ScriptedModel:

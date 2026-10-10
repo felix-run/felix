@@ -25,6 +25,8 @@ from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 
+from tests.support.factories import make_settings
+
 ALICE, BOB = "iss|alice", "iss|bob"
 BODY = """# Notes
 
@@ -41,7 +43,7 @@ NEW = {"name": "notes", "description": "Take notes the way I do", "body": BODY, 
 @pytest.fixture
 def settings() -> Settings:
     # Not `none`: under it no scope is checked, and `skills:personal` is the point here.
-    return Settings(database_url="memory://personal-writes", auth_mode="api_key")
+    return make_settings(auth_mode="api_key")
 
 
 @pytest.fixture
