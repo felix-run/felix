@@ -1117,11 +1117,6 @@
           ],
           "default": null,
           "title": "Max Cost Usd"
-        },
-        "precount": {
-          "default": false,
-          "title": "Precount",
-          "type": "boolean"
         }
       },
       "title": "Limits",

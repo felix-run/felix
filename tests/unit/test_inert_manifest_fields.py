@@ -236,7 +236,6 @@ async def test_anomaly_disabled_manifest_is_skipped(monkeypatch: pytest.MonkeyPa
 # per field — but the set may not grow, and shrinking it is the point.
 KNOWN_INERT_FIELDS = {
     "min_rate",  # AnomalySpec
-    "precount",  # Limits
 }
 
 

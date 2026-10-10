@@ -145,6 +145,10 @@ async def put_job(
     payload: dict[str, Any] | None = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
+    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar."""
+    from felix.jobs.schedule import parse_schedule
+
+    parse_schedule(schedule)
     ts = now_ms()
 
     if _use_memory(settings):
@@ -198,7 +202,7 @@ async def touch_run(
     tenant_id: str,
     name: str,
     *,
-    last_run_at: int,
+    last_run_at: int | None,
     next_run_at: int | None = None,
     last_status: str = "ok",
     last_error: str = "",

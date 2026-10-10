@@ -63,6 +63,9 @@ RETIRED: dict[tuple[str, ...], str] = {
         "removed after 0.3.0 (#261); named a count of planner examples with no corpus "
         "behind it anywhere, and was read by nothing"
     ),
+    ("spec", "limits", "precount"): (
+        "removed after 0.3.0; promised to count input tokens before the call, and was read by nothing"
+    ),
 }
 
 
