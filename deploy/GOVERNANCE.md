@@ -1687,22 +1687,37 @@ The same channel carries UI prompts and client-tool answers.
 ## Permission modes
 
 A thread is in one of four modes, set with `POST /chat/mode` (or by an approved plan) and kept in
-thread metadata. `spec.permissions.allowed_modes` says which a manifest's conversations may use
-(default `default`, `plan`, `accept_edits`) and `default_mode` which they start in; a stored mode the
-manifest does not allow is ignored and the run uses the default.
+thread metadata. The change applies from the next run: a run reads the stored mode once.
 
 | Mode | Effect |
 |------|--------|
 | `default` | Every control runs as the manifest says. |
-| `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked. A background `task` is refused (a worker run would not inherit the mode). `exit_plan_mode(plan)` is gated by the built-in `plan-approval` rule; approval returns the thread to `default_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
-| `accept_edits` | Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
-| `bypass` | Every approval is waived **except** the plan approval. Only where `allowed_modes` lists it; never a `default_mode`; setting it needs `approvals:bypass`, and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. |
+| `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
+| `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass`, and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
 
-The mode is enforced by the `permission mode` wrapper, just outside approvals (so plan mode
-refuses before anyone is asked), and by `waives_approval`, which approvals consults. A child agent
-shares the run's mode: plan mode applies to it as it is, but a waiver applies only where the
-child's own manifest allows that mode — a parent in bypass does not waive its children's
-approvals. Every mode change through the route is an audit event, `permission_mode_change`.
+`allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
+wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
+falls back to its `default_mode`.
+
+**The plan approval.** `exit_plan_mode(plan)` is gated by the built-in `plan-approval` rule —
+`one_shot`, `bind_principal`, a 30-minute TTL — and its grant is bound to the thread as well as the
+plan text, so an approved plan is never a standing key out of plan mode for another thread, person
+or later turn. No mode waives it. Approval returns the thread to `default_mode`.
+
+**Enforcement.** The `permission mode` wrapper sits just outside approvals, so plan mode refuses
+before anyone is asked; approvals asks `waives_approval` itself. A run caches only the stored mode
+and the caller's bypass verdict, and each agent — a router's children, a `task` child — resolves
+its own mode from them on every call, so a child that does not offer plan mode cannot take the
+run out of it, and a waiver needs the child's own manifest to allow the mode. An unreadable stored
+mode is read as `plan` (fail closed).
+
+**Audit.** Every mode change is `permission_mode_change` (`payload.via`: `route` or
+`exit_plan_mode`), and every approval a mode waived is `approval_waived` with the tool and the mode,
+plus the `felix_approval_waived` counter.
+
+`deep`'s `plan_create` / `plan_update_step` are added by the pattern after the wrapper stack and
+write only the plans store; they are not governed by plan mode.
 
 ## Session leases
 

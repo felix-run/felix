@@ -194,9 +194,9 @@ async def _start_in_background(
     from felix.session.thread_state import claim_thread
 
     settings, tenant_id, parent = req.settings, req.auth.tenant_id, req.thread_id
-    from felix.governance.permission_mode import run_mode
+    from felix.governance.permission_mode import in_plan_mode
 
-    if run_mode(req) == "plan":
+    if await in_plan_mode(req):
         return tool_error_output(
             "permission_denied",
             "[task] plan mode: a background task would run outside it; delegate in the foreground",

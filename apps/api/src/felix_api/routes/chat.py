@@ -27,6 +27,7 @@ from felix.idempotency import (
     valid_key,
 )
 from felix.logging_setup import loggable
+from felix.manifests.schema import PermissionModeName
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
@@ -418,7 +419,7 @@ class PermissionModeRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     thread_id: str = Field(min_length=1)
-    mode: Literal["default", "accept_edits", "plan", "bypass"]
+    mode: PermissionModeName
 
 
 class ThinkingRequest(BaseModel):
@@ -2622,9 +2623,7 @@ async def chat_permission_mode(
     can change under it. `bypass` waives every approval, so setting it needs `approvals:bypass`
     here, and the run checks the scope again for whoever drives the thread then.
     """
-    from felix.audit import store as audit_store
-    from felix.auth.mgmt import holds_mgmt_scopes
-    from felix.governance.permission_mode import BYPASS_SCOPE
+    from felix.governance.permission_mode import BYPASS_SCOPE, may_bypass, record_mode_change
     from felix.session.thread_state import update_thread_meta
 
     auth = _auth_from_request(request)
@@ -2633,19 +2632,12 @@ async def chat_permission_mode(
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     await _refuse_unless_driver(request, thread, lease_token)
-    if body.mode == "bypass" and not holds_mgmt_scopes(settings, auth.scopes, BYPASS_SCOPE):
+    if body.mode == "bypass" and not may_bypass(settings, auth.scopes):
         raise HTTPException(status_code=403, detail=f"missing_scope:{BYPASS_SCOPE}")
     await update_thread_meta(
         settings=settings, tenant_id=auth.tenant_id, thread_id=thread, permission_mode=body.mode
     )
-    audit_store.record_event(
-        settings,
-        auth.tenant_id,
-        "permission_mode_change",
-        principal_subj=auth.principal_sub or "",
-        status=body.mode,
-        payload={"thread_id": thread, "mode": body.mode},
-    )
+    record_mode_change(settings, auth.tenant_id, auth.principal_sub or "", thread, body.mode, via="route")
     return {"ok": True, "thread_id": thread, "mode": body.mode}
 
 

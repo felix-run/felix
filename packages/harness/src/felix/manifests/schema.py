@@ -1021,7 +1021,9 @@ class PermissionsSpec(_Strict):
 
     default_mode: PermissionModeName = "default"
     allowed_modes: list[PermissionModeName] = Field(
-        default_factory=lambda: ["default", "plan", "accept_edits"]
+        # `accept_edits` and `bypass` are opt-in: each waives approvals an author already wrote,
+        # so allowing one is that author's call, not a default every existing manifest inherits.
+        default_factory=lambda: ["default", "plan"]
     )
     # Tools (names or globs) plan mode may run beside the built-in read-only ones -- an MCP
     # server's search tools, a shell tool restricted to reads. An MCP tool's own read-only

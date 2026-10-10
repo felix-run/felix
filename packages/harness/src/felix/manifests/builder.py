@@ -20,6 +20,8 @@ from felix.governance.permission_mode import (
     EXIT_PLAN_TOOL_NAME,
     apply_permission_mode,
     make_exit_plan_tool,
+    plan_approval_rule,
+    record_waiver,
     waives_approval,
 )
 from felix.governance.reply import ReplyScreen, screen_session_store
@@ -100,8 +102,6 @@ class BuildDeps:
     # screen chains to it (`ReplyScreen.parent`). Set and restored around the child compile.
     reply_screen: Any | None = None
 
-
-PLAN_APPROVAL_RULE_ID = "plan-approval"
 
 # Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
 # what keeps the compile a request triggers proportional to what the tenant meant to write.
@@ -1123,7 +1123,10 @@ def apply_approvals(
             req = try_get_context()
             # The thread's permission mode may waive this approval (`accept_edits` for an edit
             # tool, `bypass` for any) -- resolved by the permission-mode wrapper outside this one.
-            granted = waives_approval(tool.name, permissions, req)
+            waived_by = await waives_approval(tool.name, permissions, req)
+            if waived_by is not None and req is not None:
+                record_waiver(req, tool.name, waived_by, manifest_id)
+            granted = waived_by is not None
             pending_row: dict[str, object] | None = None
             preview_failure: str | None = None
             # What the row and the frame show. Equal to `args` unless the tool computes a
@@ -2201,13 +2204,7 @@ async def build_agent(
         if "plan" in m.spec.permissions.allowed_modes:
             # The plan is approved through the same flow as any gated call -- the row, the
             # `approval_required` frame, `GET /approvals` -- and no mode waives it.
-            approval_rules.append(
-                ApprovalRule(
-                    id=PLAN_APPROVAL_RULE_ID,
-                    description="Approve this plan and leave plan mode",
-                    tools=[EXIT_PLAN_TOOL_NAME],
-                )
-            )
+            approval_rules.append(plan_approval_rule())
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions
