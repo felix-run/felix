@@ -5,7 +5,8 @@ The seven tools (`list_dir`, `read_file`, `write_file`, `edit_file`, `delete_fil
 hand the file I/O to a `WorkspaceBackend` (`felix.tools.workspace_backend`; on this host,
 `felix.tools.workspace_local`). The primitives below (`workspace_parts`, `open_workspace_parent`,
 `open_regular`, ...) are that backend's, and `shell`, the image tools and the context-file loader's,
-which work on the local filesystem by design. `workspace_root()` is the directory those local consumers work in for the current call.
+which work on the local filesystem by design. `workspace_root()` is the directory those local
+consumers work in for the current call.
 """
 
 from __future__ import annotations
