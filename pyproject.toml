@@ -125,10 +125,15 @@ exclude_also = [
 ]
 
 [tool.pytest.ini_options]
+# A misspelt marker or ini key fails the run instead of silently doing nothing.
+addopts = ["--strict-markers", "--strict-config"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 120
 timeout_method = "thread"
+# An exception raised where nothing can catch it (a __del__, a task nobody awaited) fails the test
+# that caused it, rather than scrolling past as a warning.
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
 
 [tool.ty.environment]
 python-version = "3.14"
