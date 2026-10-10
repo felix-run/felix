@@ -84,6 +84,9 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
             handler=ask_user_handler,
         ),
     )
+    from felix.tools.todos import TODO_TOOL_NAME, make_todo_tool
+
+    provider.register(TODO_TOOL_NAME, make_todo_tool)
     provider.register(
         "list_skills",
         lambda: define_tool(

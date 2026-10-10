@@ -19,6 +19,7 @@
     "subagent_start",
     "text_delta",
     "thinking_delta",
+    "todo_updated",
     "tool_end",
     "tool_execution_update",
     "tool_request",
