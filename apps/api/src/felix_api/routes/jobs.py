@@ -13,6 +13,8 @@ from felix.auth.mgmt import (
 )
 from pydantic import BaseModel, Field
 
+from felix_api.errors import client_safe_message
+
 router = APIRouter(tags=["Jobs"])
 
 
@@ -49,17 +51,23 @@ async def get_job(name: str, request: Request) -> Any:
 @router.put("/{name}")
 async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     from felix.jobs import store as jobs_store
+    from felix.jobs.schedule import ScheduleError
 
     require_mgmt_scopes(request, SCOPE_JOBS_WRITE)
-    return await jobs_store.put_job(
-        request.app.state.settings,
-        tenant_id_from_request(request),
-        name,
-        schedule=body.schedule,
-        manifest_id=body.manifest_id,
-        payload=body.payload,
-        enabled=body.enabled,
-    )
+    try:
+        return await jobs_store.put_job(
+            request.app.state.settings,
+            tenant_id_from_request(request),
+            name,
+            schedule=body.schedule,
+            manifest_id=body.manifest_id,
+            payload=body.payload,
+            enabled=body.enabled,
+        )
+    except ScheduleError as exc:
+        raise HTTPException(
+            status_code=422, detail=client_safe_message(exc, authored_for_clients=True)
+        ) from None
 
 
 @router.delete("/{name}")

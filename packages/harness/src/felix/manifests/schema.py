@@ -977,7 +977,6 @@ class Limits(_Strict):
     max_output_tokens: int | None = Field(default=None, ge=1, le=ABSOLUTE_LIMITS["max_output_tokens"])
     # Per-run spend ceiling, priced from the model catalog as tokens accumulate.
     max_cost_usd: float | None = Field(default=None, gt=0, le=ABSOLUTE_LIMITS["max_cost_usd"])
-    precount: bool = False
 
 
 class JudgeRule(_Strict):

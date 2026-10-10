@@ -1034,6 +1034,42 @@ comment explaining exactly that. It is conditional, not inert.
 ---
 ## Next (this quarter)
 
+### Harness parity program (gap analysis, 2026-10-10)
+
+Felix against Claude Code, Codex CLI, OpenClaw and Claude Cowork, each Felix cell verified in the
+tree. It leads on governance, the skill library, durability, eval and tenancy. It trails on
+delegation the model drives, coding-tool depth, and everything that lets an agent live in a user's
+world (channels, triggers, self-scheduled work, per-user state, connectors, an interactive browser).
+Each wave is shaped by the extensibility rule: what another harness bakes in lands here as a
+registry entry, a plugin or a skill, not as a fixed workflow.
+
+- [~] **W0 — silent defaults found by the audit.** The job schedule parser read `*/N * * * *` only,
+      and fired anything else — the docs' own `0 3 * * *` included — every 60 s. It is now real
+      five-field cron plus macros, refused at write, and a stored unreadable schedule stops firing
+      and records why. `limits.precount` (read by nothing) is retired through `compat.RETIRED`.
+- [ ] **W1 — delegation and planning.** A `task` tool the model calls to spawn a child agent
+      (compiled by `build_agent`, a child thread in `session/tree.py`, the full governance stack,
+      usage rolled up to the parent run); background children on durable fibers, with the
+      `subagent_start`/`subagent_end` frames from *Headless / contract*; a `todo_write` tool for
+      any pattern, lifted out of `deep`'s plan tools; plan mode as a permission mode.
+- [ ] **W2 — permissions, hooks, commands.** Per-session modes (`default | accept_edits | plan |
+      bypass`) as one deliberate new governance slot ahead of approvals; declarative `spec.hooks`
+      with `session_start`, `user_prompt_submit`, `stop` and `subagent_stop` events, delivered over
+      signed HTTP or a sandbox command; `/name args` resolved against `spec.prompts`; output styles;
+      `spec.network.allow_hosts`, landed with *credentials the model never holds*.
+- [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
+      background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
+      worktree per child task, and clearing of stale tool results.
+- [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
+      pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
+      `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per
+      user, plus an agent-editable `USER.md` and `SOUL.md`.
+- [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
+      OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,
+      with office-document skills; installable bundles through the skill-import gate; a stock
+      approvals preset for destructive actions.
+- [ ] **W6 — clients.** A TypeScript SDK generated from the wire contract, and a `felix chat` REPL.
+
 ### Harness
 
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**

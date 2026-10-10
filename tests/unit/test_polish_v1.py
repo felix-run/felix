@@ -21,7 +21,8 @@ def test_next_run_at_ms_parsers() -> None:
     assert next_run_at_ms("30", base) == base + 30_000
     assert next_run_at_ms("every:5m", base) == base + 5 * 60_000
     assert next_run_at_ms("@every 2s", base) == base + 2_000
-    assert next_run_at_ms("*/10 * * * *", base) == base + 10 * 60_000
+    # Real cron: the next wall-clock minute divisible by ten (00:16:40 -> 00:20:00), not "base + 10m".
+    assert next_run_at_ms("*/10 * * * *", base) == 20 * 60_000
 
 
 def test_heuristic_judge_score() -> None:

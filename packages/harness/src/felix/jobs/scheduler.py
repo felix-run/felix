@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 import uuid
 from typing import Any
@@ -11,6 +10,7 @@ from typing import Any
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.jobs import store as jobs_store
+from felix.jobs.schedule import ScheduleError, parse_schedule
 from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage, InvokeInput
 
@@ -22,34 +22,12 @@ def now_ms() -> int:
 
 
 def next_run_at_ms(schedule: str, from_ms: int | None = None) -> int:
-    """Compute next fire time from a simple schedule string.
+    """When `schedule` next fires after `from_ms` (default: now). The grammar is `felix.jobs.schedule`.
 
-    Supported:
-    * empty → +60s
-    * integer seconds (``300``)
-    * ``every:30s`` / ``every:5m`` / ``@every 5m``
-    * cron ``*/N * * * *`` → every N minutes
-    * otherwise → +60s
+    Raises `ScheduleError` for a schedule outside it -- never a guessed interval.
     """
     base = from_ms if from_ms is not None else now_ms()
-    s = (schedule or "").strip().lower()
-    if not s:
-        return base + 60_000
-    if s.isdigit():
-        return base + max(int(s), 1) * 1000
-    m = re.match(r"^(?:@?every[:\s]+)(\d+)\s*([smh])$", s)
-    if m:
-        n = int(m.group(1))
-        unit = m.group(2)
-        mult = {"s": 1_000, "m": 60_000, "h": 3_600_000}[unit]
-        return base + max(n, 1) * mult
-    if s.startswith("*/") and " " in s:
-        try:
-            n = int(s.split()[0][2:])
-            return base + max(n, 1) * 60_000
-        except ValueError:
-            pass
-    return base + 60_000
+    return parse_schedule(schedule).next_after(base)
 
 
 async def _invoke_job_manifest(
@@ -185,13 +163,30 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
         # this tick read, so a second worker -- or this worker's next tick, overlapping a
         # slow one -- that read the same due job does not fire it again.
         try:
+            following = next_run_at_ms(str(job.get("schedule") or ""), ts)
+        except ScheduleError as exc:
+            # Stored before the schedule was validated on write. It used to fire every minute
+            # whatever it said; now it does not fire, and says why where the operator looks.
+            if job.get("last_error") != str(exc):
+                logger.warning("job_schedule_invalid name=%s", loggable(str(job.get("name")), limit=200))
+                await jobs_store.touch_run(
+                    settings,
+                    tenant_id,
+                    job["name"],
+                    last_run_at=job.get("last_run_at"),
+                    next_run_at=jobs_store.KEEP_SCHEDULE,
+                    last_status="error",
+                    last_error=str(exc),
+                )
+            continue
+        try:
             claimed = await jobs_store.claim_run(
                 settings,
                 tenant_id,
                 job["name"],
                 seen_next_run_at=next_run,
                 last_run_at=ts,
-                next_run_at=next_run_at_ms(str(job.get("schedule") or ""), ts),
+                next_run_at=following,
             )
         except Exception:
             logger.warning("job_claim_failed name=%s", job.get("name"), exc_info=True)

@@ -97,6 +97,15 @@ async def test_a_job_round_trips_through_the_api(boot: Any) -> None:
         assert (await app.client.get("/jobs/nightly", headers=_as(ADMIN))).status_code == 404
 
 
+async def test_a_schedule_outside_the_grammar_is_refused_and_nothing_is_stored(boot: Any) -> None:
+    """It used to be stored and fired every sixty seconds, whatever it said."""
+    async with boot([], env=_keys(reader=["jobs:read"])) as app:
+        refused = await app.client.put("/jobs/daily", json={"schedule": "daily at 9"}, headers=_as(ADMIN))
+        assert refused.status_code == 422, refused.text
+        assert "cron" in refused.json()["detail"]
+        assert (await app.client.get("/jobs/daily", headers=_as(ADMIN))).status_code == 404
+
+
 async def test_an_unknown_job_is_a_404_on_both_read_and_delete(boot: Any) -> None:
     """A missing row must not read as an empty one, which a caller would treat as configured."""
     async with boot([], env=_keys(reader=["jobs:read"])) as app:
