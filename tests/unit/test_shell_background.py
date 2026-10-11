@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -251,7 +252,8 @@ def test_a_state_directory_that_is_not_private_is_refused(
 ) -> None:
     base = bg.background_base(root)
     if make_unsafe == "open to others":
-        os.chmod(base, 0o710)  # its group may enter: enough to refuse, with nothing readable
+        # Its group may enter, and no more: enough to refuse, with nothing readable.
+        os.chmod(base, base.stat().st_mode | stat.S_IXGRP)
     else:
         base.rmdir()
         os.symlink(tmp_path, base)
