@@ -187,13 +187,17 @@ spec:
         additionalProperties: false
       timeout_seconds: 300
     - name: local_open
-      description: Open a local path or URL in the user's environment.
+      description: >-
+        Show the user a file from their folder by opening it in the editor pane beside this
+        conversation, where they can read and edit it; or open an http(s) URL in a new browser
+        tab. Use it whenever the user asks to open, show or view a file. It does not read the
+        file for you: use local_read for that.
       args_schema:
         type: object
         properties:
           target:
             type: string
-            description: File path or URL to open.
+            description: A path relative to the user's folder, or an http(s) URL.
         required: [target]
         additionalProperties: false
       timeout_seconds: 60
