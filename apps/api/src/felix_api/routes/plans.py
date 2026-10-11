@@ -9,11 +9,24 @@ from felix.auth.mgmt import (
     SCOPE_PLANS_READ,
     SCOPE_PLANS_WRITE,
     require_mgmt_scopes,
+    subject_from_request,
     tenant_id_from_request,
 )
 from pydantic import BaseModel
 
 router = APIRouter(tags=["Plans"])
+
+#: The key a plan written through `PUT /plans/{id}` carries: `{"by": principal, "at": epoch ms}`.
+#: The plan tools build their blob from named keys, so the agent cannot write it; a step update
+#: copies the stored blob, so it survives the agent's later progress on an edited plan, and a
+#: `plan_create` over the same id drops it, because the agent has rewritten the plan.
+EDITED_KEY = "edited"
+
+
+def now_ms() -> int:
+    import time
+
+    return int(time.time() * 1000)
 
 
 class PlanUpsert(BaseModel):
@@ -80,13 +93,20 @@ async def upsert_plan(plan_id: str, body: PlanUpsert, request: Request) -> Any:
     from felix.plans import store as plans_store
 
     require_mgmt_scopes(request, SCOPE_PLANS_WRITE)
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
     sent = body.model_fields_set
+    # This route is how a person (or a client acting for one) writes a plan; the agent writes
+    # through its plan tools. So the plan says it was edited, by whom and when, and the client
+    # cannot say otherwise: an `edited` it sent is replaced, never kept.
+    who = subject_from_request(request)
+    plan = {**body.plan, EDITED_KEY: {"by": who, "at": now_ms()}}
     try:
-        return await plans_store.put_plan(
-            request.app.state.settings,
-            tenant_id_from_request(request),
+        row = await plans_store.put_plan(
+            settings,
+            tenant_id,
             plan_id,
-            plan=body.plan,
+            plan=plan,
             manifest_id=body.manifest_id if "manifest_id" in sent else plans_store.KEEP,
             expires_at=body.expires_at if "expires_at" in sent else plans_store.KEEP,
             expected_updated_at=body.expected_updated_at,
@@ -96,6 +116,29 @@ async def upsert_plan(plan_id: str, body: PlanUpsert, request: Request) -> Any:
             status_code=409,
             detail={"error": "plan_changed", "current": conflict.current},
         ) from conflict
+    from felix.audit import store as audit_store
+
+    audit_store.record_event(
+        settings,
+        tenant_id,
+        "plan_edit",
+        principal_subj=who,
+        status="ok",
+        payload={"plan_id": plan_id, "thread_id": row.get("thread_id") or ""},
+    )
+    # The plan's own conversation hears about it, as it hears about a workspace file the
+    # operator changed: before its next model call if a run is going, in its log otherwise.
+    # Its plan tools would show the change, but only if it thought to look.
+    told = None
+    if row.get("thread_id"):
+        from felix.workspace_notes import WorkspaceNote
+
+        from felix_api.routes.chat import _deliver_workspace_note
+
+        told, _ = await _deliver_workspace_note(
+            request, tenant_id, row["thread_id"], WorkspaceNote(path=plan_id, kind="plan")
+        )
+    return {**row, "agent_told": told}
 
 
 @router.delete("/{plan_id}")

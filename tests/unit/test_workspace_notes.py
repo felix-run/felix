@@ -298,3 +298,16 @@ async def test_a_note_queued_after_the_last_model_call_is_logged_when_the_run_en
     logged = [e for e in await store.open(thread).get_events() if e.kind == "custom"]
     assert [(e.metadata or {}).get("op") for e in logged] == ["delete"]
     assert await workspace_notes.drain(TENANT, thread) == []
+
+
+def test_a_plan_note_survives_the_queue_and_names_only_the_plan() -> None:
+    """`PUT /plans/{id}`'s note: queued through Redis as JSON like any other, and read as a
+    plan rather than a file at the other end. Its text names the plan's id and nothing the
+    operator wrote."""
+    from felix.workspace_notes import WorkspaceNote
+
+    note = WorkspaceNote(path="p-1", kind="plan")
+    back = WorkspaceNote.from_json(note.to_json())
+    assert back == note
+    assert back.metadata()["kind"] == "plan" and back.event_data()["kind"] == "plan"
+    assert "`p-1`" in note.text() and "plan_get" in note.text()

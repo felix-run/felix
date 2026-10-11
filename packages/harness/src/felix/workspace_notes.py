@@ -30,8 +30,9 @@ logger = logging.getLogger("felix.workspace_notes")
 NoteOp = Literal["write", "delete", "rename"]
 NOTE_OPS: tuple[NoteOp, ...] = ("write", "delete", "rename")
 # What a note is about. `folder` only from the file pane's folder routes, and only with `delete` or
-# `rename`; a file note leaves `kind` out of its metadata and its frame, as it always has.
-NoteKind = Literal["file", "folder"]
+# `rename`; a file note leaves `kind` out of its metadata and its frame, as it always has. `plan`
+# only from `PUT /plans/{id}`, with `write`: `path` is then the plan's id, not a file.
+NoteKind = Literal["file", "folder", "plan"]
 
 # The `metadata.type` a note's session entry carries. (The frame a live run emits is the
 # literal `workspace_note` in `patterns/react.py`: the wire-contract scan reads literals.)
@@ -62,6 +63,14 @@ class WorkspaceNote:
         here = _code(self.path)
         if self.kind == "folder":
             return self._folder_text(here)
+        if self.kind == "plan":
+            # The id only: a plan's title and steps are text the operator wrote, and a note
+            # carries structure, never prose the model would read as instructions.
+            return (
+                f"The operator edited your plan {here} directly. Its steps or their statuses may "
+                "have changed: call `plan_get` for it before you continue, and work from what it "
+                "says now."
+            )
         if self.op == "delete":
             return (
                 f"The operator deleted {here} from the workspace. It no longer exists; anything "
@@ -103,6 +112,8 @@ class WorkspaceNote:
             out["kind"] = "folder"
             if self.files is not None:
                 out["files"] = self.files
+        elif self.kind == "plan":
+            out["kind"] = "plan"
         return out
 
     def metadata(self) -> dict[str, Any]:
@@ -144,7 +155,7 @@ class WorkspaceNote:
             op=op if op in NOTE_OPS else "write",  # type: ignore[arg-type]
             bytes=int(size) if size is not None else None,
             to_path=str(data["to_path"]) if data.get("to_path") is not None else None,
-            kind="folder" if data.get("kind") == "folder" else "file",
+            kind=data["kind"] if data.get("kind") in ("folder", "plan") else "file",
             files=int(files) if files is not None else None,
         )
 
