@@ -552,7 +552,7 @@ async def _write_file(args: WriteFileArgs) -> ToolOutput:
     backend, scope = _seam()
     try:
         await backend.prepare(scope)
-        workspace_parts(args.path)
+        writable_file(args.path)
     except ValueError as exc:
         return _path_refused(exc)
     payload = args.content.encode("utf-8")
@@ -581,7 +581,7 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
     backend, scope = _seam()
     try:
         await backend.prepare(scope)
-        workspace_parts(args.path)
+        writable_file(args.path)
     except ValueError as exc:
         return _path_refused(exc)
     if len(args.new_string.encode("utf-8")) > _MAX_WRITE_BYTES:
@@ -605,6 +605,16 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
             "bytes": edited.bytes,
         }
     )
+
+
+def writable_file(path: str) -> None:
+    """Refuse, as ValueError, a path a model's write may not touch: anything inside `.git`, and
+    any `.gitattributes`. Both decide what git runs -- hooks, and filter, diff and merge drivers
+    by a name the repository picks -- so letting the model write them would turn any allowlisted
+    git command into running whatever it wrote (`deploy/GOVERNANCE.md`, *Shell tools*)."""
+    parts = workspace_parts(path)
+    if ".git" in parts or (parts and parts[-1] == ".gitattributes"):
+        raise ValueError(f"reserved path: {path} (git's own files decide what git runs)")
 
 
 def _changeable_file(path: str) -> None:

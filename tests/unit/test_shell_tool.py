@@ -192,7 +192,11 @@ async def test_the_child_does_not_see_the_api_environment(
     # 538) — which is what a container's child sees. The builder found the second: this test
     # passed on macOS and on CI and failed inside the image.
     injected = {"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}
-    assert set(env) - injected <= {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}, sorted(env)
+    # And what the tool adds itself: git's overrides of the repository's config, values it wrote.
+    from felix.tools.shell import _git_disarmed
+
+    ours = set(_git_disarmed({}))
+    assert set(env) - injected - ours <= {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}, sorted(env)
 
 
 async def test_a_run_is_killed_at_its_timeout(tmp_path: Path) -> None:
