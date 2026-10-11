@@ -36,6 +36,7 @@ from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.logging_setup import loggable
 from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
 from felix.patterns.types import Agent, ChatMessage, InvokeInput
+from felix.security.host_allowlist import EgressBound
 from felix.side_events import emit as emit_side_event
 from felix.tools.errors import tool_error_output
 from felix.tools.types import Tool, ToolOutput, define_tool
@@ -83,10 +84,13 @@ def make_task_tool(
     background: bool = False,
     max_background: int = 3,
     manifest_hooks: ManifestHooks | None = None,
+    egress: EgressBound | None = None,
 ) -> Tool:
     """`task(agent, prompt)` over `children`: manifest name -> (compiled agent, description, the
     manifest it compiled from), in declaration order. `ceiling` is the delegating agent's own
-    effective limits. `background` adds the `background` argument (`spec.delegation.background`)."""
+    effective limits. `background` adds the `background` argument (`spec.delegation.background`).
+    `egress` is the delegating agent's `allow_hosts` bound, which a background child carries into
+    the worker; a foreground child was compiled under it already."""
     names = list(children)
     schema: dict[str, Any] = {
         "type": "object",
@@ -140,7 +144,7 @@ def make_task_tool(
         req.extras.pop(INBOUND_SCREENED_EXTRA, None)
         if args["background"]:
             return await _start_in_background(
-                req, name, manifest, str(args["prompt"]), ceiling, max_background
+                req, name, manifest, str(args["prompt"]), ceiling, max_background, egress
             )
         await emit_side_event(req.thread_id, "subagent_start", {"agent": name, "background": False})
         outcome = "error"
@@ -194,6 +198,7 @@ async def _start_in_background(
     prompt: str,
     ceiling: EffectiveLimits,
     max_background: int,
+    egress: EgressBound | None = None,
 ) -> ToolOutput:
     """Enqueue the child as a durable run on a thread of its own, and say how to read it."""
     from felix.durability.fibers import TooManyChildren
@@ -236,6 +241,7 @@ async def _start_in_background(
             parent_thread_id=parent,
             ceilings=[residual(c, req.limit_state) for c in (*req.limit_state.ceilings, ceiling)],
             max_children=max_background,
+            egress_ceilings=(egress or EgressBound()).as_state(),
         )
     except TooManyChildren as full:
         return tool_error_output(

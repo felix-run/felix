@@ -775,6 +775,43 @@ time — a review question, not a silent default. What to check when reviewing o
 A fetch tool is **not** replay-safe. A resumed run will not re-issue it, because the model
 names the endpoint and a GET that mutates is ordinary on the open web.
 
+### Per-agent allowlist: `spec.network.allow_hosts`
+
+Everything above decides whether an address is safe for *anyone* to reach. `allow_hosts` decides
+which hosts *this agent* may reach, and it is the control to reach for when an agent should read
+three APIs and nothing else:
+
+```yaml
+spec:
+  network:
+    allow_hosts: [api.github.com, "*.githubusercontent.com", docs.example.com]
+```
+
+- **Patterns** are a host, `*.` and a host (any name under it, never the apex itself), or an IP
+  literal. No scheme, port or path: those are other grammars and a pattern carrying one would
+  match nothing, so validation refuses it. An internationalised name is written in punycode,
+  which is what a request carries (`raw_host`, not httpx's decoded `host`).
+- **Unset** leaves the agent as it was. An **empty list** allows nothing.
+- **Enforced where the model picks the destination.** `http_fetch` checks the URL before it
+  opens a client and the guarded transport checks again on every redirect hop, with the same
+  `egress_blocked` line as any refusal (`felix_egress_blocked{reason="not in allow_hosts"}`). The
+  browser checks the navigation and every request the page makes, so a page on a listed host
+  cannot load from, post to or redirect to one that is not. A page's CDN must be listed or its
+  assets are aborted.
+- **Checked against what the manifest names.** An `mcp_servers` or `peers` URL, a container
+  `gateway_url`, or an `http_tools`/`browser_tools` `path_prefix` on a host the list does not allow
+  is refused when the manifest is written, so the list is the agent's whole reachable surface.
+- **Children answer to it.** A sub-agent or `task` child compiles under its parent's list as well
+  as its own, and a manifest URL outside a parent's list fails that compile. A child two parents
+  share is rebuilt under each one's list, never reused from a looser one. A background `task`
+  child runs in the worker on a run of its own, so the lists above it are stored on the durable
+  run (`egress_ceilings`), re-validated when it resumes, and bind its tools there.
+- **Not covered:** a command the model runs (`shell_tools`, a sandbox) opens its own sockets; the
+  runner or sandbox network is the boundary there (see *Shell tools*). Operator traffic -- hooks,
+  completion webhooks, push, model providers -- is not the agent's and is not bound by it. Web
+  search reaches the operator's search endpoint; the results are text, and following one is a
+  fetch, which is bound.
+
 **What is still advisory:** cross-host subresources and redirects *in the browser tool*.
 Those keep resolving normally and are checked per request but not pinned, because denying
 them outright breaks

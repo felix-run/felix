@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from felix.manifests.schema import BrowserToolRef
 from felix.observability.metrics import record_counter
 from felix.security.egress import approved_addresses
+from felix.security.host_allowlist import EgressBound, url_host
 from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url_async
 from felix.tools.types import (
     Tool,
@@ -77,8 +78,10 @@ class _BrowserExecutor:
         path_prefix: str,
         allow_http: bool,
         binding: str,
+        egress: EgressBound | None = None,
     ) -> None:
         self._op = op
+        self._egress = egress
         self._timeout_ms = timeout_ms
         self._path_prefix = path_prefix.rstrip("/")
         self._allow_http = allow_http
@@ -92,6 +95,10 @@ class _BrowserExecutor:
         per request — the same defect as resolving in a pydantic validator, on a hotter path.
         """
         await assert_safe_outbound_url_async(url, allow_http=self._allow_http)
+        # The agent's own hosts: the navigation and every request the page makes, so a page on an
+        # allowed host cannot load, post to, or redirect to one that is not.
+        if self._egress is not None and not self._egress.allows(url_host(url)):
+            raise ValueError("egress_blocked: destination not permitted")
 
     async def _check_url(self, url: str) -> None:
         """Checks for the top-level navigation the model asked for."""
@@ -226,6 +233,7 @@ def tools_from_browser_refs(
     refs: list[BrowserToolRef],
     *,
     allow_http: bool = False,
+    egress: EgressBound | None = None,
 ) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
@@ -236,6 +244,7 @@ def tools_from_browser_refs(
             path_prefix=ref.path_prefix,
             allow_http=allow_http,
             binding=ref.binding,
+            egress=egress,
         )
         desc = ref.description or f"Browser {ref.op} via Playwright ({ref.binding or 'chromium'})."
         out.append(

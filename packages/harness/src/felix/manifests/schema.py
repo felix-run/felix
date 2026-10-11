@@ -1055,6 +1055,27 @@ class HookRule(_Strict):
 PermissionModeName = Literal["default", "accept_edits", "plan", "bypass"]
 
 
+class NetworkSpec(_Strict):
+    """Where this agent's tools may reach (`felix.security.host_allowlist`).
+
+    `allow_hosts` unset leaves the agent where it was: any public address the egress guard
+    permits. Set, the model can fetch and browse only those hosts -- every redirect hop and every
+    request a page makes included -- and every URL the manifest declares must name one. An empty
+    list allows none. A child agent answers to this list as well as its own.
+    """
+
+    allow_hosts: list[str] | None = Field(default=None, max_length=MAX_REFS)
+
+    @field_validator("allow_hosts")
+    @classmethod
+    def _patterns(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        from felix.security.host_allowlist import normalise_host_pattern
+
+        return list(dict.fromkeys(normalise_host_pattern(p) for p in v))
+
+
 class OutputStyle(_Strict):
     """How the agent writes its answers -- terse, explanatory, a teaching voice -- chosen per
     conversation. `prompt` joins the system prompt of the agent the person is talking to."""
@@ -1312,6 +1333,7 @@ class Spec(_Strict):
     delegation: DelegationSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
     output_styles: OutputStylesSpec = Field(default_factory=OutputStylesSpec)
+    network: NetworkSpec = Field(default_factory=NetworkSpec)
     hooks: list[HookRule] = Field(default_factory=list, max_length=16)
 
     @field_validator("hooks")
@@ -1399,6 +1421,29 @@ class Spec(_Strict):
             raise ValueError(
                 "personal_skills: write needs skill_authoring.enabled: it is where the agent's "
                 "create_skill and update_skill save"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _declared_hosts_are_allowed(self) -> Spec:
+        """Every URL the manifest itself names reaches a host `network.allow_hosts` allows --
+        refused here, at write, rather than compiling an MCP server or peer the list rules out."""
+        if self.network.allow_hosts is None:
+            return self
+        from felix.security.host_allowlist import HostAllowlist, hosts_outside
+
+        urls = [
+            *(r.url for r in self.mcp if r.url),
+            *(r.url for r in self.peers),
+            *(r.gateway_url for r in self.containers),
+            *(r.path_prefix for r in self.http_tools if r.path_prefix),
+            *(r.path_prefix for r in self.browser_tools if r.path_prefix),
+        ]
+        outside = hosts_outside(HostAllowlist(tuple(self.network.allow_hosts)), urls)
+        if outside:
+            raise ValueError(
+                f"network.allow_hosts does not allow {', '.join(sorted(set(outside)))}, which this "
+                "manifest's own tools reach (mcp_servers, peers, containers, http_tools, browser_tools)"
             )
         return self
 
@@ -1542,6 +1587,7 @@ __all__ = [
     "Manifest",
     "Metadata",
     "ModelSpec",
+    "NetworkSpec",
     "OutputStyle",
     "OutputStylesSpec",
     "PermissionsSpec",

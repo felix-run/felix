@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import HttpFetchToolRef
 from felix.security.egress import safe_async_client
+from felix.security.host_allowlist import EgressBound, url_host
 from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import (
@@ -220,7 +221,9 @@ class _HttpFetchExecutor:
         timeout_ms: int = DEFAULT_FETCH_TIMEOUT_MS,
         max_bytes: int = DEFAULT_MAX_BYTES,
         as_text: bool = True,
+        egress: EgressBound | None = None,
     ) -> None:
+        self._egress = egress
         self._path_prefix = path_prefix
         self._allow_http = allow_http
         self._timeout_s = timeout_ms / 1000
@@ -244,6 +247,11 @@ class _HttpFetchExecutor:
             # gets the detail in the log, caller gets the same line either way.
             logger.warning("http_fetch refused url=%s reason=%s", url, exc)
             raise EgressBlocked(_BLOCKED) from None
+        if self._egress is not None and not self._egress.allows(url_host(url)):
+            # The same line as any refusal: the list is the operator's, and the transport refuses
+            # each redirect hop on these terms too.
+            logger.warning("http_fetch refused url=%s reason=not in allow_hosts", url)
+            raise EgressBlocked(_BLOCKED)
         if self._path_prefix and not _within_prefix(url, self._path_prefix):
             # Not a secret: the prefix is operator-set and is already in the tool
             # description, so telling the model is what lets it correct itself.
@@ -317,6 +325,7 @@ class _HttpFetchExecutor:
                 asyncio.timeout(self._timeout_s),
                 safe_async_client(
                     allow_http=self._allow_http,
+                    egress=self._egress,
                     timeout=timeout,
                     follow_redirects=False,
                 ) as client,
@@ -381,6 +390,7 @@ def tools_from_http_fetch_refs(
     refs: list[HttpFetchToolRef],
     *,
     allow_http: bool = False,
+    egress: EgressBound | None = None,
 ) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
@@ -400,6 +410,7 @@ def tools_from_http_fetch_refs(
             timeout_ms=int(ref.timeout_ms or DEFAULT_FETCH_TIMEOUT_MS),
             max_bytes=int(ref.max_bytes or DEFAULT_MAX_BYTES),
             as_text=ref.format == "text",
+            egress=egress,
         )
         desc = ref.description or "Fetch a URL over HTTP(S) and return its contents."
         if ref.path_prefix:

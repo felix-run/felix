@@ -677,3 +677,23 @@ async def test_a_background_child_does_not_take_its_own_default_style(boot: Any)
         [system] = [m.content for m in app.spy.prompts[2] if m.role == "system"]
     assert system.startswith("You research.")
     assert "SHOUT EVERYTHING." not in system
+
+
+async def test_a_background_child_answers_to_its_parents_allow_hosts(boot: Any) -> None:
+    """The worker compiles the child as a run of its own: the parent's list rides the run."""
+    from felix.durability import fibers as F
+
+    fetcher = _agent(
+        "e2e-researcher",
+        system_prompt={"inline": "You research."},
+        http_tools=[{"name": "fetch", "allow_any_host": True}],
+    )
+    lead = _bg_lead(network={"allow_hosts": ["docs.example.com"]})
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "Read the page.")]), ScriptedTurn(content="Started it.")]
+    async with boot(script, manifests={"e2e-lead": lead, "e2e-researcher": fetcher}) as app:
+        assert (await _chat(app)).status_code == 200
+        fetch = ToolCall(id="f1", name="fetch", args={"url": "https://elsewhere.io/"})
+        app.spy.push(ScriptedTurn(tool_calls=[fetch]), ScriptedTurn(content="Blocked."))
+        await F.resume_due_fibers(app.settings)
+        shown = _text(app.spy.prompts[-1])
+    assert "egress_blocked: destination not permitted" in shown

@@ -546,8 +546,11 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       expansion on `/chat` and `/v1` (any other slash is sent as written), and `GET /v1/models`
       lists them as `felix.commands`. Output styles: `spec.output_styles` (inline prose, a `default`),
       chosen per thread by `POST /chat/style`, appended to the top-level agent's system prompt;
-      listed on `/v1/models`, shown on the snapshot. *Next:*
-      `spec.network.allow_hosts`, landed with *credentials the model never holds*.
+      listed on `/v1/models`, shown on the snapshot. Per-agent egress: `spec.network.allow_hosts`
+      (host, `*.` subdomain or IP patterns), enforced by `http_fetch` per hop in the guarded
+      transport and by the browser on every page request, checked against the manifest's own
+      URLs at write; children compile under their parents' lists, background children carry them
+      on the durable run. *Next:* *credentials the model never holds*, onto the same transport.
 - [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
       background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
       worktree per child task, and clearing of stale tool results.
