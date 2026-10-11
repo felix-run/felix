@@ -124,6 +124,14 @@ def _raise_for(code: str, message: str, kind: str = "") -> None:
             raise _os_error(kind, message)
         case "timeout":
             raise TimeoutError(message)
+        case "busy":
+            from felix.tools.shell_background import BackgroundLimitReached
+
+            raise BackgroundLimitReached(message)
+        case "unknown_background":
+            from felix.tools.shell_background import UnknownBackgroundId
+
+            raise UnknownBackgroundId(message)
         case "unauthorized":
             raise _unavailable("the gateway refused FELIX_WORKSPACE_GATEWAY_TOKEN")
         case _:
@@ -452,6 +460,17 @@ class HostedBackend:
         # The helper kills at the command's timeout and drains; a cold start comes on top.
         wait = httpx.Timeout(timeout_ms / 1000 + 90.0, connect=10.0)
         out = await self._call(scope, "exec", body, timeout=wait)
+        self._written(scope)
+        return out
+
+    async def background(
+        self, scope: WorkspaceScope, op: str, body: dict[str, Any], timeout_s: float
+    ) -> dict[str, Any]:
+        """`exec_start`, `exec_output` or `exec_kill`: a background command in the scope's sandbox
+        (`felix.tools.shell_background`, which the helper carries), answered within `timeout_s`. A
+        running command may write at any time, so each call marks the scope written, to be
+        checkpointed at the end of the request."""
+        out = await self._call(scope, op, body, timeout=httpx.Timeout(timeout_s, connect=10.0))
         self._written(scope)
         return out
 

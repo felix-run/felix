@@ -339,6 +339,7 @@ class PortedCodeTests(unittest.TestCase):
         "packages/harness/src/felix/tools/workspace_local.py",
         "packages/harness/src/felix/tools/workspace_backend.py",
         "packages/harness/src/felix/tools/shell.py",
+        "packages/harness/src/felix/tools/shell_background.py",
         "packages/harness/src/felix/tools/github_publish.py",
     )
     PORTED = (
@@ -391,6 +392,41 @@ class PortedCodeTests(unittest.TestCase):
         "_feed",
         "resolve_cwd",
         "exec_argv",
+        # shell_background.py: a background command's supervisor and its reads, so a sandboxed one
+        # is bounded, ended and read exactly as the API's or the runner's is.
+        "BackgroundLimitReached",
+        "UnknownBackgroundId",
+        "_supervisor_argv",
+        "_private_dir",
+        "_state_top",
+        "background_base",
+        "_flocked",
+        "_read_json",
+        "_write_json",
+        "_is_entry_dir",
+        "_entry",
+        "_supervisor_alive",
+        "_spec",
+        "_status",
+        "_state",
+        "_describe",
+        "_entries",
+        "_prune",
+        "_running_everywhere",
+        "_limit",
+        "start_background",
+        "_start_locked",
+        "_kill_group_of",
+        "_spawn",
+        "_ending",
+        "_pump",
+        "_run_supervised",
+        "supervise",
+        "_read_new",
+        "_cursor",
+        "read_background",
+        "list_background",
+        "kill_background",
         # github_publish.py: the git a listing and `publish_commits` read a sandboxed repository
         # with. `_git_run` is not here: on the harness it is the dispatcher that sends a hosted
         # repository's calls to the gateway, and `_git_exec` is the half that runs git.
@@ -459,6 +495,34 @@ class PortedCodeTests(unittest.TestCase):
         ):
             self.assertEqual(getattr(felix_fs, name), getattr(shell, name), name)
         self.assertEqual(felix_fs._MAX_EXEC_TIMEOUT_MS, MAX_INTEGRATION_TIMEOUT_MS)
+
+    def test_the_helpers_background_bounds_are_the_harness_bounds(self) -> None:
+        from felix.tools import shell, shell_background
+
+        for name in (
+            "MAX_OUTPUT_BYTES",
+            "MAX_TOTAL_OUTPUT_BYTES",
+            "_READ_CHUNK",
+            "_MAX_STDIN_CHARS",
+            "_DRAIN_AFTER_KILL_S",
+            "MAX_RUNNING",
+            "MAX_RUNNING_OWNER",
+            "MAX_RUNNING_HOST",
+            "MAX_KEPT",
+            "KEPT_FOR_S",
+            "MAX_WAIT_MS",
+            "KILL_WAIT_S",
+            "DETACH_WAIT_S",
+            "_STATES",
+            "_POLL_S",
+            "_MAX_STATE_BYTES",
+            "_LOCK_WAIT_S",
+            "_BACKGROUND_ID",
+        ):
+            self.assertEqual(getattr(felix_fs, name), getattr(shell_background, name), name)
+        # And the background budget is the foreground's.
+        for name in ("MAX_OUTPUT_BYTES", "MAX_TOTAL_OUTPUT_BYTES", "_READ_CHUNK", "_MAX_STDIN_CHARS"):
+            self.assertEqual(getattr(shell_background, name), getattr(shell, name), name)
 
     def test_the_helpers_git_is_the_publish_tools(self) -> None:
         from felix.tools import github_publish

@@ -31,6 +31,11 @@ export const OPS = [
   'search',
   // A `shell_tools` command, run in the sandbox by the shell tool's own exec path.
   'exec',
+  // A background command (`run_in_background`): started under a supervisor that outlives the call,
+  // read since the last read (or, with no id, listed), and ended. The helper's shell_background code.
+  'exec_start',
+  'exec_output',
+  'exec_kill',
   // A thread's repository, cloned into its empty /workspace with the person's token (`github.ts`).
   'clone',
   // The harness reading that repository: git run by its own `_git_run`, output kept from the start.
@@ -53,6 +58,10 @@ export const MAX_ARGV_ITEMS = 256;
 export const MAX_ARGV_BYTES = 64_000;
 export const MAX_STDIN_CHARS = 256_000;
 export const MAX_EXEC_TIMEOUT_MS = 3_600_000;
+/** A background read's longest wait (`shell_background.MAX_WAIT_MS`), under `OPERATION_TIMEOUT_MS`. */
+export const MAX_BACKGROUND_WAIT_MS = 20_000;
+/** A background command's id: what the helper answered `exec_start` with. */
+const BACKGROUND_ID = /^[0-9a-f]{32}$/;
 /** The harness's git output cap (`_GIT_OUTPUT_CAP`) and listing ceiling (`LIST_MAX`). */
 export const MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const MAX_LSTAT_PATHS = 10_000;
@@ -99,6 +108,9 @@ export type HelperRequest =
   | { op: 'rename_folder'; path: string; to_path: string }
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
   | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
+  | { op: 'exec_start'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
+  | { op: 'exec_output'; id: string | null; wait_ms: number }
+  | { op: 'exec_kill'; id: string }
   | { op: 'clone'; repo: string; branch: string; token: string }
   | { op: 'git'; args: string[]; stdin?: string; limit: number }
   | { op: 'lstat'; paths: string[] }
@@ -126,7 +138,11 @@ export type ErrorCode =
   | 'reserved_path'
   | 'too_many_entries'
   | 'too_deep'
-  | 'clone_failed';
+  | 'clone_failed'
+  // A background start refused: enough commands are running already (the message says how many).
+  | 'busy'
+  // A background read or end for an id this sandbox does not have.
+  | 'unknown_background';
 
 /** What the sandbox's `felix-fs` helper prints, and what the Durable Object returns. */
 export type HelperAnswer =
@@ -162,6 +178,8 @@ export const STATUS: Record<ErrorCode, number> = {
   too_many_entries: 409,
   too_deep: 409,
   clone_failed: 502,
+  busy: 409,
+  unknown_background: 404,
   invalid_path: 422,
   edit_refused: 422,
   io_error: 500,
@@ -278,7 +296,22 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
       if (toPath === null) return '`to_path` must be a string';
       return { op, path, to_path: toPath };
     }
-    case 'exec': {
+    case 'exec_output': {
+      const id = body.id ?? null;
+      const waitMs = int(body, 'wait_ms', 0, 0, MAX_BACKGROUND_WAIT_MS);
+      if (id !== null && (typeof id !== 'string' || !BACKGROUND_ID.test(id))) {
+        return '`id` must be 32 lowercase hex characters, or absent to list';
+      }
+      if (waitMs === null) return `\`wait_ms\` must be an integer from 0 to ${MAX_BACKGROUND_WAIT_MS}`;
+      return { op, id: id as string | null, wait_ms: waitMs };
+    }
+    case 'exec_kill': {
+      const id = body.id;
+      if (typeof id !== 'string' || !BACKGROUND_ID.test(id)) return '`id` must be 32 lowercase hex characters';
+      return { op, id };
+    }
+    case 'exec':
+    case 'exec_start': {
       const argv = body.argv;
       const cwd = str(body, 'cwd', '.');
       const timeoutMs = int(body, 'timeout_ms', 300_000, 1, MAX_EXEC_TIMEOUT_MS);

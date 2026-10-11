@@ -179,6 +179,35 @@ describe('workspace gateway', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('takes a background start with exec’s bounds, and a read or an end by id', async () => {
+    const id = 'a'.repeat(32);
+    await send(post('/v1/workspaces/acme/shared/exec_start', { argv: ['npm', 'run', 'dev'] }));
+    await send(post('/v1/workspaces/acme/shared/exec_output', { id, wait_ms: 20_000 }));
+    await send(post('/v1/workspaces/acme/shared/exec_output', {}));
+    await send(post('/v1/workspaces/acme/shared/exec_kill', { id }));
+    expect(calls.map((c) => c.request)).toEqual([
+      { op: 'exec_start', argv: ['npm', 'run', 'dev'], cwd: '.', timeout_ms: 300_000 },
+      { op: 'exec_output', id, wait_ms: 20_000 },
+      { op: 'exec_output', id: null, wait_ms: 0 },
+      { op: 'exec_kill', id },
+    ]);
+    const bad: [string, unknown][] = [
+      ['exec_start', { argv: [] }],
+      ['exec_start', { argv: ['ls'], timeout_ms: 3_600_001 }],
+      ['exec_output', { id: 'A'.repeat(32) }],
+      ['exec_output', { id: '../'.repeat(11) }],
+      ['exec_output', { id, wait_ms: 20_001 }],
+      ['exec_output', { id: `${id}\n` }],
+      ['exec_kill', {}],
+      ['exec_kill', { id: 'a'.repeat(31) }],
+    ];
+    for (const [op, body] of bad) {
+      const res = await send(post(`/v1/workspaces/acme/shared/${op}`, body));
+      expect(res.status, `${op} ${JSON.stringify(body).slice(0, 60)}`).toBe(400);
+    }
+    expect(calls).toHaveLength(4);
+  });
+
   it('takes a clone with a repository, a branch and a token, and nothing looser', async () => {
     const ok = { repo: 'felix-run/felix', branch: 'main', token: 'ghs_x' };
     await send(post('/v1/workspaces/acme/shared/clone', ok));

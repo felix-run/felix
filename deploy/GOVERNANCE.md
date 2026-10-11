@@ -997,6 +997,41 @@ dashboards a policy deny is. A manifest that binds a shell tool may not allow an
 outside development — the same rule `cowork.yaml` records for its client shell — because the
 approvals that would gate the tool are anonymous too when the caller is.
 
+**Background commands** (`background: true`, `tools/shell_background.py`) pass every check above
+before they start — both allowlists, `cwd`, command screening, and the refusal to exec in the API
+off a development box — and run in the same place a foreground call would: the API on a
+development box, the runner, or the scope's sandbox (`tools/shell.py:shell_place`, the one choice
+every shell call makes, so an id is looked up where it was made). `shell_output` and `shell_kill`
+are refused in the API off a development box too. Each command runs under a supervisor (the
+module run as a script, detached from the call) that holds the foreground's limits: the group is
+killed at `timeout_ms`, past `MAX_TOTAL_OUTPUT_BYTES` (written to disk no further than that), and
+on `shell_kill`, which leaves a marker the supervisor acts on so nothing is signalled from outside.
+A command counts as running while its supervisor holds an `flock` on the entry's `alive` file, not
+by pid or by `status.json`. At most 4 run per workspace root, 8 per tenant across its roots, and 32
+on the host, counted and started under one lock; 16 are kept per root, each for an hour after it
+ends, and every root's are swept on each start. State files are read to 64 KB at most, and a lock a
+command holds is waited on for 10 seconds, not forever. Their state is in a directory under the
+system temp directory, one per workspace root, refused unless it is this user's and closed to
+others; an id is looked up only under the root of the call's scope. **A runner must run under an
+init** that reaps orphans: each supervisor is reparented to PID 1 when it ends, and a runner that
+is PID 1 itself keeps every one as a zombie, counted against its process limit. The builder stack
+sets `init: true`; a runner deployed any other way must do the same (`docker run --init`, or tini
+as the entrypoint). The hosted sandbox image runs tini. What this does not hold, shared with
+foreground commands: the supervisor, the state and the command all belong to one user, so a
+command can defeat its own accounting. It can kill its supervisor (the entry reads `lost`, no
+longer counts against any cap, and the command is no longer bounded by `timeout_ms` — as a
+foreground command can leave its group with `setsid`), replace its `alive` file and write its own
+outcome (it then reads as ended and frees its slot, though its supervisor still kills it at
+`timeout_ms`), or hold a lock on `alive` itself after its supervisor ends (it then reads `running`
+until its container restarts, holding its slot), or hold the host's start lock, so every start on
+that host is refused as "being started" until it lets go (a start itself holds that lock while its
+supervisor detaches, normally milliseconds and at most 10 seconds). And wherever scopes share a host (the `local`
+backend, and the shell runner, where every tenant's commands run as one user) one scope's command
+can read and write another's state — its output, its status, its kill marker — as it can that
+scope's files. The caps bound commands that keep to the rules; the runner or sandbox is the
+boundary for the rest, and a deployment that does not trust its tenants binds shell tools only
+under `hosted`.
+
 What the allowlist cannot bound, and a deployment that binds a shell tool must hold true on its
 own:
 

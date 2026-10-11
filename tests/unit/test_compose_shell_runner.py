@@ -90,6 +90,8 @@ def test_the_stores_publish_no_host_port() -> None:
 def test_the_shell_service_has_a_process_ceiling() -> None:
     shell = _services()["shell"]
     assert shell["pids_limit"] == 512
+    # And an init to reap detached background supervisors, or each one's zombie counts against it.
+    assert shell["init"] is True
 
 
 # Every key the `shell` service may carry. An allowlist, not a list of dangerous keys: Compose
@@ -106,6 +108,7 @@ SHELL_KEYS_ALLOWED = {
     "cap_drop",
     "security_opt",
     "pids_limit",
+    "init",
     "mem_limit",
     "cpus",
     "healthcheck",
