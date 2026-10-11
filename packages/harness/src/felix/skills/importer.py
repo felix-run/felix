@@ -11,8 +11,9 @@ passes -- and an imported version, and every version built on one, is held to a 
 
 The bundle is sanitised before it is validated, as Skillist's mirror does: what the bundle format
 accepts is kept (`format.bundle_path_issue`, which includes a root license file) less `evals/`
-and dot-paths, everything else (examples, tests, a README) is dropped and reported, and an over-long description is clamped
-(`format.clamp_description`). The skill's name must be its folder's.
+and dot-paths, everything else (examples, tests, a README) is dropped and reported, and an
+over-long description is clamped (`format.clamp_description`). The skill's name must be its
+folder's.
 
 Change detection is a digest of the kept files' tree entries (`github.hash_tree_snapshot`), not
 the commit SHA: a repository commits constantly, and an unrelated commit -- or a change to a file

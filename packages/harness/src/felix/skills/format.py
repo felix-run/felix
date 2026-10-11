@@ -443,8 +443,8 @@ def extract_discovery_meta(files: Mapping[str, str]) -> tuple[str, str] | None:
 
 __all__ = [
     "ALLOWED_ROOT_FILES",
-    "LICENSE_FILES",
     "BUNDLE_DIRS",
+    "LICENSE_FILES",
     "MAX_BUNDLE_BYTES",
     "MAX_BUNDLE_FILES",
     "MAX_DESCRIPTION_CHARS",
