@@ -30,11 +30,11 @@ from contextlib import contextmanager
 
 import pytest
 from felix.manifests.schema import HttpFetchToolRef
+from felix.security.host_allowlist import within_prefix
 from felix.tools.http_fetch import (
     MAX_REDIRECTS,
     NO_READABLE_TEXT,
     _HttpFetchExecutor,
-    _within_prefix,
     html_to_text,
     tools_from_http_fetch_refs,
 )
@@ -452,7 +452,7 @@ def test_path_prefix_is_advertised_to_the_model() -> None:
     That is the stronger assertion — it also pins that the base sentence survives — and it
     avoids `py/incomplete-url-substring-sanitization`, which pattern-matches any URL literal
     on the left of an `in` and reads this as a sanitiser. It is not one; nothing here filters
-    a URL, and the real check is `_within_prefix`, which parses rather than matches text.
+    a URL, and the real check is `within_prefix`, which parses rather than matches text.
     """
     prefix = "https://docs.felix.run/"
     (tool,) = tools_from_http_fetch_refs([_ref(path_prefix=prefix)])
@@ -506,10 +506,17 @@ def test_path_prefix_is_normalised_to_end_in_a_slash() -> None:
         ("https://docs.felix.run:8443/x", "https://docs.felix.run/", False),
         ("https://docs.felix.run/guide/a", "https://docs.felix.run/", True),
         ("https://docs.felix.run/other", "https://docs.felix.run/guide/", False),
+        # The path httpx sends, not the one written: `..` is resolved before the comparison.
+        ("https://docs.felix.run/guide/../../evil", "https://docs.felix.run/guide/", False),
+        ("https://docs.felix.run/guide/./a", "https://docs.felix.run/guide/", True),
+        # Encoded, a dot segment or slash is the server's to resolve after the check: refused.
+        ("https://docs.felix.run/guide/%2e%2e/evil", "https://docs.felix.run/guide/", False),
+        ("https://docs.felix.run/guide%2f..%2fevil", "https://docs.felix.run/guide", False),
+        ("https://docs.felix.run", "https://docs.felix.run/", True),  # an empty path is `/`
     ],
 )
 def test_prefix_matching_compares_origins_not_text(url: str, prefix: str, inside: bool) -> None:
-    assert _within_prefix(url, prefix) is inside
+    assert within_prefix(url, prefix) is inside
 
 
 def test_the_byte_ceiling_is_enforced_at_its_boundary() -> None:

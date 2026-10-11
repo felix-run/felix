@@ -114,8 +114,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False, pin_manifest: b
     # Accept bare host or /a2a path.
     endpoint = url if url.endswith("/a2a") else f"{url}/a2a"
 
-    async def handler(args: Any, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-        # `PeerArgs`, or `PinnedPeerArgs` when the far agent is pinned.
+    async def handler(args: PeerArgs | PinnedPeerArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -127,7 +126,8 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False, pin_manifest: b
                 },
             },
         }
-        override = getattr(args, "manifest", None)
+        # Pinned, never forwarded -- whatever arrived -- rather than trusting the schema alone.
+        override = None if pin_manifest or isinstance(args, PinnedPeerArgs) else args.manifest
         if override:
             payload["params"]["manifest"] = override  # type: ignore[index]
         async with safe_async_client(allow_http=allow_http, timeout=_peer_timeout(ref)) as client:

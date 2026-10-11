@@ -798,12 +798,18 @@ spec:
   The list is checked *before* anything resolves: a lookup of `<secret>.attacker.example` is a
   leak to that name's nameserver even when the request is then refused.
 - **The browser** checks the navigation, then guards its whole browser context: every request
-  any page in it makes, popups (`window.open`) included, and every WebSocket. Service workers are
-  blocked, since their fetches bypass the interceptor, and WebRTC's UDP is disabled
-  (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`). A page's CDN must be listed or
-  its assets are aborted. A model URL containing a backslash, whitespace or a control character
-  is refused: Chromium's parser and the checker's disagree on them. Still advisory: DNS
-  prefetch by the page, which is a lookup rather than a request.
+  any page in it makes, popups (`window.open`) included, and every WebSocket (a `ws`/`wss` URL is
+  checked as the `http`/`https` handshake it is). The channels no interceptor sees are shut:
+  service workers are blocked; `RTCPeerConnection` and `WebTransport` are removed from every page,
+  frame and popup, since a TURN server reached over TCP carries data the UDP flag
+  (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`, also set) does not stop; and QUIC
+  is disabled (`--disable-quic`), which WebTransport needs, including from a worker the page
+  script removal does not reach. A page's CDN must be listed or its assets are aborted. A model
+  URL containing a backslash, whitespace or a control character is refused: Chromium's parser and
+  the checker's disagree on them. Still advisory: DNS prefetch and preconnect by the page, which
+  are lookups and bare connections rather than requests. The interceptor bounds where the browser
+  sends requests; a Chromium-level proxy enforcing the bound would bound every socket, and is the
+  stronger design (`docs/ROADMAP.md`).
 - **Checked against what the manifest names.** An `mcp_servers` or `peers` URL, a container
   `gateway_url`, or an `http_tools`/`browser_tools` `path_prefix` on a host the list does not
   allow is refused when the manifest is written (`Spec.declared_urls`).
@@ -831,7 +837,8 @@ spec:
   `docs.google.com` each admit pages anyone can publish to or post through (a form endpoint is a
   GET away). Only `*.<top-level domain>` is refused. On a multi-tenant host, pair the list with an
   `http_tools` `path_prefix`, or treat the list as a reachability control rather than an
-  exfiltration one.
+  exfiltration one. A prefix is compared with the path httpx actually sends: `..` segments are
+  resolved first, and an encoded dot segment or slash (`%2e%2e`, `%2f`) is refused.
 
 **What is still advisory:** cross-host subresources and redirects *in the browser tool*.
 Those keep resolving normally and are checked per request but not pinned, because denying

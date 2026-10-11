@@ -28,14 +28,13 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+from felix.security.ssrf import BLOCKED_MESSAGE, EgressBlocked
+
 logger = logging.getLogger("felix.security.host_allowlist")
 
 # A background child's inherited lists, restored from its durable run: `list[list[str]]`.
 EGRESS_CEILINGS_EXTRA = "egress_ceilings"
 
-# One message for every refusal, the SSRF guard's: which list refused, or that one did, is not
-# the model's to learn.
-BLOCKED_MESSAGE = "egress_blocked: destination not permitted"
 
 _LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _HOST_RE = re.compile(rf"^{_LABEL}(?:\.{_LABEL})*$")
@@ -84,7 +83,8 @@ class HostAllowlist:
             return False
         for pattern in self.patterns:
             if pattern.startswith("*."):
-                if name.endswith(pattern[1:]):
+                # A label before the suffix, never the suffix alone (`.example.com`).
+                if name.endswith(pattern[1:]) and name != pattern[1:]:
                     return True
             elif name == pattern:
                 return True
@@ -156,7 +156,6 @@ def check_host(bound: EgressBound, host: str) -> None:
     runs, so they log, count and refuse alike. Never resolves: run it before anything that does,
     or the lookup itself leaks the refused name to its nameserver."""
     from felix.observability.metrics import record_counter
-    from felix.security.ssrf import EgressBlocked
 
     if bound.allows(host):
         return
@@ -165,6 +164,30 @@ def check_host(bound: EgressBound, host: str) -> None:
     logger.warning("egress blocked host=%s reason=not in allow_hosts", loggable(host, limit=260))
     record_counter("felix_egress_blocked", {"reason": "not in allow_hosts"})
     raise EgressBlocked(BLOCKED_MESSAGE)
+
+
+def within_prefix(url: str, prefix: str) -> bool:
+    """Is `url` inside `prefix`, compared as the request httpx will send rather than as text?
+
+    Origins as origins: scheme, ASCII host and port, so `https://docs.felix.run.evil.com/` and
+    `https://evil.com@...` cannot pass for a `https://docs.felix.run/` prefix by sharing its
+    characters. The path as sent: httpx removes `..` segments before it sends, so
+    `/repos/org/../../evil` is `/evil` and is compared as that; an encoded dot segment or slash
+    (`%2e%2e`, `%2f`), which a server may resolve after the comparison, is refused outright. httpx
+    reads an empty path as `/`.
+    """
+    import httpx
+
+    try:
+        u, p = httpx.URL(url), httpx.URL(prefix)
+    except httpx.InvalidURL, TypeError, ValueError:
+        return False
+    if (u.scheme, u.raw_host.lower(), u.port) != (p.scheme, p.raw_host.lower(), p.port):
+        return False
+    raw = u.raw_path.split(b"?", 1)[0].lower()
+    if b"%2f" in raw or b"%5c" in raw or any(seg in (".", "..") for seg in u.path.split("/")):
+        return False
+    return u.path.startswith(p.path)
 
 
 def hosts_outside(bound: HostAllowlist | EgressBound, urls: Iterable[str]) -> list[str]:
@@ -188,4 +211,5 @@ __all__ = [
     "normalise_host_pattern",
     "run_bound",
     "url_host",
+    "within_prefix",
 ]

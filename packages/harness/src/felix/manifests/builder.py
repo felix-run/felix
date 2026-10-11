@@ -53,7 +53,7 @@ from felix.patterns.registry import (
     list_patterns,
 )
 from felix.patterns.types import Agent
-from felix.security.host_allowlist import EgressBound, hosts_outside, run_bound
+from felix.security.host_allowlist import EgressBound, hosts_outside
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
@@ -1754,11 +1754,10 @@ async def build_agent(
             )
         sub_agents: dict[str, Agent] = {}
         delegates: dict[str, Agent] = {}
-        # This agent's reachable hosts: its own list beneath every one above it. Its children
-        # compile under it, so none of them can reach what it may not. At the root, "above it" is
-        # what the run inherited -- a background child's parents -- read here, once.
-        above = deps.egress if deps.compiling else EgressBound((*run_bound().lists, *deps.egress.lists))
-        egress = above.under(m.spec.network.allow_hosts)
+        # This agent's reachable hosts: its own list beneath every one above it (`deps.egress`:
+        # a parent's bound, or at the root what the run inherited). Its children compile under
+        # it, so none of them can reach what it may not.
+        egress = deps.egress.under(m.spec.network.allow_hosts)
         if child_agent_names(m.spec):
             # A sub-agent inherits this compile's session store, so its own
             # `spec.memory.checkpointer` is not consulted. Most composites invoke a child

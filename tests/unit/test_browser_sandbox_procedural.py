@@ -89,6 +89,10 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
             self.service_workers = service_workers
             self.routes: list[str] = []
             self.socket_routes: list[str] = []
+            self.init_scripts: list[str] = []
+
+        async def add_init_script(self, script: str) -> None:
+            self.init_scripts.append(script)
 
         async def route(self, pattern: str, _handler: Any) -> None:
             self.routes.append(pattern)
@@ -146,6 +150,9 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
     assert context.service_workers == "block", "a service worker's fetches bypass route"
     assert context.routes == ["**/*"] and context.socket_routes == ["**/*"], "guard the context, sockets too"
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launched_args[0]
+    assert "--disable-quic" in launched_args[0], "WebTransport runs over QUIC, from workers too"
+    [script] = context.init_scripts
+    assert "RTCPeerConnection" in script and "WebTransport" in script, "TURN over TCP needs no UDP"
 
     blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())
     assert "must start with" in (blocked if isinstance(blocked, str) else blocked.content)

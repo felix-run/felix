@@ -101,6 +101,7 @@ def test_a_pattern_in_another_grammar_is_refused(raw: str) -> None:
         ("uploads.github.com", True),  # `*.github.com`
         ("a.b.github.com", True),
         ("github.com", False),  # the wildcard is subdomains only
+        (".github.com", False),  # and needs a label before the suffix
         ("evilgithub.com", False),
         ("github.com.evil.com", False),
         ("203.0.113.7", True),
@@ -326,16 +327,17 @@ async def test_the_builder_binds_the_browser_to_the_list(
 
 
 async def test_a_background_childs_inherited_lists_bind_its_compile(lookups: list[str]) -> None:
-    """Its parents' lists ride the run; the root of its compile reads them, once."""
-    from felix.manifests.builder import BuildDeps, build_agent
+    """Its parents' lists ride the run; `build_tenant_agent` seeds the root of its compile."""
+    from felix.runtime import build_tenant_agent
     from felix.tools.provider import InMemoryToolProvider
 
-    ctx = RequestContext(settings=make_settings(), auth=AuthContext())
+    settings = make_settings()
+    ctx = RequestContext(settings=settings, auth=AuthContext())
     ctx.extras[EGRESS_CEILINGS_EXTRA] = EgressBound().under(["allowed.test"])
     fetcher = _manifest("child", http_tools=[{"name": "fetch", "allow_any_host": True}])
     async with async_run_with_context(ctx):
-        agent = await build_agent(
-            fetcher, deps=BuildDeps(tools=InMemoryToolProvider(), settings=make_settings())
+        agent = await build_tenant_agent(
+            settings, manifest=fetcher, tools=InMemoryToolProvider(), tenant_id="default", skill_owner=None
         )
     assert await _run(_tool(agent, "fetch"), {"url": "https://other.test/"}) == BLOCKED
 
@@ -385,3 +387,56 @@ async def test_an_internationalised_host_is_matched_by_its_punycode(monkeypatch:
         bound = EgressBound().under(["xn--mnchen-3ya.de"])
         async with safe_async_client(timeout=5, allow_http=True, egress=bound) as client:
             assert (await client.get(f"http://münchen.de:{_port(base)}/")).text == "OK"
+
+
+# --- the browser's WebSocket route ------------------------------------------------------
+
+
+class _Socket:
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.connected = False
+        self.closed = False
+
+    def connect_to_server(self) -> None:
+        self.connected = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def _socket_handler(egress: EgressBound) -> Any:
+    class _Context:
+        async def route(self, _pattern: str, _handler: Any) -> None:
+            return None
+
+        async def route_web_socket(self, _pattern: str, handler: Any) -> None:
+            self.socket_handler = handler
+
+    (tool,) = tools_from_browser_refs(
+        [BrowserToolRef(name="b", binding="chromium")], allow_http=True, egress=egress
+    )
+    context = _Context()
+    await tool.executor._install_egress_guard(context)
+    return context.socket_handler
+
+
+@pytest.mark.parametrize("scheme", ["ws", "wss"])
+async def test_a_websocket_to_a_listed_host_connects_and_others_close(
+    scheme: str, lookups: list[str]
+) -> None:
+    handler = await _socket_handler(EgressBound().under(["allowed.test"]))
+    allowed, other = _Socket(f"{scheme}://allowed.test/socket"), _Socket(f"{scheme}://other.test/socket")
+    await handler(allowed)
+    await handler(other)
+    assert allowed.connected and not allowed.closed
+    assert other.closed and not other.connected
+    assert "other.test" not in lookups
+
+
+async def test_an_unrestricted_browser_keeps_its_websockets(lookups: list[str]) -> None:
+    """The SSRF check speaks http(s): a `wss://` URL handed to it as-is refused every socket."""
+    handler = await _socket_handler(EgressBound())
+    sock = _Socket("wss://anything.test/socket")
+    await handler(sock)
+    assert sock.connected

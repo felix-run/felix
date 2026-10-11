@@ -44,7 +44,7 @@ logger = logging.getLogger("felix.security.egress")
 # One message for every refusal. Distinguishing "does not resolve" from "resolves into
 # private space" would hand the caller a one-bit probe for internal names, and this string
 # reaches the model through the tool-error path.
-_BLOCKED_MESSAGE = "egress_blocked: destination not permitted"
+_BLOCKED_MESSAGE = ssrf.BLOCKED_MESSAGE
 
 
 def _refuse(host: str, address: str, reason: str) -> None:

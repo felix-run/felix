@@ -550,7 +550,8 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       (host, `*.` subdomain or IP patterns), enforced by `http_fetch` per hop in the guarded
       transport and by the browser on every page request, checked against the manifest's own
       URLs at write; children compile under their parents' lists, background children carry them
-      on the durable run. *Next:* *credentials the model never holds*, onto the same transport.
+      on the durable run. *Next:* *credentials the model never holds*, onto the same transport; the
+      browser behind a local proxy enforcing the bound, so DNS prefetch and preconnect are bounded too.
 - [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
       background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
       worktree per child task, and clearing of stale tool results.
