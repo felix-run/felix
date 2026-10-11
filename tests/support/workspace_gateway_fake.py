@@ -69,6 +69,10 @@ class FakeGateway:
     # Where `clone` fetches `{repo}.git` from, standing in for github.com (the `git_server` fixture).
     clone_base: str = ""
     clone_tokens: list[str] = field(default_factory=list)
+    # One helper call at a time. The helper's `ROOT` is a module global set per call, so two calls
+    # in flight let the first to finish restore it under the second -- which then ran against
+    # `/workspace`. The real gateway runs each call in its own sandbox process, one at a time.
+    _helper_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def sandbox(self, scope: str) -> Path:
         return self.root / scope
@@ -97,12 +101,13 @@ class FakeGateway:
         if op == "clone":
             return await self._clone(directory, body)
         helper = _helper()
-        previous, helper.ROOT = helper.ROOT, directory
-        try:
-            # Off the event loop: `exec` runs its own (`asyncio.run`), as it does in the sandbox.
-            answer = await asyncio.to_thread(helper.run, {"op": op, **body})
-        finally:
-            helper.ROOT = previous
+        async with self._helper_lock:
+            previous, helper.ROOT = helper.ROOT, directory
+            try:
+                # Off the event loop: `exec` runs its own (`asyncio.run`), as it does in the sandbox.
+                answer = await asyncio.to_thread(helper.run, {"op": op, **body})
+            finally:
+                helper.ROOT = previous
         if answer["ok"]:
             return httpx.Response(200, json={"result": answer["result"]})
         refusal = {
