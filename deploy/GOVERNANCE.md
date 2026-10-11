@@ -748,7 +748,7 @@ guarded transport and is re-checked against the tool's `path_prefix` as well. ht
 `follow_redirects` would have re-validated egress but not the prefix, and one `302` from an
 allowed page is enough to leave it.
 
-**The browser pins its navigation host too.** Chromium resolves independently, so the
+**The browser pins its navigation host too** (on Chromium). Chromium resolves independently, so the
 guard's lookup and Chromium's would otherwise be two lookups. The browser is launched with
 `--host-resolver-rules=MAP <host> <validated address>`, so the name it navigates to can only
 reach the address the guard approved. A hostname is matched against a strict pattern before
@@ -774,6 +774,84 @@ time — a review question, not a silent default. What to check when reviewing o
 
 A fetch tool is **not** replay-safe. A resumed run will not re-issue it, because the model
 names the endpoint and a GET that mutates is ordinary on the open web.
+
+### Per-agent allowlist: `spec.network.allow_hosts`
+
+Everything above decides whether an address is safe for *anyone* to reach. `allow_hosts` decides
+which hosts *this agent* may reach, and it is the control to reach for when an agent should read
+three APIs and nothing else:
+
+```yaml
+spec:
+  network:
+    allow_hosts: [api.github.com, "*.githubusercontent.com", docs.example.com]
+```
+
+- **Patterns** are a host, `*.` and a host (any name under it, never the apex itself), or an IP
+  literal. No scheme, port or path: those are other grammars and a pattern carrying one would
+  match nothing, so validation refuses it. An internationalised name is written in punycode,
+  which is what a request carries (`raw_host`, not httpx's decoded `host`).
+- **Unset** leaves the agent as it was. An **empty list** allows nothing.
+- **Enforced where the model picks the destination.** `http_fetch` checks the URL before it
+  opens a client and the guarded transport checks again on every redirect hop, with the same
+  `egress_blocked` line as any refusal (`felix_egress_blocked{reason="not in allow_hosts"}`).
+  The list is checked *before* anything resolves: a lookup of `<secret>.attacker.example` is a
+  leak to that name's nameserver even when the request is then refused.
+- **Not the browser.** A manifest with `allow_hosts` and `browser_tools` is refused at write, and
+  a child with `browser_tools` under a parent's list is refused at compile. A request interceptor
+  cannot confine Chromium: review found a page reaching unlisted hosts through WebRTC over TCP,
+  WebTransport in a worker, and worklet module fetches, none of which `route` sees. A browser
+  held to a list would look confined and not be; one behind a local proxy enforcing the bound is
+  the follow-up (`docs/ROADMAP.md`).
+- **Checked against what the manifest names.** An `mcp_servers` or `peers` URL, a container
+  `gateway_url`, or an `http_tools` `path_prefix` on a host the list does not allow is refused
+  when the manifest is written (`Spec.declared_urls`).
+- **A2A peers are pinned.** Under a list, a `peer__*` tool loses its `manifest` argument: the
+  agent that answers on the far side compiles there with no bound, so the model may not choose
+  which one it is.
+- **Children answer to it.** A sub-agent or `task` child compiles under its parent's list as well
+  as its own, and a manifest URL outside a parent's list fails that compile. A child two parents
+  share is rebuilt under each one's list, never reused from a looser one. A background `task`
+  child runs in the worker on a run of its own, so the lists above it are stored on the durable
+  run (`egress_ceilings`), re-validated when it resumes, and bind its tools there.
+- **Not covered.** The list bounds the requests Felix itself sends for the model. It does not
+  reach a process that opens its own sockets, nor what a server does on the far side:
+  - `shell_tools` and sandboxes: the runner's or sandbox's network is the boundary (*Shell tools*);
+  - stdio MCP servers, which run on the API host with its network (`FELIX_MCP_STDIO_ALLOWED_COMMANDS`);
+  - a remote MCP server or A2A peer whose own tools fetch: it is listed, so it is trusted, and
+    what it reaches is its operator's control;
+  - container gateways' and sandboxes' outbound traffic;
+  - tools a plugin binds (`deps.extra_tools`), which are not handed the agent's bound.
+
+  Operator traffic -- hooks, completion webhooks, push, model providers -- is not the agent's and
+  is not bound by it. Web search reaches the operator's search endpoint; following a result is a
+  fetch, which is bound.
+- **A host is not a confinement on a shared host.** `*.github.io`, `*.vercel.app`, `*.co.uk` or
+  `docs.google.com` each admit pages anyone can publish to or post through (a form endpoint is a
+  GET away). Only `*.<top-level domain>` is refused. On a multi-tenant host, pair the list with an
+  `http_tools` `path_prefix`, or treat the list as a reachability control rather than an
+  exfiltration one. A prefix is compared with the path httpx actually sends: `..` segments are
+  resolved first, and an encoded dot segment or slash (`%2e%2e`, `%2f`), a backslash, or a `..;`
+  segment is refused.
+
+**Every browser, list or not, shuts the channels its interceptor cannot see** -- each is a way
+past the SSRF check that guards every request. The guard sits on the whole browser context, popups
+included, and on the page's WebSockets (a `ws`/`wss` URL is checked as the `http`/`https`
+handshake it is). Service workers are blocked. `RTCPeerConnection`, `WebTransport`,
+`sharedStorage` and `Worklet.prototype.addModule` are removed (not writable, not configurable) from
+every page, frame and popup -- a TURN server over TCP needs the API removal, and a worklet's module
+fetch never reaches `route`. On Chromium (`binding: chromium`, the default) WebRTC's UDP is also
+disabled and the navigation host pinned; those are Chromium launch flags, and another engine gets
+the script removals and the interceptor only. A model URL containing a backslash, whitespace or a
+control character is refused, since Chromium's parser and the checker's disagree on them.
+
+**Still open: a page's workers.** An init script does not run in a dedicated worker, and
+Playwright's interceptors do not see a worker's sockets. A worker's `WebTransport` sends QUIC over
+UDP, and a worker's `WebSocket` opens a TCP handshake, to any address -- loopback and private ones
+included -- outside the SSRF guard. Where browser agents run on shared infrastructure, give the
+process that runs Chromium (the API, or the worker for durable runs) a network policy that refuses
+UDP and private and loopback TCP. Removing workers would close both and break pages that use them;
+a browser behind a local proxy enforcing every socket is the follow-up (`docs/ROADMAP.md`).
 
 **What is still advisory:** cross-host subresources and redirects *in the browser tool*.
 Those keep resolving normally and are checked per request but not pinned, because denying

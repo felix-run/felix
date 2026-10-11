@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpcore
 import httpx
@@ -36,12 +36,15 @@ from felix.observability.metrics import record_counter
 from felix.security import ssrf
 from felix.security.ssrf import EgressBlocked
 
+if TYPE_CHECKING:
+    from felix.security.host_allowlist import EgressBound
+
 logger = logging.getLogger("felix.security.egress")
 
 # One message for every refusal. Distinguishing "does not resolve" from "resolves into
 # private space" would hand the caller a one-bit probe for internal names, and this string
 # reaches the model through the tool-error path.
-_BLOCKED_MESSAGE = "egress_blocked: destination not permitted"
+_BLOCKED_MESSAGE = ssrf.BLOCKED_MESSAGE
 
 
 def _refuse(host: str, address: str, reason: str) -> None:
@@ -160,7 +163,7 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
     # construction, and `mounts` takes precedence over the transport entirely.
     _ROUTES_AROUND_THE_PIN = ("proxy", "mounts", "uds")
 
-    def __init__(self, *, allow_http: bool = False, **kwargs: Any) -> None:
+    def __init__(self, *, allow_http: bool = False, egress: EgressBound | None = None, **kwargs: Any) -> None:
         for name in self._ROUTES_AROUND_THE_PIN:
             if kwargs.get(name) is not None:
                 raise TypeError(
@@ -174,6 +177,7 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
                 "be installed and an unguarded client must not be returned"
             )
         self._allow_http = allow_http
+        self._egress = egress
         self._pool._network_backend = _PinningBackend(allow_http=allow_http)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -182,6 +186,12 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
         # means a new caller cannot get half a guard by forgetting a line, and a redirect
         # target is checked on the same terms as the original URL.
         ssrf.assert_safe_outbound_url(str(request.url), allow_http=self._allow_http, resolve=False)
+        # The agent's own hosts (`spec.network.allow_hosts`), on the same terms: each hop, here.
+        # `raw_host` is the ASCII (punycode) name the patterns are written in; `host` is decoded.
+        if self._egress is not None:
+            from felix.security.host_allowlist import check_host
+
+            check_host(self._egress, request.url.raw_host.decode("ascii", errors="replace"))
         return await super().handle_async_request(request)
 
 
@@ -189,6 +199,7 @@ def safe_async_client(
     *,
     timeout: httpx.Timeout | float,
     allow_http: bool = False,
+    egress: EgressBound | None = None,
     **kwargs: Any,
 ) -> httpx.AsyncClient:
     """An `httpx.AsyncClient` that can only reach addresses the guard approved.
@@ -198,7 +209,9 @@ def safe_async_client(
     `timeout` is required rather than defaulted: httpx falls back to a silent 5s, which is
     wrong in both directions here — too short for a slow peer, and invisible when it bites.
     `follow_redirects` defaults to False, as at every other outbound call site: a redirect is
-    a fresh destination and belongs to the caller to decide about.
+    a fresh destination and belongs to the caller to decide about. `egress`, for a client a
+    tool uses on the model's behalf, is the agent's `allow_hosts` bound: a host outside it is
+    refused like an unsafe address, redirect hops included.
     """
     # Checked here as well as on the transport: `proxy` and `mounts` are client-level
     # arguments, so the transport never sees them and would return a guarded object wired
@@ -210,7 +223,7 @@ def safe_async_client(
             )
     kwargs.setdefault("follow_redirects", False)
     return httpx.AsyncClient(
-        transport=GuardedAsyncTransport(allow_http=allow_http),
+        transport=GuardedAsyncTransport(allow_http=allow_http, egress=egress),
         timeout=timeout,
         **kwargs,
     )

@@ -53,6 +53,7 @@ from felix.patterns.registry import (
     list_patterns,
 )
 from felix.patterns.types import Agent
+from felix.security.host_allowlist import EgressBound, hosts_outside
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
@@ -108,6 +109,13 @@ class BuildDeps:
     # The reply screen of the compile whose sub-agents are being built, so a child's own
     # screen chains to it (`ReplyScreen.parent`). Set and restored around the child compile.
     reply_screen: Any | None = None
+    # The `allow_hosts` lists of every agent above the one compiling (`security.host_allowlist`):
+    # set around a child compile, so the child's fetch tools answer to them too (and a child
+    # binding `browser_tools` under them is refused, `_check_declared_egress`).
+    egress: EgressBound = field(default_factory=EgressBound)
+    # The bound each child in `compiled` was built under: a child two parents share is rebuilt
+    # under a parent whose bound differs, never reused from one with a looser list.
+    compiled_egress: dict[str, EgressBound] = field(default_factory=dict)
 
 
 # Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
@@ -144,6 +152,25 @@ def _compiling_children(deps: BuildDeps, name: str, **inherited: Any) -> Iterato
         for field_name, value in saved.items():
             setattr(deps, field_name, value)
         deps.compiling.pop()
+
+
+def _check_declared_egress(m: Manifest, egress: EgressBound) -> None:
+    """Refuse a manifest whose own URLs (`Spec.declared_urls`) reach a host its bound does not
+    allow. The schema checked them against the manifest's own list at write; a parent's list, or a
+    background child's inherited one, is only known at compile."""
+    # Lifted together with `Spec._declared_hosts_are_allowed`'s refusal, when the browser runs
+    # behind a proxy enforcing the bound (`docs/ROADMAP.md`).
+    if egress.restricted and m.spec.browser_tools:
+        raise ValueError(
+            f"manifest '{m.metadata.name}' binds browser_tools under an agent with network.allow_hosts; "
+            "the browser cannot be held to a host list yet"
+        )
+    outside = hosts_outside(egress, m.spec.declared_urls())
+    if outside:
+        raise ValueError(
+            f"manifest '{m.metadata.name}' reaches {', '.join(sorted(set(outside)))}, which "
+            "an agent above it does not allow (network.allow_hosts)"
+        )
 
 
 def _bundled_sub_agent(deps: BuildDeps) -> Callable[[str], Awaitable[Agent]]:
@@ -1735,6 +1762,10 @@ async def build_agent(
             )
         sub_agents: dict[str, Agent] = {}
         delegates: dict[str, Agent] = {}
+        # This agent's reachable hosts: its own list beneath every one above it (`deps.egress`:
+        # a parent's bound, or at the root what the run inherited). Its children compile under
+        # it, so none of them can reach what it may not.
+        egress = deps.egress.under(m.spec.network.allow_hosts)
         if child_agent_names(m.spec):
             # A sub-agent inherits this compile's session store, so its own
             # `spec.memory.checkpointer` is not consulted. Most composites invoke a child
@@ -1750,10 +1781,12 @@ async def build_agent(
                 session_store=session_store,
                 reply_screen=screen_chain,
                 session_strategy=session_strategy,
+                egress=egress,
             ):
                 for name in child_agent_names(m.spec):
-                    if name not in deps.compiled:
+                    if name not in deps.compiled or deps.compiled_egress.get(name) != egress:
                         deps.compiled[name] = await builder(name)
+                        deps.compiled_egress[name] = egress
                 if m.spec.sub_agents:
                     sub_agents = {name: deps.compiled[name] for name in m.spec.sub_agents}
                 if m.spec.delegation is not None:
@@ -1802,6 +1835,7 @@ async def build_agent(
             system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
 
         mcp_refs, peer_refs, container_refs = await resolve_outbound_secrets(m, deps.settings)
+        _check_declared_egress(m, egress)
 
         # Outbound MCP servers → remote tools.
         if mcp_refs:
@@ -1820,7 +1854,11 @@ async def build_agent(
             try:
                 from felix.a2a.peers import tools_from_peers
 
-                peer_tools = tools_from_peers(peer_refs, allow_http=allow_http)
+                # Restricted, the model may not choose which agent answers on the far side: that
+                # agent compiles there with no bound, and could fetch for it anywhere.
+                peer_tools = tools_from_peers(
+                    peer_refs, allow_http=allow_http, pin_manifest=egress.restricted
+                )
                 _append_unique_tools(resolved, peer_tools)
             except Exception:
                 logger.warning("peer tool binding failed", exc_info=True)
@@ -1854,7 +1892,7 @@ async def build_agent(
 
                 _append_unique_tools(
                     resolved,
-                    tools_from_http_fetch_refs(list(m.spec.http_tools), allow_http=allow_http),
+                    tools_from_http_fetch_refs(list(m.spec.http_tools), allow_http=allow_http, egress=egress),
                 )
             except Exception:
                 logger.warning("http fetch tool binding failed", exc_info=True)
@@ -2172,6 +2210,7 @@ async def build_agent(
                     background=m.spec.delegation.background,
                     manifest_hooks=manifest_hooks,
                     max_background=m.spec.delegation.max_background,
+                    egress=egress,
                 )
             )
             if m.spec.delegation.background:
