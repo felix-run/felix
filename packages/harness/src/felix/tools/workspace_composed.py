@@ -22,6 +22,7 @@ import asyncio
 import fnmatch
 import hashlib
 import json
+import time
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -51,6 +52,7 @@ _MAX_PATTERN_CHARS = 256
 # backtracking regex for the whole path: `*a*a*a*a*a*a*b` against a long name ran for minutes.)
 _MAX_GLOB_WILDCARDS = 8
 _MAX_GLOB_DEEP = 4
+_MAX_GLOB_SEGMENTS = 32
 _GLOB_BUDGET_S = 5.0
 _MAX_EDITS = 50
 
@@ -131,6 +133,8 @@ def _glob_pattern_refusal(pattern: str) -> str | None:
     segments = pattern.split("/")
     if pattern.startswith("/") or ".." in segments or "\0" in pattern:
         return "pattern must be relative to path, with no `..`"
+    if len(segments) > _MAX_GLOB_SEGMENTS:
+        return f"pattern has more than {_MAX_GLOB_SEGMENTS} segments"
     if sum(s == "**" for s in segments) > _MAX_GLOB_DEEP:
         return f"pattern has more than {_MAX_GLOB_DEEP} `**` segments"
     if sum(s.count("*") + s.count("?") for s in segments if s != "**") > _MAX_GLOB_WILDCARDS:
@@ -154,23 +158,30 @@ def glob_match(segments: list[str], parts: list[str]) -> bool:
         else:
             for j in range(1, len(parts) + 1):
                 nxt[j] = reach[j - 1] and fnmatch.fnmatchcase(parts[j - 1], seg)
+        if not any(nxt):
+            return False  # no prefix of the path can match what is left
         reach = nxt
     return reach[len(parts)]
 
 
 def _filter(
-    entries: list[dict[str, object]], prefix: str, segments: list[str], limit: int
-) -> tuple[list[str], bool]:
+    entries: list[dict[str, object]], prefix: str, segments: list[str], limit: int, deadline: float
+) -> tuple[list[str], bool, bool]:
+    """`(matches, more, timed_out)`. Checks `deadline` itself: the thread `to_thread` runs it on
+    cannot be cancelled, so a deadline only the caller kept would answer on time and leave the
+    work running to the end."""
     matches: list[str] = []
-    for entry in entries:
+    for n, entry in enumerate(entries):
+        if n % 256 == 0 and time.monotonic() > deadline:
+            return matches, False, True
         rel = str(entry.get("path") or "")
         if entry.get("type") != "file" or not rel.startswith(prefix):
             continue
         if glob_match(segments, rel[len(prefix) :].split("/")):
             if len(matches) == limit:
-                return matches, True
+                return matches, True, False
             matches.append(rel)
-    return matches, False
+    return matches, False, False
 
 
 async def _glob(args: GlobArgs) -> ToolOutput:
@@ -198,14 +209,13 @@ async def _glob(args: GlobArgs) -> ToolOutput:
             return _refuse(f"not found: {args.path}")
         return _os_failed(exc)
     prefix = f"{base}/" if base else ""
-    try:
-        # Off the event loop and on a deadline, as `search_files`: bounded per path, but over
-        # every entry the walk returned.
-        matches, more = await asyncio.wait_for(
-            asyncio.to_thread(_filter, walked.entries, prefix, args.pattern.split("/"), args.max_results),
-            _GLOB_BUDGET_S,
-        )
-    except TimeoutError:
+    # Off the event loop, and stopping itself at the deadline: bounded per path, but over every
+    # entry the walk returned.
+    deadline = time.monotonic() + _GLOB_BUDGET_S
+    matches, more, timed_out = await asyncio.to_thread(
+        _filter, walked.entries, prefix, args.pattern.split("/"), args.max_results, deadline
+    )
+    if timed_out:
         return tool_error_output(
             ToolErrorCode.TIMEOUT, f"glob exceeded {_GLOB_BUDGET_S:.0f}s — narrow the pattern or path"
         )

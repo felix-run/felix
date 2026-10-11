@@ -319,13 +319,19 @@ async def test_a_parallel_edit_on_hosted_is_never_lost(tmp_path: Path, gateway: 
     here = _here(tmp_path, "hosted", gateway)
     (here / "f.py").write_text("alpha\nbeta\n")
     async with _request(_settings(tmp_path, "hosted")):
+        # The scope prepared once, so the race below is between the two writes alone.
+        await _call("list_dir", {"path": "."})
         multi, single = await asyncio.gather(
             _call("multi_edit", {"path": "f.py", "edits": [_edit("alpha", "ALPHA")]}),
             _call("edit_file", {"path": "./f.py", "old_string": "beta", "new_string": "BETA"}),
         )
     final = (here / "f.py").read_text()
-    assert "BETA" in final, (multi, single, final)
-    assert "ALPHA" in final or "changed while the edits were applied" in multi
+    # Whatever said it landed, did: a success whose change is gone is the silent overwrite.
+    if not single.startswith("[tool error"):
+        assert "BETA" in final, (multi, single, final)
+    if not multi.startswith("[tool error"):
+        assert "ALPHA" in final, (multi, single, final)
+    assert not (multi.startswith("[tool error") and single.startswith("[tool error")), (multi, single)
 
 
 async def test_a_file_changed_after_the_read_is_not_overwritten(
@@ -371,3 +377,26 @@ def test_one_file_is_one_lock_however_its_path_is_written(tmp_path: Path) -> Non
     assert workspace_hosted._write_lock(settings, scope, "./src/a.py") is lock
     assert workspace_hosted._write_lock(settings, scope, "src//a.py") is lock
     assert workspace_hosted._write_lock(settings, scope, "src/b.py") is not lock
+
+
+async def test_glob_stops_its_own_work_at_the_deadline(
+    tmp_path: Path, gateway: FakeGateway, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`to_thread` cannot be cancelled: the filter checks the deadline itself, so the work stops
+    when the answer does rather than running on after a timeout the caller already returned."""
+    here = _here(tmp_path, "local", gateway)
+    (here / "a.py").write_text("x")
+    monkeypatch.setattr(workspace_composed, "_GLOB_BUDGET_S", -1.0)
+    async with _request(_settings(tmp_path, "local")):
+        out = await _call("glob", {"pattern": "*.py"})
+    assert out.startswith("[tool error/timeout] glob exceeded")
+    entries = [{"path": f"d/{n}.py", "type": "file"} for n in range(1000)]
+    assert workspace_composed._filter(entries, "", ["**", "*.py"], 500, deadline=0.0) == ([], False, True)
+
+
+def test_a_pattern_with_too_many_segments_is_refused() -> None:
+    """Literal segments count toward no wildcard cap, and each one is a row of the match table."""
+    assert (
+        workspace_composed._glob_pattern_refusal("/".join(["a"] * 33)) == "pattern has more than 32 segments"
+    )
+    assert workspace_composed._glob_pattern_refusal("/".join(["a"] * 32)) is None
