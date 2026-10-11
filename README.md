@@ -309,13 +309,6 @@ different server connection and fails. PgBouncer ≥ 1.21 with `max_prepared_sta
 them for you and needs no change; RDS Proxy instead pins the session when it sees one, defeating the
 multiplexing you deployed it for, so turn preparation off there.
 
-Felix runs on infrastructure **you** operate. Cloudflare DNS, CDN, TLS, and WAF in front of your
-origin are fine. There is **no** Cloudflare Workers, Durable Objects, Hyperdrive, R2-as-binding,
-Queues, or Workflows compute in this stack.
-
-The line is **compute**, not vendor. Calling a hosted Cloudflare **API** over HTTPS — Workers AI as a model provider, R2 through its S3 endpoint — is an outbound request like any other and is fine. What Felix will not do
-is *run on* Workers or Durable Objects, or depend on a binding only available inside them.
-
 ### Extending Felix
 
 Felix is built to **not dictate your workflow**. Features other harnesses bake in are meant to

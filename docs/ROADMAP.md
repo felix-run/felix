@@ -1015,10 +1015,6 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 - [!] **`FELIX_POLICY_BUNDLE_PUBKEY` / OPA** — no signed policy-bundle
       runtime in v1 (governance stays manifest compile + wrappers).
 - [!] **Commerce / billing plugin** — seam only; no Stripe in-tree.
-- [!] **Cloudflare compute in the harness** — Workers/DOs out of `felix`;
-      CF hosts web + named tunnel to GCE API only. Scoped to *compute*: the
-      `workers_ai` model provider is an outbound HTTPS call to api.cloudflare.com,
-      the same shape as every other hosted provider, and does not reopen this.
 - [!] **Merging web into `felix`** — keep repos split.
 - [!] **Third-party TUI / CBOR / npm package installer** — session/loop
       ideas only; composition is YAML + `felix.plugins` entry points.
