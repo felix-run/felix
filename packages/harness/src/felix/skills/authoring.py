@@ -124,6 +124,9 @@ class _Composed(BaseModel):
     # The parent's files the save keeps unchanged, as `{path, sha256}`: what an approver is
     # shown beside the SKILL.md, since the agent's arguments never name them.
     inherited: list[dict[str, str]] = []
+    # A create under a name whose every version was rejected: it builds on nothing, as an import
+    # or a promotion into such a name does, rather than being refused as `skill_exists`.
+    over_rejected: bool = False
 
 
 def _review_hint(row: dict[str, Any]) -> str:
@@ -297,11 +300,28 @@ class _SkillAuthor:
         personal = await self._into_personal(name, update=update)
         lib = self.lib(personal)
         skill = await lib.get_skill(self.tenant_id, name)
+        over_rejected = False
         if not update:
             if skill is not None:
-                raise _ComposeError({"error": "skill_exists", "name": name, "detail": "use update_skill"})
+                # A name whose every version a person rejected has nothing to update: refusing a
+                # create as `skill_exists` sent the agent to `update_skill`, which answered
+                # `unknown_skill`, and the name was out of reach for good.
+                from felix.skills import library
+
+                kept = (
+                    await library.newest_buildable_versions(
+                        self.settings, self.tenant_id, [name], owner=lib.owner
+                    )
+                ).get(name)
+                if kept is not None:
+                    raise _ComposeError({"error": "skill_exists", "name": name, "detail": "use update_skill"})
+                over_rejected = True
             frontmatter = {"name": name, "description": str(args.get("description") or "")}
-            return _Composed(files={"SKILL.md": serialize_skill_md(frontmatter, body)}, personal=personal)
+            return _Composed(
+                files={"SKILL.md": serialize_skill_md(frontmatter, body)},
+                personal=personal,
+                over_rejected=over_rejected,
+            )
         if skill is None:
             raise _ComposeError(
                 {"error": "unknown_skill", "name": name, "detail": "not in the skill library"}
@@ -407,7 +427,11 @@ class _SkillAuthor:
                     principal=_principal(),
                 ),
                 parent=composed.parent,
-                expect_newest=composed.parent if update else library.MUST_NOT_EXIST,
+                expect_newest=(
+                    composed.parent
+                    if update
+                    else (None if composed.over_rejected else library.MUST_NOT_EXIST)
+                ),
                 max_pending=self.max_pending,
                 object_store=self.object_store,
                 owner=self.lib(composed.personal).owner,
