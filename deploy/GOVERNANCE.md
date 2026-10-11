@@ -1016,6 +1016,20 @@ own:
   — `uv` resolves an index the workspace names. And secret confinement covers what Felix
   masks, not a file in the checkout — the workspace holds no `.env` and no deployment secret,
   because an allowlisted `git diff` or a failing test can print one into the transcript.
+- **An allowlisted `git` runs no program the repository names.** `.git/config` and `.git/hooks`
+  are workspace files the agent can write, and without this a planted hook, `core.fsmonitor`,
+  `core.editor` (a commit without `-m`) or `gpg.program` (with `commit.gpgSign`, or a `-S` the
+  model passes) would turn
+  `git commit` or `git status` into running anything. The child's environment overrides them for
+  every git it starts -- named in argv or run by a script (`GIT_CONFIG_COUNT`, git 2.31+; plus
+  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR` and `GIT_PAGER`): hooks, fsmonitor, editors, signing (and
+  the signing programs, pinned to the system's, since `-S` forces it),
+  `core.sshCommand`, `credential.helper` and `diff.external` are switched off
+  (`tools/shell.py:_GIT_DISARMED`). **Not covered:** a `filter.<name>` clean or smudge driver,
+  which `.gitattributes` names and git runs on `add` and checkout -- the name is the repository's
+  choice, so no fixed key can switch it off. Where that matters, keep `git add` and checkout-type
+  commands off `FELIX_SHELL_ALLOWED_COMMANDS`; commands that run repository code (`make test`) run
+  anything already, and the runner is their boundary.
 - **Run locally, the child can read the API's own environment.** With `FELIX_SHELL_RUNNER_URL`
   unset — `make dev`, a plain `make up`, any deployment that does not set it — the child inherits
   only the five variables above, but it runs as the API's user in the API's PID namespace, so it
