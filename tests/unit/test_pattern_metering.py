@@ -388,3 +388,29 @@ async def test_cached_prompt_tokens_are_counted_on_the_limit_state() -> None:
 
     assert ctx.limit_state.tokens_input == 10
     assert ctx.limit_state.tokens_cached == 4
+
+
+@pytest.mark.parametrize("model_type", [_MeteredModel, _ChatOnlyModel], ids=["stream_turn", "chat_only"])
+async def test_a_composite_answer_is_sent_once(monkeypatch: pytest.MonkeyPatch, model_type: type) -> None:
+    """The synthesized answer reaches the stream as `text_delta` and nothing else.
+
+    It also went out as the legacy `on_chat_model_stream`, the same text again, and a client
+    reading both names -- as the web clients and `felix chat` do, for an older deployment --
+    drew a composite's answer twice. `react` sends `text_delta` alone.
+    """
+    from felix.governance.reply import REPLY_TEXT_EVENTS
+    from felix.patterns import delegating
+
+    model = model_type(text="combined")
+    monkeypatch.setattr(delegating, "_model_for", lambda *a, **k: model)
+    agent = _agent("parallel", sub_agents={"a": _Child("one")})
+
+    async with async_run_with_context(_ctx()):
+        events = [
+            ev
+            async for ev in agent.stream_events(
+                InvokeInput(messages=[ChatMessage(role="user", content="hi")])
+            )
+        ]
+
+    assert [(e.event, e.text) for e in events if e.event in REPLY_TEXT_EVENTS] == [("text_delta", "combined")]

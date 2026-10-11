@@ -241,11 +241,14 @@ async def _yield_model_stream(
                 )
                 continue
             collected.append(item.text)
+            # `text_delta` only, as `react` sends it. The legacy `on_chat_model_stream` beside
+            # it was the same text a second time, and a client that reads both names -- the
+            # web clients and `felix chat` do, for a deployment older than the rename -- drew a
+            # composite's answer twice.
             yield Event(
                 event="text_delta",
                 data={"chunk": {"content": item.text}, "delta": item.text},
             )
-            yield Event(event="on_chat_model_stream", data={"chunk": {"content": item.text}})
         return
 
     result = await chat_with_model_hooks(model, messages, [], options, context=hook_context)
@@ -257,7 +260,6 @@ async def _yield_model_stream(
             event="text_delta",
             data={"chunk": {"content": text}, "delta": text},
         )
-        yield Event(event="on_chat_model_stream", data={"chunk": {"content": text}})
 
 
 def _model_for(input: InvokeInput, settings: Any, model_spec: Any) -> Any:

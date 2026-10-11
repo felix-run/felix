@@ -212,11 +212,12 @@ async def test_a_session_event_carries_the_reasoning_a_person_can_read(
     thought = next(e for e in events if e["content"] == "the answer")
     plain = next(e for e in events if e["content"] == "no reasoning here")
 
-    assert thought.get("metadata") == {"thinking": [{"type": "thinking", "thinking": "weigh the options"}]}
+    assert thought["metadata"]["thinking"] == [{"type": "thinking", "thinking": "weigh the options"}]
     # Opaque on purpose, and replay-only: never on the frame.
     assert "sig-abc" not in body and "opaque-xyz" not in body
-    # Nothing readable means no key at all, the way `tool_calls` is omitted when empty.
-    assert "metadata" not in plain
+    # Nothing readable means no reasoning key, the way `tool_calls` is omitted when empty.
+    # (The row may still carry the fields a client folds it with, such as its `parent_id`.)
+    assert "thinking" not in plain.get("metadata", {})
 
 
 async def test_progress_the_worker_made_before_the_stream_polled_is_not_skipped(
@@ -906,3 +907,70 @@ async def test_a_durable_stream_never_waits_past_the_runs_deadline(
         await post_stream(client, "deadline")
 
     assert slept and max(slept) <= 3.0, f"waited past the deadline: {slept}"
+
+
+async def test_a_session_event_carries_what_a_client_folds_a_row_with(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Images, usage and a workspace note's fields reach a watching client while the run goes.
+
+    The snapshot sends `metadata` whole; the tail frame sent only readable reasoning, so a
+    durable run drew no tool screenshot, no usage and every workspace note as a generic one
+    until it landed and the client re-read the snapshot. The frame now passes a named set of
+    keys through, and still nothing else.
+    """
+    settings = durable_settings()
+    thread = "default:folded"
+    force_durable(monkeypatch)
+    shot = [{"url": "felix-file://abc", "media_type": "image/png"}]
+    usage = {"input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0}
+
+    async def worker_wrote_rows() -> None:
+        await _append(
+            settings,
+            thread,
+            AppendableEvent(
+                kind="message",
+                role="assistant",
+                content="looked",
+                metadata={"usage": usage, "provider_secret": "never-shown"},
+            ),
+            AppendableEvent(
+                kind="custom",
+                role="user",
+                content="edited",
+                metadata={
+                    "type": "workspace_edit",
+                    "path": "notes/a.md",
+                    "op": "rename",
+                    "to_path": "notes/b.md",
+                    "in_context": True,
+                },
+            ),
+            AppendableEvent(
+                kind="message",
+                role="tool",
+                content="shot taken",
+                name="screenshot",
+                tool_call_id="c1",
+                metadata={"attachments": shot},
+            ),
+        )
+
+    stub_fiber(monkeypatch, on_poll=[worker_wrote_rows], statuses=["running"])
+
+    async with app_client(settings) as client:
+        body = await post_stream(client, "folded")
+
+    events = {
+        p["data"]["content"]: p["data"].get("metadata", {})
+        for _, p in sse_blocks(body)
+        if p.get("event") == "session_event"
+    }
+    assert events["looked"]["usage"] == usage
+    assert events["edited"]["type"] == "workspace_edit"
+    assert events["edited"]["to_path"] == "notes/b.md"
+    assert events["edited"]["in_context"] is True
+    assert events["shot taken"]["attachments"] == shot
+    # Named keys only: anything else stored on a row stays on the server.
+    assert "never-shown" not in body
