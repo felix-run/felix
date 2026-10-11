@@ -334,7 +334,10 @@ class _HttpFetchExecutor:
         except httpx.HTTPError as exc:
             # The type is useful to the model; the message is not, and asyncio embeds the
             # dialled address in `ConnectError`.
-            logger.warning("http_fetch failed url=%s error=%s", loggable(url, limit=300), exc)
+            # A protocol error from h11 quotes the header it refused, and a header may be a
+            # credential the transport attached: its type is all the log gets.
+            detail = type(exc).__name__ if isinstance(exc, httpx.LocalProtocolError) else exc
+            logger.warning("http_fetch failed url=%s error=%s", loggable(url, limit=300), detail)
             return f"http_fetch_error: {type(exc).__name__}"
 
     def _render(self, resp: Any, body: bytes, truncated: bool) -> str:

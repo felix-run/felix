@@ -55,6 +55,7 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix.patterns.model import ModelGatewayError
     from felix.prompts import PromptUnavailable
     from felix.secrets import SecretNotFoundError
+    from felix.security.egress_credentials import EgressCredentialError
     from felix_ai.output_schema import InvalidOutputSchema
     from felix_ai.providers.base import ProviderConfigError
     from felix_ai.types import MessageFormatError
@@ -88,6 +89,10 @@ def _relayable() -> tuple[type[BaseException], ...]:
         # `unknown_prompt:<name>` / `empty_prompt:<name>`: only the template or slash command
         # the caller named.
         PromptUnavailable,
+        # Names the credential id the manifest asked for and, for one registered to this tenant,
+        # its host; never a value, and the same words for an id that is unregistered or another
+        # tenant's.
+        EgressCredentialError,
     )
     try:
         # Optional package on a lean install, so its absence must not turn a content

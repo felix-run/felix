@@ -915,9 +915,25 @@ spec:
   operator has not registered for the tenant, or a host the list does not name, fails the compile.
   A wildcard host and the transport's own headers (`Host`, `Content-Length`, `Cookie`, …) are
   refused at boot. Children do not inherit a parent's credentials.
-- **Never shown.** The value is resolved when first sent and registered for masking, so a server
-  that echoes the header back reaches the model as `[REDACTED]`. It is in no prompt, argument,
-  tool result or log line; the log records which credential id was attached to which host.
+- **Never shown.** The value is resolved when the agent compiles, before the masking wrappers take
+  their list, and registered for masking, so a server that echoes the header back reaches the
+  model as `[REDACTED]` on the first request a process makes as on every later one. It is in no
+  prompt, argument, tool result or log line; the log records which credential id was attached to
+  which host. A value that masking would miss or that the wire would refuse in an error quoting it
+  -- under 8 characters, surrounding whitespace (a trailing newline from `echo key | …`), a
+  control character -- fails the compile, as does a secret the backend cannot resolve, both with
+  the credential's id and not its value (`422` on `/chat`).
+- **Stripped where it does not belong.** The transport removes a bound credential's header from
+  any request it does not cover, so a client that copies headers onto a redirect hop cannot carry
+  the key past its host or prefix; a client carrying credentials must follow redirects by hand
+  (`safe_async_client` refuses `follow_redirects=True` with them). A doubly-encoded path (`%25`)
+  gets no key.
+- **Who may use one.** Any manifest in a tenant the credential is registered for may name it: a
+  tenant user who can write manifests can bind it, and only its host, port and prefix bound where
+  it goes. A credential open to `"*"`, or to `default` -- the tenant anonymous callers and
+  `FELIX_AUTH_MODE=none` run as -- is usable by anyone who may call a manifest naming it. Plain
+  http follows `FELIX_ALLOW_INSECURE` in development: the key goes in clear to an `http://` URL on
+  its host there, never in production.
 - **Not yet covered:** MCP HTTP servers still resolve their `Authorization` into the compiled tool
   (`docs/ROADMAP.md`), and stdio children hold env secrets, where only exact-string masking stands
   between a key and the model.

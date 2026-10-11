@@ -204,7 +204,7 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
         # Only after the host is allowed: the key goes to a request already permitted to go there,
         # and each redirect hop arrives here as a request of its own, judged again.
         if self._credentials is not None:
-            await self._credentials.attach(request)
+            self._credentials.attach(request, allow_http=self._allow_http)
         return await super().handle_async_request(request)
 
 
@@ -236,6 +236,10 @@ def safe_async_client(
                 f"{name}= would bypass the egress guard; a guarded client cannot proxy or use a unix socket"
             )
     kwargs.setdefault("follow_redirects", False)
+    if credentials is not None and kwargs["follow_redirects"]:
+        # httpx copies headers onto the next hop itself. The transport strips a credential a hop is
+        # not covered by, but a client that carries authority follows its redirects by hand.
+        raise TypeError("credentials= needs follow_redirects=False; follow each hop as its own request")
     return httpx.AsyncClient(
         transport=GuardedAsyncTransport(allow_http=allow_http, egress=egress, credentials=credentials),
         timeout=timeout,

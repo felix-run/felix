@@ -842,7 +842,8 @@ Storage and execution:
 - `spec.network.credentials: [github]` lets `http_fetch` call an authenticated API without the model
   ever holding the key: the operator registers it in `FELIX_EGRESS_CREDENTIALS` (a JSON map of id →
   `{host, path_prefix?, port?, header?, scheme?, secret, tenants}`), and the egress transport adds the
-  header to https requests for that exact host and path prefix, each redirect hop judged again. The
+  header to https requests for that exact host and path prefix, each redirect hop judged again; the
+  value is resolved and registered for masking when the agent compiles. The
   manifest must list the host in `network.allow_hosts`; an id not registered for the tenant fails
   the compile. See `deploy/GOVERNANCE.md`.
 - `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints

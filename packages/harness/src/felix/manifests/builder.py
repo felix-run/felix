@@ -1890,12 +1890,8 @@ async def build_agent(
         # than dropping the tool it was meant for.
         from felix.security.egress_credentials import bind_credentials
 
-        credentials = bind_credentials(
-            m.spec.network.credentials,
-            deps.settings,
-            tenant_id,
-            allow_hosts=m.spec.network.allow_hosts,
-            allow_http=allow_http,
+        credentials = await bind_credentials(
+            m.spec.network.credentials, deps.settings, tenant_id, allow_hosts=m.spec.network.allow_hosts
         )
 
         # Fetch tools: the model names the URL, the egress guard pins the address.

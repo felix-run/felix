@@ -10,16 +10,18 @@ copy it from. So the key never reaches the model. The operator registers it once
 
 A manifest names the ids it may use (`spec.network.credentials`), and must also set
 `network.allow_hosts` with each credential's host on it: an agent carrying authority has bounded
-egress. The guarded transport (`security/egress.py`) attaches the header after the host check, to
-a request -- each redirect hop judged again -- whose host is the credential's, whose path is inside
-its prefix (`within_prefix`), and whose scheme is https. The value is resolved when first sent and
-registered for masking, so a server that echoes it back is redacted like any secret. The model,
-the tool's arguments and every log see only the request it made.
+egress. The value is resolved when the agent compiles -- before the masking wrappers take their
+list -- and registered for masking, so a server that echoes it back is redacted like any secret.
+The guarded transport (`security/egress.py`) sets the header after the host check on a request
+whose origin is the credential's, whose path is inside its prefix (`within_prefix`) and whose
+scheme is https, and strips it from any request no credential covers; each redirect hop is a
+request of its own, judged again. The model, the tool's arguments and every log see only the
+request it made.
 """
 
 from __future__ import annotations
 
-import json
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass, field
@@ -28,15 +30,25 @@ from typing import Any
 import httpx
 
 from felix.security.host_allowlist import normalise_host_pattern, within_prefix
+from felix.settings_registry import parse_registry, parse_tenants, tenant_allowed
 
 logger = logging.getLogger("felix.security.egress_credentials")
 
-_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # A header name is an RFC 9110 token; these are the transport's, not a credential's.
 _HEADER_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$")
 _FORBIDDEN_HEADERS = frozenset(
     {"host", "content-length", "transfer-encoding", "connection", "upgrade", "te", "trailer", "cookie"}
 )
+_SCHEME_RE = re.compile(r"^[A-Za-z0-9-]{0,32}$")
+# What a value may be: visible ASCII and inner spaces, at least as long as masking will match. A
+# trailing newline from `echo key | ... --data-file=-` would otherwise reach the wire, be refused
+# there, and land in a log line inside the error that names it.
+_VALUE_RE = re.compile(r"[!-~](?:[ -~]*[!-~])?")
+_MIN_VALUE_CHARS = 8
+
+
+class EgressCredentialError(ValueError):
+    """A credential that could not be bound: its message names the id, never the value."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,12 +66,15 @@ class EgressCredential:
     tenants: frozenset[str] | None
 
     def allows(self, tenant_id: str) -> bool:
-        return self.tenants is None or tenant_id in self.tenants
+        return tenant_allowed(self.tenants, tenant_id)
 
     def covers(self, url: httpx.URL, *, allow_http: bool) -> bool:
-        """Whether a request to `url` is one this credential is sent with: its host, its port, a
+        """Whether a request to `url` is one this credential is sent with: its host and port, a
         path inside its prefix, over https (http only where plain-text dials are allowed)."""
         if url.scheme != "https" and not (allow_http and url.scheme == "http"):
+            return False
+        # A doubly-encoded path is one a server that decodes twice could walk out of the prefix.
+        if b"%25" in url.raw_path.split(b"?", 1)[0]:
             return False
         # The prefix is the credential's own origin, so `within_prefix` refuses another host or port
         # as well as another path.
@@ -69,23 +84,12 @@ class EgressCredential:
 
 def parse_egress_credentials(settings: Any) -> dict[str, EgressCredential]:
     """`FELIX_EGRESS_CREDENTIALS`, validated. `ValueError` naming what is wrong."""
-    raw = str(getattr(settings, "egress_credentials", "") or "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"not valid JSON ({exc.msg})") from None
-    if not isinstance(parsed, dict):
-        raise ValueError("must be a JSON object of credential id -> {host, secret, tenants}")
-    out: dict[str, EgressCredential] = {}
-    for name, spec in parsed.items():
-        if not isinstance(name, str) or not _ID_RE.match(name):
-            raise ValueError(f"credential id {name!r} must match {_ID_RE.pattern}")
-        if not isinstance(spec, dict):
-            raise ValueError(f"credential {name!r} must be an object")
-        out[name] = _credential(name, spec)
-    return out
+    parsed = parse_registry(
+        str(getattr(settings, "egress_credentials", "") or ""),
+        kind="credential",
+        shape="{host, secret, tenants}",
+    )
+    return {name: _credential(name, spec) for name, spec in parsed.items()}
 
 
 def _credential(name: str, spec: dict[str, Any]) -> EgressCredential:
@@ -96,6 +100,12 @@ def _credential(name: str, spec: dict[str, Any]) -> EgressCredential:
     if host.startswith("*."):
         # A wildcard would send the key to every name under it, one of which may not be the API.
         raise ValueError(f"credential {name!r} `host` must be one exact host, not a wildcard")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError(f"credential {name!r} `host` must be a name, not an IP address")
     port = spec.get("port")
     if port is not None and not (isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536):
         raise ValueError(f"credential {name!r} `port` must be a port number, or absent for the default")
@@ -108,17 +118,11 @@ def _credential(name: str, spec: dict[str, Any]) -> EgressCredential:
             f"credential {name!r} `header` must be a header name other than {sorted(_FORBIDDEN_HEADERS)}"
         )
     scheme = spec.get("scheme", "")
-    if not isinstance(scheme, str) or not re.fullmatch(r"[A-Za-z0-9-]{0,32}", scheme):
-        raise ValueError(f"credential {name!r} `scheme` must be a word such as Bearer, or empty")
+    if not isinstance(scheme, str) or not _SCHEME_RE.match(scheme):
+        raise ValueError(f"credential {name!r} `scheme` must match {_SCHEME_RE.pattern}, such as Bearer")
     secret = spec.get("secret")
     if not isinstance(secret, str) or not secret.strip():
         raise ValueError(f"credential {name!r} needs a `secret` (secret:NAME, or a literal)")
-    # Required, with "*" for every tenant: a credential open to all has to be a written decision.
-    tenants = spec.get("tenants")
-    if tenants != "*" and not (
-        isinstance(tenants, list) and tenants and all(isinstance(t, str) for t in tenants)
-    ):
-        raise ValueError(f'credential {name!r} `tenants` must be a list of tenant ids, or "*" for all')
     return EgressCredential(
         name=name,
         host=host,
@@ -127,67 +131,80 @@ def _credential(name: str, spec: dict[str, Any]) -> EgressCredential:
         header=header,
         scheme=scheme,
         secret=secret,
-        tenants=None if tenants == "*" else frozenset(tenants),
+        tenants=parse_tenants(spec, kind="credential", name=name),
     )
 
 
 @dataclass
 class CredentialSet:
-    """The credentials one compiled agent may send, and the values resolved so far. Held by the
-    tool, not the model: nothing here is ever in a prompt, an argument or a result."""
+    """The credentials one compiled agent may send, their values resolved at compile. Held by the
+    tool's transport, not the model: nothing here is in a prompt, an argument or a result."""
 
     credentials: tuple[EgressCredential, ...]
-    settings: Any
-    allow_http: bool = False
     _values: dict[str, str] = field(default_factory=dict, repr=False)
 
-    async def attach(self, request: httpx.Request) -> None:
-        """Set the matching credential's header on `request`, replacing whatever was there."""
+    def attach(self, request: httpx.Request, *, allow_http: bool) -> None:
+        """Set the covering credential's header on `request`, and strip every bound credential's
+        header from it otherwise: a client that copies headers onto a redirect hop -- httpx does,
+        within an origin, and for any header but `Authorization` across one -- must not carry a
+        key to a request the credential does not cover."""
+        covering = next((c for c in self.credentials if c.covers(request.url, allow_http=allow_http)), None)
         for cred in self.credentials:
-            if not cred.covers(request.url, allow_http=self.allow_http):
-                continue
-            value = await self._value(cred)
-            request.headers[cred.header] = f"{cred.scheme} {value}" if cred.scheme else value
-            logger.info("egress credential attached credential=%s host=%s", cred.name, cred.host)
+            if cred is not covering and cred.header in request.headers:
+                del request.headers[cred.header]
+        if covering is None:
             return
-
-    async def _value(self, cred: EgressCredential) -> str:
-        if cred.name not in self._values:
-            from felix.secrets import build_secrets, register_resolved_secret, resolve_secret_value
-
-            value = await resolve_secret_value(build_secrets(self.settings), cred.secret)
-            if not value:
-                raise ValueError(f"egress credential {cred.name} resolved to nothing")
-            # Masked wherever it could surface: a server that echoes the header back, a log line.
-            register_resolved_secret(value)
-            self._values[cred.name] = value
-        return self._values[cred.name]
+        value = self._values[covering.name]
+        request.headers[covering.header] = f"{covering.scheme} {value}" if covering.scheme else value
+        logger.info("egress credential attached credential=%s host=%s", covering.name, covering.host)
 
 
-def bind_credentials(
-    names: list[str], settings: Any, tenant_id: str, *, allow_hosts: list[str] | None, allow_http: bool
+async def bind_credentials(
+    names: list[str], settings: Any, tenant_id: str, *, allow_hosts: list[str] | None
 ) -> CredentialSet | None:
-    """The `CredentialSet` a manifest's `network.credentials` grants, or `ValueError` for an id
-    the operator has not registered for this tenant or a host the manifest's list leaves out."""
+    """The `CredentialSet` a manifest's `network.credentials` grants, each value resolved and
+    registered for masking now -- before the compile's masking wrappers take their list.
+    `EgressCredentialError` for an id the operator has not registered for this tenant, a host the
+    manifest's list does not name, or a value that cannot be resolved or would not be masked."""
     if not names:
         return None
+    from felix.secrets import build_secrets, register_resolved_secret, resolve_secret_value
+
     registry = parse_egress_credentials(settings)
     chosen: list[EgressCredential] = []
+    values: dict[str, str] = {}
     for name in names:
         cred = registry.get(name)
+        # One message whether the id is unregistered or another tenant's: which ids exist is not
+        # this tenant's to learn.
         if cred is None or not cred.allows(tenant_id):
-            raise ValueError(f"unknown egress credential: {name}")
+            raise EgressCredentialError(f"unknown egress credential: {name}")
         if allow_hosts is None or cred.host not in allow_hosts:
-            raise ValueError(
+            raise EgressCredentialError(
                 f"egress credential {name} is for {cred.host}, which network.allow_hosts must name exactly"
             )
+        try:
+            value = await resolve_secret_value(build_secrets(settings), cred.secret)
+        except Exception:
+            # The backend's own text is the operator's; the compile is refused by id.
+            logger.warning("egress credential unresolved credential=%s", name, exc_info=True)
+            raise EgressCredentialError(f"egress credential {name} could not be resolved") from None
+        # `fullmatch`: `$` matches before a trailing newline, which is the value this refuses.
+        if len(value) < _MIN_VALUE_CHARS or not _VALUE_RE.fullmatch(value):
+            raise EgressCredentialError(
+                f"egress credential {name} resolved to a value that is empty, under "
+                f"{_MIN_VALUE_CHARS} characters, or holds whitespace at its ends or a control character"
+            )
+        register_resolved_secret(value)
         chosen.append(cred)
-    return CredentialSet(tuple(chosen), settings, allow_http=allow_http)
+        values[name] = value
+    return CredentialSet(tuple(chosen), values)
 
 
 __all__ = [
     "CredentialSet",
     "EgressCredential",
+    "EgressCredentialError",
     "bind_credentials",
     "parse_egress_credentials",
 ]
