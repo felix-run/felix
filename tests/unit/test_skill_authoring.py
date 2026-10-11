@@ -1254,3 +1254,34 @@ async def test_an_operator_edit_still_builds_on_the_absolute_newest(
         owner=ORG_OWNER,
     )
     assert kept["parent_version"] == rejected["version"]
+
+
+async def test_an_agent_can_create_a_skill_again_once_every_version_was_rejected(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    # Refused as `skill_exists` ("use update_skill"), while `update_skill` answered `unknown_skill`:
+    # once a person rejected an agent's only draft, the name was out of the agent's reach for good.
+    tools = _authoring(settings, store)
+    args = {"name": "invoice-triage", "description": "Route invoices.", "body": BODY, "reason": "r"}
+    await _call(tools["create_skill"], args)
+    await library.reject(settings, "acme", "invoice-triage", "0.1.0", by="ops", note="no", owner=ORG_OWNER)
+
+    again = await _call(tools["create_skill"], args)
+
+    assert (again["status"], again["version"]) == ("draft", "0.1.1")
+    row = await get_skill_library_store(settings, owner=ORG_OWNER).get_version(
+        "acme", "invoice-triage", "0.1.1"
+    )
+    assert row is not None and row["parent_version"] is None, "it builds on nothing"
+
+
+async def test_a_create_under_a_name_with_a_kept_version_is_still_refused(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    tools = _authoring(settings, store)
+    args = {"name": "invoice-triage", "description": "Route invoices.", "body": BODY, "reason": "r"}
+    await _call(tools["create_skill"], args)
+
+    again = await _call(tools["create_skill"], args)
+
+    assert again == {"error": "skill_exists", "name": "invoice-triage", "detail": "use update_skill"}
