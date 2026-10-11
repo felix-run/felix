@@ -778,7 +778,7 @@ Storage and execution:
   once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,
   so a new run starts within about a second and one parked on an approval holds up no other
 - `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints
-  (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?}`): the worker
+  (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?, hooks?}`): the worker
   POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks
   (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`), retries with backoff up to
   `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`

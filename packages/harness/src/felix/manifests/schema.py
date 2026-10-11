@@ -1022,6 +1022,9 @@ class HookRule(_Strict):
 
     id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
     event: HookEventName
+    # The handler. `http` is a signed POST to `endpoint`; the field exists so a second handler
+    # kind arrives as a variant rather than a reshaping of every stored manifest.
+    type: Literal["http"] = "http"
     endpoint: str = Field(min_length=1, max_length=64)
     # Tool names or globs, for the tool events. Empty: every tool.
     tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)

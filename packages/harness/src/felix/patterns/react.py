@@ -64,6 +64,8 @@ from felix.workspace_notes import drain as drain_workspace_notes
 
 if TYPE_CHECKING:
     from felix.decisions import MeteredDecider
+    from felix.manifest_hooks import ManifestHooks
+    from felix.manifests.schema import HookEventName
 
 logger = logging.getLogger("felix.patterns.react")
 
@@ -234,9 +236,9 @@ class _ReactAgent:
     # The compile's `ReplyScreen` chain, when reply controls are on: memory capture extracts
     # from the reply as the controls ship it, not as the model wrote it.
     reply_screen: Any | None = None
-    # `spec.hooks`, built (`felix.manifest_hooks.ManifestHooks`): session_start and
-    # user_prompt_submit at the top of a run, pre/post tool in the tool runner, stop below.
-    hooks: Any | None = None
+    # `spec.hooks`, built: session_start and user_prompt_submit at the top of a run, pre/post tool
+    # in the tool runner, stop below. Not `felix.hooks`, the in-process plugin seam.
+    manifest_hooks: ManifestHooks | None = None
     tool_execution: str = "sequential"
     steering_mode: str = "all"
     follow_up_mode: str = "all"
@@ -257,7 +259,7 @@ class _ReactAgent:
             tool_map=self._tool_map,
             manifest_id=self.manifest_id,
             tool_execution=self.tool_execution,
-            hooks=self.hooks,
+            manifest_hooks=self.manifest_hooks,
         )
 
     async def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
@@ -889,29 +891,30 @@ class _ReactAgent:
             return True
         return False
 
-    async def _entry_hooks(self, input: InvokeInput, tenant_id: str) -> list[ChatMessage]:
+    async def _entry_hooks(self, input: InvokeInput) -> list[ChatMessage]:
         """Fire `session_start` (a thread's first run) and `user_prompt_submit`; raise `HookBlocked`
         on a refusal, else return their context as transient guidance.
 
         First thing in a run, so a refused prompt leaves nothing behind: no queue, no append."""
-        if self.hooks is None:
+        hooks = self.manifest_hooks
+        if hooks is None:
             return []
         from felix.manifest_hooks import HookBlocked
 
         prompt = next((str(m.content or "") for m in reversed(input.messages) if m.role == "user"), "")
         data = {"manifest_id": self.manifest_id, "prompt": prompt}
         guidance: list[ChatMessage] = []
-        events: list[str] = []
-        if self.hooks.has("session_start") and input.thread_id and self.session_store is not None:
+        events: list[HookEventName] = []
+        if hooks.has("session_start") and input.thread_id and self.session_store is not None:
             # No event yet, not "no metadata": the route writes the thread's metadata (its pin, its
             # preview) before the run, so `thread_exists` already answers yes on the first run.
             head = await self.session_store.open(input.thread_id).head()
             if not head.get("seq"):
                 events.append("session_start")
-        if self.hooks.has("user_prompt_submit"):
+        if hooks.has("user_prompt_submit"):
             events.append("user_prompt_submit")
         for event in events:
-            outcome = await self.hooks.fire(event, data)
+            outcome = await hooks.fire(event, data)
             if outcome.blocked:
                 raise HookBlocked(outcome.hook_id, outcome.reason)
             if outcome.contexts:
@@ -919,25 +922,31 @@ class _ReactAgent:
         return guidance
 
     async def _stop_hook(self, final: ChatMessage, continuations: int, step: int) -> ChatMessage | None:
-        """Ask the `stop` hooks whether the agent may finish. A message to continue with, or None.
+        """Ask the `stop` hooks whether the agent may finish. Transient guidance to continue with,
+        or None.
 
         Bounded twice: `MAX_STOP_CONTINUATIONS` per run, and the recursion limit -- a hook sending
-        the agent back on the run's last step would end it at `max_turns` with nothing said."""
-        from felix.manifest_hooks import MAX_STOP_CONTINUATIONS
+        the agent back on the run's last step would end it at `max_turns` with nothing said. A hook
+        that could not be asked lets the agent finish: `on_error: block` on `stop` would otherwise
+        send it back for an outage. The reason is the hook's text, so it is fenced and screened
+        and attached to the next call only, never stored as a turn the next run replays."""
+        from felix.manifest_hooks import MAX_STOP_CONTINUATIONS, fence, screened
 
-        if self.hooks is None or not self.hooks.has("stop") or continuations >= MAX_STOP_CONTINUATIONS:
+        hooks = self.manifest_hooks
+        if hooks is None or not hooks.has("stop") or continuations >= MAX_STOP_CONTINUATIONS:
             return None
         if step + 1 >= self.recursion_limit:
             return None
-        outcome = await self.hooks.fire(
+        outcome = await hooks.fire(
             "stop", {"manifest_id": self.manifest_id, "final": str(final.content or "")}
         )
-        if not outcome.blocked:
+        if not outcome.blocked or outcome.errored:
             return None
-        note = f"[hook {outcome.hook_id}] Not finished yet: {outcome.reason or 'continue the task'}"
+        reason = await screened(outcome.reason or "the task is not finished")
+        note = "The task is not finished yet; keep working.\n\n" + fence(outcome.hook_id, reason)
         if outcome.contexts:
             note = f"{note}\n\n{outcome.context_block()}"
-        return ChatMessage(role="user", content=note)
+        return ChatMessage(role="user", content=note, transient=True)
 
     async def _transient_guidance(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
         """Messages for this run's first model call only — see `ChatMessage.transient`.
@@ -1164,7 +1173,7 @@ class _ReactAgent:
         """
         tenant_id = input.tenant_id or "default"
         # Before anything is written: a refused prompt must leave the thread as it was.
-        hook_guidance = await self._entry_hooks(input, tenant_id)
+        hook_guidance = await self._entry_hooks(input)
         # First: `_persist_model_change` below is already an append.
         await self._sync_leaf(input.thread_id)
         if not getattr(input, "thinking_level", None) and input.thread_id:
@@ -1416,9 +1425,8 @@ class _ReactAgent:
                     keep_going = await self._stop_hook(assistant, stop_continuations, _step)
                     if keep_going is not None:
                         stop_continuations += 1
-                        messages.append(keep_going)
-                        produced.append(keep_going)
-                        await self._append_produced(input.thread_id, [keep_going])
+                        # Transient: attached to the next model call only, not stored or replayed.
+                        transient = [keep_going]
                         continue
                     delivered: list[ChatMessage] = []
                     async for ev in self._deliver_follow_ups(
@@ -1645,7 +1653,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         skill_suggester=ctx.get("skill_suggester"),
         procedural_memory=ctx.get("procedural_memory"),
         reply_screen=ctx.get("reply_screen"),
-        hooks=ctx.get("hooks"),
+        manifest_hooks=ctx.get("hooks"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,
         follow_up_mode=follow_mode,

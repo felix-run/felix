@@ -913,6 +913,12 @@
           "title": "Event",
           "type": "string"
         },
+        "type": {
+          "const": "http",
+          "default": "http",
+          "title": "Type",
+          "type": "string"
+        },
         "endpoint": {
           "maxLength": 64,
           "minLength": 1,

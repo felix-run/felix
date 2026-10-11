@@ -12,7 +12,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.audit.emit import emit_agent_audit
 from felix.hooks import run_after_tool, run_before_tool
@@ -31,6 +31,9 @@ from felix.tools.types import (
     is_wrapper_deny,
     tool_output_images,
 )
+
+if TYPE_CHECKING:
+    from felix.manifest_hooks import ManifestHooks
 
 logger = logging.getLogger("felix.patterns.tool_runner")
 
@@ -86,8 +89,9 @@ class ToolRunner:
     tool_map: dict[str, Tool]
     manifest_id: str
     tool_execution: str = "sequential"
-    # `spec.hooks`, built: `pre_tool_use` before a call, `post_tool_use` after it.
-    hooks: Any | None = None
+    # `spec.hooks`, built: `pre_tool_use` before a call, `post_tool_use` after it. Not the
+    # `felix.hooks` plugin seam `run_before_tool` / `run_after_tool` call into.
+    manifest_hooks: ManifestHooks | None = None
     # How many more tool images this run may keep; see `felix.tools.tool_images`.
     image_budget: ImageBudget = field(default_factory=ImageBudget)
 
@@ -106,6 +110,53 @@ class ToolRunner:
                 return "sequential"
         return "parallel"
 
+    def _refuse(
+        self,
+        call: ToolCall,
+        thread_id: str | None,
+        content: str,
+        *,
+        control: str,
+        hook: str,
+        terminate: bool = False,
+    ) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
+        """A call a hook refused before it ran: counted and audited as a refusal, like a
+        governance deny -- a block that left no row was invisible in the ledger."""
+        record_counter(
+            "felix_tool_calls",
+            {
+                "transport": _transport_of(self.tool_map.get(call.name)),
+                "status": "denied",
+                "manifest_id": self.manifest_id,
+            },
+        )
+        emit_agent_audit(
+            "policy_deny",
+            status="denied",
+            manifest_id=self.manifest_id,
+            payload=_call_row(call, thread_id, control=control, hook=hook),
+        )
+        message = ChatMessage(role="tool", tool_call_id=call.id, name=call.name, content=content)
+        return None, message, terminate, True
+
+    async def _post_tool_hooks(self, call: ToolCall, content: Any, *, is_error: bool) -> Any:
+        """`post_tool_use`, on both ways a tool finishes; its context joins the result, fenced."""
+        hooks = self.manifest_hooks
+        if hooks is None or not hooks.has("post_tool_use") or not isinstance(content, str):
+            return content
+        observed = await hooks.fire(
+            "post_tool_use",
+            {
+                "manifest_id": self.manifest_id,
+                "tool_name": call.name,
+                "args": call.args,
+                "is_error": is_error,
+                "result": content,
+            },
+            tool_name=call.name,
+        )
+        return f"{content}\n\n{observed.context_block()}" if observed.contexts else content
+
     async def dispatch(
         self, call: ToolCall, thread_id: str | None
     ) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
@@ -118,67 +169,31 @@ class ToolRunner:
             context={"manifest_id": self.manifest_id, "thread_id": thread_id},
         )
         if preflight and preflight.get("block"):
-            reason = str(preflight.get("reason") or "blocked by before_tool hook")
-            terminate = bool(preflight.get("terminate"))
-            # Counted and audited as a refusal, like a governance deny: a hook block used to
-            # leave no row, so a call an operator's plugin refused was invisible in the ledger.
-            # The reason is the hook's own text and stays out of the row, as a deny's does.
-            record_counter(
-                "felix_tool_calls",
-                {
-                    "transport": _transport_of(self.tool_map.get(call.name)),
-                    "status": "denied",
-                    "manifest_id": self.manifest_id,
-                },
+            # The plugin's reason is its own text and stays out of the row, as a deny's does.
+            return self._refuse(
+                call,
+                thread_id,
+                f"[error/blocked] {preflight.get('reason') or 'blocked by before_tool hook'}",
+                control="hook",
+                hook=str(preflight.get("hook") or "?"),
+                terminate=bool(preflight.get("terminate")),
             )
-            emit_agent_audit(
-                "policy_deny",
-                status="denied",
-                manifest_id=self.manifest_id,
-                payload=_call_row(call, thread_id, control="hook", hook=str(preflight.get("hook") or "?")),
-            )
-            return (
-                None,
-                ChatMessage(
-                    role="tool",
-                    tool_call_id=call.id,
-                    name=call.name,
-                    content=f"[error/blocked] {reason}",
-                ),
-                terminate,
-                True,
-            )
-        if self.hooks is not None and self.hooks.has("pre_tool_use"):
-            outcome = await self.hooks.fire(
+        # Only for a bound tool: an unknown name is refused below without asking anyone, and its
+        # arguments have no business leaving the deployment.
+        hooks = self.manifest_hooks
+        if hooks is not None and hooks.has("pre_tool_use") and call.name in self.tool_map:
+            outcome = await hooks.fire(
                 "pre_tool_use",
                 {"manifest_id": self.manifest_id, "tool_name": call.name, "args": call.args},
                 tool_name=call.name,
             )
             if outcome.blocked:
-                record_counter(
-                    "felix_tool_calls",
-                    {
-                        "transport": _transport_of(self.tool_map.get(call.name)),
-                        "status": "denied",
-                        "manifest_id": self.manifest_id,
-                    },
-                )
-                emit_agent_audit(
-                    "policy_deny",
-                    status="denied",
-                    manifest_id=self.manifest_id,
-                    payload=_call_row(call, thread_id, control="manifest_hook", hook=outcome.hook_id),
-                )
-                return (
-                    None,
-                    ChatMessage(
-                        role="tool",
-                        tool_call_id=call.id,
-                        name=call.name,
-                        content=f"[hook denied] {outcome.hook_id}: {outcome.reason or 'refused'}",
-                    ),
-                    False,
-                    True,
+                return self._refuse(
+                    call,
+                    thread_id,
+                    f"[hook denied] {outcome.hook_id}: {outcome.reason or 'refused'}",
+                    control="manifest_hook",
+                    hook=outcome.hook_id,
                 )
 
         async def _run(span: Any) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
@@ -262,6 +277,7 @@ class ToolRunner:
                 terminate = bool(after and after.get("terminate"))
                 if after and after.get("content") is not None:
                     text = _applied_hook_content(after["content"], text, call.name)
+                text = await self._post_tool_hooks(call, text, is_error=True)
                 return (
                     code if tool.fatal else None,
                     ChatMessage(role="tool", tool_call_id=call.id, name=call.name, content=text),
@@ -399,21 +415,10 @@ class ToolRunner:
             if after and after.get("content") is not None:
                 content = _applied_hook_content(after["content"], content, call.name)
                 rewritten = True
-            if self.hooks is not None and self.hooks.has("post_tool_use") and not denied:
-                observed = await self.hooks.fire(
-                    "post_tool_use",
-                    {
-                        "manifest_id": self.manifest_id,
-                        "tool_name": call.name,
-                        "args": call.args,
-                        "is_error": bool(err),
-                        "result": content if isinstance(content, str) else str(content),
-                    },
-                    tool_name=call.name,
-                )
-                if observed.contexts and isinstance(content, str):
-                    content = f"{content}\n\n{observed.context_block()}"
-                    rewritten = True
+            if not denied:
+                hooked = await self._post_tool_hooks(call, content, is_error=bool(err))
+                rewritten = rewritten or hooked is not content
+                content = hooked
         except Exception:
             logger.warning("post-call handling failed for %s; the tool already ran", call.name, exc_info=True)
             record_counter(

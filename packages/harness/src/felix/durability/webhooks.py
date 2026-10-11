@@ -79,6 +79,9 @@ class WebhookEndpoint:
     # lets one tenant's run arrive signed with the secret another tenant's receiver trusts.
     tenants: frozenset[str] | None = None
     private: bool = False
+    # Open to manifest hooks (`manifest_hooks.py`), which send prompts, tool arguments and results
+    # -- far more than a run notification. Its own decision, off by default.
+    hooks: bool = False
 
     def allows(self, tenant_id: str) -> bool:
         return self.tenants is None or tenant_id in self.tenants
@@ -131,12 +134,16 @@ def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
         private = spec.get("private", False)
         if not isinstance(private, bool):
             raise ValueError(f"endpoint {name!r} `private` must be true or false")
+        hooks = spec.get("hooks", False)
+        if not isinstance(hooks, bool):
+            raise ValueError(f"endpoint {name!r} `hooks` must be true or false")
         out[name] = WebhookEndpoint(
             name=name,
             url=url,
             secret=secret,
             tenants=None if tenants == "*" else frozenset(tenants),
             private=private,
+            hooks=hooks,
         )
     return out
 
