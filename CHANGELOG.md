@@ -10,6 +10,272 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-10-11
+
+### Added
+
+- `POST /memory/{id}/restore` undoes a forget, gated on whoever forgot the memory; `GET /memory?status=forgotten` lists forgotten memories. (#548)
+
+- `GET /memory` and `GET /memory/as-of/{turn_seq}` take `?thread_id=` (the thread suffix) to narrow to one conversation. (#548)
+
+- `GET /memory/search` hits carry `thread_id`, `manifest_id`, `origin_seq`, `status`, `created_at` and `last_used_at`. (#548)
+
+- `before_model` and `after_model` agent-loop hooks: replace the messages one model call sends, or the assistant reply the run records and acts on. (#550)
+
+- The `before_model` and `after_model` hooks now also run on the router's classifier, reflect's verifier, the `plan_execute` planner and the composite patterns' synthesis call, and their `ctx` names the call's `purpose`. (#551)
+
+- `felix_hook_failures{hook}` counts agent-loop hooks that raised or answered in a shape their runner refuses. (#553)
+
+- `/skill-library/~me`: a caller's own skill library — read with no scope, written with the new `skills:personal` scope, bounded by 500 names and `FELIX_SKILL_PERSONAL_MAX_BYTES` (50 MiB). (#555)
+
+- `GET /skill-library/-/personal` and `/skill-library/~{digest}`: an administrator lists, reads and archives personal libraries; each look is audited as `personal_library_accessed`. (#555)
+
+- `spec.personal_skills: write`: with `skill_authoring` enabled, `create_skill` saves into the caller's own skill library and `update_skill` edits a skill in the library it came from. It needs a caller who has a library and holds `skills:personal`, and is never redirected to the tenant's library. In publish mode, a personal skill that would replace a tenant skill is held for its owner to publish. (#557)
+
+- `Tool.approval_binding`: what an approval binds beyond a call's arguments, hashed into the call signature. The skill authoring tools bind the library they save into. (#557)
+
+- `final_response` audit rows carry `payload.denied_calls`, the number of tool calls refused across the whole run. `status` still says whether the run ended on a refusal, so a run that recovered after one is `ok` with a non-zero count. (#562)
+
+- `FELIX_MANIFESTS_DIR`: an extra directory of manifest YAML, served after the bundled `manifests/`. A missing directory, or one holding a name the bundled set also has, is refused at boot. (#566)
+
+- `POST /skill-library/~me/{name}/versions/{version}/promote` proposes a version of your personal library to the tenant's library as a draft (`source: promoted`, `promoted_from`) that goes through the normal review queue; it never publishes. Needs `skills:personal`. Refused with `origin_mismatch` (409) for an imported skill not yet adopted, `promotion_pending` (409) while the tenant's skill already holds an undecided promotion, and `pending_cap_reached` (429) past 20 undecided promotions per person. Audited as `skill_promoted`. (#567)
+
+- Migration `0038_skill_version_promoted`: `skill_version.promoted_from` and the `promoted` source. The downgrade refuses while any promoted version exists (see `docs/UPGRADING.md`). (#567)
+
+- `final_response` rows with `status=error` carry `payload.reasons` (`fatal`, `denied`, `cancelled`, `exception`), plus `payload.fatal_call` (`tool_call_id`, `error_code`) or `payload.error_type` where they apply. (#569)
+
+- `GET /v1/models` entries carry `felix.description`, from the manifest's `metadata.description`. (#571)
+
+- `POST /chat/ask` answers a question about a thread from its context without adding anything to it. It is admitted, screened and reply-controlled as a turn of the thread's manifest, renders from the stored summary, takes no lease, and is metered and audited as `side_question`. (#572)
+
+- Session strategies receive `stored_summary_only` in their render options when a render must not summarise. The bundled compacting and summarizing strategies honour it. (#572)
+
+- `POST /chat/workspace/edited` tells the agent the operator edited, deleted or renamed a workspace file directly. A run in flight reads it before its next model call, without cancelling tool calls, and emits a `workspace_note` SSE frame. Otherwise the note is recorded for the next run. `FelixClient.workspace_edited` wraps it. (#577)
+
+- `GET /chat/workspace/tree`, `GET /chat/workspace/file` and `POST /chat/workspace/write`: list, read and conditionally write files in the thread's harness workspace, which is resolved server-side from the manifest the thread ran under (or its checkout). A write is refused with `409 workspace_changed` when `expected_sha256` no longer matches, tells the agent as `/chat/workspace/edited` does, and is audited as `workspace_write`. (#578)
+
+- `/v1/models` entries carry `felix.workspace` (`{tools: server|client|both|none, scope}`). (#578)
+
+- `FelixClient.workspace_tree`, `workspace_read` and `workspace_write`. (#578)
+
+- `POST /chat/workspace/delete` and `POST /chat/workspace/rename`: delete or move one regular file in the thread's workspace from the file pane. Both are conditional on `expected_sha256` (`409 workspace_changed`). A rename makes the directories it needs and never replaces anything (`409 target_exists`). Both tell the agent as `/chat/workspace/edited` does, are lease-guarded, and are audited as `workspace_delete` / `workspace_rename`. On the hosted backend they need the workspace gateway redeployed (new `delete` and `rename` ops). (#582)
+
+- `FelixClient.workspace_delete` and `FelixClient.workspace_rename`. (#582)
+
+- `spec.delegation`: a `task` tool the model calls to hand a self-contained job to a child agent, which runs from a fresh context under its own governance, its own inbound auth checked against the caller, and the parent's limits as well as its own. (#583)
+
+- Agents can delete and rename workspace files with the `delete_file` (`{path}`) and `rename_file` (`{path, to_path}`) tools: files only, no symlink followed, nothing inside `.git` or `.felix-scopes`, and a rename never replaces anything. `contributor` binds both. (#584)
+
+- `cowork` declares `local_delete` and `local_rename` client tools, gated by the same `workspace-write` approval as `local_write` and `local_edit`. (#584)
+
+- Background children for `spec.delegation`: with `background: true`, the model can start a child as a durable run and read its answer later with `task_result`. The child runs pinned, on its own linked thread, no longer than what started it, on what is left of the parent's budgets, and at most `max_background` (default 3) at once per conversation. (#585)
+
+- `subagent_start` and `subagent_end` stream frames mark where a delegated child's work begins and ends. (#585)
+
+- `todo_write`, a builtin tool for an agent's working checklist. Each write replaces the list, is announced on the stream as `todo_updated`, and the session snapshot returns the current branch's list as `todos`. (#586)
+
+- Permission modes per conversation (`spec.permissions`, `POST /chat/mode`): `plan` runs only read-only tools until a person approves the plan through `exit_plan_mode`; `accept_edits` skips approvals for workspace edits; `bypass` skips every approval but a plan's, for a caller holding the new `approvals:bypass` scope. Waiver modes are opt-in per manifest, and every skipped approval is audited. (#588)
+
+- Tools carry a `read_only` flag, set on the built-in tools that only read. (#588)
+
+- `make bootstrap` sets up a fresh clone: tool check, `.env` with generated passwords, install, pre-commit. (#592)
+
+- `make db` starts only Postgres and Valkey, for running the API from a checkout (`make db migrate dev`). (#592)
+
+- `make lock-check`, `make deps-age`, `make compose-check` and `make helm-lint` run CI's checks locally. (#592)
+
+- A README for `examples/felix-plugin-example`. (#592)
+
+- `spec.hooks`: manifest hooks on `session_start`, `user_prompt_submit`, `pre_tool_use`, `post_tool_use`, `stop` and `subagent_stop`, sent as signed requests to operator-registered endpoints, which can block, add context or send the agent back; `on_error` makes a hook advisory or a control. (#590)
+
+- `FELIX_WEBHOOK_ENDPOINTS` endpoints accept `"hooks": true`; only those receive manifest hooks. (#590)
+
+- A manifest that gates `write_file`/`edit_file` (or a client's `local_write`/`local_edit`) behind an approval rule while binding `delete_file`/`rename_file` (or `local_delete`/`local_rename`) with no rule over them is now warned about: `felix validate-manifest` prints the warning, `PUT /manifests/{name}` returns it in a new always-present `warnings` list, and the compile logs it once and counts `felix_delete_gated_less_than_write`. Warned, not refused, so stored manifests keep loading. (#591)
+
+- `felix validate-manifest --strict` and `felix bundle-manifests --strict` exit 1 when any manifest has a warning, after reporting all of them, so CI can gate on warnings. Default behaviour is unchanged: warnings print and the exit is 0. `validate-manifest` now accepts several paths and reports every one before exiting. This repository's CI runs `bundle-manifests --strict`. (#593)
+
+- **The file pane can delete and rename folders.** `POST /chat/workspace/delete_folder` (`{thread_id, path, expected_count?}` → `{status, path, files, event_id}`) and `POST /chat/workspace/rename_folder` (`{thread_id, path, to_path}` → `{status, path, to_path, event_id}`) are for the operator only; the agent's tools stay files-only. No symlink is followed, and a link inside a deleted folder is removed without touching its target. Both are refused, with nothing changed, for the root, a file (`400 not_a_directory`), a folder that is or holds `.git` / `.felix-scopes` (`400 reserved_path`), and more than 2,000 entries (`409 too_many_entries`). A delete whose file count no longer matches `expected_count` is `409 workspace_changed`. A rename never replaces anything (`409 target_exists`) and never moves a folder into itself. The agent is told through the workspace note, which now carries `kind: folder` (and `files` for a delete). Both routes are lease-guarded and audited as `workspace_delete_folder` / `workspace_rename_folder`. On the hosted backend, redeploy the workspace gateway (new `delete_folder` and `rename_folder` ops) before the harness. (#594)
+
+- **`FelixClient.workspace_delete_folder` and `FelixClient.workspace_rename_folder`.** (#594)
+
+- `felix chat`: chat with a manifest on a running server, one line at a time (replaces `clients/cli.py`; `make cli` runs it). (#595)
+
+- Slash commands: a user turn written `/name args` on `/chat`, `/chat/stream` or `/v1/chat/completions` runs the manifest's `spec.prompts` entry `name`; any other leading slash is sent as written. `GET /v1/models` lists them as `felix.commands`, and prompts gain optional `description` and `argument_hint`. (#599)
+
+- Output styles: `spec.output_styles` declares named styles of prose and an optional default; `POST /chat/style` picks one per thread, appended to the system prompt of the agent the person talks to. Listed on `GET /v1/models` (`outputStyles`, `defaultOutputStyle`) and on the session snapshot (`outputStyle`). Refused at compile on patterns whose own prompt does not write the answer, such as `router`. (#600)
+
+- `spec.network.allow_hosts`: the hosts an agent's tools may reach. Enforced for `http_fetch` on every redirect hop. Checked against every URL the manifest names. Binds child agents, background ones included. Pins A2A peers. `browser_tools` are refused under a list. (#602)
+
+- `FELIX_EGRESS_CREDENTIALS` and `spec.network.credentials`: an operator-registered header that the egress transport attaches to an agent's `http_tools` requests for one exact host and path prefix over https. The model, the tool arguments and the logs never hold the key, and a server that echoes it back is masked. (#604)
+
+- `glob` and `multi_edit` workspace tools. `glob` finds files by name pattern (`**/*.py`) under a folder. `multi_edit` applies several exact-string edits to one file, in order, all or none. Both work on the local and hosted workspace backends. (#606)
+
+- `spec.session.clear_tool_results: {keep_turns, min_chars}` stubs old tool results (large or carrying an image) in what the model is sent, leaving the session log whole; a spilled result's stub keeps its artifact id. (#610)
+
+### Changed
+
+- The `compacting` session strategy reads the full rows of a thread only from its newest summary on, and the shape of the rest; on a 2,000-event thread that roughly halves the time to load the branch. (#544)
+
+- A streamed reply checks for Stop against Redis at most every 250 ms instead of on every token; an abort raised on the same process is still seen on the next token. (#544)
+
+- Content-screening verdicts are cached for ten minutes per tenant, window text and screener, so a conversation re-sent every turn is not model-screened again on every request; long texts are screened four windows at a time. See `deploy/GOVERNANCE.md`. (#546)
+
+- Tool-output judges that score with the heuristic run first, and model and decider judges then run concurrently; when several deny, the denial named is the first heuristic one, else the first of the rest in manifest order. (#546)
+
+- An idle stream whose sources are all notified polls about a third as often; streams with a durable run in flight keep their pace. (#546)
+
+- The retention sweep deletes in batches of 5,000 rows, each its own transaction, instead of one statement per table. (#547)
+
+- A stream tailing a durable run, or reattached to a thread with one in flight, is woken when the run's status changes, an approval opens or is answered, or a client tool request opens or closes, and polls as a safety net up to every 60 s instead of every 10 s. (#549)
+
+- A failing agent-loop hook's first failure is logged at warning with its traceback, rather than every failure at debug. (#553)
+
+- The agent-loop hook types and `PluginRegistry.register_*` methods spell out the positional parameters a hook is called with, so a type checker rejects a hook written against `**kwargs`. (#553)
+
+- Skill library audit events carry `library`: `org`, or a personal library's digest. (#552)
+
+- `session.follow_up_mode: all` answers every queued follow-up in one turn, and `one-at-a-time` gives each its own turn. A run that stops on a budget, a truncation, the step limit or an abort leaves its follow-ups queued for the thread's next run. (#554)
+
+- `Idempotency-Key` on `/chat` and `/chat/stream` is scoped by the caller's issuer as well as their subject. A retry that spans the upgrade runs once more instead of replaying. (#557)
+
+- `GET /chat/sessions` returns one page of threads, newest first: `limit` (default 100, at most 500), `cursor`, and `next_cursor` in the response. A client that sends no cursor now gets the 100 most recent threads, not all of them. Migration `0037` adds the index that serves the order. (#559)
+
+- `FelixClient.list_sessions` takes `limit` and `cursor`. (#559)
+
+- The `calculator` tool refuses an `expression` longer than 1,000 characters. (#560)
+
+- The `felix` CLI source moved from `packages/cli` to `apps/cli`; the package, module and command names are unchanged. (#563)
+
+- `contributor` and `triage` are no longer bundled. They live in `manifests/self/`, and only a deployment that sets `FELIX_MANIFESTS_DIR` to that directory serves them; `deploy/docker/compose.self.yml` does. Elsewhere they no longer appear in `/manifests`, and asking for one is an unknown manifest rather than a compile error. (#566)
+
+- `GET /v1/models`: `felix.providerModel` is now set for every resolved manifest. It is the model route the manifest runs on (its `spec.model.id`, else the deployment's default route). Before, it was `null` unless the manifest named a model. (#571)
+
+- `*/N` job schedules fire on wall-clock boundaries, as cron does, rather than N minutes after the previous run. (#580)
+
+- Cycle and nesting errors for child agents now name both `sub_agents` and `delegation`. (#583)
+
+- The governance wrapper order gains `permission mode`, between approvals and artifact spill. (#588)
+
+- `make help` is generated from each target's description and grouped. (#592)
+
+- On a lean install, `make type`, and so `make check`, skips the type check with a notice instead of failing. `make check-ci`, or `STRICT=1`, still fails on it. (#592)
+
+- `.env.example` writes `FELIX_DATABASE_URL` and `FELIX_S3_SECRET_KEY` with `${POSTGRES_PASSWORD}` and `${MINIO_ROOT_PASSWORD}`, so each password is set once. (#592)
+
+- The README quick start begins with building your own agent. (#592)
+
+- The self-build agents' skills moved from `skills/` to `manifests/self/skills/` and are served only by the self stack, through `FELIX_SKILLS_DIR`. Other installs no longer list them or reserve their names. (#595)
+
+- A `FELIX_SKILLS_DIR` that is set but missing refuses to boot instead of serving its skills as empty stubs. (#595)
+
+- Docker images now reserve `calculator-help` against tenant skill libraries, as checkouts always did. A tenant skill of that name is shadowed by the host copy. (#595)
+
+- `FELIX_WEBHOOK_ENDPOINTS` now refuses an empty-string tenant id in `tenants`; it never matched any tenant. Registry ids with a trailing newline are refused. (#604)
+
+- **An operator's plan edit is marked, audited and told to the agent.** `PUT /plans/{id}` stores `plan.edited` (who and when), records a `plan_edit` audit event, and, for a plan written in a conversation, tells the agent before its next model call (a `workspace_note` with `kind: "plan"`, or a log entry when idle). The response adds `agent_told`. (#605)
+
+- The delete gate warns when `multi_edit` is bound without an approval rule beside a gated `edit_file`. Hosted workspace writes and edits are ordered against the file pane's checked saves in the same process. (#606)
+
+- Skill bundles may carry a root license file (`LICENSE`, `LICENSE.md` or `LICENSE.txt`), and a GitHub import keeps it rather than dropping it. Skills already imported from a folder with a license file report an update on their next source check: the update adds that file. (#611)
+
+- A GitHub import keeps a skill's own folders and loose files instead of dropping them: text moves under `references/` and binary assets under `assets/`, within the bundle's caps, and `SKILL.md` references to them are rewritten. Import and update responses list the moves as `relocated_files`. `evals/`, dot-paths, tests and build output are still dropped. Skills already imported from folders with such material report an update on their next source check. (#613)
+
+### Deprecated
+
+- `POST /eval/datasets/{name}/run` is deprecated in favour of `POST /eval/runs` with `dataset_name` in the body. It keeps working for one release, and its responses carry `Deprecation` and `Link` headers. (#570)
+
+### Removed
+
+- `idx_session_events_tenant_thread`, which duplicated the `session_events` primary key (migration `0036_session_events_one_index`). (#544)
+
+- `spec.limits.precount`, which was read by nothing; stored manifests that set it still load. (#580)
+
+### Fixed
+
+- PII redaction no longer runs Presidio on the event loop, and a failed Presidio analysis is logged as a warning and counted as `felix_control_degraded` instead of passing silently with regex coverage only. (#546)
+
+- The filesystem object store no longer blocks the event loop, and a request reads each attachment once instead of once per model call. (#546)
+
+- Audit and usage flushes of more than a few thousand rows for one tenant no longer exceed Postgres's bind-parameter limit and fall back to one transaction per row; they insert 1,000 rows per statement. (#547)
+
+- A scheduled job fires once per due time when two scheduler ticks read it at once, and a run that outlasts its interval no longer makes the next slot fire twice. (#547)
+
+- The example plugin's `before_tool` hook now uses the signature and `block` key the runner expects; it previously raised on every call and blocked nothing. (#550)
+
+- A queued follow-up is answered by an ordinary step of the run: a tool call in its reply now runs, a streamed run streams it, the run reports its stop reason, and budgets, abort and overflow recovery apply to it. (#554)
+
+- An `after_tool` hook now sees and can rewrite the message for a failed tool call, whether the tool raised or returned an error. A replacement for a raised error used to be dropped, so a redacting hook let exception text through. A replacement for a returned error could drop its failure spelling, so eval counted the call as a success. (#556)
+
+- A `before_tool` hook answer that isn't a block no longer stops later `before_tool` hooks from running; only a block ends the chain. A non-empty answer without a `block` key, or one that isn't a dict, is logged once and counted in `felix_hook_failures`. (#558)
+
+- A call blocked by a `before_tool` hook is now recorded like a governance denial: a `policy_deny` audit row with `payload.control: "hook"` and `payload.hook` naming the hook, and `felix_tool_calls{status="denied"}`. (#558)
+
+- A cursor whose timestamp is outside a 64-bit integer, or whose id contains a NUL, is refused with 400 on `/chat/sessions`, `/audit` and `/usage`, instead of failing in Postgres with a 500. (#559)
+
+- A failed `calculator` or plan-tool call is now marked as a tool error, so `after_tool` sees `is_error=True`, the audit row reads `error`, eval counts it against `max_errors`, and MCP answers `isError: true`. Before, these tools answered failures as plain `error: …` text, which every one of those read as success. (#560)
+
+- A call whose arguments fail the tool's schema (`[invalid args for …]`) is now counted as a failure by eval. (#560)
+
+- MCP `tools/call` sets `isError` for a tool's own marked error, not only for a governance denial. (#560)
+
+- The reference plugin in `examples/felix-plugin-example/` now works as shipped. `example__greet` declares its `name` parameter, so the model can pass it, and the plugin registers the `example__forbidden` tool its `before_tool` hook blocks, so the block fires on a stock install. (#561)
+
+- Memory recall and document search no longer return fewer vector matches than they ask for when Postgres serves them from the shared HNSW index. This affected a tenant holding most of a table, where document search could get 35 of 40. Needs pgvector 0.8 or later; older versions behave as before and log one warning. (#564)
+
+- A failed lexical channel in document search no longer takes the vector channel down with it. (#564)
+
+- A run that raises (for example a model call hitting `httpx.ReadTimeout`) now writes its `final_response` audit row with `status=error`, instead of none. (#569)
+
+- A tool that raises now writes a `tool_call` audit row with `status=error` and `payload.error_code`, like a tool that returns a failure. (#569)
+
+- `GET /v1/models` describes each manifest by the model it runs on: `providerModel` is set for manifests on the default route, and the context window, modalities, thinking levels and price come from the resolved model rather than the manifest's name. (#571)
+
+- A workspace path with a component over 255 bytes is refused as an invalid path (by the tools, the new routes and the gateway helper) instead of failing with an internal `ENAMETOOLONG` error. (#578)
+
+- Scheduled jobs now honour standard five-field cron (and `@daily`-style macros) in UTC; previously any schedule other than `*/N * * * *` fired every 60 seconds. A schedule outside the grammar is refused with `422`, and a stored job with an unreadable schedule stops firing and reports why in `last_error`. (#580)
+
+- A job schedule whose day-of-month or day-of-week field starts with `*` (such as `*/2`) no longer counts as restricted, so the two day fields combine as in standard cron. (#581)
+
+- Changing a job's schedule now takes effect at the new schedule's next slot unless the job was already due sooner. (#581)
+
+- Compaction summaries listed a deleted or renamed file as read rather than modified. (#584)
+
+- A prompt refused inside a run is a `422` on non-streaming `/v1/chat/completions` and a typed error frame on streams, rather than a server error. (#590)
+
+- The Docker image now ships the bundled skills. Before, every bundled manifest's `calculator-help` was an empty stub inside the image. (#595)
+
+- **A thread can move to a `pin_compile` agent.** A conversation started on an agent without `governance.pin_compile` was refused `409 manifest hash drift` on its first turn under one that has it, comparing against the other agent's hash. That switch now pins the thread to the new agent. A thread already pinned to an agent refuses another one with `thread pinned to <agent>: <other> cannot continue it`. (#601)
+
+- **A streamed `parallel` or `plan_execute` answer is sent once.** It also went out as `on_chat_model_stream`, and clients that read both names showed it twice. Only `text_delta` carries it now. (#603)
+
+- **A durable run's live transcript carries its images, usage and workspace notes.** `session_event` frames now include the `metadata` keys a client folds a row with (`parent_id`, `attachments`, `usage`, and a workspace note's fields), so these no longer wait for the run to end. (#603)
+
+- **Personal skill libraries work on the filesystem object store.** Saving to a personal library (`POST /skill-library/~me`, and every later write there) failed with a 500 `invalid object key` when `FELIX_OBJECT_STORE=fs`, because the store refused the `~{digest}` segment of the library's keys. (#607)
+
+- A GitHub import whose every version a reviewer rejected can be imported again: it saves a new draft rather than being refused as `skill_exists` for good. (#612)
+
+### Security
+
+- An approval of `create_skill` / `update_skill` no longer authorizes the identical call from a caller whose save would land in a different skill library. (#557)
+
+- felix-boundary also judges a renamed file's previous path, and a manifest name present in both the bundled set and `FELIX_MANIFESTS_DIR` is refused, so a change can't replace a protected manifest by shadowing it. (#566)
+
+- Off a development box (`FELIX_ENVIRONMENT=development` with `FELIX_AUTH_MODE=none`), a shell tool must exec in a shell runner (`FELIX_SHELL_RUNNER_URL`) or the hosted workspace backend's sandbox, never as a child of the API. `FELIX_SHELL_ALLOWED_COMMANDS` set without either refuses to boot, a manifest binding a shell tool is refused at write and compile, and the call itself refuses. Under the hosted backend, `workspace.scope: deployment` needs the runner, because that scope is served from the API's host. (#568)
+
+- A promoted draft is judged as an agent's draft. Only an evaluation on the bundle's own `evals/` scenarios counts toward the publish policy, and its `evals/` files must match the tenant version's exactly: none added, changed or removed. The import copy rule runs on it, and it inherits the personal version's import lineage. An undecided one cannot be adopted. An agent's publish-mode edit of it is held for review, including an edit built on an earlier held edit or on an improvement of it. (#567)
+
+- A promotion into an imported skill is refused (`origin_mismatch`) until a reviewer adopts the import, so a promotion cannot stop an imported skill from taking its source's updates. (#567)
+
+- A durable run started from inside another durable run now expires no later than the run that started it, and records the person it acts for rather than the worker. (#585)
+
+- The self-build agents' skills, the bundled `skills/` directory and `.dockerignore` are now inside the self-modification boundary, so a Felix-authored pull request cannot change them. (#595)
+
+- Every browser tool now guards its whole context, popups included, and its WebSockets. It blocks service workers, removes WebRTC, WebTransport, Shared Storage and worklet module loading from pages, and refuses URLs its parsers read differently. Fetch and browser `path_prefix` compare the normalised path, so `..` and encoded traversal cannot leave the prefix. (#602)
+
+- `write_file`, `edit_file` and `multi_edit` refuse paths inside `.git` and any `.gitattributes`. Git started by the shell tool runs no hook, fsmonitor, editor, pager, signing program, ssh command, credential helper or external diff that the repository's config names. (#608)
+
+- `rename_file` refuses a destination of `.gitattributes`, and every workspace write, delete and rename compares reserved names case-insensitively. (#609)
+
 ## [0.12.1] — 2026-10-08
 
 ### Added
@@ -4495,3 +4761,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.11.3]: https://github.com/felix-run/felix/releases/tag/v0.11.3
 [0.12.0]: https://github.com/felix-run/felix/releases/tag/v0.12.0
 [0.12.1]: https://github.com/felix-run/felix/releases/tag/v0.12.1
+[0.13.0]: https://github.com/felix-run/felix/releases/tag/v0.13.0
