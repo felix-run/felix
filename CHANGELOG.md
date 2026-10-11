@@ -10,6 +10,12 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-10-11
+
+### Fixed
+
+- An agent's `create_skill` can create a skill again after a person rejected every version of it, rather than being refused as `skill_exists` while `update_skill` answered `unknown_skill`. (#616)
+
 ## [0.13.0] — 2026-10-11
 
 ### Added
@@ -4762,3 +4768,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.12.0]: https://github.com/felix-run/felix/releases/tag/v0.12.0
 [0.12.1]: https://github.com/felix-run/felix/releases/tag/v0.12.1
 [0.13.0]: https://github.com/felix-run/felix/releases/tag/v0.13.0
+[0.13.1]: https://github.com/felix-run/felix/releases/tag/v0.13.1
