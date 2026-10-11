@@ -6,9 +6,9 @@ backend.** Built so far: phase 0 (the default volume), phase 1 (truthful failure
 it is updated in place as each phase lands, like [SELF.md](SELF.md).
 
 The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`, since
-2026-10-10 `delete_file` and `rename_file`, and since 2026-10-11 `glob` and `multi_edit` (composed
+2026-10-10 `delete_file` and `rename_file`, since 2026-10-11 `glob` and `multi_edit` (composed
 from the other backend operations, `tools/workspace_composed.py`, so they need nothing new from the
-gateway) — are how a model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
+gateway), and since 2026-10-12 `open_file` — are how a model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
 directory. This proposal moves that I/O out of the process that holds the deployment's credentials,
 scopes it per tenant and per thread, and keeps the tool surface a manifest sees exactly as it is.
 
@@ -183,6 +183,20 @@ has no undo, so it is never gated less than a write. An operator's manifest that
 less is warned about (`felix validate-manifest`, `warnings` on `PUT /manifests/{name}`, a log line
 at compile) by the same check, `felix/manifests/delete_gate.py`, and still loads. On `hosted` a deployment whose gateway
 predates the operations answers these tools `transport_unavailable`, as it answers the pane `503`.
+
+**The agent's open (2026-10-12).** `open_file` (`{path}` → `{opened, kind: "file", in:
+"side_pane", size}`) shows the user a file: the harness opens nothing, and a client opens what a
+successful result names in its file pane, from `GET /chat/workspace/file`. The result is the whole
+instruction on purpose. A side event (`felix/side_events.py`) is an in-process queue, so one
+emitted by a durable run in the worker never reaches the stream the API serves; a tool result
+reaches every client on every path -- `tool_end` live, `session_event` on a durable run -- so the
+same design works for both. It refuses what that route would: a path the tools refuse, a
+directory, a missing file, any component the pane hides (`reserved path`, case-folded) and a file
+over the 512,000-byte read cap (`too large to show`), so a client is never asked to open what it
+then cannot read. Read-only and replay-safe; in `WORKSPACE_TOOL_NAMES`, so a manifest binding it
+reports `felix.workspace.tools: server`. `contributor` binds it; `triage`, which runs on a webhook
+with nobody to show, does not. `tests/unit/test_workspace_open_file.py` holds both backends to the
+same answers, and every refusal `read_file` shares to `read_file`'s wording.
 
 ### Scope
 

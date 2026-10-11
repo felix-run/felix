@@ -1,8 +1,8 @@
 """The workspace file tools, and the path primitives every workspace consumer walks with.
 
-The seven tools (`list_dir`, `read_file`, `write_file`, `edit_file`, `delete_file`, `rename_file`,
-`search_files`) judge their arguments here -- size caps, the regex screen, reserved paths -- and
-hand the file I/O to a `WorkspaceBackend` (`felix.tools.workspace_backend`; on this host,
+The tools (`list_dir`, `read_file`, `open_file`, `write_file`, `edit_file`, `delete_file`,
+`rename_file`, `search_files`) judge their arguments here -- size caps, the regex screen, reserved
+paths -- and hand the file I/O to a `WorkspaceBackend` (`felix.tools.workspace_backend`; on this host,
 `felix.tools.workspace_local`). The primitives below (`workspace_parts`, `open_workspace_parent`,
 `open_regular`, ...) are that backend's, and `shell`, the image tools and the context-file loader's,
 which work on the local filesystem by design. `workspace_root()` is the directory those local
@@ -65,6 +65,12 @@ class PathArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     path: str = Field(default=".", description="Path relative to the workspace root.")
+
+
+class OpenFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, description="File path relative to the workspace root.")
 
 
 class ReadFileArgs(BaseModel):
@@ -548,6 +554,44 @@ async def _read_file(args: ReadFileArgs) -> ToolOutput:
     )
 
 
+async def _open_file(args: OpenFileArgs) -> ToolOutput:
+    """Show the user a workspace file: answered here, opened by the client that reads the result.
+
+    Nothing is sent on the side channel. A durable run executes in the worker and its stream is
+    served by the API, so a side event never reaches it -- but a tool *result* reaches every client
+    on every path (`tool_end`, a durable run's `session_event`), so the result is the instruction.
+    The check is a one-byte read through the backend, so this refuses exactly what `read_file`
+    refuses and opens nothing `GET /chat/workspace/file` could not then serve.
+    """
+    backend, scope = _seam()
+    try:
+        parts = workspace_parts(args.path)
+    except ValueError as exc:
+        return _path_refused(exc)
+    if not parts:
+        return _refuse(f"not a file: {args.path}")
+    # What `GET /chat/workspace/file` refuses as `reserved_path`, so a client is never told to
+    # open what its pane cannot then read. Case-folded, as `_reserved` is.
+    if any(pane_hides(part.casefold()) for part in parts):
+        return _refuse(f"reserved path: {args.path} (the file pane does not show it)")
+    try:
+        read = await backend.read_file(scope, args.path, 0, 1)
+    except NotAFileError:
+        return _refuse(f"not a file: {args.path}")
+    except ValueError as exc:
+        return _path_refused(exc)
+    except OSError as exc:
+        if _missing(exc):
+            return _refuse(f"not a file: {args.path}")
+        return _os_failed(exc)
+    # The pane reads a file whole, under the same cap the tools read with.
+    if read.size > _MAX_READ_BYTES:
+        return _refuse(
+            f"too large to show: {args.path} ({read.size} bytes; the pane shows up to {_MAX_READ_BYTES})"
+        )
+    return json.dumps({"opened": read.path, "kind": "file", "in": "side_pane", "size": read.size})
+
+
 async def _write_file(args: WriteFileArgs) -> ToolOutput:
     backend, scope = _seam()
     try:
@@ -784,6 +828,7 @@ WORKSPACE_TOOL_NAMES = frozenset(
     {
         "list_dir",
         "read_file",
+        "open_file",
         "write_file",
         "edit_file",
         "multi_edit",
@@ -820,6 +865,21 @@ def register_workspace_tools(provider: InMemoryToolProvider) -> None:
             description="Read a UTF-8 text file from the workspace.",
             args=ReadFileArgs,
             handler=_read_file,
+        ),
+    )
+    provider.register(
+        "open_file",
+        lambda: define_tool(
+            name="open_file",
+            replay_safe=True,
+            read_only=True,
+            description=(
+                "Show the user a workspace file by opening it in the editor pane beside this "
+                "conversation, where they can read and edit it. Use it whenever the user asks to "
+                "open, show or view a file. It does not read the file for you: use read_file."
+            ),
+            args=OpenFileArgs,
+            handler=_open_file,
         ),
     )
     provider.register(
