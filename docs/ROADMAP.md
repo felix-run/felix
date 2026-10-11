@@ -731,11 +731,10 @@ end to end, and these turned up. Each was re-checked against `main` on 2026-10-1
 fallback one had already been fixed by `parse_schedule`). They came from reading, not from a run,
 so under the meta-work budget only the first is exempt as a security defect; the rest are queued.
 
-- [ ] **Browser `path_prefix` is a raw `startswith` (security).** `tools/browser.py` strips the
-      prefix's trailing slash and then checks `url.startswith(prefix)`, so `https://docs.felix.run/`
-      admits `https://docs.felix.run.evil.com/`; and the prefix is checked on the first navigation
-      only — redirects get the egress check, not the prefix. `http_fetch._within_prefix` already
-      compares origins and re-checks every hop: reuse it, and plant both cases in a test.
+- [ ] **Browser `path_prefix` holds the first navigation only (security).** The navigation is
+      compared as an origin and a normalised path (`security.host_allowlist.within_prefix`, shared
+      with `http_fetch`), but redirects and subresources get the SSRF check, not the prefix. Apply
+      it to redirects of the main frame in the route guard, and plant the case in a test.
 - [ ] **Sandbox `path_prefix` confines nothing.** `tools/sandboxes.py` checks `path` against the
       prefix with a raw `startswith`, and `path` is then never passed to the container. Either
       pass it and check it properly, or drop the field from the ref.

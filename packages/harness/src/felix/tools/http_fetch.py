@@ -53,9 +53,9 @@ MAX_REDIRECTS = 5
 # Every egress refusal returns this exact line, whatever the reason and whichever layer
 # raised it. Distinguishing "does not resolve" from "resolves into private space" from
 # "blocked by scheme" would hand the model — and whatever is steering it — a probe for
-# internal addressing, and this string goes straight into the transcript. It mirrors
-# `felix.security.egress._BLOCKED_MESSAGE`; the tests assert on equality with it, so a
-# refusal cannot be confused with an unrelated failure that merely happens to be an error.
+# internal addressing, and this string goes straight into the transcript. It is
+# `ssrf.BLOCKED_MESSAGE`, the one line every egress guard uses; the tests assert on equality with
+# it, so a refusal cannot be confused with an unrelated failure that merely happens to be an error.
 _BLOCKED = BLOCKED_MESSAGE
 
 # What is worth handing to a model as text. Anything else returns a description instead of

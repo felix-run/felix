@@ -415,3 +415,31 @@ async def test_a_browser_websocket_passes_the_ssrf_check_as_its_handshake(lookup
         await dev(admitted)
         assert refused.closed and not refused.connected
         assert admitted.connected and not admitted.closed
+
+
+async def test_a_pinned_peer_tool_still_calls_its_peer(lookups: list[str]) -> None:
+    """The pin drops the model's choice of agent, not the call: a restricted agent's peer works."""
+    import json
+
+    from felix.a2a.peers import make_peer_tool
+    from felix.manifests.schema import A2APeerRef
+
+    bodies: list[dict[str, Any]] = []
+
+    def _peer(req: Request, writer: asyncio.StreamWriter) -> None:
+        bodies.append(json.loads(req.body))
+        answer = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"artifacts": [{"parts": [{"type": "text", "text": "PEER-ANSWER"}]}]},
+        }
+        _respond(writer, json.dumps(answer).encode(), extra="content-type: application/json\r\n")
+
+    async with _serve(_peer) as base:
+        ref = A2APeerRef.model_construct(
+            name="p", url=f"http://peer.test:{_port(base)}", auth="", timeout_ms=None
+        )
+        tool = make_peer_tool(ref, allow_http=True, pin_manifest=True)
+        out = await tool.executor.execute({"message": "hi"})
+    assert "PEER-ANSWER" in (out if isinstance(out, str) else str(getattr(out, "content", out)))
+    assert "manifest" not in bodies[0]["params"]

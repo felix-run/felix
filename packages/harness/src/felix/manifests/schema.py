@@ -1059,9 +1059,10 @@ class NetworkSpec(_Strict):
     """Where this agent's tools may reach (`felix.security.host_allowlist`).
 
     `allow_hosts` unset leaves the agent where it was: any public address the egress guard
-    permits. Set, the model can fetch and browse only those hosts -- every redirect hop and every
-    request a page makes included -- and every URL the manifest declares must name one. An empty
-    list allows none. A child agent answers to this list as well as its own.
+    permits. Set, the model can fetch only those hosts, every redirect hop included; every URL the
+    manifest declares must name one; and `browser_tools` are refused, since a browser cannot be held
+    to a host list yet. An empty list allows none. A child agent answers to this list as well as
+    its own.
     """
 
     allow_hosts: list[str] | None = Field(default=None, max_length=MAX_REFS)
@@ -1446,6 +1447,7 @@ class Spec(_Strict):
         if self.browser_tools:
             # A page reaches hosts through channels no request interceptor sees (WebTransport in a
             # worker, among others); held to a list, the browser would look confined and not be.
+            # Lifted with `builder._check_declared_egress` once a proxy enforces the bound.
             raise ValueError(
                 "network.allow_hosts cannot be combined with browser_tools: the browser cannot be "
                 "held to a host list yet (deploy/GOVERNANCE.md)"

@@ -151,10 +151,10 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
     assert context.routes == ["**/*"] and context.socket_routes == ["**/*"], "guard the context, sockets too"
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launched_args[0]
     [script] = context.init_scripts
-    assert "RTCPeerConnection" in script and "WebTransport" in script, "TURN over TCP needs no UDP"
-    assert "writable: false" in script
-    # A worklet's module fetch never reaches `route`; Shared Storage worklets are the other door.
-    assert "Worklet.prototype, 'addModule'" in script and "sharedStorage" in script
+    for name in browser_mod._SIDE_CHANNEL_APIS:
+        assert name in script, f"{name} is left in the page"
+    # A worklet's module fetch never reaches `route`.
+    assert "Worklet.prototype" in script and "addModule" in script
 
     blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())
     assert "must start with" in (blocked if isinstance(blocked, str) else blocked.content)

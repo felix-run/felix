@@ -110,7 +110,8 @@ class BuildDeps:
     # screen chains to it (`ReplyScreen.parent`). Set and restored around the child compile.
     reply_screen: Any | None = None
     # The `allow_hosts` lists of every agent above the one compiling (`security.host_allowlist`):
-    # set around a child compile, so the child's fetch and browser tools answer to them too.
+    # set around a child compile, so the child's fetch tools answer to them too (and a child
+    # binding `browser_tools` under them is refused, `_check_declared_egress`).
     egress: EgressBound = field(default_factory=EgressBound)
     # The bound each child in `compiled` was built under: a child two parents share is rebuilt
     # under a parent whose bound differs, never reused from one with a looser list.
@@ -157,6 +158,8 @@ def _check_declared_egress(m: Manifest, egress: EgressBound) -> None:
     """Refuse a manifest whose own URLs (`Spec.declared_urls`) reach a host its bound does not
     allow. The schema checked them against the manifest's own list at write; a parent's list, or a
     background child's inherited one, is only known at compile."""
+    # Lifted together with `Spec._declared_hosts_are_allowed`'s refusal, when the browser runs
+    # behind a proxy enforcing the bound (`docs/ROADMAP.md`).
     if egress.restricted and m.spec.browser_tools:
         raise ValueError(
             f"manifest '{m.metadata.name}' binds browser_tools under an agent with network.allow_hosts; "

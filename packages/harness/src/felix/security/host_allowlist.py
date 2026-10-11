@@ -2,11 +2,12 @@
 
 The SSRF guard (`security/egress.py`) answers "is this address safe for anyone to reach"; this
 answers "is this host one *this agent* may reach". It is enforced where the model chooses the
-destination -- `http_fetch` (every redirect hop, in the guarded transport) and the browser (the
-navigation and the requests its pages make) -- and checked against every URL the manifest itself
-declares (`Spec.declared_urls`). It does not reach a process that opens its own sockets (shell,
-sandbox, stdio MCP), nor what a remote MCP server or A2A peer does on the far side:
-`deploy/GOVERNANCE.md` lists what it does not cover.
+destination -- `http_fetch`, every redirect hop included, in the guarded transport -- and checked
+against every URL the manifest itself declares (`Spec.declared_urls`). `browser_tools` are refused
+under a list (`Spec._declared_hosts_are_allowed`, `builder._check_declared_egress`): a page opens
+sockets no request interceptor sees, so a browser cannot be held to one. It does not reach a
+process that opens its own sockets (shell, sandbox, stdio MCP), nor what a remote MCP server or A2A
+peer does on the far side: `deploy/GOVERNANCE.md` lists what it does not cover.
 
 A pattern is a host (`api.github.com`), a subdomain wildcard (`*.github.com`: any name under it,
 never the apex), or an IP literal. No scheme, port or path: those are other grammars, and a
@@ -96,7 +97,7 @@ class EgressBound:
     """Every `allow_hosts` list from an agent up to its root; empty means unrestricted.
 
     A value: it reads nothing ambient, so two bounds that compare equal allow the same hosts
-    wherever they are asked -- inside a run, in a browser callback, or in a compile memo.
+    wherever they are asked -- in the guarded transport, a durable run, or a compile memo.
     """
 
     lists: tuple[HostAllowlist, ...] = ()
@@ -205,7 +206,6 @@ def hosts_outside(bound: HostAllowlist | EgressBound, urls: Iterable[str]) -> li
 
 
 __all__ = [
-    "BLOCKED_MESSAGE",
     "EGRESS_CEILINGS_EXTRA",
     "EgressBound",
     "HostAllowlist",

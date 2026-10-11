@@ -748,7 +748,7 @@ guarded transport and is re-checked against the tool's `path_prefix` as well. ht
 `follow_redirects` would have re-validated egress but not the prefix, and one `302` from an
 allowed page is enough to leave it.
 
-**The browser pins its navigation host too.** Chromium resolves independently, so the
+**The browser pins its navigation host too** (on Chromium). Chromium resolves independently, so the
 guard's lookup and Chromium's would otherwise be two lookups. The browser is launched with
 `--host-resolver-rules=MAP <host> <validated address>`, so the name it navigates to can only
 reach the address the guard approved. A hostname is matched against a strict pattern before
@@ -836,16 +836,22 @@ spec:
 
 **Every browser, list or not, shuts the channels its interceptor cannot see** -- each is a way
 past the SSRF check that guards every request. The guard sits on the whole browser context, popups
-included, and on WebSockets (a `ws`/`wss` URL is checked as the `http`/`https` handshake it is).
-Service workers are blocked. `RTCPeerConnection`, `WebTransport`, `sharedStorage` and
-`Worklet.prototype.addModule` are removed (not writable, not configurable) from every page, frame
-and popup, and WebRTC's UDP is disabled (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`)
--- a TURN server over TCP needs the API removal, a worklet's module fetch never reaches `route`. A
-model URL containing a backslash, whitespace or a control character is refused, since Chromium's
-parser and the checker's disagree on them. **Still open:** an init script does not run in a worker,
-and a worker's `WebTransport` sends QUIC over UDP to any address outside the SSRF guard. Block UDP
-egress from the API and worker at the network layer where browser agents run on shared
-infrastructure.
+included, and on the page's WebSockets (a `ws`/`wss` URL is checked as the `http`/`https`
+handshake it is). Service workers are blocked. `RTCPeerConnection`, `WebTransport`,
+`sharedStorage` and `Worklet.prototype.addModule` are removed (not writable, not configurable) from
+every page, frame and popup -- a TURN server over TCP needs the API removal, and a worklet's module
+fetch never reaches `route`. On Chromium (`binding: chromium`, the default) WebRTC's UDP is also
+disabled and the navigation host pinned; those are Chromium launch flags, and another engine gets
+the script removals and the interceptor only. A model URL containing a backslash, whitespace or a
+control character is refused, since Chromium's parser and the checker's disagree on them.
+
+**Still open: a page's workers.** An init script does not run in a dedicated worker, and
+Playwright's interceptors do not see a worker's sockets. A worker's `WebTransport` sends QUIC over
+UDP, and a worker's `WebSocket` opens a TCP handshake, to any address -- loopback and private ones
+included -- outside the SSRF guard. Where browser agents run on shared infrastructure, give the
+process that runs Chromium (the API, or the worker for durable runs) a network policy that refuses
+UDP and private and loopback TCP. Removing workers would close both and break pages that use them;
+a browser behind a local proxy enforcing every socket is the follow-up (`docs/ROADMAP.md`).
 
 **What is still advisory:** cross-host subresources and redirects *in the browser tool*.
 Those keep resolving normally and are checked per request but not pinned, because denying
