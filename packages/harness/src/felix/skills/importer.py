@@ -580,6 +580,17 @@ async def import_skill(
             )
         return fetched
     verb = "updated" if action == "update" else "imported"
+    # Optimistic concurrency against the version the origin check read: of two imports racing to
+    # a new skill, one saves and the other is refused rather than stacked on it. A name whose
+    # every version was rejected -- an import a reviewer turned down -- is free to import into
+    # again, building on nothing, as a promotion is (`library.promote`): `MUST_NOT_EXIST` counts
+    # rejected versions, and refused every re-import of such a name as `skill_exists`, for good.
+    rejected_only = fetched.parent is None and bool(
+        await get_skill_library_store(settings, owner=ORG_OWNER).version_ids(tenant_id, _slug(parsed))
+    )
+    expect_newest = (
+        fetched.parent if fetched.parent is not None else (None if rejected_only else library.MUST_NOT_EXIST)
+    )
     saved = await library.save_draft(
         settings,
         tenant_id,
@@ -601,9 +612,7 @@ async def import_skill(
             ),
         ),
         parent=fetched.parent,
-        # Optimistic concurrency against the version the origin check read: of two imports racing
-        # to the same skill, one saves and the other is refused rather than stacked on it.
-        expect_newest=fetched.parent if fetched.parent is not None else library.MUST_NOT_EXIST,
+        expect_newest=expect_newest,
         object_store=deps.object_store,
         owner=ORG_OWNER,
     )
