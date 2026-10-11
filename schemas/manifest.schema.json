@@ -1787,7 +1787,7 @@
     },
     "PromptTemplateSpec": {
       "additionalProperties": false,
-      "description": "Named user-message template expanded via ``$1`` / ``$@`` / ``${1:-default}``.",
+      "description": "Named user-message template expanded via ``$1`` / ``$@`` / ``${1:-default}``.\n\nRun by a request's `template` field, or by a user turn written `/name args` when `name` is a\ncommand name (letters, digits, `-`, `_`): `felix.prompts.commands`.",
       "properties": {
         "name": {
           "maxLength": 64,
@@ -1811,6 +1811,32 @@
           ],
           "default": null,
           "title": "File"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "argument_hint": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Argument Hint"
         }
       },
       "required": [

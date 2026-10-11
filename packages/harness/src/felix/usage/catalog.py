@@ -109,7 +109,7 @@ def catalog_from_manifest(
     if manifest is None:
         entry = model_catalog_entry(model_id=name)
         entry["felix"].update(
-            providerModel=None, description=None, starters=[], greeting=None, workspace=None
+            providerModel=None, description=None, starters=[], commands=[], greeting=None, workspace=None
         )
         return entry
     if settings is None:
@@ -143,6 +143,13 @@ def catalog_from_manifest(
     # harness lists starters" from an older one that has no key.
     entry["felix"]["starters"] = [
         {"title": s.title, "prompt": s.prompt} for s in (getattr(meta, "starters", None) or [])
+    ]
+    # The prompts a person can run as `/name args`; empty, like starters, when there are none.
+    from felix.prompts.commands import runnable_commands
+
+    entry["felix"]["commands"] = [
+        {"name": p.name, "description": p.description, "argumentHint": p.argument_hint}
+        for p in runnable_commands(manifest)
     ]
     # `null` when the manifest declares none: the client's own greeting stands.
     entry["felix"]["greeting"] = (

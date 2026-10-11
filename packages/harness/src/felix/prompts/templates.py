@@ -9,6 +9,12 @@ from typing import Any
 _TOKEN_RE = re.compile(r"\$\{(\d+)(?::-([^}]*))?\}|\$(\d+)|\$@")
 
 
+class PromptUnavailable(LookupError):
+    """A named prompt the manifest does not declare, one that expands to nothing, or more slash
+    commands in one request than `commands.MAX_COMMANDS_PER_REQUEST`. Its message names only the
+    prompt the caller chose, or that fixed limit, so a route may relay it."""
+
+
 def expand_template(body: str, args: list[str] | None = None) -> str:
     """Expand positional placeholders in a prompt template body."""
     args = list(args or [])
@@ -83,7 +89,7 @@ async def expand_named_prompt(
     """Look up a named prompt on the manifest and expand it."""
     prompt_spec = find_prompt_spec(manifest, name)
     if prompt_spec is None:
-        raise LookupError(f"unknown_prompt:{name}")
+        raise PromptUnavailable(f"unknown_prompt:{name}")
     body = await resolve_prompt_body(
         prompt_spec,
         object_store=object_store,
@@ -91,11 +97,12 @@ async def expand_named_prompt(
         tenant_id=tenant_id,
     )
     if not body:
-        raise LookupError(f"empty_prompt:{name}")
+        raise PromptUnavailable(f"empty_prompt:{name}")
     return expand_template(body, args)
 
 
 __all__ = [
+    "PromptUnavailable",
     "expand_named_prompt",
     "expand_template",
     "find_prompt_spec",
