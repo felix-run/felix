@@ -3,11 +3,11 @@
 [![CI](https://github.com/felix-run/felix/actions/workflows/ci.yml/badge.svg)](https://github.com/felix-run/felix/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**Felix** is a self-hostable **agents harness**. You author agents as YAML manifests
-(`apiVersion: felix/v1`); Felix compiles them into governed agents with durable fibers, memory,
-skills, eval, approvals, and sandboxes — served over REST/SSE, an OpenAI-compatible API, A2A, and
-MCP. Fork, rewind, and steer live runs. Deploy with Docker, Helm, AWS, or GCP on infrastructure you
-operate.
+**Felix** is a self-hostable **agents harness**: the primitives and the runtime to build any agent,
+for any agentic workflow. You describe an agent as a YAML manifest (`apiVersion: felix/v1`); Felix
+compiles it into a governed agent with durable fibers, memory, skills, eval, approvals, and
+sandboxes — served over REST/SSE, an OpenAI-compatible API, A2A, and MCP. Fork, rewind, and steer
+live runs. Deploy with Docker, Helm, AWS, or GCP on infrastructure you operate.
 
 📖 **[docs.felix.run](https://docs.felix.run)** — installation, concepts, manifest and API reference
 
@@ -19,7 +19,7 @@ operate.
 
 ## What you get
 
-- **Manifests** — `felix/v1` YAML; bundled agents in `manifests/`
+- **Manifests** — `felix/v1` YAML; the agents in `manifests/` are worked examples, not the product
 - **Governance** — auth, approvals, audit, usage meters
 - **Durable execution** — fibers, steer and follow-up
 - **Session control** — fork, rewind, compacting / windowed / semantic strategies
@@ -30,13 +30,68 @@ operate.
 
 ## Quick start
 
-```bash
-cp .env.example .env
-# Set POSTGRES_PASSWORD (and MINIO_ROOT_PASSWORD only with --profile full):
-#   openssl rand -hex 32
+### Prerequisites
 
-make install          # lean core + dev (small VMs / CI)
-make up               # migrates, then api :8080, worker, pgvector, Valkey (fs object store)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/). It fetches Python 3.14 itself.
+- Docker with Compose v2, for the database and the full stack. The test suite does not need it.
+- A model key: Anthropic or OpenAI, or any provider in `.env.example`.
+- `jq` for the examples below (optional).
+
+### Set up
+
+```bash
+make bootstrap   # checks the tools, writes .env with generated passwords, installs, adds pre-commit
+make test        # the suite on in-memory stores: no database, no model key
+```
+
+Put your model key in `.env` (`FELIX_ANTHROPIC_API_KEY` or `FELIX_OPENAI_API_KEY`).
+
+### Build your first agent
+
+An agent is a manifest. Write one anywhere, for example `agents/triage.yaml`:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/felix-run/felix/main/schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: triage
+  description: Sorts incoming requests into bug, question or feature, and says why.
+spec:
+  pattern: react
+  system_prompt:
+    inline: |
+      You triage incoming requests. Answer with one of bug, question or feature,
+      then one sentence on why. Use the calculator for any arithmetic.
+  tools: [calculator]
+  auth:
+    inbound:
+      allow_anonymous: true   # local development only; drop it once callers carry a key
+```
+
+Validate it, then serve it from this checkout with Postgres and Valkey in Docker:
+
+```bash
+uv run felix validate-manifest agents/triage.yaml
+make db migrate                           # Postgres + Valkey on localhost, schema applied
+FELIX_MANIFESTS_DIR=agents make dev       # the API on :8080, serving manifests/ and agents/
+curl -s -X POST http://localhost:8080/chat -H 'content-type: application/json' \
+  -d '{"manifest":"triage","messages":[{"role":"user","content":"The export button does nothing"}]}' | jq
+```
+
+From there, the same manifest grows by adding primitives: more `tools`, `skills`, `memory`, MCP
+servers and A2A peers, sub-agents and `delegation`, `approvals` and `guardrails`,
+`execution.mode: durable`, and a different `pattern`. `governed.yaml` uses most of them, and
+[docs.felix.run](https://docs.felix.run) covers each one. The editor schema in the header line
+completes and checks every field as you type.
+
+On a running stack, `PUT /manifests/<name>` with `{"manifest": {...}}` stores a manifest without
+a restart. That needs the `manifests:write` scope.
+
+### Run the full stack
+
+```bash
+make up               # migrates, then api :8080, worker, scheduler, pgvector, Valkey (fs object store)
 curl -s http://localhost:8080/health | jq
 ```
 
@@ -64,7 +119,7 @@ For cloud SDKs, embeddings, or browser tools locally, use `make install-full`.
 
 ### Send a request
 
-Chat against the bundled `quick` manifest:
+With the stack up, chat with a bundled example, `quick`:
 
 ```bash
 curl -s -X POST http://localhost:8080/chat \
@@ -91,17 +146,18 @@ tenant rather than per caller, so `assistant` refuses anonymous requests — und
 ### Local development without Compose
 
 ```bash
-make install
-make migrate
+make db migrate               # Postgres + Valkey in Docker on localhost; `make down` stops them
 make dev                      # Granian on :8080, FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
 make cli                      # httpx REPL client
 make check                    # ruff + ty + pytest + format check (matches CI)
 ./scripts/test.sh -k <expr>   # one test; sets the in-memory stores the suite needs
+make help                     # every target, grouped
 ```
 
 Run tests with `./scripts/test.sh`, never a bare `pytest` — the repo `.env` points at a real
 Postgres, so the suite would fail on connection errors that look like code bugs. See
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for this and other recurring failure modes.
+`tests/README.md` says where a new test goes.
 
 ## Deployment
 
