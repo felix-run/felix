@@ -44,7 +44,6 @@ def _contents(hits: list[dict[str, Any]]) -> list[str]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_appended_event_becomes_findable(store_settings: Any) -> None:
     """On Postgres this is free — `content_tsv` is generated. On the twin it needs a writer."""
     await _append(store_settings, "t1", "the zucchini marker")
@@ -54,7 +53,6 @@ async def test_an_appended_event_becomes_findable(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_term_that_appears_nowhere_finds_nothing(store_settings: Any) -> None:
     """The other half: a search returning everything would satisfy the test above.
 
@@ -69,7 +67,6 @@ async def test_a_term_that_appears_nowhere_finds_nothing(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_empty_query_finds_nothing(store_settings: Any) -> None:
     """A blank box in the UI must not dump the whole log."""
     await _append(store_settings, "t1", "the zucchini marker")
@@ -84,7 +81,6 @@ async def test_an_empty_query_finds_nothing(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_search_does_not_cross_the_tenant_boundary(store_settings: Any) -> None:
     """Both arms are asserted positively, so a total read outage cannot pass for isolation."""
     await _append(store_settings, "shared-name", "acme's zucchini", tenant=TENANT)
@@ -95,7 +91,6 @@ async def test_search_does_not_cross_the_tenant_boundary(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_hit_names_the_thread_it_came_from(store_settings: Any) -> None:
     """The hit is a deep link, so the thread id is the part a client needs to be right."""
     await _append(store_settings, "t1", "zucchini here")
@@ -107,7 +102,6 @@ async def test_a_hit_names_the_thread_it_came_from(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_limit_is_honoured(store_settings: Any) -> None:
     await _append(store_settings, "t1", *[f"zucchini {i}" for i in range(5)])
 
@@ -118,7 +112,6 @@ async def test_the_limit_is_honoured(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_resetting_a_thread_removes_it_from_the_index(store_settings: Any) -> None:
     """`reset()` is what `DELETE /chat/history/{id}` and the retention sweep both reach.
 
@@ -136,7 +129,6 @@ async def test_resetting_a_thread_removes_it_from_the_index(store_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deleting_one_thread_leaves_the_others_findable(store_settings: Any) -> None:
     """The blast radius of a delete, expressed as the behaviour rather than the mechanism.
 
@@ -153,7 +145,6 @@ async def test_deleting_one_thread_leaves_the_others_findable(store_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deleting_a_thread_does_not_reach_another_tenant(store_settings: Any) -> None:
     """Thread ids are namespaced per tenant; a delete keyed on the id alone would cross that."""
     await _append(store_settings, "shared-name", "acme's zucchini", tenant=TENANT)
@@ -169,7 +160,6 @@ async def test_deleting_a_thread_does_not_reach_another_tenant(store_settings: A
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_masked_secret_is_not_searchable(store_settings: Any) -> None:
     """The index is a second copy of event content, so it inherits the masking rule.
 

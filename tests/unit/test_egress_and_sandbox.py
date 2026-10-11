@@ -155,7 +155,6 @@ def test_parsing_still_rejects_what_needs_no_lookup() -> None:
             McpServerRef(name="x", url=bad)
 
 
-@pytest.mark.asyncio
 async def test_dial_resolves_and_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     """The authoritative check moved to dial, so it must actually fire there.
 
@@ -176,7 +175,6 @@ async def test_dial_resolves_and_blocks(monkeypatch: pytest.MonkeyPatch) -> None
     assert "rebinds.example.com" not in str(exc.value)
 
 
-@pytest.mark.asyncio
 async def test_dial_resolution_does_not_stall_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """`getaddrinfo` is synchronous, so the dial-time check has to leave the loop.
 
@@ -208,7 +206,6 @@ async def test_dial_resolution_does_not_stall_the_loop(monkeypatch: pytest.Monke
 # --- browser egress guard -------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_browser_registers_an_egress_guard() -> None:
     """page.goto() follows redirects and subresources past the initial check."""
     from felix.tools.browser import _BrowserExecutor
@@ -253,7 +250,6 @@ async def test_browser_registers_an_egress_guard() -> None:
     assert continued == [ok.url]
 
 
-@pytest.mark.asyncio
 async def test_path_prefix_applies_to_navigation_not_subresources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -324,7 +320,6 @@ def _stub_docker(sleep_s: float) -> None:
     sys.modules["docker"] = fake
 
 
-@pytest.mark.asyncio
 async def test_sandbox_timeout_can_actually_fire() -> None:
     """asyncio.wait_for cannot interrupt a blocking C call, so the declared sandbox
     timeout never worked."""
@@ -336,7 +331,6 @@ async def test_sandbox_timeout_can_actually_fire() -> None:
         await asyncio.wait_for(ex.execute({"code": "x"}), timeout=0.4)
 
 
-@pytest.mark.asyncio
 async def test_sandbox_does_not_stall_the_event_loop() -> None:
     """A model emitting `while True: pass` froze every concurrent request."""
     _stub_docker(0.6)
@@ -356,7 +350,6 @@ async def test_sandbox_does_not_stall_the_event_loop() -> None:
     assert ticks >= 3, "the event loop was blocked during the container run"
 
 
-@pytest.mark.asyncio
 async def test_sandbox_is_confined() -> None:
     _stub_docker(0.0)
     from felix.tools.transports import SandboxExecutor
@@ -372,7 +365,6 @@ async def test_sandbox_is_confined() -> None:
     assert kwargs["network_disabled"] is True
 
 
-@pytest.mark.asyncio
 async def test_sandbox_uses_environment_not_stdin() -> None:
     """The sandbox passes JSON via environment variable, not stdin."""
     _stub_docker(0.0)
@@ -385,7 +377,6 @@ async def test_sandbox_uses_environment_not_stdin() -> None:
     assert "input" not in kwargs, "docker-py doesn't support 'input' parameter"
 
 
-@pytest.mark.asyncio
 async def test_sandbox_kwargs_are_accepted_by_real_docker_py() -> None:
     """Every kwarg the executor sends must be one docker-py actually forwards.
 
@@ -449,7 +440,6 @@ def _settings(**kw):
     return Settings(**base)
 
 
-@pytest.mark.asyncio
 async def test_a_slow_resolver_is_refused_not_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A lookup that outruns its budget blocks, rather than falling through.
 
@@ -471,7 +461,6 @@ async def test_a_slow_resolver_is_refused_not_allowed(monkeypatch: pytest.Monkey
 # --- the guard as enforcement, not advice --------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_connection_is_pinned_to_the_validated_address(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -499,7 +488,6 @@ async def test_connection_is_pinned_to_the_validated_address(
     assert dialled == ["93.184.216.34"], "connected to a name, so a rebind still wins"
 
 
-@pytest.mark.asyncio
 async def test_a_selectively_answering_resolver_cannot_bypass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -519,7 +507,6 @@ async def test_a_selectively_answering_resolver_cannot_bypass(
         await _PinningBackend().connect_tcp("blackholed.example.com", 443)
 
 
-@pytest.mark.asyncio
 async def test_one_bad_answer_refuses_the_whole_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """A round-robin containing a private address must not be reachable by retrying."""
     from felix.security import ssrf
@@ -581,7 +568,6 @@ def test_a_guarded_client_mounts_nothing_unguarded(monkeypatch: pytest.MonkeyPat
     assert isinstance(client._transport, GuardedAsyncTransport)
 
 
-@pytest.mark.asyncio
 async def test_a_unix_socket_is_refused() -> None:
     from felix.security.egress import _PinningBackend
     from felix.security.ssrf import EgressBlocked
@@ -590,7 +576,6 @@ async def test_a_unix_socket_is_refused() -> None:
         await _PinningBackend().connect_unix_socket("/var/run/docker.sock")
 
 
-@pytest.mark.asyncio
 async def test_every_approved_address_is_tried(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pinning one address would drop the fallback Happy Eyeballs provides.
 
@@ -615,7 +600,6 @@ async def test_every_approved_address_is_tried(monkeypatch: pytest.MonkeyPatch) 
     assert tried == ["2606:2800:220:1::", "93.184.216.34"]
 
 
-@pytest.mark.asyncio
 async def test_the_syntactic_half_runs_on_the_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     """The backend only sees addresses, so scheme and internal-name checks live above it.
 
@@ -633,7 +617,6 @@ async def test_the_syntactic_half_runs_on_the_transport(monkeypatch: pytest.Monk
 # --- browser: pinning the navigation host --------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_browser_pins_the_navigation_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Chromium resolves for itself, so the validated address must be forced on it.
 
@@ -650,7 +633,6 @@ async def test_browser_pins_the_navigation_host(monkeypatch: pytest.MonkeyPatch)
     ]
 
 
-@pytest.mark.asyncio
 async def test_browser_refuses_to_pin_a_host_that_could_inject_rules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -669,7 +651,6 @@ async def test_browser_refuses_to_pin_a_host_that_could_inject_rules(
         await ex._pin_args("https://evil.com,MAP%20*%20169.254.169.254/x".replace("%20", " "))
 
 
-@pytest.mark.asyncio
 async def test_browser_pins_ipv6_with_brackets(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.security import ssrf
     from felix.tools.browser import _BrowserExecutor
@@ -681,7 +662,6 @@ async def test_browser_pins_ipv6_with_brackets(monkeypatch: pytest.MonkeyPatch) 
     ]
 
 
-@pytest.mark.asyncio
 async def test_browser_needs_no_rule_for_a_literal(monkeypatch: pytest.MonkeyPatch) -> None:
     """Chromium does not resolve a literal, and `_check_url` already validated it."""
     from felix.tools.browser import _BrowserExecutor

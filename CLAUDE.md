@@ -94,7 +94,8 @@ command names — plus `create_application()` called the way production calls it
 Shared test code lives in `tests/support/`: fakes (`github_fake`, `loopback_http`, …), the e2e
 scaffolding (`e2e.py`), and `factories.py` — `make_settings` (the `memory://` baseline, overrides at the
 call site) and `app_client`. A test imports shared code from there and
-never from another test module or a conftest; `test_invariants.py` enforces it.
+never from another test module or a conftest; `test_invariants.py` enforces it. Test-only data lives in
+`tests/fixtures/`; `tests/README.md` is the map.
 
 A test that needs an optional extra gates on `tests/support/optional_deps.py:require_optional(module,
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level

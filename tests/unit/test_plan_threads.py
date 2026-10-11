@@ -17,12 +17,14 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns import _plan_tools
 from felix.plans import store as plans_store
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    # Its own memory database, and its own tenant per test: the memory store is a
-    # module-level dict shared by the whole run, and these tests list by tenant.
-    return Settings(database_url="memory://plan-threads")
+    # Its own tenant per test: the memory store is a module-level dict shared by every
+    # `memory://` URL, whatever its name, and these tests list by tenant.
+    return make_settings()
 
 
 def _tenant() -> str:
@@ -40,7 +42,6 @@ async def _call(name: str, args: dict[str, Any]) -> str:
     return out if isinstance(out, str) else out.content
 
 
-@pytest.mark.asyncio
 async def test_plan_create_records_the_thread_it_ran_in(settings: Settings) -> None:
     tenant = _tenant()
     async with async_run_with_context(_req(settings, tenant, f"{tenant}:a")):
@@ -49,7 +50,6 @@ async def test_plan_create_records_the_thread_it_ran_in(settings: Settings) -> N
     assert row is not None and row["thread_id"] == f"{tenant}:a"
 
 
-@pytest.mark.asyncio
 async def test_a_thread_filter_is_applied_before_the_limit(settings: Settings) -> None:
     # Filtering a returned page would let newer plans from other threads push this
     # thread's off it — which is the whole failure the column exists to fix.
@@ -63,7 +63,6 @@ async def test_a_thread_filter_is_applied_before_the_limit(settings: Settings) -
     assert len(everything) == 6
 
 
-@pytest.mark.asyncio
 async def test_an_empty_thread_filter_means_plans_written_outside_a_chat(settings: Settings) -> None:
     tenant = _tenant()
     await plans_store.put_plan(settings, tenant, "loose", plan={})
@@ -72,7 +71,6 @@ async def test_an_empty_thread_filter_means_plans_written_outside_a_chat(setting
     assert [p["id"] for p in loose] == ["loose"]
 
 
-@pytest.mark.asyncio
 async def test_a_write_that_does_not_name_the_thread_keeps_it(settings: Settings) -> None:
     tenant = _tenant()
     await plans_store.put_plan(settings, tenant, "p", plan={"v": 1}, thread_id=f"{tenant}:a")
@@ -80,7 +78,6 @@ async def test_a_write_that_does_not_name_the_thread_keeps_it(settings: Settings
     assert row["thread_id"] == f"{tenant}:a"
 
 
-@pytest.mark.asyncio
 async def test_a_step_update_backfills_a_legacy_plan_and_never_moves_a_threaded_one(
     settings: Settings,
 ) -> None:
@@ -100,7 +97,6 @@ async def test_a_step_update_backfills_a_legacy_plan_and_never_moves_a_threaded_
     assert (await plans_store.get_plan(settings, tenant, "mine"))["thread_id"] == f"{tenant}:a"
 
 
-@pytest.mark.asyncio
 async def test_a_bare_plan_get_answers_for_this_thread_only(settings: Settings) -> None:
     tenant = _tenant()
     async with async_run_with_context(_req(settings, tenant, f"{tenant}:a")):
@@ -118,7 +114,6 @@ async def test_a_bare_plan_get_answers_for_this_thread_only(settings: Settings) 
     assert empty == "[tool error/invalid_arguments] no plans on this thread"
 
 
-@pytest.mark.asyncio
 async def test_outside_a_chat_a_bare_plan_get_stays_tenant_wide(settings: Settings) -> None:
     tenant = _tenant()
     await plans_store.put_plan(settings, tenant, "any", plan={}, thread_id=f"{tenant}:a")

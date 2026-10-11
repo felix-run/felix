@@ -18,6 +18,8 @@ from felix.skills.library_keys import ORG_OWNER, library_object_key
 from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
+from tests.support.factories import make_settings
+
 BODY = """
 # Invoice triage
 
@@ -41,7 +43,7 @@ def _bundle(name: str = "invoice-triage", body: str = BODY, **extra: str) -> dic
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://skills")
+    return make_settings()
 
 
 @pytest.fixture

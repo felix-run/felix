@@ -70,32 +70,27 @@ async def _bound_names(tools: list[str]) -> list[str]:
     return [t.name for t in bound]
 
 
-@pytest.mark.asyncio
 async def test_empty_allowlist_binds_every_remote_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     """The default every existing manifest was written against."""
     _install_fake_server(monkeypatch)
     assert await _bound_names([]) == [f"gh__{n}" for n in REMOTE_TOOLS]
 
 
-@pytest.mark.asyncio
 async def test_allowlist_binds_only_what_it_names(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_server(monkeypatch)
     assert await _bound_names(["issue_read"]) == ["gh__issue_read"]
 
 
-@pytest.mark.asyncio
 async def test_allowlist_patterns_are_globs_over_remote_names(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_server(monkeypatch)
     assert await _bound_names(["issue_*"]) == ["gh__issue_read", "gh__issue_write"]
 
 
-@pytest.mark.asyncio
 async def test_overlapping_patterns_bind_a_tool_once(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_server(monkeypatch)
     assert await _bound_names(["issue_*", "issue_read"]) == ["gh__issue_read", "gh__issue_write"]
 
 
-@pytest.mark.asyncio
 async def test_a_glob_shaped_remote_name_listed_literally_binds_itself(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -105,7 +100,6 @@ async def test_a_glob_shaped_remote_name_listed_literally_binds_itself(
     assert await _bound_names(["report[2024]"]) == ["gh__report[2024]"]
 
 
-@pytest.mark.asyncio
 async def test_the_bound_spelling_is_accepted_too(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every other `tools:` list in a manifest is written over the bound name, `gh__issue_read`.
 
@@ -118,7 +112,6 @@ async def test_the_bound_spelling_is_accepted_too(monkeypatch: pytest.MonkeyPatc
     assert await _bound_names(["other__issue_read"]) == []
 
 
-@pytest.mark.asyncio
 async def test_a_pattern_the_server_no_longer_serves_is_logged_not_fatal(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -140,7 +133,6 @@ async def test_a_pattern_the_server_no_longer_serves_is_logged_not_fatal(
     ]
 
 
-@pytest.mark.asyncio
 async def test_secret_resolution_keeps_the_allowlist() -> None:
     """`resolve_mcp_ref` sits between the manifest and the binder. A rewrite that rebuilt the
     ref field by field would drop `tools` with every binder test green — the silent-default shape."""

@@ -80,7 +80,6 @@ def _body(page: str) -> str:
     return page.split("\n", 1)[1]
 
 
-@pytest.mark.asyncio
 async def test_the_marker_is_still_what_clients_parse() -> None:
     # The model's way back is the reader; the clients' is this marker. Adding the first must
     # not cost the second, so the spilled output ends in a marker the client pattern accepts,
@@ -107,7 +106,6 @@ async def test_the_marker_is_still_what_clients_parse() -> None:
     assert output[: match.start()].rstrip("\n…") == BIG[: SPEC.preview_chars]
 
 
-@pytest.mark.asyncio
 async def test_paging_from_the_offsets_it_reports_reconstructs_the_output() -> None:
     store = _Store()
     artifact_id = await _spill(store)
@@ -127,7 +125,6 @@ async def test_paging_from_the_offsets_it_reports_reconstructs_the_output() -> N
     assert len(pages[0]) == SPEC.default_window_chars, "no length means the default window"
 
 
-@pytest.mark.asyncio
 async def test_a_request_larger_than_the_cap_is_capped() -> None:
     store = _Store()
     artifact_id = await _spill(store)
@@ -137,7 +134,6 @@ async def test_a_request_larger_than_the_cap_is_capped() -> None:
     assert _body(page) == BIG[: SPEC.max_window_chars]
 
 
-@pytest.mark.asyncio
 async def test_an_offset_past_the_end_is_an_empty_last_page_not_an_error() -> None:
     store = _Store()
     artifact_id = await _spill(store)
@@ -147,7 +143,6 @@ async def test_an_offset_past_the_end_is_an_empty_last_page_not_an_error() -> No
     assert page == f"[artifact-window:{artifact_id} chars {len(BIG)}-{len(BIG)} of {len(BIG)}; end]\n"
 
 
-@pytest.mark.asyncio
 async def test_the_reader_is_not_itself_spilled() -> None:
     # Its window (5000) is over the spill threshold (1000). Wrapped like any other tool, a
     # read would come back as a fresh preview of the text the model just asked to see.
@@ -168,7 +163,6 @@ async def test_the_reader_is_not_itself_spilled() -> None:
     assert len(store.objects) == 2, "reading must not write a new artifact (one object + its owner)"
 
 
-@pytest.mark.asyncio
 async def test_a_manifest_tool_named_read_artifact_is_still_spilled() -> None:
     # The exemption is by source, so it cannot be claimed by picking a name.
     store = _Store()
@@ -189,7 +183,6 @@ async def test_a_manifest_tool_named_read_artifact_is_still_spilled() -> None:
     assert any(k.endswith(".txt") for k in store.objects)
 
 
-@pytest.mark.asyncio
 async def test_it_cannot_reach_another_tenant_or_manifest() -> None:
     # The model names only the id; tenant and manifest are fixed when the tool is built.
     store = _Store()
@@ -207,7 +200,6 @@ async def test_it_cannot_reach_another_tenant_or_manifest() -> None:
     assert "another agent" not in tool_output_content(output)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("artifact_id", ["f" * 32, "not-an-id"])
 async def test_an_unknown_or_malformed_id_is_a_tool_error(artifact_id: str) -> None:
     # Traversal spellings are covered where the id is validated, in test_artifact_read.py.
@@ -220,7 +212,6 @@ async def test_an_unknown_or_malformed_id_is_a_tool_error(artifact_id: str) -> N
 # --- one conversation's artifacts are not another's ------------------------------
 
 
-@pytest.mark.asyncio
 async def test_another_thread_cannot_read_it() -> None:
     # Same tenant, same manifest, id in hand: the case the tenant/manifest prefix does not
     # cover, because every caller of a manifest shares it.
@@ -242,7 +233,6 @@ async def test_another_thread_cannot_read_it() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_with_no_conversation_nothing_is_readable() -> None:
     # No thread and no request context: nothing to bind the artifact to, so the spill records
     # no owner and the reader, which has no conversation either, refuses rather than guessing.
@@ -268,7 +258,6 @@ async def test_with_no_conversation_nothing_is_readable() -> None:
     assert read_tool_error_code(output) == "invalid_arguments"
 
 
-@pytest.mark.asyncio
 async def test_a_threadless_request_reads_its_own_spill_and_no_other() -> None:
     # `/v1/chat/completions` without a thread still runs inside one request context. What it
     # spills it can read back within that request; a second request, also thread-less,
@@ -353,7 +342,6 @@ async def _bound_tools(*, artifacts: bool, object_store: object | None) -> list[
     return seen
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("_restore_patterns")
 async def test_the_reader_is_bound_only_where_there_is_something_to_read() -> None:
     assert READ_ARTIFACT_TOOL in await _bound_tools(artifacts=True, object_store=_Store())

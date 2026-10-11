@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, StreamDelta, TokenUsage
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, InvokeInput, ToolCall
@@ -99,7 +98,6 @@ async def _drain(agent: _ReactAgent) -> list[Any]:
     ]
 
 
-@pytest.mark.asyncio
 async def test_streaming_turn_makes_exactly_one_model_call() -> None:
     model = _SingleCallModel(
         ModelChatResult(
@@ -114,7 +112,6 @@ async def test_streaming_turn_makes_exactly_one_model_call() -> None:
     assert model.stream_calls == 0
 
 
-@pytest.mark.asyncio
 async def test_streamed_text_is_the_text_that_is_kept() -> None:
     """Two samplings could disagree; one cannot."""
     model = _SingleCallModel(
@@ -129,7 +126,6 @@ async def test_streamed_text_is_the_text_that_is_kept() -> None:
     assert streamed == "Hello"
 
 
-@pytest.mark.asyncio
 async def test_tool_calls_arrive_from_the_streamed_turn() -> None:
     executed: list[str] = []
 
@@ -153,7 +149,6 @@ async def test_tool_calls_arrive_from_the_streamed_turn() -> None:
     assert executed == ["felix"], "the streamed request now carries tools"
 
 
-@pytest.mark.asyncio
 async def test_thinking_deltas_are_surfaced_but_not_counted_as_text() -> None:
     model = _SingleCallModel(
         ModelChatResult(
@@ -174,7 +169,6 @@ async def test_thinking_deltas_are_surfaced_but_not_counted_as_text() -> None:
     assert text == "answer", "thinking is not part of the answer body"
 
 
-@pytest.mark.asyncio
 async def test_provider_without_stream_turn_still_works() -> None:
     """Plugin clients that only implement `stream()` keep the old two-call behaviour."""
     model = _LegacyModel()

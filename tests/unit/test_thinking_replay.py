@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.types import ChatMessage, ToolCall
 from felix.session.types import SessionEvent, chat_message_to_event, event_to_chat_message
 from felix_ai.wire.anthropic_messages import _anthropic_thinking_blocks
@@ -135,7 +134,6 @@ def _client(monkeypatch: Any, payload: dict[str, Any]):
     )
 
 
-@pytest.mark.asyncio
 async def test_thinking_blocks_are_captured_off_the_response(monkeypatch: Any) -> None:
     client = _client(
         monkeypatch,
@@ -158,7 +156,6 @@ async def test_thinking_blocks_are_captured_off_the_response(monkeypatch: Any) -
     assert result.message.tool_calls and result.message.tool_calls[0].id == "c1"
 
 
-@pytest.mark.asyncio
 async def test_captured_thinking_is_sent_back_on_the_next_turn(monkeypatch: Any) -> None:
     """The round trip that was broken: reason, call a tool, then replay both."""
     client = _client(

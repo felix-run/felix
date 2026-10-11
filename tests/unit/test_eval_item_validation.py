@@ -17,6 +17,8 @@ from felix.config import Settings
 from felix.eval import store as eval_store
 from felix.eval.validation import RUBRIC_RULE_KEYS, read_item, validate_items
 
+from tests.support.factories import make_settings
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "fixtures" / "eval"
 
@@ -31,7 +33,7 @@ def _isolate_process_settings() -> Any:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://eval-validation", object_store="memory")
+    return make_settings()
 
 
 def _fixture(name: str) -> dict[str, Any]:
@@ -246,7 +248,6 @@ def test_the_smoke_fixture_is_clean_and_the_negative_one_warns_where_it_means_to
 # --------------------------------------------------------------------------- the write paths
 
 
-@pytest.mark.asyncio
 async def test_the_put_route_refuses_and_writes_nothing() -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -269,7 +270,6 @@ async def test_the_put_route_refuses_and_writes_nothing() -> None:
     assert await eval_store.get_dataset(_settings(), "default", "mistyped") is None
 
 
-@pytest.mark.asyncio
 async def test_the_put_route_returns_warnings_with_the_stored_dataset() -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

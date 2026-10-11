@@ -45,14 +45,12 @@ def _settings(**kw: object) -> Settings:
 # --- readiness -------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_ready_when_dependencies_are_reachable() -> None:
     report = await check_readiness(_settings())
     assert report.ready is True
     assert {p.name for p in report.probes} == {"database", "redis", "object_store"}
 
 
-@pytest.mark.asyncio
 async def test_not_ready_when_a_dependency_is_down() -> None:
     """This is the case /health could not express."""
     report = await check_readiness(_settings(redis_url="redis://127.0.0.1:1/0"))
@@ -62,13 +60,11 @@ async def test_not_ready_when_a_dependency_is_down() -> None:
     assert redis.detail, "a failed probe should say why"
 
 
-@pytest.mark.asyncio
 async def test_one_failure_does_not_hide_the_others() -> None:
     report = await check_readiness(_settings(redis_url="redis://127.0.0.1:1/0"))
     assert next(p for p in report.probes if p.name == "database").ok is True
 
 
-@pytest.mark.asyncio
 async def test_a_hanging_probe_fails_rather_than_hanging(monkeypatch: pytest.MonkeyPatch) -> None:
     """A probe that never returns is a probe that fails."""
     import felix.health as health
@@ -83,7 +79,6 @@ async def test_a_hanging_probe_fails_rather_than_hanging(monkeypatch: pytest.Mon
     assert "timed out" in next(p for p in report.probes if p.name == "redis").detail
 
 
-@pytest.mark.asyncio
 async def test_ready_endpoint_returns_503_when_not_ready() -> None:
     from felix_api.app import create_app
     from httpx import ASGITransport, AsyncClient
@@ -110,7 +105,6 @@ def _settings_from_env(monkeypatch: pytest.MonkeyPatch, redis_url: str | None) -
     return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
-@pytest.mark.asyncio
 async def test_ready_on_memory_with_no_redis_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     """The no-infrastructure mode goes green: the default localhost URL is not a Redis anyone set.
 
@@ -130,7 +124,6 @@ async def test_ready_on_memory_with_no_redis_configured(monkeypatch: pytest.Monk
     assert next(p for p in report.probes if p.name == "redis").detail == "not configured"
 
 
-@pytest.mark.asyncio
 async def test_not_ready_on_memory_when_a_configured_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
     """memory:// relaxes only the default. A URL someone set is required, and down is down."""
     from felix_api.app import create_app
@@ -172,7 +165,6 @@ def test_per_process_rate_limits_are_noted_once_at_info(
     assert "per process" in records[0].getMessage()
 
 
-@pytest.mark.asyncio
 async def test_live_does_no_io_and_stays_200_when_deps_are_down() -> None:
     """Liveness must not restart a healthy process because a database blipped."""
     from felix_api.app import create_app
@@ -186,7 +178,6 @@ async def test_live_does_no_io_and_stays_200_when_deps_are_down() -> None:
             assert resp.json()["status"] == "ok"
 
 
-@pytest.mark.asyncio
 async def test_probe_paths_need_no_credential_under_a_real_auth_mode() -> None:
     """kubelet sends no Authorization header.
 
@@ -263,7 +254,6 @@ def _counting_probe(monkeypatch: pytest.MonkeyPatch, *, delay: float = 0.0) -> l
     return calls
 
 
-@pytest.mark.asyncio
 async def test_ready_route_serves_a_cached_report(monkeypatch: pytest.MonkeyPatch) -> None:
     """Through the route, because the route is the production caller: if it stopped
     asking for the cache, a public unthrottled path would probe three dependencies per
@@ -279,7 +269,6 @@ async def test_ready_route_serves_a_cached_report(monkeypatch: pytest.MonkeyPatc
     assert calls[0] == 1
 
 
-@pytest.mark.asyncio
 async def test_readiness_cache_expires_and_is_per_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.health as health
 
@@ -299,7 +288,6 @@ async def test_readiness_cache_expires_and_is_per_configuration(monkeypatch: pyt
     assert calls[0] == 4, "a different configuration never inherits another's report"
 
 
-@pytest.mark.asyncio
 async def test_concurrent_readiness_callers_share_one_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """A burst during a slow probe must not multiply the probe: with a blackholed
     dependency the window is PROBE_TIMEOUT_S, on the pod that is already degraded."""
@@ -310,7 +298,6 @@ async def test_concurrent_readiness_callers_share_one_probe(monkeypatch: pytest.
     assert calls[0] == 1
 
 
-@pytest.mark.asyncio
 async def test_a_cancelled_caller_does_not_drop_the_shared_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """A client that opens /ready and aborts must not discard the report the other
     waiters share, nor leave the guard so the next request starts a fresh probe — that
@@ -331,7 +318,6 @@ async def test_a_cancelled_caller_does_not_drop_the_shared_probe(monkeypatch: py
     assert calls[0] == 1, "the report survived its creator being cancelled"
 
 
-@pytest.mark.asyncio
 async def test_ready_body_carries_no_probe_detail() -> None:
     """The route is public: a failed probe's detail is the exception text, which names
     internal hosts, ports and database users. The body says which probe failed, not why."""
@@ -403,7 +389,6 @@ def test_configure_logging_does_not_stack_handlers() -> None:
     assert len(ours) == 1
 
 
-@pytest.mark.asyncio
 async def test_request_id_is_echoed_and_honoured() -> None:
     from felix_api.app import create_app
     from httpx import ASGITransport, AsyncClient
@@ -420,7 +405,6 @@ async def test_request_id_is_echoed_and_honoured() -> None:
 # --- SSE ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_is_emitted_during_a_quiet_stream() -> None:
     """A long tool call emits nothing and proxy idle timeouts are commonly 60s, so a
     healthy run was being disconnected mid-flight."""
@@ -435,7 +419,6 @@ async def test_heartbeat_is_emitted_during_a_quiet_stream() -> None:
     assert seen[-1] == "first"
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_passes_events_through_unchanged() -> None:
     from felix_api.routes._sse import HEARTBEAT, with_heartbeat
 
@@ -448,7 +431,6 @@ async def test_heartbeat_passes_events_through_unchanged() -> None:
     assert HEARTBEAT not in seen
 
 
-@pytest.mark.asyncio
 async def test_heartbeat_propagates_upstream_errors() -> None:
     from felix_api.routes._sse import with_heartbeat
 

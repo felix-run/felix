@@ -59,7 +59,6 @@ def _agent(model: Any, limit: int) -> _ReactAgent:
     return agent
 
 
-@pytest.mark.asyncio
 async def test_running_out_of_steps_is_reported_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     counted: list[tuple[str, dict[str, str]]] = []
     monkeypatch.setattr(
@@ -80,7 +79,6 @@ def test_the_openai_wire_reports_it_as_length() -> None:
     assert finish_reason_for("max_turns") == "length"
 
 
-@pytest.mark.asyncio
 async def test_a_model_that_finishes_is_not_reported() -> None:
     class _Finishes(_AlwaysCalls):
         async def chat(

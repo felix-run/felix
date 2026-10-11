@@ -29,7 +29,6 @@ MINIMAL_MANIFEST = {
 }
 
 
-@pytest.mark.asyncio
 async def test_manifest_store_roundtrip(memory_settings: Settings) -> None:
     manifest = parse_manifest(MINIMAL_MANIFEST)
     created = await manifest_store.put_version(memory_settings, "t1", "quick", manifest, created_by="tester")
@@ -53,7 +52,6 @@ async def test_manifest_store_roundtrip(memory_settings: Settings) -> None:
     assert resolved.metadata.name == "quick"
 
 
-@pytest.mark.asyncio
 async def test_audit_buffer_and_flush(memory_settings: Settings) -> None:
     audit_store._pending.clear()
     audit_store._memory_events.clear()
@@ -73,7 +71,6 @@ async def test_audit_buffer_and_flush(memory_settings: Settings) -> None:
     assert cursor is None
 
 
-@pytest.mark.asyncio
 async def test_approvals_crud(memory_settings: Settings) -> None:
     pending = await approvals_store.create_pending(
         memory_settings,
@@ -98,7 +95,6 @@ async def test_approvals_crud(memory_settings: Settings) -> None:
     assert decided["status"] == "approved"
 
 
-@pytest.mark.asyncio
 async def test_plans_and_jobs(memory_settings: Settings) -> None:
     plan = await plans_store.put_plan(
         memory_settings,
@@ -120,7 +116,6 @@ async def test_plans_and_jobs(memory_settings: Settings) -> None:
     assert jobs["payload"]["topic"] == "sync"
 
 
-@pytest.mark.asyncio
 async def test_eval_run_completes_without_items(memory_settings: Settings) -> None:
     await eval_store.put_dataset(memory_settings, "t1", "smoke", items=[])
     result = await start_run(
@@ -133,7 +128,6 @@ async def test_eval_run_completes_without_items(memory_settings: Settings) -> No
     assert result["scores"] == []
 
 
-@pytest.mark.asyncio
 async def test_session_append_event(memory_settings: Settings) -> None:
     event = await append_event(
         settings=memory_settings,
@@ -151,7 +145,6 @@ async def test_session_append_event(memory_settings: Settings) -> None:
     assert events[0].content == "hello"
 
 
-@pytest.mark.asyncio
 async def test_a_lease_requires_a_tenant_scoped_thread_id() -> None:
     """The lease key is the thread id alone, so the tenant prefix is the whole partition.
 

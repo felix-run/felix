@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 from felix.approvals.interrupt import signal_decision, wait_for_decision
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
@@ -14,7 +13,6 @@ from felix.tools.client_bridge import complete_result, tools_from_client_refs, w
 from felix.tools.types import ToolInvocationCtx
 
 
-@pytest.mark.asyncio
 async def test_side_events_emit_drain() -> None:
     await emit("thread-a", "tool_request", {"id": "c1"})
     items = await drain("thread-a")
@@ -22,7 +20,6 @@ async def test_side_events_emit_drain() -> None:
     assert await drain("thread-a") == []
 
 
-@pytest.mark.asyncio
 async def test_client_bridge_complete() -> None:
     async def _waiter() -> str:
         result = await wait_for_result("default:t1", "call_1", timeout=2)
@@ -35,7 +32,6 @@ async def test_client_bridge_complete() -> None:
     assert await task == "pong"
 
 
-@pytest.mark.asyncio
 async def test_client_tool_executor_roundtrip() -> None:
     tools = tools_from_client_refs([ClientToolRef(name="local_open", description="Open something")])
     tool = tools[0]
@@ -54,7 +50,6 @@ async def test_client_tool_executor_roundtrip() -> None:
     assert "ok" in str(out)
 
 
-@pytest.mark.asyncio
 async def test_approval_interrupt_signal() -> None:
     async def _wait() -> str:
         decision = await wait_for_decision("appr_1", timeout=2)
@@ -66,7 +61,6 @@ async def test_approval_interrupt_signal() -> None:
     assert await task == "approved"
 
 
-@pytest.mark.asyncio
 async def test_cowork_manifest_loads() -> None:
     from felix.manifests.loader import load_bundled
 
@@ -86,7 +80,6 @@ async def test_cowork_manifest_loads() -> None:
     assert m.spec.execution.mode == "durable"
 
 
-@pytest.mark.asyncio
 async def test_apply_approvals_waits_for_decide(tmp_path) -> None:
     from felix.manifests.builder import apply_approvals
     from felix.manifests.schema import ApprovalRule
@@ -138,7 +131,6 @@ async def test_apply_approvals_waits_for_decide(tmp_path) -> None:
     assert str(out) == "echo:ok"
 
 
-@pytest.mark.asyncio
 async def test_approval_frame_names_the_rule_and_says_why() -> None:
     """`description` is the one field in `ApprovalRule` written to be read by a person.
 
@@ -200,7 +192,6 @@ async def test_approval_frame_names_the_rule_and_says_why() -> None:
     assert frames[0]["data"]["reason"] == "Confirm writes to the workspace"
 
 
-@pytest.mark.asyncio
 async def test_the_pending_row_names_the_thread_that_is_blocked() -> None:
     """The row, not only the frame — because for a durable run the row is all there is.
 
@@ -266,7 +257,6 @@ async def test_the_pending_row_names_the_thread_that_is_blocked() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
     """The poll must not be a poorer channel than the frame, because for a durable run it is
     the only one.
@@ -349,7 +339,6 @@ async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_a_command_screening_approval_names_its_thread_too() -> None:
     """The other `create_pending` call site: `require_approval` from command screening.
 

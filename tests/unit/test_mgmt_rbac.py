@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pytest
 from felix.config import Settings
 from felix.manifests.builder import apply_command_screening
 from felix.manifests.schema import CommandScreening
@@ -31,7 +30,6 @@ def _sandbox_tool() -> Tool:
     )
 
 
-@pytest.mark.asyncio
 async def test_command_screening_include_defaults_denies_rm() -> None:
     tools = apply_command_screening(
         [_sandbox_tool()],
@@ -43,7 +41,6 @@ async def test_command_screening_include_defaults_denies_rm() -> None:
     assert "denied" in text.lower()
 
 
-@pytest.mark.asyncio
 async def test_command_screening_include_defaults_off() -> None:
     tools = apply_command_screening(
         [_sandbox_tool()],
@@ -55,7 +52,6 @@ async def test_command_screening_include_defaults_off() -> None:
     assert text == "ran:rm -rf /"
 
 
-@pytest.mark.asyncio
 async def test_mgmt_manifests_requires_scope() -> None:
     from felix_api.app import create_app
 
@@ -86,7 +82,6 @@ async def test_mgmt_manifests_requires_scope() -> None:
         assert audit_denied.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_mgmt_skipped_when_auth_none() -> None:
     from felix_api.app import create_app
 
@@ -104,7 +99,6 @@ async def test_mgmt_skipped_when_auth_none() -> None:
         assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_governed_chat_with_scopes_no_mcp_secret() -> None:
     """Bundled governed no longer requires FELIX_MCP_AUTH_TOKEN for /chat."""
     from felix_api.app import create_app

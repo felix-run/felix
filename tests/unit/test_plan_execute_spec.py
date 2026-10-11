@@ -233,7 +233,6 @@ def _plan_agent(**kw: Any) -> Any:
     return agent
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_both_routes_are_built_and_only_one_is_the_planner(streaming: bool) -> None:
     """The cheap shape check: two clients, built from the right two specs, in order.
@@ -273,7 +272,6 @@ async def test_both_routes_are_built_and_only_one_is_the_planner(streaming: bool
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_an_unset_planner_model_keeps_every_turn_on_the_manifests_model(
     streaming: bool,
@@ -299,7 +297,6 @@ async def test_an_unset_planner_model_keeps_every_turn_on_the_manifests_model(
     assert set(seen_ids) == {"manifest-model"}, seen_ids
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_a_refused_subtask_replans_the_remainder(streaming: bool) -> None:
     """The field said `replan_on_failure: true` and nothing replanned.
@@ -329,7 +326,6 @@ async def test_a_refused_subtask_replans_the_remainder(streaming: bool) -> None:
     assert steps.subtasks == ["alpha", "gamma"], steps.subtasks
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_replanning_is_not_attempted_when_the_manifest_turns_it_off(
     streaming: bool,
@@ -356,7 +352,6 @@ async def test_replanning_is_not_attempted_when_the_manifest_turns_it_off(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_max_replans_bounds_a_subtask_that_always_fails(streaming: bool) -> None:
     """Otherwise a step that cannot succeed spends the whole run replanning around itself."""
@@ -378,7 +373,6 @@ async def test_max_replans_bounds_a_subtask_that_always_fails(streaming: bool) -
     assert len(steps.subtasks) == 2, f"replanned past max_replans=1: {steps.subtasks}"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_a_replan_keeps_the_steps_already_done(streaming: bool) -> None:
     """Replanning replaces the *remainder*, not the plan.
@@ -407,7 +401,6 @@ async def test_a_replan_keeps_the_steps_already_done(streaming: bool) -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_compile_hands_the_executor_route_to_the_agent_it_builds() -> None:
     """The test that was missing, and its absence let `executor_model` ship inert.
 
@@ -458,7 +451,6 @@ async def test_the_compile_hands_the_executor_route_to_the_agent_it_builds() -> 
     assert manifest.spec.model.id == "manifest-model", "the manifest's own spec was mutated"
 
 
-@pytest.mark.asyncio
 async def test_a_plan_execute_agent_built_without_an_inner_agent_still_runs() -> None:
     """The fallback branch, which is where `executor_model` was wired first and did nothing.
 
@@ -504,7 +496,6 @@ async def test_a_plan_execute_agent_built_without_an_inner_agent_still_runs() ->
 # own doubles, so a mutation to either survived the whole file.
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_a_model_named_on_the_request_outranks_the_planner_route(streaming: bool) -> None:
     """`_model_for` applies the request override *last*, so it wins over `planner_model`.
@@ -540,7 +531,6 @@ async def test_a_model_named_on_the_request_outranks_the_planner_route(streaming
     assert set(built) == {"request-override"}, f"the request-level model did not reach every turn: {built}"
 
 
-@pytest.mark.asyncio
 async def test_a_streamed_composite_says_how_it_really_ended() -> None:
     """`stop_reason` rides on the composite's `done` event, not only on `on_chain_end`.
 
@@ -574,7 +564,6 @@ async def test_a_streamed_composite_says_how_it_really_ended() -> None:
     assert done[0].data.get("stop_reason") == "refusal", done[0].data
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_max_replans_zero_turns_replanning_off(streaming: bool) -> None:
     """The other way an operator switches it off, and the one with no behavioural test.
@@ -600,7 +589,6 @@ async def test_max_replans_zero_turns_replanning_off(streaming: bool) -> None:
     assert steps.subtasks == ["alpha", "beta"], f"a ceiling of zero still replanned: {steps.subtasks}"
 
 
-@pytest.mark.asyncio
 async def test_a_replan_cannot_grow_the_run_past_max_subtasks() -> None:
     """`max_subtasks` is a promise about the whole run, not about each plan separately.
 
@@ -697,7 +685,6 @@ def _routed_settings(**routes: dict[str, str]) -> Any:
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_each_route_does_its_own_half_of_the_run(streaming: bool, two_routes: None) -> None:
     """Which client *performed* which turn, which is the half a spy cannot see.
@@ -735,7 +722,6 @@ async def test_each_route_does_its_own_half_of_the_run(streaming: bool, two_rout
     )
 
 
-@pytest.mark.asyncio
 async def test_a_planner_route_that_does_not_resolve_fails_the_run(two_routes: None) -> None:
     """Loudly, and that is the intended half.
 
@@ -754,7 +740,6 @@ async def test_a_planner_route_that_does_not_resolve_fails_the_run(two_routes: N
         await _run(agent, streaming=False)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", STREAMING)
 async def test_a_planner_with_nothing_to_say_leaves_the_plan_alone(streaming: bool) -> None:
     """A replan that comes back empty is not a reason to stop.

@@ -1,6 +1,6 @@
 """`felix.skills.format`, `binary`, `plugin` and `semver`.
 
-Every bundle in `fixtures/skills/` must validate.
+Every bundle in `tests/fixtures/skills/` must validate.
 """
 
 from __future__ import annotations
@@ -38,7 +38,9 @@ from felix.skills.plugin import PluginManifest, is_allowed_host_pattern, parse_p
 from felix.skills.semver import bump_semver, compare_semver, resolve_next_semver
 from pydantic import ValidationError
 
-FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "skills"
+from tests.support import paths
+
+FIXTURES = paths.FIXTURES / "skills"
 
 
 def _bundle_dirs() -> list[Path]:

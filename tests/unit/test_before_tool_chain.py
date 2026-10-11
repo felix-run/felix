@@ -46,7 +46,6 @@ def blocks(tool_call, ctx):
     return {"block": True, "reason": "no", "hook": "spoofed"}
 
 
-@pytest.mark.asyncio
 async def test_a_non_block_answer_does_not_switch_off_a_later_blocking_hook() -> None:
     hooks = get_agent_hooks()
     hooks.register_before_tool(answers_without_block)
@@ -59,7 +58,6 @@ async def test_a_non_block_answer_does_not_switch_off_a_later_blocking_hook() ->
     assert messages[0].content == "[error/blocked] no"
 
 
-@pytest.mark.asyncio
 async def test_the_first_block_wins_and_ends_the_chain() -> None:
     later: list[str] = []
     hooks = get_agent_hooks()
@@ -73,7 +71,6 @@ async def test_the_first_block_wins_and_ends_the_chain() -> None:
     assert later == []
 
 
-@pytest.mark.asyncio
 async def test_an_answer_without_a_block_key_is_warned_about_and_an_explicit_allow_is_not(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -95,7 +92,6 @@ async def test_an_answer_without_a_block_key_is_warned_about_and_an_explicit_all
     assert executor.calls == 1
 
 
-@pytest.mark.asyncio
 async def test_a_block_is_audited_counted_and_marks_the_batch_denied(monkeypatch: pytest.MonkeyPatch) -> None:
     rows: list[tuple[str, dict[str, Any]]] = []
     counts: list[tuple[str, dict[str, Any]]] = []

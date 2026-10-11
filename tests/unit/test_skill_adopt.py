@@ -21,6 +21,7 @@ from felix.skills.library_store import ImportOrigin, get_skill_library_store
 from felix.storage import MemoryObjectStore
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
 from tests.support.skill_import_fake import skill_md
 
 NAME = "invoice-triage"
@@ -34,7 +35,7 @@ QUEUES = "# Queues\n\nSend invoices over 500 to finance, the rest to ops.\n"
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://skill-adopt")
+    return make_settings()
 
 
 @pytest.fixture

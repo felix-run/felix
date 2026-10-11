@@ -25,7 +25,6 @@ def memory_settings(tmp_path) -> Settings:
     )
 
 
-@pytest.mark.asyncio
 async def test_plan_tools_persist(memory_settings: Settings) -> None:
     tools = {t.name: t for t in _plan_tools()}
     auth = AuthContext(tenant_id="t1", principal_sub="tester", anonymous=False)
@@ -49,7 +48,6 @@ async def test_plan_tools_persist(memory_settings: Settings) -> None:
         assert g["plan"]["title"] == "Ship"
 
 
-@pytest.mark.asyncio
 async def test_a2a_tasks_persist_memory(memory_settings: Settings) -> None:
     task_store.clear_tasks()
     await task_store.put_task(
@@ -65,7 +63,6 @@ async def test_a2a_tasks_persist_memory(memory_settings: Settings) -> None:
     assert canceled["status"]["state"] == "canceled"
 
 
-@pytest.mark.asyncio
 async def test_fiber_get_after_stash(memory_settings: Settings) -> None:
     fiber = await create_fiber(
         memory_settings,
@@ -86,7 +83,6 @@ async def test_fiber_get_after_stash(memory_settings: Settings) -> None:
     assert row["state_json"]["stash"].get("prompt") == "hi"
 
 
-@pytest.mark.asyncio
 async def test_hydrate_secrets_from_env(memory_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-secret-value")
     memory_settings.anthropic_api_key = ""

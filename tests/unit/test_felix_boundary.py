@@ -182,7 +182,7 @@ def test_surface_is_read_from_the_issue_form() -> None:
 
 
 def test_a_surface_line_may_carry_prose_after_the_path() -> None:
-    """The first bot PR (#290) failed the surface check on all three files: its ticket wrote
+    r"""The first bot PR (#290) failed the surface check on all three files: its ticket wrote
     `- \`path\` — reason` per line and the whole line was read as a glob."""
     body = (
         "### Files expected to change\n\n"

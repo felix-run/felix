@@ -19,7 +19,6 @@ TENANT = "conformance"
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_plans_updated_in_one_millisecond_page_the_same_on_both_arms(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -34,7 +33,6 @@ async def test_plans_updated_in_one_millisecond_page_the_same_on_both_arms(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_filter_applies_before_the_limit_on_both_arms(store_settings: Any) -> None:
     # `0025_plan_thread_id`: the Postgres arm filters in SQL, so a page cut by `limit`
     # cannot drop this thread's plan behind newer ones from other threads.

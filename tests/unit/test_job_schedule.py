@@ -15,6 +15,8 @@ from felix.jobs import store as jobs_store
 from felix.jobs.schedule import ScheduleError, parse_schedule
 from felix.jobs.scheduler import next_run_at_ms, run_due_jobs
 
+from tests.support.factories import make_settings
+
 
 def _ms(*args: int) -> int:
     return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
@@ -86,13 +88,7 @@ def test_a_schedule_outside_the_grammar_is_refused(schedule: str) -> None:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        database_url="memory://schedule",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-    )
+    return make_settings()
 
 
 @pytest.fixture(autouse=True)
@@ -101,14 +97,12 @@ def _clean() -> None:
     jobs_store._memory_runs.clear()
 
 
-@pytest.mark.asyncio
 async def test_put_job_refuses_a_schedule_it_cannot_read(settings: Settings) -> None:
     with pytest.raises(ScheduleError):
         await jobs_store.put_job(settings, "default", "j", schedule="every tuesday")
     assert await jobs_store.get_job(settings, "default", "j") is None
 
 
-@pytest.mark.asyncio
 async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -137,7 +131,6 @@ async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
     assert await jobs_store.list_runs(settings, "default", "j") == []
 
 
-@pytest.mark.asyncio
 async def test_changing_a_schedule_moves_its_due_time(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

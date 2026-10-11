@@ -26,7 +26,6 @@ class _Store:
         return raw.encode() if raw is not None else None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "name",
     ["../victim/secrets", "a/b", "..", ".", "", "UPPER", "has space", "x" * 65],
@@ -38,7 +37,6 @@ async def test_a_bad_skill_name_never_reaches_a_key(name: str) -> None:
     assert store.seen == [], f"attempted keys for {name!r}: {store.seen}"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("version", ["../..", "a/b", "..", ""])
 async def test_a_bad_version_never_reaches_a_key(version: str) -> None:
     store = _Store()
@@ -49,7 +47,6 @@ async def test_a_bad_version_never_reaches_a_key(version: str) -> None:
     assert not any(version and version in k for k in store.seen)
 
 
-@pytest.mark.asyncio
 async def test_a_valid_skill_still_loads() -> None:
     store = _Store({"skills/t/real/SKILL.md": SKILL})
 
@@ -58,7 +55,6 @@ async def test_a_valid_skill_still_loads() -> None:
     assert skill is not None and skill.name == "real"
 
 
-@pytest.mark.asyncio
 async def test_a_versioned_skill_still_loads() -> None:
     store = _Store({"skills/t/real/1.2.0/SKILL.md": SKILL})
 
@@ -67,7 +63,6 @@ async def test_a_versioned_skill_still_loads() -> None:
     assert skill is not None
 
 
-@pytest.mark.asyncio
 async def test_a_tenants_own_skill_wins_over_the_shared_one() -> None:
     """Tenant keys were interleaved with shared ones: a shared *versioned* skill was
     tried before the tenant's own unversioned one, the same shape as the AGENTS.md
@@ -85,7 +80,6 @@ async def test_a_tenants_own_skill_wins_over_the_shared_one() -> None:
     assert "TENANT OWN" in skill.description
 
 
-@pytest.mark.asyncio
 async def test_the_shared_operator_skill_is_still_reachable() -> None:
     """No route lets a tenant write a bare `skills/` key, so it is an operator layer."""
     store = _Store({"skills/real/SKILL.md": SKILL})
@@ -93,7 +87,6 @@ async def test_the_shared_operator_skill_is_still_reachable() -> None:
     assert await load_skill_from_store(store, tenant_id="t", name="real") is not None
 
 
-@pytest.mark.asyncio
 async def test_a_bad_name_is_rejected_through_load_manifest_skills() -> None:
     """The validator only helps if the manifest entry point routes through it.
 

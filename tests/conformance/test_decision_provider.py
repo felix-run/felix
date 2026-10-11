@@ -200,7 +200,6 @@ async def _decide_in_request(decider: Any, settings: Any, ctx: Any = None) -> tu
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_decision_answers_every_question_with_its_type(arm: _Arm) -> None:
     arm.program("b")
     result, _ctx = await _decide_in_request(arm.build(), arm.settings)
@@ -215,7 +214,6 @@ async def test_a_decision_answers_every_question_with_its_type(arm: _Arm) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_decision_is_metered_and_priced_against_the_run(arm: _Arm) -> None:
     """The chain end to end: spend lands on `ctx.limit_state`, or `max_cost_usd` fails open."""
     arm.program("b")
@@ -231,7 +229,6 @@ async def test_a_decision_is_metered_and_priced_against_the_run(arm: _Arm) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_choice_outside_the_offered_options_is_refused(arm: _Arm) -> None:
     arm.program("z")
     ctx = _request_ctx(arm.settings)
@@ -244,7 +241,6 @@ async def test_a_choice_outside_the_offered_options_is_refused(arm: _Arm) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_unanswered_question_is_refused(arm: _Arm) -> None:
     arm.program("b", missing="sure")
     with pytest.raises(ValueError, match="sure"):
@@ -252,7 +248,6 @@ async def test_an_unanswered_question_is_refused(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["llm"], indirect=True)
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "reply",
     ["sure, b", "[1, 2]", '{"pick": "b", "sure": 0.8, "level": 7}'],
@@ -272,7 +267,6 @@ async def test_a_chat_model_reply_that_is_not_a_decision_is_refused(arm: _Arm, r
 
 
 @pytest.mark.parametrize("arm", ["typesafe"], indirect=True)
-@pytest.mark.asyncio
 async def test_typesafe_sends_the_documented_request(arm: _Arm) -> None:
     arm.program("b")
     await _decide_in_request(arm.build(), arm.settings)
@@ -292,7 +286,6 @@ async def test_typesafe_sends_the_documented_request(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["workers_ai"], indirect=True)
-@pytest.mark.asyncio
 async def test_workers_ai_nests_the_input_and_unwraps_the_envelope(arm: _Arm) -> None:
     arm.program("b")
     result, _ctx = await _decide_in_request(arm.build(), arm.settings)
@@ -306,7 +299,6 @@ async def test_workers_ai_nests_the_input_and_unwraps_the_envelope(arm: _Arm) ->
 
 
 @pytest.mark.parametrize("arm", ["clef"], indirect=True)
-@pytest.mark.asyncio
 async def test_clef_is_run_by_path_with_its_short_name_and_flat_fields(arm: _Arm) -> None:
     """Clef's documented request: `/ai/run/@cf/cloudflare/clef`, the Jev fields at the top,
     and `model` matching `^(clef|clef-flash)$` — the `@cf/` id is refused there."""
@@ -334,7 +326,6 @@ def test_every_default_decision_route_is_priced(route_id: str) -> None:
 
 
 @pytest.mark.parametrize("arm", ["workers_ai", "clef"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_cloudflare_failure_envelope_is_an_error_not_an_empty_answer(arm: _Arm) -> None:
     assert arm.transport is not None
     arm.transport.responses = [_Resp(200, {"result": {}, "success": False, "errors": [{"code": 7000}]})]
@@ -343,7 +334,6 @@ async def test_a_cloudflare_failure_envelope_is_an_error_not_an_empty_answer(arm
 
 
 @pytest.mark.parametrize("arm", ["workers_ai"], indirect=True)
-@pytest.mark.asyncio
 async def test_an_unfinished_run_names_its_state(arm: _Arm) -> None:
     assert arm.transport is not None
     run = {"state": "Running", "result": {}}
@@ -353,7 +343,6 @@ async def test_an_unfinished_run_names_its_state(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["typesafe", "workers_ai", "clef"], indirect=True)
-@pytest.mark.asyncio
 async def test_an_http_error_raises_the_gateway_error(arm: _Arm) -> None:
     assert arm.transport is not None
     arm.transport.responses = [_Resp(401, {"error": "bad key"})]
@@ -364,7 +353,6 @@ async def test_an_http_error_raises_the_gateway_error(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["typesafe"], indirect=True)
-@pytest.mark.asyncio
 async def test_overloaded_is_retried(arm: _Arm, monkeypatch: pytest.MonkeyPatch) -> None:
     """TypeSafe documents 529 as retry-after-a-moment; it used to fail the call outright."""
     import asyncio
@@ -381,7 +369,6 @@ async def test_overloaded_is_retried(arm: _Arm, monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.parametrize("arm", ["typesafe"], indirect=True)
-@pytest.mark.asyncio
 async def test_persistent_overload_ends_in_the_gateway_error(
     arm: _Arm, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -400,7 +387,6 @@ async def test_persistent_overload_ends_in_the_gateway_error(
 
 
 @pytest.mark.parametrize("arm", ["typesafe"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_decision_does_not_wait_out_the_generation_timeout(arm: _Arm) -> None:
     """During an outage every turn waits this long before falling back, so it is the
     decision budget (15s) rather than the 120s one generation needs."""

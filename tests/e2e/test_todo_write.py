@@ -6,12 +6,13 @@ What a person sees is the point of the tool, so these assert on what reaches the
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
+
+from tests.support.sse import sse_payloads
 
 THREAD = "e2e-todos"
 
@@ -33,14 +34,6 @@ def _write(call_id: str, *items: tuple[str, str]) -> ScriptedTurn:
     return ScriptedTurn(tool_calls=[ToolCall(id=call_id, name="todo_write", args={"todos": todos})])
 
 
-def _frames(body: str) -> list[dict[str, Any]]:
-    return [
-        json.loads(line[len("data: ") :])
-        for line in body.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
-    ]
-
-
 def _text(messages: list[Any]) -> str:
     return "\n".join(str(getattr(m, "content", "")) for m in messages)
 
@@ -51,7 +44,7 @@ async def _stream(app: Any, text: str = "fix the build") -> list[dict[str, Any]]
         json={"manifest": "e2e-todo", "thread_id": THREAD, "messages": [{"role": "user", "content": text}]},
     )
     assert resp.status_code == 200, resp.text
-    return _frames(resp.text)
+    return sse_payloads(resp.text)
 
 
 async def _snapshot_todos(app: Any) -> list[dict[str, Any]]:

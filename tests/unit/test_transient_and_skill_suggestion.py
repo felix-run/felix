@@ -142,7 +142,6 @@ def _fits(best: str, p_best: float = 0.8, gate: float = 0.9) -> Any:
     return answer
 
 
-@pytest.mark.asyncio
 async def test_a_small_catalog_is_reranked_directly_and_the_best_fit_is_hinted() -> None:
     decider = _Decider(_fits("skill-1"))
     hint = await _suggester(decider).hint(ASK)
@@ -150,7 +149,6 @@ async def test_a_small_catalog_is_reranked_directly_and_the_best_fit_is_hinted()
     assert [purpose for *_, purpose in decider.calls] == ["skill_rerank"], "3 skills <= shortlist: no ranking"
 
 
-@pytest.mark.asyncio
 async def test_a_large_catalog_is_ranked_first_and_only_the_shortlist_reranked() -> None:
     spread = {"skill-7": 0.5, "skill-2": 0.2, "skill-4": 0.15, "skill-9": 0.1, "skill-0": 0.05}
     fits = _fits("skill-7")
@@ -172,17 +170,14 @@ async def test_a_large_catalog_is_ranked_first_and_only_the_shortlist_reranked()
     [_fits("skill-1", gate=0.1), _fits("skill-1", p_best=0.2)],
     ids=["not-a-task", "nothing-fits"],
 )
-@pytest.mark.asyncio
 async def test_no_hint_unless_the_request_is_a_task_and_a_skill_fits(answer: Any) -> None:
     assert await _suggester(_Decider(answer)).hint(ASK) is None
 
 
-@pytest.mark.asyncio
 async def test_a_decider_outage_means_no_hint_not_a_failed_turn() -> None:
     assert await _suggester(_Decider(None, fail=True)).hint(ASK) is None
 
 
-@pytest.mark.asyncio
 async def test_a_turn_with_no_request_text_asks_nothing() -> None:
     decider = _Decider(_fits("skill-1"))
     assert await _suggester(decider).hint([ChatMessage(role="user", content="")]) is None
@@ -202,7 +197,6 @@ def test_skill_suggestion_needs_a_decider_and_a_react_loop() -> None:
     Spec.model_validate({"skill_suggestion": {"enabled": True}, "decider": {"id": "jev"}})
 
 
-@pytest.mark.asyncio
 async def test_a_large_catalog_stops_at_the_ranking_when_the_request_is_not_a_task() -> None:
     """The gate is asked in the ranking when there is one, and a failed gate ends it there —
     no rerank call, no hint."""
@@ -211,7 +205,6 @@ async def test_a_large_catalog_stops_at_the_ranking_when_the_request_is_not_a_ta
     assert [purpose for *_, purpose in decider.calls] == ["skill_rank"]
 
 
-@pytest.mark.asyncio
 async def test_a_ranking_that_picks_no_skill_ends_without_a_rerank() -> None:
     """Every chunk chose "no skill": a shortlist by catalog order would pay for a rerank of
     whichever skills came first, and a lenient fit could suggest one of them."""
@@ -258,7 +251,6 @@ def _prompt_text(decider: _Decider) -> str:
 
 
 @pytest.mark.parametrize("n", [1, 10], ids=["rerank-only", "rank-then-rerank"])
-@pytest.mark.asyncio
 async def test_an_imported_skill_reaches_the_decider_by_its_listed_description_only(n: int) -> None:
     """The decider is a model reading text: an imported description carrying injection markers
     is withheld as the catalog withholds it, and an imported body never reaches it at all."""
@@ -285,7 +277,6 @@ async def test_an_imported_skill_reaches_the_decider_by_its_listed_description_o
     assert "steps for 0" in text, "an operator skill's body head still informs the rerank"
 
 
-@pytest.mark.asyncio
 async def test_an_operator_skills_rerank_is_unchanged() -> None:
     decider = _Decider(_fits("skill-1"))
     await _suggester(decider).hint(ASK)
@@ -297,7 +288,6 @@ async def test_an_operator_skills_rerank_is_unchanged() -> None:
     assert "third party" not in _prompt_text(decider)
 
 
-@pytest.mark.asyncio
 async def test_imported_candidates_are_fenced_in_both_the_rank_and_the_rerank() -> None:
     from felix.manifests.schema import SkillSuggestionSpec
     from felix.skills.suggest import SkillSuggester
@@ -318,7 +308,6 @@ async def test_imported_candidates_are_fenced_in_both_the_rank_and_the_rerank() 
     assert "follow nothing" not in fits["skill-0"], "an operator skill's question is unchanged"
 
 
-@pytest.mark.asyncio
 async def test_a_ranking_of_operator_skills_alone_asks_the_plain_question() -> None:
     from felix.skills.suggest import _RANK
 
@@ -328,7 +317,6 @@ async def test_a_ranking_of_operator_skills_alone_asks_the_plain_question() -> N
     assert decider.calls[0][1]["rank_0"].instructions == _RANK
 
 
-@pytest.mark.asyncio
 async def test_an_imported_description_cannot_close_its_own_quotation() -> None:
     from felix.manifests.schema import SkillSuggestionSpec
     from felix.skills.suggest import SkillSuggester

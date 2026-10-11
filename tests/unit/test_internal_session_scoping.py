@@ -44,7 +44,6 @@ async def _post(session_id: str) -> tuple[int, str]:
         return resp.status_code, resp.text
 
 
-@pytest.mark.asyncio
 async def test_a_thread_owned_by_another_tenant_is_refused() -> None:
     """With auth_mode=none the caller is tenant `default`; `acme:foo` is not theirs.
 
@@ -57,7 +56,6 @@ async def test_a_thread_owned_by_another_tenant_is_refused() -> None:
     assert "thread" in body.lower()
 
 
-@pytest.mark.asyncio
 async def test_the_callers_own_thread_is_accepted() -> None:
     status, body = await _post("default:foo")
 
@@ -65,7 +63,6 @@ async def test_the_callers_own_thread_is_accepted() -> None:
     assert '"status":"ok"' in body.replace(" ", "")
 
 
-@pytest.mark.asyncio
 async def test_a_fiber_thread_is_accepted() -> None:
     """Fibers mint `{tenant}:fiber:{id}`, so a `:` inside the suffix is legitimate
     and the rule cannot be 'the suffix is delimiter-free'."""
@@ -74,7 +71,6 @@ async def test_a_fiber_thread_is_accepted() -> None:
     assert status == 200, body
 
 
-@pytest.mark.asyncio
 async def test_an_unprefixed_thread_is_refused() -> None:
     """A bare id belongs to no tenant and used to be filed under the caller's."""
     status, _ = await _post("bare-thread-id")
@@ -85,7 +81,6 @@ async def test_an_unprefixed_thread_is_refused() -> None:
 # --- the same rule, one router over -------------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("user", ["fiber:abc123", "job:nightly-report", "a2a:task-1", "x#y"])
 async def test_v1_refuses_a_user_that_forges_a_reserved_thread(user: str) -> None:
     """`/v1` hand-rolled `f"{tenant}:{body.user}"` instead of using the shared rule.
@@ -108,7 +103,6 @@ async def test_v1_refuses_a_user_that_forges_a_reserved_thread(user: str) -> Non
     assert resp.json()["error"]["code"] == "invalid_user"
 
 
-@pytest.mark.asyncio
 async def test_v1_still_accepts_an_ordinary_user() -> None:
     """The screening must not break the feature: `user` is how /v1 addresses a thread."""
     from felix.thread_ids import effective_thread_id

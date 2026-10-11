@@ -177,7 +177,6 @@ def test_manifest_skills_reach_the_card() -> None:
 # --- anomaly --------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_anomaly_thresholds_come_from_the_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.jobs import anomaly
 
@@ -203,7 +202,6 @@ async def test_anomaly_thresholds_come_from_the_manifest(monkeypatch: pytest.Mon
     assert found[0]["threshold_factor"] == 1.5
 
 
-@pytest.mark.asyncio
 async def test_anomaly_disabled_manifest_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     """`enabled: false` did not disable anything."""
     from felix.jobs import anomaly

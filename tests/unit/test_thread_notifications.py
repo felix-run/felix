@@ -25,9 +25,11 @@ from felix.session import notify
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 
+from tests.support.factories import make_settings
+
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://notify", redis_url="")
+    return make_settings(redis_url="")
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +71,6 @@ async def _registered(tenant_id: str, thread_id: str, *, timeout: float = 2.0) -
         await asyncio.sleep(0)
 
 
-@pytest.mark.asyncio
 async def test_an_append_wakes_a_waiting_reader() -> None:
     async def _wait() -> notify.Wake:
         return await notify.wait_for_events("t", "th", timeout=5.0)
@@ -82,7 +83,6 @@ async def test_an_append_wakes_a_waiting_reader() -> None:
     assert wake.woken is True
 
 
-@pytest.mark.asyncio
 async def test_a_timeout_is_not_an_error() -> None:
     """The caller polls on the way out either way, so a quiet thread must return
     normally rather than raise."""
@@ -90,7 +90,6 @@ async def test_a_timeout_is_not_an_error() -> None:
     assert wake.woken is False
 
 
-@pytest.mark.asyncio
 async def test_without_redis_nothing_claims_to_be_notified(monkeypatch: pytest.MonkeyPatch) -> None:
     """`by_notification` is what tells the caller it may wait longer. Claiming it
     without a cross-process channel would make a multi-replica deployment miss writes
@@ -105,7 +104,6 @@ async def test_without_redis_nothing_claims_to_be_notified(monkeypatch: pytest.M
     assert wake.by_notification is False
 
 
-@pytest.mark.asyncio
 async def test_only_the_named_thread_is_woken() -> None:
     """Both halves, because the negative alone passes against a `wait_for_events` that
     wakes nobody — which is a thing this module could plausibly regress into."""
@@ -120,7 +118,6 @@ async def test_only_the_named_thread_is_woken() -> None:
     assert (await other).woken is False, "an append to one thread woke a reader of another"
 
 
-@pytest.mark.asyncio
 async def test_tenants_do_not_share_a_channel() -> None:
     """The channel carries the tenant, so one tenant's writes cannot wake another's
     reader — a cross-tenant wake would leak the timing of another tenant's activity."""
@@ -135,7 +132,6 @@ async def test_tenants_do_not_share_a_channel() -> None:
     assert (await reader).woken is False
 
 
-@pytest.mark.asyncio
 async def test_every_reader_of_a_thread_is_woken() -> None:
     """Two tabs on one conversation is ordinary. A single-consumer primitive — which is
     what the existing `waiters` module is — would wake one and strand the other."""
@@ -146,7 +142,6 @@ async def test_every_reader_of_a_thread_is_woken() -> None:
     assert all(w.woken for w in results), [w.woken for w in results]
 
 
-@pytest.mark.asyncio
 async def test_a_notification_with_nobody_listening_registers_nothing() -> None:
     """Was assertion-free, and `notify_appended` catches `Exception` around everything
     that can fail — so it could only have failed on a bare `SyntaxError`. The real
@@ -157,7 +152,6 @@ async def test_a_notification_with_nobody_listening_registers_nothing() -> None:
     assert notify._subscribed == {}
 
 
-@pytest.mark.asyncio
 async def test_waiters_are_released_when_a_reader_goes_away() -> None:
     """A stream per tab, and tabs close. Leaking a waiter per stream would be a slow
     leak in exactly the component added to help at scale."""
@@ -168,7 +162,6 @@ async def test_waiters_are_released_when_a_reader_goes_away() -> None:
     assert notify._subscribed == {}, f"left {notify._subscribed} subscribed"
 
 
-@pytest.mark.asyncio
 async def test_a_cancelled_reader_also_releases() -> None:
     task = asyncio.create_task(notify.wait_for_events("t", "cancelled", timeout=5.0))
     await _registered("t", "cancelled")
@@ -182,7 +175,6 @@ async def test_a_cancelled_reader_also_releases() -> None:
 # --- the append path is what publishes ------------------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("tenant", ["default", "tenant-b"])
 async def test_appending_through_the_store_wakes_that_tenants_reader(tenant: str) -> None:
     """Wired into the store rather than a route, so it covers every writer — the agent
@@ -205,7 +197,6 @@ async def test_appending_through_the_store_wakes_that_tenants_reader(tenant: str
     assert wake.woken is True
 
 
-@pytest.mark.asyncio
 async def test_one_tenants_append_does_not_wake_another_on_the_same_thread_id() -> None:
     """The other direction, and the one with a disclosure shape.
 
@@ -229,7 +220,6 @@ async def test_one_tenants_append_does_not_wake_another_on_the_same_thread_id() 
     assert (await stranger).woken is False, "a tenant-b append woke a 'default' reader"
 
 
-@pytest.mark.asyncio
 async def test_two_tenants_do_not_share_a_thread_id_in_the_store() -> None:
     """The bug above had a storage half as well: ``get_session_store`` took a tenant and
     handed back one process-wide store that ignored it, so the same thread id was the
@@ -244,7 +234,6 @@ async def test_two_tenants_do_not_share_a_thread_id_in_the_store() -> None:
     assert await b.get_events() == [], "tenant-b can read tenant-a's events"
 
 
-@pytest.mark.asyncio
 async def test_a_failing_notifier_does_not_fail_the_append(monkeypatch: pytest.MonkeyPatch) -> None:
     """The append already succeeded. Losing a wake costs a reader some latency; raising
     here would lose the event."""
@@ -358,7 +347,6 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch):
     return _make
 
 
-@pytest.mark.asyncio
 async def test_a_watch_subscribes_once_however_many_times_it_waits(fake_redis) -> None:
     """The unit is the reader, not the wait.
 
@@ -373,7 +361,6 @@ async def test_a_watch_subscribes_once_however_many_times_it_waits(fake_redis) -
     assert client.log[-1] == ("unsub", notify._channel("t", "held"))
 
 
-@pytest.mark.asyncio
 async def test_two_readers_of_one_thread_share_a_single_subscription(fake_redis) -> None:
     """The ref-count branch that keeps a channel alive for the second reader."""
     client = fake_redis()
@@ -390,7 +377,6 @@ async def test_two_readers_of_one_thread_share_a_single_subscription(fake_redis)
     assert notify._subscribed == {}
 
 
-@pytest.mark.asyncio
 async def test_a_departing_reader_does_not_strand_one_still_subscribing(fake_redis) -> None:
     """The regression this file exists for.
 
@@ -417,7 +403,6 @@ async def test_a_departing_reader_does_not_strand_one_still_subscribing(fake_red
     assert (await asyncio.wait_for(staying, timeout=2.0)).woken is True
 
 
-@pytest.mark.asyncio
 async def test_an_append_between_two_waits_is_not_missed(fake_redis) -> None:
     """A reader spends most of its time querying, not waiting. An append landing in that
     gap used to be lost with the per-wait event that recorded it."""

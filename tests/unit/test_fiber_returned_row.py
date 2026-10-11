@@ -27,7 +27,6 @@ def _clean() -> Any:
     _memory_fibers.clear()
 
 
-@pytest.mark.asyncio
 async def test_create_fiber_returns_the_version_it_stored() -> None:
     """Without this the first compare-and-set is against a version that was never written."""
     fiber = await create_fiber(SETTINGS, "default", kind="durable_chat", status="pending", state={})
@@ -35,7 +34,6 @@ async def test_create_fiber_returns_the_version_it_stored() -> None:
     assert fiber["version"] == 0
 
 
-@pytest.mark.asyncio
 async def test_a_write_using_the_returned_row_is_not_discarded() -> None:
     """Take the returned row, advance it, save — what any writer holding it does."""
     from felix.durability.fibers import _memory_fibers

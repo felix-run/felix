@@ -65,7 +65,6 @@ def _finish(fiber_id: str) -> None:
 # --- the reattach stream asks what the run is waiting on -----------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_reattach_is_asked_to_run_the_client_tool_the_run_is_waiting_on() -> None:
     settings = durable_settings()
     thread = "default:reattach-tool"
@@ -82,7 +81,6 @@ async def test_a_reattach_is_asked_to_run_the_client_tool_the_run_is_waiting_on(
     assert asked == [request], f"expected one tool_request, got {asked} in {sse_event_names(body)}"
 
 
-@pytest.mark.asyncio
 async def test_a_reattach_is_asked_to_decide_the_approval_the_run_is_waiting_on() -> None:
     settings = durable_settings()
     thread = "default:reattach-gate"
@@ -96,7 +94,6 @@ async def test_a_reattach_is_asked_to_decide_the_approval_the_run_is_waiting_on(
     assert gates[0]["thread_id"] == thread
 
 
-@pytest.mark.asyncio
 async def test_a_reattach_is_not_told_another_threads_gates() -> None:
     settings = durable_settings()
     await pending_gate(settings, "default:theirs", call_signature="sig-theirs", ttl_seconds=600)
@@ -111,7 +108,6 @@ async def test_a_reattach_is_not_told_another_threads_gates() -> None:
     assert "approval_required" not in names and "tool_request" not in names, names
 
 
-@pytest.mark.asyncio
 async def test_a_reattach_holds_open_while_a_durable_run_is_in_flight() -> None:
     """The idle limit (0.2s here) is for an idle thread. A durable run blocked on a person is
     idle by that measure for as long as nobody answers, and closing then is closing exactly
@@ -133,7 +129,6 @@ async def test_a_reattach_holds_open_while_a_durable_run_is_in_flight() -> None:
     assert lasted >= 0.8, f"the reattach closed after {lasted:.2f}s with the run still in flight"
 
 
-@pytest.mark.asyncio
 async def test_a_reattach_with_no_run_in_flight_still_closes_when_idle() -> None:
     settings = durable_settings()
     async with app_client(settings) as client:
@@ -145,7 +140,6 @@ async def test_a_reattach_with_no_run_in_flight_still_closes_when_idle() -> None
 # --- the durable stream's deadline ----------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_the_durable_stream_outlives_its_deadline_while_a_worker_holds_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -171,7 +165,6 @@ async def test_the_durable_stream_outlives_its_deadline_while_a_worker_holds_the
     assert "run_expired:fiber-1" not in body
 
 
-@pytest.mark.asyncio
 async def test_the_durable_stream_still_says_expired_when_nothing_holds_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

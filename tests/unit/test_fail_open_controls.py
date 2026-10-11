@@ -40,7 +40,6 @@ def test_high_score_flags() -> None:
     assert ScreenResult(score=0.99).flagged is True
 
 
-@pytest.mark.asyncio
 async def test_screener_outage_reports_unavailable(caplog: pytest.LogCaptureFixture) -> None:
     """A missing key, an expired credential, or a 429 must not read as clean."""
     with caplog.at_level(logging.ERROR, logger="felix.governance.screening"):
@@ -50,7 +49,6 @@ async def test_screener_outage_reports_unavailable(caplog: pytest.LogCaptureFixt
     assert "unavailable" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_unparseable_reply_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reply we cannot parse is not evidence the text is clean."""
     from felix.patterns.types import ChatMessage
@@ -232,7 +230,6 @@ class _ChattyVerifier:
         return ModelChatResult(message=ChatMessage(role="assistant", content=self.text))
 
 
-@pytest.mark.asyncio
 async def test_unreachable_verifier_does_not_pass_the_gate(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -249,7 +246,6 @@ async def test_unreachable_verifier_does_not_pass_the_gate(
     assert any("verifier" in r.message for r in caplog.records), "the outage must be visible"
 
 
-@pytest.mark.asyncio
 async def test_verifier_outage_falls_back_to_a_real_measurement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -274,7 +270,6 @@ async def test_verifier_outage_falls_back_to_a_real_measurement(
         ("1", 1.0),
     ],
 )
-@pytest.mark.asyncio
 async def test_verifier_replies_are_parsed_not_guessed(
     monkeypatch: pytest.MonkeyPatch, reply: str, expected: float
 ) -> None:
@@ -286,7 +281,6 @@ async def test_verifier_replies_are_parsed_not_guessed(
 
 
 @pytest.mark.parametrize("reply", ["7", "-2", "8 out of 10", "rated 95"])
-@pytest.mark.asyncio
 async def test_an_out_of_range_score_is_not_clamped_into_a_pass(
     monkeypatch: pytest.MonkeyPatch, reply: str
 ) -> None:
@@ -302,7 +296,6 @@ async def test_an_out_of_range_score_is_not_clamped_into_a_pass(
     assert await _reflect_agent()._score("some answer", "assert_present:zebra", "") == 0.0
 
 
-@pytest.mark.asyncio
 async def test_unparseable_verifier_reply_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.patterns import delegating
 

@@ -53,7 +53,6 @@ def _age(approval_id: str, *, by_ms: int) -> None:
         row["expires_at"] -= by_ms
 
 
-@pytest.mark.asyncio
 async def test_an_unanswered_approval_is_denied_on_its_row() -> None:
     """End to end through the gate: nobody answers, and the row stops reading `pending`."""
     from felix.manifests.builder import apply_approvals
@@ -91,7 +90,6 @@ async def test_an_unanswered_approval_is_denied_on_its_row() -> None:
     assert row["decided_at"] is not None
 
 
-@pytest.mark.asyncio
 async def test_a_reask_after_the_deadline_gets_a_row_of_its_own() -> None:
     settings = _settings()
     stale = await _pending(settings)
@@ -106,7 +104,6 @@ async def test_a_reask_after_the_deadline_gets_a_row_of_its_own() -> None:
     assert (closed["status"], closed["decision_note"]) == ("denied", "timeout")
 
 
-@pytest.mark.asyncio
 async def test_a_row_with_no_ttl_lapses_at_the_default_wait() -> None:
     """`expires_at` is null when the rule sets no ttl, but the wait still ends -- at five
     minutes -- so the row has a deadline even though it is not written down."""
@@ -120,7 +117,6 @@ async def test_a_row_with_no_ttl_lapses_at_the_default_wait() -> None:
     assert fresh["id"] != stale["id"]
 
 
-@pytest.mark.asyncio
 async def test_a_live_row_is_still_shared_by_identical_calls() -> None:
     """The reuse is deliberate -- concurrent identical calls share one decision -- and only a
     lapsed row is excluded from it."""
@@ -130,7 +126,6 @@ async def test_a_live_row_is_still_shared_by_identical_calls() -> None:
     assert second["id"] == first["id"]
 
 
-@pytest.mark.asyncio
 async def test_closing_never_overwrites_a_decision_that_landed_first() -> None:
     settings = _settings()
     row = await _pending(settings)

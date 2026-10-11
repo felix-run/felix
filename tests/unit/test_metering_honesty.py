@@ -98,13 +98,11 @@ async def _spend(usage: TokenUsage | None, *, logical: str, wire: str) -> float:
     return ctx.limit_state.cost_usd
 
 
-@pytest.mark.asyncio
 async def test_a_custom_route_accrues_the_wire_models_cost() -> None:
     spend = await _spend(TokenUsage(input=1_000_000), logical="fast", wire="claude-sonnet-5")
     assert spend > 0.0
 
 
-@pytest.mark.asyncio
 async def test_an_unpriced_route_accrues_nothing() -> None:
     spend = await _spend(TokenUsage(input=1_000_000), logical="fast", wire="mystery-model")
     assert spend == 0.0
@@ -113,7 +111,6 @@ async def test_an_unpriced_route_accrues_nothing() -> None:
 # --- an unmetered turn is loud ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("usage", [None, TokenUsage()])
 async def test_a_turn_reporting_no_usage_warns(usage: TokenUsage | None, caplog: Any) -> None:
     """It leaves the run uncapped, so it must not pass silently. The common cause is a
@@ -125,7 +122,6 @@ async def test_a_turn_reporting_no_usage_warns(usage: TokenUsage | None, caplog:
     assert any("unmetered" in r.message for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_a_metered_turn_does_not_warn(caplog: Any) -> None:
     with caplog.at_level(logging.WARNING, logger="felix.patterns.model"):
         await _spend(TokenUsage(input=10, output=5), logical="fast", wire="claude-sonnet-5")
@@ -225,7 +221,6 @@ def test_a_route_absent_from_the_table_is_left_to_the_model_layer() -> None:
     assert_cost_limit_is_measurable(_manifest("nowhere", limits={"max_cost_usd": 5.0}), settings)
 
 
-@pytest.mark.asyncio
 async def test_the_cost_check_runs_at_compile() -> None:
     """Every other test here calls the function directly, so nothing held `build_agent` to
     actually invoking it — removing the call from the builder left the suite green."""

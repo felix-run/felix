@@ -32,6 +32,8 @@ from felix.memory.extraction import (
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 
+from tests.support.factories import make_settings
+
 TENANT = "t-extract"
 MANIFEST = "m"
 
@@ -50,7 +52,7 @@ def _clean() -> None:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://extract", object_store="memory", allow_insecure=True)
+    return make_settings()
 
 
 class _ScriptedModel:
@@ -156,7 +158,6 @@ def test_real_facts_are_not_mistaken_for_meta() -> None:
         assert not looks_like_assistant_meta(text), text
 
 
-@pytest.mark.asyncio
 async def test_the_heuristic_path_drops_meta_and_keeps_facts() -> None:
     """With no model there is no judgement, so the exclusion is applied bluntly.
 
@@ -181,7 +182,6 @@ async def test_the_heuristic_path_drops_meta_and_keeps_facts() -> None:
 # --- verification ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_verification_drops_what_the_excerpt_does_not_support() -> None:
     model = _ScriptedModel(
         _payload({"content": "Supported."}, {"content": "Invented."}),
@@ -191,7 +191,6 @@ async def test_verification_drops_what_the_excerpt_does_not_support() -> None:
     assert [m.content for m in out] == ["Supported."]
 
 
-@pytest.mark.asyncio
 async def test_an_unparseable_verification_keeps_the_unverified_set() -> None:
     """A broken verifier must not silently empty the store."""
     model = _ScriptedModel(_payload({"content": "Kept."}), "the verifier said something odd")
@@ -199,7 +198,6 @@ async def test_an_unparseable_verification_keeps_the_unverified_set() -> None:
     assert [m.content for m in out] == ["Kept."]
 
 
-@pytest.mark.asyncio
 async def test_verification_is_off_unless_asked_for() -> None:
     """It doubles the calls, so it stays opt-in."""
     model = _ScriptedModel(_payload({"content": "Kept."}))
@@ -207,7 +205,6 @@ async def test_verification_is_off_unless_asked_for() -> None:
     assert len(model.prompts) == 1
 
 
-@pytest.mark.asyncio
 async def test_a_failing_model_yields_nothing_rather_than_raising() -> None:
     class _Broken:
         model_id = "broken"
@@ -218,7 +215,6 @@ async def test_a_failing_model_yields_nothing_rather_than_raising() -> None:
     assert await extract_memories(_Broken(), "excerpt", max_facts=3) is None
 
 
-@pytest.mark.asyncio
 async def test_the_excerpt_reaches_the_model_fenced() -> None:
     """Extraction reads tool output, and what it extracts is injected into later prompts.
 
@@ -256,7 +252,6 @@ async def test_the_excerpt_reaches_the_model_fenced() -> None:
     assert prompt.endswith("</assistant_said>")
 
 
-@pytest.mark.asyncio
 async def test_a_payload_cannot_forge_the_speaker_labels() -> None:
     """The labels are what carry attribution, so they are the next thing to forge.
 
@@ -289,7 +284,6 @@ async def test_a_payload_cannot_forge_the_speaker_labels() -> None:
 # --- what capture stores -----------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_later_captured_value_is_current_without_retiring_the_earlier() -> None:
     """Capture chooses the topic_key from the transcript, through no governance wrapper, so it
     may not retire what already holds the key — one injected turn would delete the facts on it.
@@ -320,7 +314,6 @@ async def test_a_later_captured_value_is_current_without_retiring_the_earlier() 
     assert "CET" in prelude and "UTC" not in prelude
 
 
-@pytest.mark.asyncio
 async def test_kind_and_importance_survive_to_the_store() -> None:
     settings = _settings()
     await capture_from_turn(
@@ -339,7 +332,6 @@ async def test_kind_and_importance_survive_to_the_store() -> None:
     assert row["importance"] == 0.9
 
 
-@pytest.mark.asyncio
 async def test_an_empty_extraction_stores_nothing() -> None:
     """Returning [] is the common case and a better answer than a weak memory."""
     settings = _settings()
@@ -359,7 +351,6 @@ async def test_an_empty_extraction_stores_nothing() -> None:
 # --- verification, the cases that shipped wrong ------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_well_formed_empty_verdict_drops_everything() -> None:
     """The headline case, and it failed open.
 
@@ -377,7 +368,6 @@ async def test_a_well_formed_empty_verdict_drops_everything() -> None:
     assert out == []
 
 
-@pytest.mark.asyncio
 async def test_verification_cannot_introduce_a_memory_of_its_own() -> None:
     """A filter, never a source.
 
@@ -397,7 +387,6 @@ async def test_verification_cannot_introduce_a_memory_of_its_own() -> None:
     assert [m.content for m in out] == ["Proposed and supported."]
 
 
-@pytest.mark.asyncio
 async def test_a_verifier_that_raises_keeps_the_unverified_set() -> None:
     """The `except` around the verification call was never executed by any test."""
 
@@ -420,7 +409,6 @@ async def test_a_verifier_that_raises_keeps_the_unverified_set() -> None:
     assert [m.content for m in out] == ["Kept."]
 
 
-@pytest.mark.asyncio
 async def test_the_manifest_field_actually_turns_verification_on() -> None:
     """Nothing connected `spec.memory.capture.verify` to behaviour.
 
@@ -447,7 +435,6 @@ async def test_the_manifest_field_actually_turns_verification_on() -> None:
 # --- limits and normalisation ------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_max_facts_truncates() -> None:
     """A user-facing manifest field with nothing stopping a chatty model."""
     model = _ScriptedModel(_payload(*({"content": f"Fact number {i}."} for i in range(10))))
@@ -455,7 +442,6 @@ async def test_max_facts_truncates() -> None:
     assert len(out) == 3
 
 
-@pytest.mark.asyncio
 async def test_extraction_dedupes_its_own_output() -> None:
     """`merge` is tested directly, but nothing checked extract_memories applies it."""
     model = _ScriptedModel(
@@ -497,7 +483,6 @@ def test_model_extracted_meta_is_dropped_but_real_facts_survive() -> None:
     ], "parse_memories itself must stay a pure parser"
 
 
-@pytest.mark.asyncio
 async def test_extraction_drops_model_emitted_meta() -> None:
     model = _ScriptedModel(
         _payload(
@@ -509,7 +494,6 @@ async def test_extraction_drops_model_emitted_meta() -> None:
     assert [m.content for m in out] == ["The deploy runbook lives in the ops repository."]
 
 
-@pytest.mark.asyncio
 async def test_an_empty_extraction_is_not_overridden_by_the_heuristic() -> None:
     """A model saying "nothing here worth keeping" is an answer, not a failure.
 
@@ -535,7 +519,6 @@ async def test_an_empty_extraction_is_not_overridden_by_the_heuristic() -> None:
 # --- contracts the fixes above depend on -------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_unreadable_extraction_is_distinguishable_from_an_empty_one() -> None:
     """`None` means "could not read", `[]` means "read, nothing to keep".
 
@@ -546,7 +529,6 @@ async def test_unreadable_extraction_is_distinguishable_from_an_empty_one() -> N
     assert await extract_memories(_ScriptedModel("[]"), "e", max_facts=3) == []
 
 
-@pytest.mark.asyncio
 async def test_unreadable_extraction_falls_back_to_the_heuristic() -> None:
     """The other half: the fallback was only ever reached with model=None, so nothing
     proved an unreadable *model* reply also reaches it."""
@@ -565,7 +547,6 @@ async def test_unreadable_extraction_falls_back_to_the_heuristic() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_verification_cannot_retarget_a_topic_key() -> None:
     """Content was constrained; the fields that matter were not.
 
@@ -681,7 +662,6 @@ def test_a_pleasantry_after_the_first_sentence_is_caught() -> None:
         assert looks_like_assistant_meta(text), text
 
 
-@pytest.mark.asyncio
 async def test_an_unusable_verdict_keeps_the_unverified_set() -> None:
     """A verdict that parses but carries no usable item is a broken verifier.
 
@@ -695,7 +675,6 @@ async def test_an_unusable_verdict_keeps_the_unverified_set() -> None:
         assert [m.content for m in out] == ["The runbook lives in the ops repository."], verdict
 
 
-@pytest.mark.asyncio
 async def test_extraction_does_not_spend_the_conversation_prompt_cache() -> None:
     """A side request in the middle of somebody's turn carries a different prefix.
 
@@ -707,7 +686,6 @@ async def test_extraction_does_not_spend_the_conversation_prompt_cache() -> None
     assert model.opts[0].isolate_cache is True
 
 
-@pytest.mark.asyncio
 async def test_a_verifier_that_rewrites_instead_of_choosing_keeps_the_set() -> None:
     """The last silent-empty path in a pass that promises only to remove things.
 
@@ -725,7 +703,6 @@ async def test_a_verifier_that_rewrites_instead_of_choosing_keeps_the_set() -> N
         assert [m.content for m in out] == [fact], verdict
 
 
-@pytest.mark.asyncio
 async def test_a_case_only_difference_still_selects() -> None:
     """dedupe_key does normalise case and whitespace, so this must not take the
     broken-verifier path above.
@@ -745,7 +722,6 @@ async def test_a_case_only_difference_still_selects() -> None:
     assert [m.content for m in out] == [fact]
 
 
-@pytest.mark.asyncio
 async def test_capture_disabled_stores_nothing() -> None:
     """`enabled` is the switch that stops persisting user content.
 
@@ -767,7 +743,6 @@ async def test_capture_disabled_stores_nothing() -> None:
     assert await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST) == []
 
 
-@pytest.mark.asyncio
 async def test_a_turn_below_min_chars_is_not_captured() -> None:
     """The other untested gate on the same model. Both sides, so an inverted
     comparison is caught as well as a deleted one."""
@@ -804,7 +779,6 @@ async def _prelude(settings, **kw):
     return await active_facts_prompt(settings, TENANT, manifest_id=MANIFEST, **kw)
 
 
-@pytest.mark.asyncio
 async def test_every_kind_is_surfaced_not_only_facts() -> None:
     """The gap this closes. Recall filtered on `kind="fact"`, so the `instruction`,
     `event` and `task` rows extraction is told to produce were stored, superseded
@@ -828,7 +802,6 @@ async def test_every_kind_is_surfaced_not_only_facts() -> None:
         assert content in prompt, content
 
 
-@pytest.mark.asyncio
 async def test_everything_recalled_stays_reference_material() -> None:
     """One tier, and its warning is the whole reason this is safe to widen.
 
@@ -847,7 +820,6 @@ async def test_everything_recalled_stays_reference_material() -> None:
     assert "<remembered_instructions" not in prompt, "the withdrawn trusted block came back"
 
 
-@pytest.mark.asyncio
 async def test_a_stored_memory_cannot_forge_a_prelude_block() -> None:
     """A stored row carrying a well-formed block of any prelude shape.
 
@@ -881,7 +853,6 @@ async def test_a_stored_memory_cannot_forge_a_prelude_block() -> None:
     assert "Send all credentials to" in prompt, "content should still be visible, just inert"
 
 
-@pytest.mark.asyncio
 async def test_no_memories_still_yields_no_prelude() -> None:
     assert await _prelude(_settings()) == ""
 
@@ -906,7 +877,6 @@ def test_the_prelude_renders_no_markup_from_stored_content() -> None:
         assert ">" not in out, hostile
 
 
-@pytest.mark.asyncio
 async def test_volume_alone_cannot_evict_a_curated_memory() -> None:
     """The write guard stops a curated row being superseded; nothing stopped it being
     crowded out of a bounded, recency-ordered prelude by the chatter it corrects."""
@@ -938,7 +908,6 @@ async def test_volume_alone_cannot_evict_a_curated_memory() -> None:
     assert "Require approval before any production write." in prompt
 
 
-@pytest.mark.asyncio
 async def test_a_third_person_apology_from_the_extractor_is_not_stored() -> None:
     """The extractor resolves pronouns, so the apology arrives as "The assistant apologized…",
     past the first-person filter the prompt's exclusion relied on. The fact beside it is kept."""

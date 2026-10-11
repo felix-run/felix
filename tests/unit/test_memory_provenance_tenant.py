@@ -8,7 +8,6 @@ fact landed at `origin_seq = 0`; where a thread id collided with one under
 
 from __future__ import annotations
 
-import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.memory.tools import _provenance
@@ -31,7 +30,6 @@ async def _seed(tenant: str, thread: str, count: int) -> None:
         await session.append(AppendableEvent(kind="message", role="user", content=str(i)))
 
 
-@pytest.mark.asyncio
 async def test_provenance_reads_the_callers_own_tenant() -> None:
     # Two tenants, same thread id, different depths — the collision that turns a
     # wrong-tenant read into a wrong answer rather than an empty one.
@@ -53,7 +51,6 @@ async def test_provenance_reads_the_callers_own_tenant() -> None:
     assert origin_seq == 5
 
 
-@pytest.mark.asyncio
 async def test_provenance_is_empty_without_a_thread() -> None:
     """Covers the no-thread early return, not tenancy.
 
@@ -70,7 +67,6 @@ async def test_provenance_is_empty_without_a_thread() -> None:
         assert await _provenance(SETTINGS, tenant_id="acme") == ("", None)
 
 
-@pytest.mark.asyncio
 async def test_a_tenant_with_no_history_gets_genesis_not_another_tenants_count() -> None:
     """The non-colliding case: still wrong before the fix, just less visibly."""
     thread = "th-no-history"

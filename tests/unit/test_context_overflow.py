@@ -176,7 +176,6 @@ def _agent(model: Any, strategy: Any | None, store: Any | None) -> _ReactAgent:
     return agent
 
 
-@pytest.mark.asyncio
 async def test_overflow_compacts_and_retries_once() -> None:
     model = _OverflowThenOk("prompt is too long")
     strategy = _Strategy()
@@ -188,7 +187,6 @@ async def test_overflow_compacts_and_retries_once() -> None:
     assert out.final.content == "recovered"
 
 
-@pytest.mark.asyncio
 async def test_a_second_overflow_propagates() -> None:
     """Compacting twice against a request that still will not fit is a loop."""
     model = _AlwaysOverflows()
@@ -199,7 +197,6 @@ async def test_a_second_overflow_propagates() -> None:
     assert model.chat_calls == 2
 
 
-@pytest.mark.asyncio
 async def test_throttling_is_not_recovered_by_compacting() -> None:
     model = _OverflowThenOk("rate limit reached for tokens per min")
     strategy = _Strategy()
@@ -210,7 +207,6 @@ async def test_throttling_is_not_recovered_by_compacting() -> None:
     assert strategy.compactions == [], "history must not be discarded over backpressure"
 
 
-@pytest.mark.asyncio
 async def test_without_a_session_the_error_propagates() -> None:
     """There is nothing to compact, so there is nothing to retry."""
     model = _OverflowThenOk("prompt is too long")
@@ -242,7 +238,6 @@ class _SilentThenOk:
         )
 
 
-@pytest.mark.asyncio
 async def test_silent_overflow_is_recovered_even_though_nothing_raised() -> None:
     model = _SilentThenOk()
     strategy = _Strategy()
@@ -276,7 +271,6 @@ class _StreamOverflowThenOk:
         raise AssertionError("stream_turn should have produced the result")
 
 
-@pytest.mark.asyncio
 async def test_streaming_overflow_recovers_before_anything_ships() -> None:
     model = _StreamOverflowThenOk()
     strategy = _Strategy()

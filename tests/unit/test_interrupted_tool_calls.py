@@ -133,7 +133,6 @@ class _Capturing:
         )
 
 
-@pytest.mark.asyncio
 async def test_a_resumed_run_answers_every_outstanding_call() -> None:
     """Without this the provider rejects the request for an unanswered tool call."""
     model = _Capturing()
@@ -199,7 +198,6 @@ class _CallsChargeOnce:
         )
 
 
-@pytest.mark.asyncio
 async def test_a_run_that_dies_inside_a_tool_leaves_the_call_for_the_next_run_to_close() -> None:
     import asyncio
 
@@ -255,7 +253,6 @@ async def test_a_run_that_dies_inside_a_tool_leaves_the_call_for_the_next_run_to
     assert charged == 1
 
 
-@pytest.mark.asyncio
 async def test_a_resumed_run_withdraws_the_gates_its_interrupted_calls_left_open() -> None:
     """felix-run/felix#531: the dead attempt's approval and client request stop being offered.
 

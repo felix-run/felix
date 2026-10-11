@@ -36,7 +36,6 @@ class _CountingSession:
         return await self._inner.get_events(opts)
 
 
-@pytest.mark.asyncio
 async def test_the_first_user_message_costs_one_page_however_long_the_log() -> None:
     events = [AppendableEvent(kind="message", role="user", content="hi")]
     events += [AppendableEvent(kind="message", role="assistant", content=str(n)) for n in range(500)]
@@ -48,7 +47,6 @@ async def test_the_first_user_message_costs_one_page_however_long_the_log() -> N
     assert session.pages[0].kinds == ["message"] and session.pages[0].limit is not None
 
 
-@pytest.mark.asyncio
 async def test_the_read_pages_on_past_a_run_of_turns_with_no_user_text() -> None:
     events = [AppendableEvent(kind="message", role="assistant", content=str(n)) for n in range(45)]
     events += [AppendableEvent(kind="tool_result", role="tool", content="not a message")] * 5
@@ -60,7 +58,6 @@ async def test_the_read_pages_on_past_a_run_of_turns_with_no_user_text() -> None
     assert [p.from_seq for p in session.pages] == [0, 20, 40]
 
 
-@pytest.mark.asyncio
 async def test_a_log_with_no_user_text_ends_on_a_short_page() -> None:
     session = _CountingSession([AppendableEvent(kind="message", role="user", content=" ")] * 3)
     await session.load()

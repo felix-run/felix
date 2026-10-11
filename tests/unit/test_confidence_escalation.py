@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model_composites import _EscalationClient
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, StreamDelta, TokenUsage, ToolCall
 
@@ -54,7 +53,6 @@ def _escalating(primary: _Model, target: _Model) -> _EscalationClient:
     )
 
 
-@pytest.mark.asyncio
 async def test_an_escalated_turn_meters_both_calls() -> None:
     """The regression: the discarded turn was billed and invisible to every budget."""
     primary = _Model("weak", "I am not sure", TokenUsage(input=1000, output=1000))
@@ -71,7 +69,6 @@ async def test_an_escalated_turn_meters_both_calls() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_cache_tokens_are_summed_too() -> None:
     """Cache reads are a real cost line for Anthropic and are counted by usage_with_cost."""
     primary = _Model("weak", "not sure", TokenUsage(input=1, output=1, cache_read=700, cache_creation=9))
@@ -84,7 +81,6 @@ async def test_cache_tokens_are_summed_too() -> None:
     assert result.usage.cache_creation == 10
 
 
-@pytest.mark.asyncio
 async def test_a_confident_answer_costs_one_call() -> None:
     primary = _Model("weak", "a clear and complete answer", TokenUsage(input=10, output=10))
     target = _Model("strong", "unused", TokenUsage(input=999, output=999))
@@ -95,7 +91,6 @@ async def test_a_confident_answer_costs_one_call() -> None:
     assert result.usage is not None and result.usage.input == 10, "and meters only what it spent"
 
 
-@pytest.mark.asyncio
 async def test_tool_calls_are_never_escalated() -> None:
     """A turn that wants a tool has not answered yet; its text is not low confidence."""
     primary = _Model(
@@ -112,7 +107,6 @@ async def test_tool_calls_are_never_escalated() -> None:
     assert result.message.tool_calls
 
 
-@pytest.mark.asyncio
 async def test_a_missing_usage_on_either_turn_does_not_erase_the_other() -> None:
     """A provider that reports no usage must not silently zero what the other turn cost."""
     primary = _Model("weak", "not sure", TokenUsage(input=1000, output=1000))
@@ -126,7 +120,6 @@ async def test_a_missing_usage_on_either_turn_does_not_erase_the_other() -> None
     assert result.usage is not None and result.usage.input == 7
 
 
-@pytest.mark.asyncio
 async def test_the_streamed_path_carries_the_same_metered_result() -> None:
     """Escalation cannot stream — it needs the finished reply to judge confidence — so it
     settles the turn and chunks it. The terminal result is what the caller meters."""

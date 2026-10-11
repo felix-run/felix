@@ -43,7 +43,6 @@ async def _put(settings: Any, name: str = JOB, **kw: Any) -> dict[str, Any]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     created = await _put(store_settings, payload={"prompt": "summarise", "depth": 2})
 
@@ -93,7 +92,6 @@ async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_republishing_a_job_keeps_its_run_state(store_settings: Any) -> None:
     """`put_job` is an upsert, and the scheduler's state lives on the same row as the spec.
 
@@ -128,7 +126,6 @@ async def test_republishing_a_job_keeps_its_run_state(store_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_touching_a_job_that_is_gone_is_not_an_error(store_settings: Any) -> None:
     """The sweep records a result after the run, and a job can be deleted in between."""
     await jobs.touch_run(store_settings, TENANT, "never-existed", last_run_at=1, last_status="ok")
@@ -137,7 +134,6 @@ async def test_touching_a_job_that_is_gone_is_not_an_error(store_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_one_tenants_jobs_are_invisible_to_another(store_settings: Any) -> None:
     await _put(store_settings, tenant_id=TENANT)
     await _put(store_settings, tenant_id=OTHER, manifest_id="deep")
@@ -157,7 +153,6 @@ async def test_one_tenants_jobs_are_invisible_to_another(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deleting_a_job_takes_its_runs_with_it(store_settings: Any) -> None:
     """Otherwise a job republished under the same name inherits a stranger's history.
 
@@ -174,14 +169,12 @@ async def test_deleting_a_job_takes_its_runs_with_it(store_settings: Any) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deleting_a_job_that_is_not_there_reports_it(store_settings: Any) -> None:
     """The route turns this into a 404, so "did anything happen" has to be the truth."""
     assert await jobs.delete_job(store_settings, TENANT, "never-existed") is False
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deleting_one_tenants_job_leaves_anothers(store_settings: Any) -> None:
     """The tenant predicate *on the cascade*, which is a different property from the cascade.
 
@@ -204,7 +197,6 @@ async def test_deleting_one_tenants_job_leaves_anothers(store_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_run_round_trips_with_every_field(store_settings: Any) -> None:
     await _put(store_settings)
 
@@ -234,7 +226,6 @@ async def test_a_run_round_trips_with_every_field(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_runs_come_back_newest_first(store_settings: Any) -> None:
     await _put(store_settings)
     for started in (10, 30, 20):
@@ -251,7 +242,6 @@ async def test_runs_come_back_newest_first(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_limit_keeps_the_newest_runs(store_settings: Any) -> None:
     """A truncated history that drops the *newest* rows is worse than no history."""
     await _put(store_settings)
@@ -269,7 +259,6 @@ async def test_the_limit_keeps_the_newest_runs(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_runs_sharing_a_timestamp_truncate_the_same_way(store_settings: Any) -> None:
     """`started_at` is milliseconds and a sweep records a burst, so ties are ordinary.
 
@@ -297,7 +286,6 @@ async def test_runs_sharing_a_timestamp_truncate_the_same_way(store_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_one_jobs_runs_are_not_anothers(store_settings: Any) -> None:
     """By job *and* by tenant, because job names are chosen per tenant and collide freely.
 
@@ -318,7 +306,6 @@ async def test_one_jobs_runs_are_not_anothers(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
     """`GET /jobs` is an operator's inventory, and neither arm ordered it at all.
 
@@ -353,7 +340,6 @@ async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_two_ticks_claiming_one_due_run_fire_it_once(store_settings: Any) -> None:
     """Two scheduler ticks read the same due job -- two workers, or a slow tick overlapping the
     next. `touch_run` let both claim it; `claim_run` lets the first, and refuses the second."""
@@ -376,7 +362,6 @@ async def test_two_ticks_claiming_one_due_run_fire_it_once(store_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_job_with_no_due_time_is_claimed_once_too(store_settings: Any) -> None:
     """A job with no schedule has a NULL `next_run_at`, which the scheduler treats as due, and
     it must still be claimable -- on both arms. The second claim loses because the first moved

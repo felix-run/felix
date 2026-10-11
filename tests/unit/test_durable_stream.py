@@ -13,36 +13,22 @@ the run so it stops burning tokens.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
 from felix.config import Settings
 from httpx import AsyncClient
 
-from tests.support.factories import app_client
+from tests.support.factories import app_client, make_settings
+from tests.support.sse import sse_payloads
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://durable",
+    return make_settings(
         redis_url="",
         stream_resume_poll_seconds=0.1,
         stream_resume_poll_max_seconds=0.1,
     )
-
-
-def _frames(body: str) -> list[dict[str, Any]]:
-    out = []
-    for block in body.split("\n\n"):
-        for line in block.splitlines():
-            if line.startswith("data: ") and line[6:] != "[DONE]":
-                out.append(json.loads(line[6:]))
-    return out
 
 
 @pytest.fixture
@@ -94,7 +80,6 @@ async def _post_stream(client: AsyncClient, manifest: str = "quick") -> str:
     return body
 
 
-@pytest.mark.asyncio
 async def test_a_durable_manifest_streams_the_run_instead_of_running_inline(
     durable: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -110,13 +95,12 @@ async def test_a_durable_manifest_streams_the_run_instead_of_running_inline(
     async with app_client(settings) as client:
         body = await _post_stream(client)
 
-    events = [f.get("event") for f in _frames(body)]
+    events = [f.get("event") for f in sse_payloads(body)]
     assert "run_accepted" in events, f"no acceptance frame: {events}"
     assert "final" in events, f"the run never reported a result: {events}"
     assert body.rstrip().endswith("[DONE]")
 
 
-@pytest.mark.asyncio
 async def test_the_first_frame_carries_the_resume_token(
     durable: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -129,12 +113,11 @@ async def test_the_first_frame_carries_the_resume_token(
     async with app_client(settings) as client:
         body = await _post_stream(client)
 
-    first = _frames(body)[0]
+    first = sse_payloads(body)[0]
     assert first["event"] == "run_accepted"
     assert first["data"]["resume_token"] == "token-1"
 
 
-@pytest.mark.asyncio
 async def test_a_failed_run_reports_the_failure_rather_than_closing_quietly(
     durable: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -150,7 +133,6 @@ async def test_a_failed_run_reports_the_failure_rather_than_closing_quietly(
     assert "model_unavailable" in body
 
 
-@pytest.mark.asyncio
 async def test_a_transient_manifest_is_untouched() -> None:
     """The default path must not have moved: `quick` is transient, and it should still
     stream the agent rather than a run."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from felix.auth.jwt import public_jwks
 from felix.governance.judges import heuristic_judge_score
 from felix.jobs.scheduler import next_run_at_ms
@@ -33,7 +32,6 @@ def test_heuristic_judge_score() -> None:
     assert heuristic_judge_score("ship the feature soon", "ship feature") == 1.0
 
 
-@pytest.mark.asyncio
 async def test_apply_judges_threshold() -> None:
     async def _echo(args: dict) -> str:
         return str(args.get("text") or "")
@@ -63,7 +61,6 @@ def test_public_jwks_from_json() -> None:
     assert doc["keys"][0]["kid"] == "k1"
 
 
-@pytest.mark.asyncio
 async def test_file_secrets_rejects_traversal(tmp_path) -> None:
     secret = tmp_path / "ok"
     secret.write_text("value-secret", encoding="utf-8")
@@ -86,7 +83,6 @@ class _MemSession:
         return None
 
 
-@pytest.mark.asyncio
 async def test_summarizing_no_model_emits_notice() -> None:
     events = [
         SessionEvent(seq=i, ts=float(i), kind="message", role="user", content=f"msg-{i}") for i in range(6)
@@ -101,7 +97,6 @@ async def test_summarizing_no_model_emits_notice() -> None:
     assert any("[session] summarizing unavailable" in m.content for m in out)
 
 
-@pytest.mark.asyncio
 async def test_semantic_emits_keyword_notice() -> None:
     events = [
         SessionEvent(seq=1, ts=1.0, kind="message", role="user", content="alpha beta"),

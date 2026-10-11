@@ -55,7 +55,6 @@ def one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_cost_and_wire_id_survive_the_round_trip(usage_settings: Any) -> None:
     _record(usage_settings, manifest="support", model="fast", tokens=1_000_000)
     assert await usage_store.flush_pending(usage_settings) == 1
@@ -71,7 +70,6 @@ async def test_cost_and_wire_id_survive_the_round_trip(usage_settings: Any) -> N
 # Postgres only: the twin has no bind-parameter limit, so its arm could not fail.
 # `tests/unit/test_flush_bind_parameters.py` guards the same rule without a database.
 @pytest.mark.parametrize("usage_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_buffer_past_the_bind_parameter_limit_flushes_whole(
     usage_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -94,7 +92,6 @@ async def test_a_buffer_past_the_bind_parameter_limit_flushes_whole(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_summary_sums_within_the_tenant_and_groups_by_day(usage_settings: Any) -> None:
     _record(usage_settings, manifest="support", model="fast", tokens=1_000_000)
     _record(usage_settings, manifest="support", model="fast", tokens=500_000)
@@ -114,7 +111,6 @@ async def test_summary_sums_within_the_tenant_and_groups_by_day(usage_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_both_arms_bucket_by_the_same_utc_day(
     usage_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,7 +137,6 @@ async def test_both_arms_bucket_by_the_same_utc_day(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_summary_window_is_half_open_in_epoch_ms(usage_settings: Any) -> None:
     _record(usage_settings, manifest="support", model="fast", tokens=10)
     await usage_store.flush_pending(usage_settings)
@@ -159,7 +154,6 @@ async def test_summary_window_is_half_open_in_epoch_ms(usage_settings: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_paging_usage_returns_every_row_once(usage_settings: Any, one_millisecond: None) -> None:
     """Nothing called `query` with a cursor — on either arm, anywhere in the repo.
 
@@ -194,7 +188,6 @@ async def test_paging_usage_returns_every_row_once(usage_settings: Any, one_mill
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_manifest_filter_survives_a_tied_page_boundary(
     usage_settings: Any, one_millisecond: None
 ) -> None:
@@ -228,7 +221,6 @@ async def test_the_manifest_filter_survives_a_tied_page_boundary(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any, one_millisecond: None) -> None:
     """The two arms sorted the same two text keys in opposite directions.
 
@@ -254,7 +246,6 @@ async def test_the_summary_rows_come_back_in_one_order(usage_settings: Any, one_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_retried_flush_does_not_duplicate_or_block(usage_settings: Any) -> None:
     """The usage flush commits per tenant, so a retry after a partial commit re-inserts rows
     already written. That must be a no-op — not a primary-key violation retried forever, and
@@ -280,7 +271,6 @@ def _t(suffix: str) -> str:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_thread_survives_the_round_trip_and_filters_the_listing(usage_settings: Any) -> None:
     _record(usage_settings, manifest="support", model="fast", tokens=10, thread=_t("a"))
     _record(usage_settings, manifest="support", model="fast", tokens=20, thread=_t("b"))
@@ -298,7 +288,6 @@ async def test_the_thread_survives_the_round_trip_and_filters_the_listing(usage_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_event_buffered_before_the_column_flushes_as_no_thread(usage_settings: Any) -> None:
     """A process that predates the field buffered events with no `thread_id` key; a durable
     buffer can hand them to one that has it."""
@@ -313,7 +302,6 @@ async def test_an_event_buffered_before_the_column_flushes_as_no_thread(usage_se
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_threads_group_order_and_total_over_the_window(
     usage_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -364,7 +352,6 @@ async def test_threads_group_order_and_total_over_the_window(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_threads_truncate_the_page_but_total_every_thread(
     usage_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -386,7 +373,6 @@ async def test_threads_truncate_the_page_but_total_every_thread(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_threads_default_to_the_summary_window(usage_settings: Any) -> None:
     _record(usage_settings, manifest="m", model="fast", tokens=10, thread=_t("now"))
     await usage_store.flush_pending(usage_settings)

@@ -21,6 +21,8 @@ from felix.skills.library_keys import ORG_OWNER, library_object_key
 from felix.skills.library_store import get_skill_library_store
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.skill_bodies import INVOICE_TRIAGE as BODY
+
 KEYS = json.dumps(
     {
         "sk-read": {"tenant_id": "acme", "sub": "reader", "scopes": ["skills:read"]},
@@ -31,15 +33,6 @@ KEYS = json.dumps(
 )
 READ, WRITE, NONE, GLOBEX = ("sk-read", "sk-write", "sk-none", "sk-globex")
 NAME = "invoice-triage"
-BODY = """# Invoice triage
-
-Use this when an invoice arrives.
-
-## Steps
-
-1. Read the vendor and the amount.
-2. Route amounts over the limit to finance.
-"""
 # Long enough for `collected_secret_values` (8+), and shaped like no credential the scan knows.
 SHARED_SECRET = "plain-shared-value-1234"
 

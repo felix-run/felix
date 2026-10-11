@@ -191,12 +191,10 @@ async def _put_pwn(allowlist: str) -> int:
         return resp.status_code
 
 
-@pytest.mark.asyncio
 async def test_put_manifest_rejects_unallowlisted_stdio() -> None:
     """The pre-fix behaviour stored this and executed /bin/sh on the next /chat."""
     assert await _put_pwn("") == 400
 
 
-@pytest.mark.asyncio
 async def test_put_manifest_accepts_allowlisted_stdio() -> None:
     assert await _put_pwn("/bin/sh") == 200

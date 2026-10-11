@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, StreamDelta, TokenUsage
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -70,7 +69,6 @@ async def _drain(agent: _ReactAgent) -> list[Any]:
     ]
 
 
-@pytest.mark.asyncio
 async def test_reasoning_arrives_under_its_own_name() -> None:
     events = await _drain(
         _agent(
@@ -87,7 +85,6 @@ async def test_reasoning_arrives_under_its_own_name() -> None:
     assert thought == "let me work it out"
 
 
-@pytest.mark.asyncio
 async def test_reasoning_stays_out_of_the_answer() -> None:
     # The whole point of separating them: reasoning rendered as the reply is worse
     # than reasoning not rendered at all.
@@ -104,7 +101,6 @@ async def test_reasoning_stays_out_of_the_answer() -> None:
     assert "".join(e.data["delta"] for e in events if e.event == "text_delta") == "Hello"
 
 
-@pytest.mark.asyncio
 async def test_the_progress_envelope_still_carries_it() -> None:
     # Additive: a consumer already digging reasoning out of `session_progress`
     # keeps working, which is what makes this safe to ship without a client change.

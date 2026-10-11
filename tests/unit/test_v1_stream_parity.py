@@ -89,7 +89,6 @@ async def _post(body: dict[str, Any]) -> Any:
         return await client.post("/v1/chat/completions", json=body)
 
 
-@pytest.mark.asyncio
 async def test_the_stream_carries_the_headers_a_proxied_sse_stream_needs(agent) -> None:
     agent(_Agent([Event(event="text_delta", data={"delta": "hi"})]))
     resp = await _post(BODY)
@@ -99,7 +98,6 @@ async def test_the_stream_carries_the_headers_a_proxied_sse_stream_needs(agent) 
     assert resp.headers["cache-control"] == "no-cache"
 
 
-@pytest.mark.asyncio
 async def test_an_error_mid_stream_yields_an_error_chunk_and_done(agent) -> None:
     agent(
         _Agent(
@@ -120,7 +118,6 @@ async def test_an_error_mid_stream_yields_an_error_chunk_and_done(agent) -> None
     )
 
 
-@pytest.mark.asyncio
 async def test_a_gateway_error_mid_stream_is_typed_and_does_not_leak_the_body(agent) -> None:
     agent(_Agent([], raises=ModelGatewayError("anthropic", 429, "org_abc123 req_sensitive_9f3")))
     resp = await _post(BODY)
@@ -131,7 +128,6 @@ async def test_a_gateway_error_mid_stream_is_typed_and_does_not_leak_the_body(ag
     assert frames[-1] == "[DONE]"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stop_reason", "finish_reason"),
     [("end_turn", "stop"), ("max_tokens", "length"), ("refusal", "content_filter"), ("tool_use", "stop")],
@@ -149,7 +145,6 @@ async def test_finish_reason_reflects_the_stop_reason(agent, stop_reason: str, f
     assert plain.json()["choices"][0]["finish_reason"] == finish_reason
 
 
-@pytest.mark.asyncio
 async def test_sampling_parameters_reach_the_agent(agent) -> None:
     a = agent(_Agent([Event(event="text_delta", data={"delta": "x"})]))
     await _post({**BODY, "temperature": 0.2, "max_tokens": 77})
@@ -166,7 +161,6 @@ async def test_sampling_parameters_reach_the_agent(agent) -> None:
     assert (await _post({**BODY, "max_tokens": 0})).status_code == 422
 
 
-@pytest.mark.asyncio
 async def test_thinking_is_not_emitted_as_content(agent) -> None:
     agent(
         _Agent(
@@ -244,7 +238,6 @@ def _turn(**options: Any) -> InvokeInput:
     )
 
 
-@pytest.mark.asyncio
 async def test_sampling_options_reach_the_model_call_and_the_stop_reason_the_caller() -> None:
     """The react loop passes the caller's `ModelChatOptions` to the model call, and `None`
     when nobody asked — the Protocol's optional argument, so a client written against it
@@ -262,7 +255,6 @@ async def test_sampling_options_reach_the_model_call_and_the_stop_reason_the_cal
     )
 
 
-@pytest.mark.asyncio
 async def test_a_caller_may_only_lower_max_tokens() -> None:
     """The wire prefers the caller's `max_tokens` over `spec.model.max_tokens`, and the
     output budget is checked at the top of a turn — so an unclamped value sizes a whole
@@ -299,7 +291,6 @@ def test_every_stop_reason_has_a_finish_reason() -> None:
     assert set(_FINISH_REASON) == set(get_args(StopReason))
 
 
-@pytest.mark.asyncio
 async def test_a_quiet_run_is_kept_alive_for_the_proxy(agent, monkeypatch: pytest.MonkeyPatch) -> None:
     """A long tool call emits nothing and proxies cut idle streams; the sentinel becomes a
     `: keep-alive` comment, which an OpenAI SSE client ignores."""
@@ -324,7 +315,6 @@ async def test_a_quiet_run_is_kept_alive_for_the_proxy(agent, monkeypatch: pytes
     assert frames[-1] == "[DONE]" and frames[-2]["choices"][0]["finish_reason"] == "stop"
 
 
-@pytest.mark.asyncio
 async def test_finish_reason_survives_the_reply_controls_on_both_arms() -> None:
     """Through the real chain — a governed manifest wrapping the loop in reply controls —
     rather than a double: the wrapper rebuilds the output and the `done` frame, and on
@@ -348,7 +338,6 @@ async def test_finish_reason_survives_the_reply_controls_on_both_arms() -> None:
     assert out.final.content == PII_BLOCKED_REPLY and out.stop_reason == "refusal"
 
 
-@pytest.mark.asyncio
 async def test_sampling_options_reach_the_streaming_call_sites() -> None:
     """`stream: true` takes `stream_turn` (or `stream` for a client without it), not `chat`."""
     from felix_ai.types import ModelChatResult, StreamDelta, TokenUsage
@@ -398,7 +387,6 @@ async def test_sampling_options_reach_the_streaming_call_sites() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_a_bare_pattern_context_without_limits_still_takes_sampling() -> None:
     """`PatternBuildContext` is a plain dict and `limits` may be absent from a third-party
     builder's context; `_over_budget` tolerates that, and the clamp must too."""

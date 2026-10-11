@@ -8,18 +8,14 @@ from felix.config import Settings
 from felix.durability import fibers
 from felix.durability.fibers import create_fiber, resume_due_fibers
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        auth_mode="none",
-        allow_insecure=True,
-        object_store="memory",
-        database_url="memory://fiber",
-    )
+    return make_settings()
 
 
-@pytest.mark.asyncio
 async def test_fiber_stash_then_complete(settings: Settings) -> None:
     await create_fiber(
         settings,
@@ -44,7 +40,6 @@ async def test_fiber_stash_then_complete(settings: Settings) -> None:
     assert await resume_due_fibers(settings) == 0, "a finished fiber was claimed again"
 
 
-@pytest.mark.asyncio
 async def test_fiber_sleep_wake(settings: Settings) -> None:
     await create_fiber(
         settings,
@@ -63,7 +58,6 @@ async def test_fiber_sleep_wake(settings: Settings) -> None:
     assert n >= 1
 
 
-@pytest.mark.asyncio
 async def test_a2a_task_store_roundtrip(settings: Settings) -> None:
     task_store.clear_tasks()
     await task_store.put_task(

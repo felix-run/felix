@@ -74,7 +74,6 @@ def test_two_processes_get_different_identities() -> None:
     assert seen[0] != seen[1], f"two processes claim the same identity: {seen[0]!r}"
 
 
-@pytest.mark.asyncio
 async def test_one_worker_cannot_renew_another_workers_claim() -> None:
     """The consumer, pinned — this is what the unique default is *for*.
 

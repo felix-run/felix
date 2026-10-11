@@ -190,7 +190,6 @@ async def _record_waits(
     return slept, fired
 
 
-@pytest.mark.asyncio
 async def test_the_loop_actually_waits_the_backed_off_delay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,7 +208,6 @@ async def test_the_loop_actually_waits_the_backed_off_delay(
     assert len(slept) < 60, f"{len(slept)} polls to cover 120s of silence"
 
 
-@pytest.mark.asyncio
 async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,7 +226,6 @@ async def test_a_notified_stream_relaxes_to_the_longer_ceiling(
     assert max(slept) <= NOTIFIED_POLL_CEILING_SECONDS, f"waited past the ceiling: {max(slept)}"
 
 
-@pytest.mark.asyncio
 async def test_a_notified_stream_relaxes_with_a_durable_run_in_flight_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,7 +269,6 @@ async def test_a_notified_stream_relaxes_with_a_durable_run_in_flight_too(
     )
 
 
-@pytest.mark.asyncio
 async def test_a_wake_puts_the_interval_back_on_the_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

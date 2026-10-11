@@ -71,7 +71,6 @@ def stdio_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     return ref
 
 
-@pytest.mark.asyncio
 async def test_a_stdio_servers_instructions_become_its_tools_guidance(stdio_server: Any) -> None:
     tools = await tools_from_mcp_servers([stdio_server("Search before  filing;\n  never file duplicates.")])
     assert [t.name for t in tools] == ["tracker__search_issues"]
@@ -81,7 +80,6 @@ async def test_a_stdio_servers_instructions_become_its_tools_guidance(stdio_serv
     )
 
 
-@pytest.mark.asyncio
 async def test_instructions_are_ignored_unless_the_manifest_opts_in(stdio_server: Any) -> None:
     tools = await tools_from_mcp_servers([stdio_server("Search before filing.", use=False)])
     assert tools and tool_guidance_section(tools, {}) == ""
@@ -95,7 +93,6 @@ def test_flagged_instructions_are_dropped_and_long_ones_capped() -> None:
     assert len(capped) <= len("s (from the server): ") + MAX_INSTRUCTIONS_CHARS
 
 
-@pytest.mark.asyncio
 async def test_an_http_servers_instructions_are_read_off_initialize(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.mcp.client as client_mod
 

@@ -38,7 +38,6 @@ NEGATIVE = "must not leak credentials or secrets"
 # --- guardrail judges -------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_decider_judge_scores_by_probability_and_reads_a_negative_criterion() -> None:
     """The heuristic fails a negative criterion closed (0.0) because bag-of-words inverts it;
     the decider reads it as stated."""
@@ -53,7 +52,6 @@ async def test_a_decider_judge_scores_by_probability_and_reads_a_negative_criter
     assert NEGATIVE in questions["meets"].instructions
 
 
-@pytest.mark.asyncio
 async def test_a_judge_that_did_not_opt_in_never_reaches_the_decider() -> None:
     from felix.governance.judges import judge_score
 
@@ -62,7 +60,6 @@ async def test_a_judge_that_did_not_opt_in_never_reaches_the_decider() -> None:
     assert decider.calls == []
 
 
-@pytest.mark.asyncio
 async def test_a_decider_outage_falls_back_to_the_judges_old_path() -> None:
     from felix.governance.judges import heuristic_judge_score, judge_score
 
@@ -74,7 +71,6 @@ async def test_a_decider_outage_falls_back_to_the_judges_old_path() -> None:
 # --- the model judge is metered ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_the_model_judge_counts_against_the_run() -> None:
     from felix.config import Settings
     from felix.context import AuthContext, RequestContext, async_run_with_context
@@ -116,7 +112,6 @@ def _reflector(decider: Any, *, opted: bool = True) -> Any:
     )
 
 
-@pytest.mark.asyncio
 async def test_reflect_verifies_with_the_decider_when_asked() -> None:
     decider = _Decider(0.2)
     score = await _reflector(decider)._score("an answer", "cites a source", "", request="why?")
@@ -125,7 +120,6 @@ async def test_reflect_verifies_with_the_decider_when_asked() -> None:
     assert state == {"text": "an answer", "request": "why?"} and purpose == "reflect"
 
 
-@pytest.mark.asyncio
 async def test_reflect_falls_back_to_the_verifier_path_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unopted, or the decider down: the old path — here the verifier model is unreachable,
     so the heuristic answers, which is what reflect already did in that case."""
@@ -146,7 +140,6 @@ async def test_reflect_falls_back_to_the_verifier_path_without_it(monkeypatch: p
 # --- eval -------------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_an_eval_rubric_can_be_judged_by_a_decider() -> None:
     from felix.config import Settings
     from felix.decisions import register_builtin_deciders
@@ -188,7 +181,6 @@ def test_a_decider_judge_or_verifier_needs_a_decider() -> None:
     Spec.model_validate({"guardrails": judges, "reflect": {"decider": True}, "decider": {"id": "jev"}})
 
 
-@pytest.mark.asyncio
 async def test_the_reflect_pattern_is_built_with_the_decider() -> None:
     """Through `_build_reflect`, the way the compile builds it — a reflect agent that never
     received the decider would validate `reflect.decider` and then ask the model."""
@@ -209,7 +201,6 @@ async def test_the_reflect_pattern_is_built_with_the_decider() -> None:
     assert decider.calls, "the built agent asked the decider"
 
 
-@pytest.mark.asyncio
 async def test_text_longer_than_the_window_is_judged_by_the_old_path_not_a_prefix() -> None:
     """8,000 characters of filler and then the payload: a prefix judge would pass it."""
     from felix.governance.judges import heuristic_judge_score, judge_score

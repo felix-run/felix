@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, StreamDelta
 from felix.patterns.types import ChatMessage
 from felix_ai.wire.base import _repair_json
@@ -104,7 +103,6 @@ ANTHROPIC_LINES = [
 ]
 
 
-@pytest.mark.asyncio
 async def test_anthropic_stream_yields_text_and_returns_the_full_turn(monkeypatch: Any) -> None:
     deltas, result = await _collect(_client(monkeypatch, ANTHROPIC_LINES, "anthropic"))
 
@@ -122,7 +120,6 @@ async def test_anthropic_stream_yields_text_and_returns_the_full_turn(monkeypatc
     assert (result.usage.input, result.usage.output, result.usage.cache_read) == (120, 33, 40)
 
 
-@pytest.mark.asyncio
 async def test_streamed_request_carries_tools(monkeypatch: Any) -> None:
     """The old streamed request omitted tools entirely, which forced the second call."""
     from felix.tools.types import define_tool
@@ -147,7 +144,6 @@ OPENAI_LINES = [
 ]
 
 
-@pytest.mark.asyncio
 async def test_openai_stream_accumulates_tool_arguments(monkeypatch: Any) -> None:
     deltas, result = await _collect(_client(monkeypatch, OPENAI_LINES, "openai"))
 
@@ -159,7 +155,6 @@ async def test_openai_stream_accumulates_tool_arguments(monkeypatch: Any) -> Non
     assert result.usage is not None and result.usage.input == 11
 
 
-@pytest.mark.asyncio
 async def test_openai_stream_asks_for_usage(monkeypatch: Any) -> None:
     """Without stream_options a streamed turn reports no usage and meters as zero."""
     await _collect(_client(monkeypatch, OPENAI_LINES, "openai"))

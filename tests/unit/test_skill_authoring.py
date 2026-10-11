@@ -28,21 +28,15 @@ from felix.storage import MemoryObjectStore
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 from pydantic import ValidationError
 
+from tests.support.factories import make_settings
+from tests.support.skill_bodies import INVOICE_TRIAGE as BODY
+
 REPO_SKILLS = Path(__file__).resolve().parents[2] / "skills"
-BODY = """# Invoice triage
-
-Use this when an invoice arrives.
-
-## Steps
-
-1. Read the vendor and the amount.
-2. Route amounts over the limit to finance.
-"""
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://authoring")
+    return make_settings()
 
 
 @pytest.fixture

@@ -27,7 +27,6 @@ import ast
 import inspect
 import time
 
-import pytest
 from felix.security import rate_limit as rl_module
 from felix.security.rate_limit import MAX_TRACKED_KEYS, InMemoryRateLimiter
 
@@ -40,14 +39,12 @@ async def _spray(limiter: InMemoryRateLimiter, n: int, *, limit: int = 120) -> N
 # --- the semantics must not have moved ----------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_window_still_allows_exactly_the_limit() -> None:
     rl = InMemoryRateLimiter()
     allowed = [await rl.hit("ip:a", limit=3, window_seconds=60) for _ in range(5)]
     assert allowed == [True, True, True, False, False]
 
 
-@pytest.mark.asyncio
 async def test_a_rejected_request_does_not_extend_the_window() -> None:
     """The rejected hit must not be recorded, or a client at the limit could never
     recover: each rejection would push the window forward."""
@@ -59,7 +56,6 @@ async def test_a_rejected_request_does_not_extend_the_window() -> None:
     assert list(rl._windows["ip:a"]) == before
 
 
-@pytest.mark.asyncio
 async def test_keys_are_independent() -> None:
     rl = InMemoryRateLimiter()
     for _ in range(3):
@@ -68,7 +64,6 @@ async def test_keys_are_independent() -> None:
     assert await rl.hit("ip:b", limit=3, window_seconds=60) is True
 
 
-@pytest.mark.asyncio
 async def test_a_stale_bucket_frees_the_allowance() -> None:
     """window_seconds=0 puts every recorded timestamp at or before the cutoff."""
     rl = InMemoryRateLimiter()
@@ -79,7 +74,6 @@ async def test_a_stale_bucket_frees_the_allowance() -> None:
 # --- the properties the change is about ----------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_expired_keys_are_reclaimed_without_a_sweep() -> None:
     rl = InMemoryRateLimiter()
     await _spray(rl, 200)
@@ -90,7 +84,6 @@ async def test_expired_keys_are_reclaimed_without_a_sweep() -> None:
     assert len(rl._windows) <= 2, f"stale keys were never reclaimed: {len(rl._windows)}"
 
 
-@pytest.mark.asyncio
 async def test_the_key_ceiling_holds() -> None:
     """Without a bound, an IP spray is a memory-exhaustion DoS in the component whose
     job is to prevent one."""
@@ -105,7 +98,6 @@ async def test_the_key_ceiling_holds() -> None:
     assert MAX_TRACKED_KEYS == 50_000, "the shipped ceiling"
 
 
-@pytest.mark.asyncio
 async def test_eviction_examines_a_bounded_number_of_keys() -> None:
     """Structural, so it holds regardless of machine speed.
 
@@ -122,7 +114,6 @@ async def test_eviction_examines_a_bounded_number_of_keys() -> None:
             raise AssertionError(f"line {node.lineno} walks the whole key set; eviction must stay bounded")
 
 
-@pytest.mark.asyncio
 async def test_a_hit_stays_fast_with_fifty_thousand_keys_tracked() -> None:
     """A latency property deserves a latency assertion.
 

@@ -17,7 +17,6 @@ TENANT = "conformance"
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_attempts_persist_through_backoff_to_dead(
     fiber_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -51,7 +50,6 @@ async def test_attempts_persist_through_backoff_to_dead(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_attempts_persist_when_the_save_itself_fails(
     fiber_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -84,7 +82,6 @@ async def test_attempts_persist_when_the_save_itself_fails(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_webhook_delivery_state_round_trips_and_is_claimed_once(fiber_settings: Any) -> None:
     """Migration 0019's columns, the terminal-only claim, and the delivery write — on both arms.
 
@@ -134,7 +131,6 @@ async def test_webhook_delivery_state_round_trips_and_is_claimed_once(fiber_sett
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_mid_step_checkpoint_lands_under_the_claims_version_and_only_there(
     fiber_settings: Any,
 ) -> None:
@@ -160,7 +156,6 @@ async def test_a_mid_step_checkpoint_lands_under_the_claims_version_and_only_the
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_one_run_per_thread_on_both_backends(fiber_settings: Any) -> None:
     """felix-run/felix#529: the thread is recorded, a second run on it is refused, and the
     refusal ends with the run. On Postgres this is the advisory lock, the `thread_id` column
@@ -188,7 +183,6 @@ async def test_one_run_per_thread_on_both_backends(fiber_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_concurrent_sends_start_exactly_one_run(fiber_settings: Any) -> None:
     """The check and the insert are one step: a pair racing past the route's pre-check must
     not both enqueue."""
@@ -210,7 +204,6 @@ async def test_concurrent_sends_start_exactly_one_run(fiber_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_background_children_are_capped_per_parent_thread(fiber_settings: Any) -> None:
     """Each child has its own thread, so one-run-per-thread never bounded how many a parent
     could start; `max_children` does, and a finished child frees its slot. The Postgres arm reads
@@ -244,7 +237,6 @@ async def test_background_children_are_capped_per_parent_thread(fiber_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_concurrent_background_starts_respect_the_cap(fiber_settings: Any) -> None:
     import asyncio
 

@@ -131,7 +131,6 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
 # --- the bodies -----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_flush_audit_drains_the_buffer_into_the_store() -> None:
     """The audit trail exists only if something drains the buffer; this is that something."""
     from felix.audit import store as audit_store
@@ -146,7 +145,6 @@ async def test_flush_audit_drains_the_buffer_into_the_store() -> None:
     assert [row["event_type"] for row in rows] == ["tool_call"], rows
 
 
-@pytest.mark.asyncio
 async def test_flush_usage_drains_the_buffer_into_the_store() -> None:
     """Same shape, and the reason a deployment can bill nothing while serving traffic."""
     from felix.usage import store as usage_store
@@ -168,7 +166,6 @@ async def test_flush_usage_drains_the_buffer_into_the_store() -> None:
     assert [row["tokens_input"] for row in rows] == [11], rows
 
 
-@pytest.mark.asyncio
 async def test_run_scheduled_jobs_fires_a_due_job() -> None:
     """The scheduler is the whole point of `jobs`; a job that never fires is a row."""
     from felix.jobs import store as jobs_store
@@ -183,7 +180,6 @@ async def test_run_scheduled_jobs_fires_a_due_job() -> None:
     assert runs, "a due job must leave a run behind"
 
 
-@pytest.mark.asyncio
 async def test_run_scheduled_jobs_leaves_a_disabled_job_alone() -> None:
     """`enabled` is the off switch; a scheduler that ignores it cannot be stopped."""
     from felix.jobs import store as jobs_store
@@ -197,7 +193,6 @@ async def test_run_scheduled_jobs_leaves_a_disabled_job_alone() -> None:
     assert await jobs_store.list_runs(_settings(), TENANT, "paused", limit=10) == []
 
 
-@pytest.mark.asyncio
 async def test_retention_sweep_prunes_what_is_past_its_ttl() -> None:
     """Retention is a deletion guarantee, so the sweep has to actually delete."""
     from felix.audit import store as audit_store
@@ -216,7 +211,6 @@ async def test_retention_sweep_prunes_what_is_past_its_ttl() -> None:
     assert after[0]["ts"] != long_ago, "the aged row is the one that should have gone"
 
 
-@pytest.mark.asyncio
 async def test_fiber_scheduler_advances_a_due_fiber() -> None:
     """Durable runs only progress because this ticks; a stalled tick strands every one."""
     from felix.durability import fibers
@@ -230,7 +224,6 @@ async def test_fiber_scheduler_advances_a_due_fiber() -> None:
     assert stored["status"] != "pending", "a due fiber must be claimed and advanced"
 
 
-@pytest.mark.asyncio
 async def test_consolidate_memory_runs_and_reports_a_count() -> None:
     """The task body runs end to end with nothing enabled.
 
@@ -243,7 +236,6 @@ async def test_consolidate_memory_runs_and_reports_a_count() -> None:
     assert result is None  # the task logs its count rather than returning it
 
 
-@pytest.mark.asyncio
 async def test_every_task_body_is_callable_without_arguments() -> None:
     """Production calls these with nothing; a body that grew a parameter would fail only there.
 
@@ -256,7 +248,6 @@ async def test_every_task_body_is_callable_without_arguments() -> None:
         await task.original_func()
 
 
-@pytest.mark.asyncio
 async def test_skill_jobs_runs_a_queued_evaluation_and_records_its_failure_on_the_row() -> None:
     """The sweep claims a queued evaluation and finishes it, with the settings bound at import.
 

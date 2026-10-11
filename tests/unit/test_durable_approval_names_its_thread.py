@@ -95,7 +95,6 @@ async def _gated_manifest(settings: Settings) -> None:
     await manifest_store.activate_version(settings, TENANT, "gated", version=1)
 
 
-@pytest.mark.asyncio
 async def test_a_durable_run_writes_its_fiber_thread_onto_the_approval(scripted_calculator) -> None:
     from felix.approvals import store as approvals_store
     from felix.approvals.interrupt import signal_decision

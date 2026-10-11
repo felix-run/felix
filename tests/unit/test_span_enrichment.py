@@ -74,7 +74,6 @@ def _settings(**kw: Any) -> Settings:
     return Settings(database_url="memory://span-enrich", object_store="memory", **kw)
 
 
-@pytest.mark.asyncio
 async def test_cache_tokens_use_the_names_backends_read(monkeypatch: pytest.MonkeyPatch) -> None:
     span = await _run(monkeypatch, _settings(), [])
     assert span.attributes["gen_ai.usage.cache_creation_input_tokens"] == 7
@@ -83,7 +82,6 @@ async def test_cache_tokens_use_the_names_backends_read(monkeypatch: pytest.Monk
     assert span.attributes["felix.usage.cache_creation"] == 7
 
 
-@pytest.mark.asyncio
 async def test_content_is_absent_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """A tracing backend is an egress destination; prompts do not leave without consent."""
     span = await _run(monkeypatch, _settings(), [ChatMessage(role="user", content="hi")])
@@ -91,7 +89,6 @@ async def test_content_is_absent_by_default(monkeypatch: pytest.MonkeyPatch) -> 
     assert "gen_ai.output.messages" not in span.attributes
 
 
-@pytest.mark.asyncio
 async def test_capture_content_actually_captures(monkeypatch: pytest.MonkeyPatch) -> None:
     """The regression that matters: the flag was inert while documented as working."""
     span = await _run(
@@ -105,7 +102,6 @@ async def test_capture_content_actually_captures(monkeypatch: pytest.MonkeyPatch
     assert out[0]["content"] == "forty-five"
 
 
-@pytest.mark.asyncio
 async def test_captured_content_redacts_configured_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     """Content on a span is masked to exactly the audit row's standard — no more.
 
@@ -134,7 +130,6 @@ async def _attrs_in(ctx: RequestContext) -> dict[str, Any]:
         return _identity_attrs()
 
 
-@pytest.mark.asyncio
 async def test_session_identity_is_always_emitted() -> None:
     """An opaque thread id, and what turns a conversation into one session.
 
@@ -147,7 +142,6 @@ async def test_session_identity_is_always_emitted() -> None:
     assert attrs["gen_ai.conversation.id"] == "thread-7"
 
 
-@pytest.mark.asyncio
 async def test_caller_identity_is_gated() -> None:
     auth = AuthContext(principal_sub="user-42", tenant_id="acme", anonymous=False)
     on = await _attrs_in(RequestContext(settings=_settings(), auth=auth, thread_id="t"))
@@ -162,14 +156,12 @@ async def test_caller_identity_is_gated() -> None:
     assert off["session.id"] == "t"
 
 
-@pytest.mark.asyncio
 async def test_anonymous_is_not_recorded_as_a_user() -> None:
     """`anonymous` is the default subject, not a person — it would be one fake user."""
     attrs = await _attrs_in(RequestContext(settings=_settings(), auth=AuthContext(), thread_id="t"))
     assert "user.id" not in attrs
 
 
-@pytest.mark.asyncio
 async def test_identity_reaches_every_span_not_only_model_calls() -> None:
     """`docs/OBSERVABILITY.md` claims every span carries the session. Make that true.
 
@@ -189,7 +181,6 @@ async def test_identity_reaches_every_span_not_only_model_calls() -> None:
             assert span.attributes["felix.probe"] == name
 
 
-@pytest.mark.asyncio
 async def test_a_span_outside_a_request_is_still_fine() -> None:
     """Worker startup and CLI paths open spans with no request context at all."""
     span = make_span("worker retention_sweep")
@@ -236,7 +227,6 @@ def test_every_otel_setting_is_read_somewhere() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_request_root_span_gets_identity_too() -> None:
     """The root is created before auth runs, so it cannot carry identity at creation.
 

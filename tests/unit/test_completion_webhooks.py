@@ -125,7 +125,6 @@ def test_the_signature_matches_the_standard_webhooks_reference_vector() -> None:
 # --- delivery ------------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_finished_run_is_delivered_signed_and_the_run_view_says_so() -> None:
     from felix.durability.runs import get_durable_run
 
@@ -155,7 +154,6 @@ async def test_a_finished_run_is_delivered_signed_and_the_run_view_says_so() -> 
     assert await deliver_due_webhooks(settings) == 0, "a delivered run is not delivered again"
 
 
-@pytest.mark.asyncio
 async def test_a_failed_delivery_backs_off_and_goes_dead_at_the_ceiling() -> None:
     async with receiver([500]) as (url, seen):
         settings = _settings({"ops": {"url": url, "secret": SECRET}}, webhook_max_attempts=2)
@@ -175,7 +173,6 @@ async def test_a_failed_delivery_backs_off_and_goes_dead_at_the_ceiling() -> Non
     assert _stored(row)["webhook_state"]["endpoints"]["ops"]["status"] == "dead"
 
 
-@pytest.mark.asyncio
 async def test_a_run_still_going_is_not_announced() -> None:
     async with receiver([200]) as (url, seen):
         settings = _settings({"ops": {"url": url, "secret": SECRET}})
@@ -184,7 +181,6 @@ async def test_a_run_still_going_is_not_announced() -> None:
     assert seen == []
 
 
-@pytest.mark.asyncio
 async def test_an_endpoint_removed_after_the_run_started_is_dead_not_retried_forever() -> None:
     settings = _settings({"ops": {"url": "http://127.0.0.1:9/hook", "secret": SECRET}})
     row = await _finished_run(settings, ["ops"])
@@ -193,7 +189,6 @@ async def test_an_endpoint_removed_after_the_run_started_is_dead_not_retried_for
     assert "no longer registered" in _stored(row)["webhook_state"]["endpoints"]["ops"]["last_error"]
 
 
-@pytest.mark.asyncio
 async def test_a_redirect_is_not_followed() -> None:
     """A 3xx is a failed delivery: following it would send run output wherever it pointed."""
     async with receiver([302]) as (url, seen):
@@ -204,7 +199,6 @@ async def test_a_redirect_is_not_followed() -> None:
     assert _stored(row)["webhook_state"]["endpoints"]["ops"]["last_error"] == "HTTP 302"
 
 
-@pytest.mark.asyncio
 async def test_deliveries_go_through_the_egress_guard_unless_the_endpoint_says_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,7 +226,6 @@ async def test_deliveries_go_through_the_egress_guard_unless_the_endpoint_says_p
     assert len(seen) == 2
 
 
-@pytest.mark.asyncio
 async def test_a_receiver_dripping_its_answer_is_cut_off_at_the_timeout() -> None:
     """The client timeout bounds each read, so a byte every so often would hold the sweep for
     as long as the receiver liked; the attempt as a whole is what is bounded."""
@@ -260,7 +253,6 @@ async def test_a_receiver_dripping_its_answer_is_cut_off_at_the_timeout() -> Non
     assert _stored(row)["webhook_state"]["endpoints"]["ops"]["last_error"] == "TimeoutError"
 
 
-@pytest.mark.asyncio
 async def test_a_sweep_past_its_budget_leaves_the_rest_for_the_next(monkeypatch: pytest.MonkeyPatch) -> None:
     """Rows a sweep did not reach keep their claim until it lapses, rather than a second sweep
     delivering them while the first is still at it."""
@@ -275,7 +267,6 @@ async def test_a_sweep_past_its_budget_leaves_the_rest_for_the_next(monkeypatch:
     assert _stored(row)["webhook_status"] == "pending"
 
 
-@pytest.mark.asyncio
 async def test_every_webhook_secret_is_masked_from_boot(monkeypatch: pytest.MonkeyPatch) -> None:
     """Audit rows, session events and fiber state redact through the process-global list alone,
     so a signing secret has to be on it before any delivery — in the API as much as the worker."""

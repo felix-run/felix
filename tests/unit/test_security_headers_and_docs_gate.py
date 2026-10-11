@@ -40,7 +40,6 @@ def _client(settings: Settings, **transport: Any) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app, **transport), base_url="http://test")
 
 
-@pytest.mark.asyncio
 async def test_every_response_carries_the_browser_headers() -> None:
     async with _client(_settings()) as client:
         ok = await client.get("/health")
@@ -53,7 +52,6 @@ async def test_every_response_carries_the_browser_headers() -> None:
         assert "strict-transport-security" not in resp.headers, "HSTS on a plaintext response pins a policy"
 
 
-@pytest.mark.asyncio
 async def test_a_401_and_a_413_carry_them_too() -> None:
     async with _client(_settings(auth_mode="api_key", auth_api_keys=KEYS)) as client:
         denied = await client.get("/manifests")
@@ -68,7 +66,6 @@ async def test_a_401_and_a_413_carry_them_too() -> None:
         assert too_big.headers["x-frame-options"] == "DENY"
 
 
-@pytest.mark.asyncio
 async def test_hsts_only_over_tls_and_only_from_a_trusted_proxy_claim() -> None:
     settings = _settings()
     app = create_app(settings=settings, plugins=[])
@@ -104,7 +101,6 @@ async def test_hsts_only_over_tls_and_only_from_a_trusted_proxy_claim() -> None:
     assert "strict-transport-security" not in off.headers
 
 
-@pytest.mark.asyncio
 async def test_include_subdomains_is_its_own_switch() -> None:
     """On an apex hostname it pins every sibling for 180 days; dropping it must not mean
     dropping HSTS."""
@@ -114,7 +110,6 @@ async def test_include_subdomains_is_its_own_switch() -> None:
     assert resp.headers["strict-transport-security"] == "max-age=15552000"
 
 
-@pytest.mark.asyncio
 async def test_a_raw_mounted_app_that_sends_no_headers_key_still_gets_them() -> None:
     """`headers` is optional in the ASGI spec; a plugin's raw mount may omit it."""
 
@@ -129,7 +124,6 @@ async def test_a_raw_mounted_app_that_sends_no_headers_key_still_gets_them() -> 
     assert resp.status_code == 200 and resp.headers["x-content-type-options"] == "nosniff"
 
 
-@pytest.mark.asyncio
 async def test_the_docs_page_has_a_csp_whose_nonce_covers_both_scripts() -> None:
     async with _client(_settings()) as client:
         resp = await client.get("/docs")
@@ -148,7 +142,6 @@ async def test_the_docs_page_has_a_csp_whose_nonce_covers_both_scripts() -> None
     assert again.headers["content-security-policy"] != csp, "a fresh nonce per response"
 
 
-@pytest.mark.asyncio
 async def test_the_reference_is_behind_auth_unless_the_operator_opens_it() -> None:
     authed = _settings(auth_mode="api_key", auth_api_keys=KEYS)
     async with _client(authed) as client:

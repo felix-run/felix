@@ -106,7 +106,6 @@ READS: dict[str, Callable[[Any, str], Awaitable[None]]] = {
 
 @parametrized
 @pytest.mark.parametrize("read", list(READS))
-@pytest.mark.asyncio
 async def test_reading_an_unknown_thread_does_not_list_it(store_settings: Any, read: str) -> None:
     thread = _unknown_thread()
     await READS[read](store_settings, thread)
@@ -114,7 +113,6 @@ async def test_reading_an_unknown_thread_does_not_list_it(store_settings: Any, r
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_writing_thread_meta_lists_the_thread(store_settings: Any) -> None:
     from felix.session.thread_state import update_thread_meta
 
@@ -131,7 +129,6 @@ async def test_writing_thread_meta_lists_the_thread(store_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_with_only_events_exists(store_settings: Any) -> None:
     from felix.session.store import get_session_store
     from felix.session.thread_state import thread_exists
@@ -145,7 +142,6 @@ async def test_a_thread_with_only_events_exists(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_with_only_metadata_exists(store_settings: Any) -> None:
     from felix.session.store import get_session_store
     from felix.session.thread_state import thread_exists, update_thread_meta
@@ -158,7 +154,6 @@ async def test_a_thread_with_only_metadata_exists(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_claim_wins_once_and_keeps_what_was_there(store_settings: Any) -> None:
     from felix.session.thread_state import claim_thread, get_thread_meta, update_thread_meta
 
@@ -180,7 +175,6 @@ async def test_a_claim_wins_once_and_keeps_what_was_there(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_concurrent_claims_of_one_id_have_one_winner(store_settings: Any) -> None:
     import asyncio
 
@@ -224,7 +218,6 @@ async def _stored(settings: Any, thread: str) -> dict[str, Any]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_cold_replica_write_keeps_the_fields_it_did_not_change(store_settings: Any) -> None:
     from felix.session.thread_state import get_thread_meta, update_thread_meta
 
@@ -256,7 +249,6 @@ async def test_a_cold_replica_write_keeps_the_fields_it_did_not_change(store_set
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_the_row_keeps_what_a_cold_replica_did_not_write(store_settings: Any) -> None:
     """The stored row, not just the read: a cold write once stored defaults over the name."""
     from felix.session.thread_state import update_thread_meta
@@ -275,7 +267,6 @@ async def test_the_row_keeps_what_a_cold_replica_did_not_write(store_settings: A
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_replica_reads_another_replicas_rename(store_settings: Any) -> None:
     """A warm cache is no excuse: B has read the thread, A renames it, B reads the rename."""
     from felix.session import thread_state
@@ -298,7 +289,6 @@ async def test_a_replica_reads_another_replicas_rename(store_settings: Any) -> N
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_replica_reads_the_leaf_another_replica_rewound_to(store_settings: Any) -> None:
     from felix.session import tree
     from felix.session.thread_state import load_leaf, persist_leaf, update_thread_meta
@@ -320,7 +310,6 @@ async def test_a_replica_reads_the_leaf_another_replica_rewound_to(store_setting
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_an_append_after_a_rewind_moves_the_stored_leaf(store_settings: Any) -> None:
     """The stored leaf follows a turn's appends, or a read answers the rewind target forever.
 
@@ -345,7 +334,6 @@ async def test_an_append_after_a_rewind_moves_the_stored_leaf(store_settings: An
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_concurrent_writes_to_different_fields_all_land(store_settings: Any) -> None:
     import asyncio
 
@@ -381,7 +369,6 @@ async def test_concurrent_writes_to_different_fields_all_land(store_settings: An
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_two_replicas_creating_one_thread_make_one_row_with_both_writes(store_settings: Any) -> None:
     import asyncio
 
@@ -405,7 +392,6 @@ async def test_two_replicas_creating_one_thread_make_one_row_with_both_writes(st
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_key_added_to_the_defaults_later_still_answers(store_settings: Any) -> None:
     """A row written before a default existed reads that default rather than missing it."""
     from felix.db.models import ThreadState
@@ -438,7 +424,6 @@ async def _row(settings: Any, thread: str) -> dict[str, Any]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_first_message_is_the_preview_and_a_later_one_does_not_move_it(store_settings: Any) -> None:
     from felix.session.thread_state import note_first_message
 
@@ -463,7 +448,6 @@ async def test_the_first_message_is_the_preview_and_a_later_one_does_not_move_it
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_blank_message_writes_nothing_and_leaves_the_slot_for_the_next(store_settings: Any) -> None:
     from felix.session.thread_state import note_first_message
 
@@ -477,7 +461,6 @@ async def test_a_blank_message_writes_nothing_and_leaves_the_slot_for_the_next(s
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_preview_keeps_the_rest_of_the_metadata(store_settings: Any) -> None:
     from felix.session.thread_state import get_thread_meta, note_first_message, update_thread_meta
 
@@ -495,7 +478,6 @@ async def test_the_preview_keeps_the_rest_of_the_metadata(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_manifest_is_the_newest_and_falls_back_to_the_pin(store_settings: Any) -> None:
     from felix.session.thread_state import update_thread_meta
 
@@ -511,7 +493,6 @@ async def test_the_manifest_is_the_newest_and_falls_back_to_the_pin(store_settin
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_row_from_before_the_index_fields_lists_them_as_null(store_settings: Any) -> None:
     from felix.db.models import ThreadState
     from felix.db.session import tenant_session

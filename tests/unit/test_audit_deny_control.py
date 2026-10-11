@@ -83,7 +83,6 @@ async def _run_and_capture(
     return recorded
 
 
-@pytest.mark.asyncio
 async def test_a_policy_denial_names_its_control(monkeypatch: pytest.MonkeyPatch) -> None:
     recorded = await _run_and_capture(monkeypatch, scopes=frozenset())
     assert [k for k, _ in recorded] == ["policy_deny"]
@@ -92,7 +91,6 @@ async def test_a_policy_denial_names_its_control(monkeypatch: pytest.MonkeyPatch
     assert payload["tool"] == "t" and payload["tool_call_id"] == "1"
 
 
-@pytest.mark.asyncio
 async def test_the_control_is_read_from_the_deny_not_assumed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A runner that wrote `"policy"` for every denial would pass the test above."""
     denied = Tool(name="t", description="d", args_schema=None, executor=_DeniedBy("approvals"))
@@ -101,7 +99,6 @@ async def test_the_control_is_read_from_the_deny_not_assumed(monkeypatch: pytest
     assert recorded[0][1]["control"] == "approvals"
 
 
-@pytest.mark.asyncio
 async def test_a_permitted_call_carries_no_control(monkeypatch: pytest.MonkeyPatch) -> None:
     """`control` is a fact about a denial. A `tool_call` row must not grow a null key."""
     recorded = await _run_and_capture(monkeypatch, scopes=frozenset({"tools:t"}))
@@ -128,7 +125,6 @@ def test_deny_source_reads_every_shape_a_deny_can_take() -> None:
     assert deny_source({"content": "x", "metadata": {"source": "policy"}}) is None
 
 
-@pytest.mark.asyncio
 async def test_run_batch_counts_a_denied_call() -> None:
     """The fourth return value from run_batch counts the calls that were denied."""
     ctx = RequestContext(
@@ -144,7 +140,6 @@ async def test_run_batch_counts_a_denied_call() -> None:
     assert denied_calls == 1
 
 
-@pytest.mark.asyncio
 async def test_run_batch_counts_nothing_for_a_permitted_call() -> None:
     """The fourth return value from run_batch is zero when no call was denied."""
     ctx = RequestContext(
@@ -160,7 +155,6 @@ async def test_run_batch_counts_nothing_for_a_permitted_call() -> None:
     assert denied_calls == 0
 
 
-@pytest.mark.asyncio
 async def test_run_batch_counts_denials_in_parallel_mode() -> None:
     """The parallel dispatch branch also tracks denials correctly."""
     # Two calls force parallel mode; one denied, one permitted

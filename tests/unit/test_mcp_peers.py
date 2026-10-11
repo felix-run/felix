@@ -11,7 +11,6 @@ from felix.mcp.client import tools_from_mcp_servers
 from felix.tools.types import ToolInvocationCtx
 
 
-@pytest.mark.asyncio
 async def test_mcp_rpc_and_tool_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
@@ -95,7 +94,6 @@ async def test_mcp_rpc_and_tool_binding(monkeypatch: pytest.MonkeyPatch) -> None
     assert "tools/call" in calls
 
 
-@pytest.mark.asyncio
 async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Resp:
         status_code = 200
@@ -148,7 +146,6 @@ async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(tools) == 1
 
 
-@pytest.mark.asyncio
 async def test_mcp_timeout_is_per_server_over_http(monkeypatch: pytest.MonkeyPatch) -> None:
     """`McpServerRef.timeout_ms` must reach discovery and the tool call alike.
 
@@ -177,7 +174,6 @@ async def test_mcp_timeout_is_per_server_over_http(monkeypatch: pytest.MonkeyPat
     assert seen == [90.0, 90.0, 90.0]
 
 
-@pytest.mark.asyncio
 async def test_mcp_timeout_is_per_server_over_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
     """stdio is the arm with the most machinery behind it, and it was the untested one."""
     from felix.mcp import stdio as mcp_stdio

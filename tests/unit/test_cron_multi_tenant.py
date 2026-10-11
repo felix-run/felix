@@ -14,16 +14,12 @@ from felix.config import Settings
 from felix.jobs import store as jobs_store
 from felix.jobs.scheduler import run_due_jobs, run_due_jobs_all_tenants
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        database_url="memory://cron",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-    )
+    return make_settings()
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +34,6 @@ async def _job(s: Settings, tenant: str, name: str, *, enabled: bool = True) -> 
     )
 
 
-@pytest.mark.asyncio
 async def test_every_tenant_with_jobs_is_swept(settings: Settings) -> None:
     await _job(settings, "default", "a")
     await _job(settings, "acme", "b")
@@ -51,7 +46,6 @@ async def test_every_tenant_with_jobs_is_swept(settings: Settings) -> None:
     assert fired == 3, "non-default tenants' jobs never fired before this change"
 
 
-@pytest.mark.asyncio
 async def test_default_only_sweep_misses_other_tenants(settings: Settings) -> None:
     """Documents the old behaviour that the regression above replaces."""
     await _job(settings, "acme", "b")
@@ -59,7 +53,6 @@ async def test_default_only_sweep_misses_other_tenants(settings: Settings) -> No
     assert await run_due_jobs(settings, tenant_id="acme") == 1
 
 
-@pytest.mark.asyncio
 async def test_job_is_claimed_before_running(settings: Settings) -> None:
     """A second tick in the same window must not re-fire the job."""
     await _job(settings, "default", "a")
@@ -67,7 +60,6 @@ async def test_job_is_claimed_before_running(settings: Settings) -> None:
     assert await run_due_jobs(settings) == 0, "job re-fired before its next window"
 
 
-@pytest.mark.asyncio
 async def test_disabled_job_is_not_re_enabled(settings: Settings) -> None:
     await _job(settings, "default", "a")
     await run_due_jobs(settings)
@@ -81,7 +73,6 @@ async def test_disabled_job_is_not_re_enabled(settings: Settings) -> None:
     assert row["enabled"] is False, "stale write-back re-enabled a disabled job"
 
 
-@pytest.mark.asyncio
 async def test_one_bad_tenant_does_not_stop_the_others(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,13 +90,11 @@ async def test_one_bad_tenant_does_not_stop_the_others(
     assert await run_due_jobs_all_tenants(settings) == 1
 
 
-@pytest.mark.asyncio
 async def test_no_jobs_means_no_tenants(settings: Settings) -> None:
     assert await jobs_store.list_tenants_with_jobs(settings) == []
     assert await run_due_jobs_all_tenants(settings) == 0
 
 
-@pytest.mark.asyncio
 async def test_overlapping_tick_from_a_stale_read_does_not_refire(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -122,7 +111,6 @@ async def test_overlapping_tick_from_a_stale_read_does_not_refire(
     assert await run_due_jobs(settings) == 0
 
 
-@pytest.mark.asyncio
 async def test_a_run_outlasting_its_interval_does_not_rewind_the_schedule(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

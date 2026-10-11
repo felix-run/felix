@@ -22,6 +22,7 @@ from felix.context import AuthContext, RequestContext, run_with_context
 from felix.repos import checkouts
 from felix.tools.workspace import workspace_root
 
+from tests.support.factories import make_settings
 from tests.support.git_server import _git, _Server
 
 TOKEN = "ghu_person_token_0123456789"
@@ -33,8 +34,7 @@ def settings(tmp_path: Path) -> Settings:
     shared = tmp_path / "workspace"
     shared.mkdir()
     (shared / "shared.txt").write_text("the operator's workspace\n")
-    return Settings(
-        database_url="memory://checkouts",
+    return make_settings(
         data_dir=str(tmp_path / "data"),
         workspace_root=str(shared),
     )

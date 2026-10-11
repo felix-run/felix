@@ -8,11 +8,9 @@ which is the fallback the in-process queue exists for.
 
 from __future__ import annotations
 
-import pytest
 from felix import steer
 
 
-@pytest.mark.asyncio
 async def test_a_message_that_arrived_after_the_last_drain_survives_the_release() -> None:
     await steer.ensure_run_queue("t", "late")
     await steer.enqueue("t", "late", kind="steer", text="prefer metric units")

@@ -22,11 +22,13 @@ from felix.documents import store as documents
 from felix.manifests.schema import DocumentSearchToolRef
 from felix.tools.document_search import EMPTY_CORPUS, tools_from_document_refs
 
+from tests.support.factories import make_settings
+
 TENANT = "acme"
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://documents-tool", object_store="memory")
+    return make_settings()
 
 
 async def _ingest(settings: Settings, tenant: str, title: str, body: str) -> None:
@@ -42,7 +44,6 @@ def _tool(settings: Settings, tenant: str = TENANT, **kw: Any) -> Any:
     return tools[0]
 
 
-@pytest.mark.asyncio
 async def test_the_tool_returns_a_chunk_an_operator_ingested() -> None:
     settings = _settings()
     await _ingest(settings, TENANT, "deploy", "Set FELIX_OBJECT_STORE to fs for a local run.")
@@ -53,7 +54,6 @@ async def test_the_tool_returns_a_chunk_an_operator_ingested() -> None:
     assert "deploy" in out, out
 
 
-@pytest.mark.asyncio
 async def test_the_corpus_is_the_calling_tenants_own() -> None:
     """The tenant comes from the binding, not from the call, so a model cannot ask for another.
 
@@ -70,7 +70,6 @@ async def test_the_corpus_is_the_calling_tenants_own() -> None:
     assert "other runbook" not in out, out
 
 
-@pytest.mark.asyncio
 async def test_an_empty_corpus_says_so_rather_than_reporting_a_miss() -> None:
     """ "Nothing ingested" and "nothing matched" lead somewhere different.
 
@@ -87,7 +86,6 @@ async def test_an_empty_corpus_says_so_rather_than_reporting_a_miss() -> None:
     assert "No documents matched." in out, out
 
 
-@pytest.mark.asyncio
 async def test_the_result_cap_is_the_manifests(monkeypatch: pytest.MonkeyPatch) -> None:
     """`max_results` is the whole cost of this tool in a context window."""
     settings = _settings()
@@ -99,7 +97,6 @@ async def test_the_result_cap_is_the_manifests(monkeypatch: pytest.MonkeyPatch) 
     assert out.count("https://docs.example/") <= 2, out
 
 
-@pytest.mark.asyncio
 async def test_a_store_failure_names_the_class_and_not_the_detail() -> None:
     """A store error can carry a table or a connection string; the model gets neither."""
     settings = _settings()
@@ -136,7 +133,6 @@ def test_the_transport_is_untrusted_so_screening_covers_it() -> None:
     assert _is_untrusted_tool(tool) is True
 
 
-@pytest.mark.asyncio
 async def test_support_can_look_something_up() -> None:
     """The finding this whole workstream started from, asserted on the compiled agent.
 
@@ -157,7 +153,6 @@ async def test_support_can_look_something_up() -> None:
     assert {"search_docs", "fetch_docs"} <= names, f"support still cannot look anything up: {sorted(names)}"
 
 
-@pytest.mark.asyncio
 async def test_a_manifest_binding_it_without_screening_is_warned(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -187,7 +182,6 @@ async def test_a_manifest_binding_it_without_screening_is_warned(
     assert "search_docs" in unscreened[0], unscreened[0]
 
 
-@pytest.mark.asyncio
 async def test_the_bundled_support_manifest_stays_silent() -> None:
     """The bar for shipping that warning: it must not fire on what we ship."""
     import logging
@@ -212,7 +206,6 @@ async def test_the_bundled_support_manifest_stays_silent() -> None:
     assert not [m for m in records if "unscreened" in m], records
 
 
-@pytest.mark.asyncio
 async def test_a_chunk_cannot_forge_a_second_hit() -> None:
     """One document, rendered as two, is a citation the agent will follow.
 
@@ -242,7 +235,6 @@ async def test_a_chunk_cannot_forge_a_second_hit() -> None:
     assert out.count("\n1. ") + out.startswith("1. ") == 1
 
 
-@pytest.mark.asyncio
 async def test_the_vector_channel_is_reachable_from_the_tool() -> None:
     """The operator's route builds an embedder per request; the agent's tool must too.
 

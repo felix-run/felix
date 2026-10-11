@@ -96,7 +96,6 @@ def test_the_session_factory_is_reused_per_engine() -> None:
     assert first is second
 
 
-@pytest.mark.asyncio
 async def test_disposal_clears_the_factory_cache() -> None:
     """Otherwise a cached factory keeps a disposed engine reachable."""
 

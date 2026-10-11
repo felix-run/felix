@@ -18,6 +18,8 @@ from felix.skills.format import MAX_FRONTMATTER_CHARS, create_skill_template, va
 from felix.skills.loader import parse_skill_md
 from felix.skills.types import Skill
 
+from tests.support import paths
+
 ROOT = Path(__file__).resolve().parents[2]
 
 _OLD_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
@@ -53,7 +55,7 @@ def _old_parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None
 
 
 def _skill_files() -> list[Path]:
-    return sorted([*(ROOT / "skills").glob("*/SKILL.md"), *(ROOT / "fixtures" / "skills").glob("*/SKILL.md")])
+    return sorted([*(ROOT / "skills").glob("*/SKILL.md"), *(paths.FIXTURES / "skills").glob("*/SKILL.md")])
 
 
 @pytest.mark.parametrize("skill_md", _skill_files(), ids=lambda p: p.parent.relative_to(ROOT).as_posix())
@@ -71,6 +73,7 @@ def test_every_shipped_and_fixture_skill_parses_as_it_did(skill_md: Path) -> Non
 def test_the_shipped_skills_are_found() -> None:
     """The parametrized case passes vacuously over an empty glob."""
     assert len(list((ROOT / "skills").glob("*/SKILL.md"))) >= 5
+    assert len(list((paths.FIXTURES / "skills").glob("*/SKILL.md"))) >= 5, "the fixture half moved"
 
 
 def test_a_colon_in_an_unquoted_description_falls_back_to_the_line_reader(

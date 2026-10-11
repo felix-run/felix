@@ -112,7 +112,6 @@ def _on(purpose: str, reply: str):
     return hook
 
 
-@pytest.mark.asyncio
 async def test_the_router_follows_a_replaced_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.patterns import delegating
 
@@ -127,7 +126,6 @@ async def test_the_router_follows_a_replaced_classification(monkeypatch: pytest.
     assert (billing.asked, support.asked) == ([], ["the request"])
 
 
-@pytest.mark.asyncio
 async def test_plan_execute_runs_the_replaced_plan_and_the_planner_is_sent_the_hooked_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -155,7 +153,6 @@ async def test_plan_execute_runs_the_replaced_plan_and_the_planner_is_sent_the_h
     assert [a.splitlines()[0] for a in executor.asked] == ["Subtask 1/2: alpha", "Subtask 2/2: beta"]
 
 
-@pytest.mark.asyncio
 async def test_reflect_reads_the_replaced_score(monkeypatch: pytest.MonkeyPatch) -> None:
     """0.1 from the verifier would ask for a second draft; the hook's 0.95 clears the bar."""
     from felix.manifests.schema import ReflectSpec
@@ -177,7 +174,6 @@ async def test_reflect_reads_the_replaced_score(monkeypatch: pytest.MonkeyPatch)
     [(_Model, False), (_StreamingModel, True), (_Model, True)],
     ids=["invoke", "stream_turn", "chat-only-stream"],
 )
-@pytest.mark.asyncio
 async def test_the_synthesis_answer_is_the_hooks(
     monkeypatch: pytest.MonkeyPatch, model_cls: type[_Model], streaming: bool
 ) -> None:
@@ -201,7 +197,6 @@ async def test_the_synthesis_answer_is_the_hooks(
     assert out is not None and out.final.content == "the hook's synthesis"
 
 
-@pytest.mark.asyncio
 async def test_each_call_names_its_purpose_and_the_callers_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.patterns import delegating
 

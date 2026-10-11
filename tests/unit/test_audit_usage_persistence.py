@@ -77,7 +77,6 @@ def test_requeue_respects_the_ceiling() -> None:
     assert buf.dropped == 8
 
 
-@pytest.mark.asyncio
 async def test_flush_requeues_on_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     audit_store.record_event(_settings(), "t1", "tool_call", manifest_id="m")
     assert len(audit_store._pending) == 1
@@ -95,7 +94,6 @@ async def test_flush_requeues_on_write_failure(monkeypatch: pytest.MonkeyPatch) 
 # --- the API process actually flushes -------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_flush_all_drains_both_stores() -> None:
     s = _settings()
     audit_store.record_event(s, "t1", "tool_call", manifest_id="m")
@@ -108,7 +106,6 @@ async def test_flush_all_drains_both_stores() -> None:
     assert len(audit_store._pending) == 0
 
 
-@pytest.mark.asyncio
 async def test_flush_loop_drains_without_the_worker() -> None:
     """This is the regression: no worker process involved anywhere."""
     s = _settings(audit_flush_seconds=0.05)
@@ -126,7 +123,6 @@ async def test_flush_loop_drains_without_the_worker() -> None:
         await stop_flush_task(task, s)
 
 
-@pytest.mark.asyncio
 async def test_shutdown_drains_remaining_events() -> None:
     s = _settings(audit_flush_seconds=3600)  # never fires on its own
     task = start_flush_task(s)
@@ -140,7 +136,6 @@ def test_flush_task_disabled_when_interval_zero() -> None:
     assert start_flush_task(_settings(audit_flush_seconds=0)) is None
 
 
-@pytest.mark.asyncio
 async def test_flush_all_isolates_store_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     """An audit failure must not strand usage (and vice versa)."""
     s = _settings()
@@ -160,7 +155,6 @@ async def test_flush_all_isolates_store_failures(monkeypatch: pytest.MonkeyPatch
 # --- end to end: the API app wires the flusher into its lifespan ----------------
 
 
-@pytest.mark.asyncio
 async def test_api_lifespan_flushes_audit_without_a_worker() -> None:
     """Pre-fix, an event emitted while serving traffic was never written anywhere."""
     from felix_api.app import create_app
@@ -184,7 +178,6 @@ async def test_api_lifespan_flushes_audit_without_a_worker() -> None:
 # --- a dead flush loop must be loud, not silent --------------------------------
 
 
-@pytest.mark.asyncio
 async def test_crashed_flush_task_is_reported(caplog: pytest.LogCaptureFixture) -> None:
     """The done-callback used to discard the exception, so a dead loop was invisible.
 
@@ -207,7 +200,6 @@ async def test_crashed_flush_task_is_reported(caplog: pytest.LogCaptureFixture) 
     assert "no longer being written" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_cancelled_flush_task_is_not_reported_as_a_crash(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

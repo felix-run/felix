@@ -39,7 +39,6 @@ def test_duckdb_path_default(tmp_path: Path) -> None:
     assert path.parent.is_dir()
 
 
-@pytest.mark.asyncio
 async def test_memory_export_and_ping() -> None:
     wh = MemoryWarehouse()
     assert await wh.ping() is True
@@ -61,7 +60,6 @@ async def test_memory_export_and_ping() -> None:
     assert wh.tables["audit_events"][0]["event_type"] == "tool_call"
 
 
-@pytest.mark.asyncio
 async def test_audit_flush_exports_into_shared_memory_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -88,7 +86,6 @@ async def test_audit_flush_exports_into_shared_memory_factory(
     assert shared.tables["audit_events"][0]["payload"] == {"tool": "search"}
 
 
-@pytest.mark.asyncio
 async def test_duckdb_export_when_extra_installed(tmp_path: Path) -> None:
     require_optional("duckdb", "warehouse")
     path = tmp_path / "felix.duckdb"

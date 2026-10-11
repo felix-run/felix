@@ -23,17 +23,14 @@ from felix.durability.fibers import (
 )
 from felix.durability.runs import get_durable_run
 
+from tests.support.factories import make_settings
+
 TENANT = "default"
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        database_url="memory://fiber-retry",
-        object_store="memory",
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
+    return make_settings(
         fiber_max_attempts=3,
     )
 
@@ -67,7 +64,6 @@ async def _pending(settings: Settings) -> str:
     return str(row["id"])
 
 
-@pytest.mark.asyncio
 async def test_a_failing_step_backs_off_and_counts(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -91,7 +87,6 @@ async def test_a_failing_step_backs_off_and_counts(
     assert row["wake_at"] == clock.ms + 2 * FIBER_RETRY_BASE_MS, "the delay doubles per failure"
 
 
-@pytest.mark.asyncio
 async def test_at_the_ceiling_the_fiber_is_dead_and_never_claimed_again(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -116,7 +111,6 @@ async def test_at_the_ceiling_the_fiber_is_dead_and_never_claimed_again(
     assert "step failed 3 times" in run["error"] and "connection refused" in run["error"]
 
 
-@pytest.mark.asyncio
 async def test_a_step_that_completes_resets_the_count(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -166,7 +160,6 @@ async def test_a_step_that_completes_resets_the_count(
     assert calls["n"] >= 5, "not every injected failure was reached"
 
 
-@pytest.mark.asyncio
 async def test_a_save_that_keeps_failing_is_still_bounded(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -200,7 +193,6 @@ async def test_a_save_that_keeps_failing_is_still_bounded(
     assert run is not None and run["status"] == "dead" and "step failed 3 times" in run["error"]
 
 
-@pytest.mark.asyncio
 async def test_a_transient_save_failure_keeps_the_step_done(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -232,7 +224,6 @@ async def test_a_transient_save_failure_keeps_the_step_done(
     assert row["state_json"]["stash"] == {"k": 1}, "the completed step's effect was lost"
 
 
-@pytest.mark.asyncio
 async def test_a_finished_step_whose_save_failed_stays_finished(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -258,7 +249,6 @@ async def test_a_finished_step_whose_save_failed_stays_finished(
     assert (row["status"], row["attempts"], row["wake_at"]) == ("completed", 0, None)
 
 
-@pytest.mark.asyncio
 async def test_a_failing_step_leaves_no_heartbeat_behind(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:
@@ -275,7 +265,6 @@ async def test_a_failing_step_leaves_no_heartbeat_behind(
     assert not beats, "the lease renewal task outlived its failed step"
 
 
-@pytest.mark.asyncio
 async def test_a_parked_fiber_past_its_expiry_expires_on_wake(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:

@@ -32,8 +32,6 @@ from felix.db.session import get_session_factory, rls_bypass, rls_tenant
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
-pytestmark = pytest.mark.asyncio
-
 TENANT = "acme"
 OTHER = "globex"
 

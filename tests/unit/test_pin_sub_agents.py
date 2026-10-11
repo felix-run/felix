@@ -41,12 +41,10 @@ def store(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return manifests
 
 
-@pytest.mark.asyncio
 async def test_a_manifest_without_sub_agents_has_no_digest(store: dict[str, Any]) -> None:
     assert await sub_agents_hash(None, "t", _agent("solo")) is None
 
 
-@pytest.mark.asyncio
 async def test_the_digest_moves_with_a_child_or_a_grandchild_and_only_then(store: dict[str, Any]) -> None:
     parent = _agent("parent", pattern="router", sub_agents=["child"])
     store["child"] = _agent("child", pattern="router", sub_agents=["grandchild"])
@@ -58,7 +56,6 @@ async def test_the_digest_moves_with_a_child_or_a_grandchild_and_only_then(store
     assert await sub_agents_hash(None, "t", parent) != before, "a grandchild edit reaches the parent's pin"
 
 
-@pytest.mark.asyncio
 async def test_a_missing_child_or_a_cycle_is_recorded_not_raised(store: dict[str, Any]) -> None:
     store["a"] = _agent("a", pattern="router", sub_agents=["b"])
     store["b"] = _agent("b", pattern="router", sub_agents=["a", "nowhere"])
@@ -75,7 +72,6 @@ def test_a_pin_without_a_digest_does_not_drift_and_one_with_it_does() -> None:
         assert_pin_matches({**base, "sub_agents_hash": "old"}, m, sub_agents="new")
 
 
-@pytest.mark.asyncio
 async def test_an_old_pin_is_upgraded_on_its_next_turn_then_enforced(store: dict[str, Any]) -> None:
     """A thread pinned before sub-agents were covered carries on, gains a digest, and is held
     to it from then on."""
@@ -104,7 +100,6 @@ async def test_an_old_pin_is_upgraded_on_its_next_turn_then_enforced(store: dict
         await ensure_thread_pin(settings=settings, tenant_id="t", thread_id="th", manifest=parent)
 
 
-@pytest.mark.asyncio
 async def test_a_resuming_durable_run_is_held_to_its_childrens_digest(store: dict[str, Any]) -> None:
     """What `durability/fibers.py` calls on resume: a pin taken at enqueue with a digest is
     enforced against the children as they resolve now; one without a digest is not."""
@@ -121,7 +116,6 @@ async def test_a_resuming_durable_run_is_held_to_its_childrens_digest(store: dic
     await assert_resume_pin(None, "t", {**pinned, "sub_agents_hash": None}, parent)
 
 
-@pytest.mark.asyncio
 async def test_a_shared_child_is_resolved_once_however_many_parents_name_it(
     store: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

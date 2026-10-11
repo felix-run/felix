@@ -22,6 +22,7 @@ from felix.tools.builtins import default_tool_provider
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 from felix.tools.workspace_scope import thread_key
 
+from tests.support.factories import make_settings
 from tests.support.git_server import _Server
 from tests.support.workspace_gateway_fake import TOKEN as GATEWAY_TOKEN
 from tests.support.workspace_gateway_fake import URL, FakeGateway
@@ -42,8 +43,7 @@ def gateway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, git_server: _Server
 def settings(tmp_path: Path) -> Settings:
     shared = tmp_path / "workspace"
     shared.mkdir()
-    return Settings(
-        database_url="memory://hosted-checkouts",
+    return make_settings(
         data_dir=str(tmp_path / "data"),
         workspace_root=str(shared),
         workspace_backend="hosted",

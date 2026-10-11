@@ -16,6 +16,7 @@ from typing import Any
 from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 
 from tests.support.e2e import Booted
+from tests.support.sse import sse_payloads
 
 KEY = "idempotency-key"
 
@@ -26,14 +27,6 @@ def _answer(text: str = "noted") -> ScriptedTurn:
 
 def _send(thread: str, text: str = "resend me") -> dict[str, Any]:
     return {"manifest": "quick", "thread_id": thread, "messages": [{"role": "user", "content": text}]}
-
-
-def _frames(body: str) -> list[dict[str, Any]]:
-    return [
-        json.loads(line[len("data: ") :])
-        for line in body.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
-    ]
 
 
 async def _user_messages(app: Booted, thread: str) -> list[str]:
@@ -56,7 +49,7 @@ async def test_the_same_key_twice_runs_one_turn_and_replays_it(boot: Any) -> Non
         assert again.headers.get("idempotent-replayed") == "true"
         assert app.spy.calls == calls, "the resend ran a second model turn"
         assert await _user_messages(app, thread) == ["resend me"]
-        replayed = [f["data"] for f in _frames(again.text) if f.get("event") == "session_event"]
+        replayed = [f["data"] for f in sse_payloads(again.text) if f.get("event") == "session_event"]
         assert [(e["role"], e["content"]) for e in replayed if e["role"] in ("user", "assistant")] == [
             ("user", "resend me"),
             ("assistant", "first answer"),
@@ -248,7 +241,7 @@ async def test_a_disconnect_mid_turn_keeps_the_key_and_replays_the_user_message(
 
         assert resend.status_code == 200, resend.text
         assert resend.headers.get("idempotent-replayed") == "true"
-        replayed = [f["data"] for f in _frames(resend.text) if f.get("event") == "session_event"]
+        replayed = [f["data"] for f in sse_payloads(resend.text) if f.get("event") == "session_event"]
         assert [(e["role"], e["content"]) for e in replayed] == [("user", "resend me")]
         assert model_calls == ["stream_turn"], "the resend called the model again"
         assert await _user_messages(app, thread) == ["resend me"]
@@ -284,7 +277,7 @@ async def test_the_replay_carries_only_this_requests_events(boot: Any, monkeypat
         assert again.headers.get("idempotent-replayed") == "true"
         replayed = [
             (f["data"]["role"], f["data"]["content"])
-            for f in _frames(again.text)
+            for f in sse_payloads(again.text)
             if f.get("event") == "session_event"
         ]
         assert ("system", "not this request's") not in replayed, replayed
@@ -304,7 +297,7 @@ async def test_a_failed_turn_replays_its_user_message_and_its_error(boot: Any) -
         again = await app.client.post("/chat/stream", json=_send(thread), headers={KEY: "send-6"})
 
         assert again.headers.get("idempotent-replayed") == "true"
-        replayed = [f["data"] for f in _frames(again.text) if f.get("event") == "session_event"]
+        replayed = [f["data"] for f in sse_payloads(again.text) if f.get("event") == "session_event"]
         assert [e["content"] for e in replayed if e["role"] == "user"] == ["resend me"]
         assert "event: error" in again.text, again.text
         first_error = first.text.split("event: error\n", 1)[1].split("\n", 1)[0]

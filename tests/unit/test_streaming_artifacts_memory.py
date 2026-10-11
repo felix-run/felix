@@ -12,7 +12,6 @@ from felix.storage import MemoryObjectStore
 from felix.tools.types import ToolInvocationCtx, define_tool
 
 
-@pytest.mark.asyncio
 async def test_openai_stream_parses_sse_deltas(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix_ai import ModelRoute
     from felix_ai import OpenAICompletionsClient as _OpenAIClient
@@ -73,7 +72,6 @@ async def test_openai_stream_parses_sse_deltas(monkeypatch: pytest.MonkeyPatch) 
     assert "".join(parts) == "Hello"
 
 
-@pytest.mark.asyncio
 async def test_artifact_spill() -> None:
     from felix.artifacts import apply_artifact_spill
 
@@ -100,7 +98,6 @@ async def test_artifact_spill() -> None:
     assert keys
 
 
-@pytest.mark.asyncio
 async def test_memory_capture_heuristic() -> None:
     settings = Settings(database_url="memory://cap", object_store="memory", allow_insecure=True)
     facts = await capture_from_turn(

@@ -20,6 +20,7 @@ import json
 from typing import Any
 
 import pytest
+from felix.config import Settings
 from felix_ai.output_schema import (
     MAX_BYTES,
     MAX_DEPTH,
@@ -36,6 +37,8 @@ from felix_ai.wire.anthropic_messages import (
     fold_structured_output,
 )
 from felix_ai.wire.openai_completions import openai_response_format
+
+from tests.support.factories import make_settings
 
 STRICT: dict[str, Any] = {
     "type": "object",
@@ -474,10 +477,8 @@ ANSWER_SCHEMA: dict[str, Any] = {
 }
 
 
-def _settings() -> Any:
-    from felix.config import Settings
-
-    return Settings(database_url="memory://output-schema", object_store="memory", auth_mode="none")
+def _settings() -> Settings:
+    return make_settings()
 
 
 def _spec(pattern: str) -> dict[str, Any]:
@@ -489,7 +490,6 @@ def _spec(pattern: str) -> dict[str, Any]:
     }
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("pattern", ["react", "deep"])
 async def test_a_pattern_that_honours_the_schema_compiles(pattern: str) -> None:
     """`react` reads `ctx["output_schema"]` outright; `deep` has no branch in
@@ -502,7 +502,6 @@ async def test_a_pattern_that_honours_the_schema_compiles(pattern: str) -> None:
     assert agent is not None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("pattern", ["groupchat"])
 async def test_a_pattern_that_cannot_honour_the_schema_is_refused(pattern: str) -> None:
     """Refused at compile, not dropped at runtime.

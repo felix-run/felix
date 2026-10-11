@@ -58,7 +58,6 @@ async def _ticks_during(coro) -> tuple[int, object]:
     return ticks, result
 
 
-@pytest.mark.asyncio
 async def test_tool_retrieval_encode_does_not_block_the_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -73,7 +72,6 @@ async def test_tool_retrieval_encode_does_not_block_the_loop(
     assert ticks > 0, "the event loop was blocked for the whole encode"
 
 
-@pytest.mark.asyncio
 async def test_rank_indices_by_query_async_does_not_block_the_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,7 +85,6 @@ async def test_rank_indices_by_query_async_does_not_block_the_loop(
     assert ticks > 0, "the event loop was blocked for the whole encode"
 
 
-@pytest.mark.asyncio
 async def test_async_ranking_matches_the_sync_result(monkeypatch: pytest.MonkeyPatch) -> None:
     """Moving off the loop must not change the answer."""
     from felix.embeddings import rank_indices_by_query, rank_indices_by_query_async
@@ -98,7 +95,6 @@ async def test_async_ranking_matches_the_sync_result(monkeypatch: pytest.MonkeyP
     assert await rank_indices_by_query_async("q", blobs, "bge") == rank_indices_by_query("q", blobs, "bge")
 
 
-@pytest.mark.asyncio
 async def test_no_executor_hop_when_retrieval_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

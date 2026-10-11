@@ -116,7 +116,6 @@ def test_effective_limits_handles_none() -> None:
 # --- the tool wrapper -----------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_wrapper_denies_when_over_budget() -> None:
     from dataclasses import dataclass
 
@@ -148,7 +147,6 @@ async def test_wrapper_denies_when_over_budget() -> None:
     assert ctx.limit_state.aborted is True
 
 
-@pytest.mark.asyncio
 async def test_wrapper_fails_closed_without_a_request_context() -> None:
     """It used to skip every check entirely when there was no context."""
     from dataclasses import dataclass

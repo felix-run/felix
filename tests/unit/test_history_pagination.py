@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.config import Settings
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
@@ -50,7 +49,6 @@ async def _history(client: AsyncClient, thread: str, **params: Any) -> dict[str,
     return resp.json()
 
 
-@pytest.mark.asyncio
 async def test_a_limit_returns_the_newest_events_not_the_oldest() -> None:
     settings = _settings()
     await _seed(settings, "newest", 40)
@@ -63,7 +61,6 @@ async def test_a_limit_returns_the_newest_events_not_the_oldest() -> None:
     assert len(contents) == 10
 
 
-@pytest.mark.asyncio
 async def test_paging_backwards_reaches_the_start_without_gaps() -> None:
     """Walk a thread with the cursor the response hands back and reassemble it."""
     settings = _settings()
@@ -80,7 +77,6 @@ async def test_paging_backwards_reaches_the_start_without_gaps() -> None:
     assert seen == [f"m{i}" for i in range(25)], f"paging produced {len(seen)} of 25 events"
 
 
-@pytest.mark.asyncio
 async def test_has_more_is_false_once_the_thread_fits() -> None:
     settings = _settings()
     await _seed(settings, "short", 5)
@@ -91,7 +87,6 @@ async def test_has_more_is_false_once_the_thread_fits() -> None:
     assert len(body["messages"]) == 5
 
 
-@pytest.mark.asyncio
 async def test_the_response_is_bounded_even_with_no_limit_asked_for() -> None:
     """The cap is what makes the growth bounded; the default is unchanged otherwise."""
     from felix_api.routes.chat import MAX_HISTORY_EVENTS
@@ -105,7 +100,6 @@ async def test_the_response_is_bounded_even_with_no_limit_asked_for() -> None:
     assert MAX_HISTORY_EVENTS >= 1000, "the cap should be far above any real thread"
 
 
-@pytest.mark.asyncio
 async def test_a_limit_of_zero_is_rejected_rather_than_returning_everything() -> None:
     settings = _settings()
     await _seed(settings, "zero", 3)
@@ -114,7 +108,6 @@ async def test_a_limit_of_zero_is_rejected_rather_than_returning_everything() ->
     assert resp.status_code == 400, resp.status_code
 
 
-@pytest.mark.asyncio
 async def test_an_empty_thread_pages_cleanly() -> None:
     settings = _settings()
     async with app_client(settings) as client:
@@ -123,7 +116,6 @@ async def test_an_empty_thread_pages_cleanly() -> None:
     assert body["has_more"] is False
 
 
-@pytest.mark.asyncio
 async def test_the_cursor_survives_a_filtered_event_at_the_window_edge() -> None:
     """The oldest event in a window may be one the filter drops.
 

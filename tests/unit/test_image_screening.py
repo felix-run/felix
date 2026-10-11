@@ -24,7 +24,6 @@ def test_images_are_unscreened_by_default() -> None:
     assert ContentScreening(enabled=True).image_model == ""
 
 
-@pytest.mark.asyncio
 async def test_an_unbuildable_decider_quarantines_images_without_transcribing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -25,7 +25,7 @@ from felix.session.types import AppendableEvent
 from felix.thread_ids import effective_thread_id
 from httpx import AsyncClient
 
-from tests.support.factories import app_client
+from tests.support.factories import app_client, make_settings
 
 
 @pytest.fixture
@@ -40,12 +40,7 @@ def thread(request: pytest.FixtureRequest) -> str:
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
-        auth_mode="none",
-        environment="development",
-        object_store="memory",
-        database_url="memory://resume",
+    return make_settings(
         host="127.0.0.1",
         # No Redis here; the snapshot path consults it for lease and steer state and
         # would otherwise spend the test retrying a refused port.
@@ -127,7 +122,6 @@ async def _read(client: AsyncClient, url: str, *, headers: dict | None = None) -
 # --- reconnecting ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_cold_reconnect_returns_the_transcript(thread: str) -> None:
     """No cursor means the client has nothing, so hand back the thread itself.
 
@@ -149,7 +143,6 @@ async def test_cold_reconnect_returns_the_transcript(thread: str) -> None:
     assert [m["content"] for m in transcript] == ["first", "second"]
 
 
-@pytest.mark.asyncio
 async def test_warm_reconnect_replays_only_what_was_missed(thread: str) -> None:
     """The point of `Last-Event-ID`: do not re-send what the client already has."""
     settings = _settings()
@@ -166,7 +159,6 @@ async def test_warm_reconnect_replays_only_what_was_missed(thread: str) -> None:
     assert [f["payload"]["data"]["content"] for f in frames] == ["three"]
 
 
-@pytest.mark.asyncio
 async def test_the_cursor_a_reconnect_returns_is_usable_again(thread: str) -> None:
     """Round trip: the id from one connection resumes correctly on the next."""
     settings = _settings()
@@ -180,7 +172,6 @@ async def test_the_cursor_a_reconnect_returns_is_usable_again(thread: str) -> No
     assert [f["payload"]["data"]["content"] for f in _data_frames(body)] == ["three"]
 
 
-@pytest.mark.asyncio
 async def test_last_event_id_also_accepted_as_a_query_parameter(thread: str) -> None:
     """EventSource sets the header; a plain fetch or curl cannot."""
     settings = _settings()
@@ -193,7 +184,6 @@ async def test_last_event_id_also_accepted_as_a_query_parameter(thread: str) -> 
     assert [f["payload"]["data"]["content"] for f in frames] == ["two"]
 
 
-@pytest.mark.asyncio
 async def test_a_garbage_cursor_degrades_to_a_snapshot(thread: str) -> None:
     """A malformed `Last-Event-ID` must not 500 a recovery surface."""
     settings = _settings()
@@ -205,7 +195,6 @@ async def test_a_garbage_cursor_degrades_to_a_snapshot(thread: str) -> None:
     assert _data_frames(body)[0]["payload"]["event"] == "snapshot"
 
 
-@pytest.mark.asyncio
 async def test_the_stream_terminates_cleanly(thread: str) -> None:
     """Without `[DONE]` the body just stops under an already-sent 200."""
     settings = _settings()
@@ -217,7 +206,6 @@ async def test_the_stream_terminates_cleanly(thread: str) -> None:
     assert _frames(body)[-1]["done"], "the stream ended without [DONE]"
 
 
-@pytest.mark.asyncio
 async def test_an_unknown_thread_returns_an_empty_snapshot(thread: str) -> None:
     """Deliberately not a 404: that would answer whether someone else's thread exists."""
     async with app_client(_settings()) as client:
@@ -228,7 +216,6 @@ async def test_an_unknown_thread_returns_an_empty_snapshot(thread: str) -> None:
     assert frames[0]["payload"]["data"]["transcript"] == []
 
 
-@pytest.mark.asyncio
 async def test_a_thread_id_carrying_a_tenant_delimiter_is_rejected(thread: str) -> None:
     """`:` is how the tenant prefix is encoded, so accepting one invites forgery.
 
@@ -243,7 +230,6 @@ async def test_a_thread_id_carrying_a_tenant_delimiter_is_rejected(thread: str) 
     assert resp.json()["detail"] == "invalid_thread_id"
 
 
-@pytest.mark.asyncio
 async def test_a_reconnect_cannot_read_another_tenants_thread(thread: str) -> None:
     """Thread ids are namespaced per tenant; the route must use the namespaced one."""
     settings = _settings()
@@ -273,7 +259,6 @@ class _ScriptedAgent:
         yield Event(event="done", data={})
 
 
-@pytest.mark.asyncio
 async def test_post_stream_stamps_structural_frames_only(
     thread: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -347,7 +332,6 @@ def test_pause_frames_are_resume_points() -> None:
         assert is_resume_point(name), f"{name} should carry a resume cursor"
 
 
-@pytest.mark.asyncio
 async def test_stream_cursor_is_the_next_sequence(thread: str) -> None:
     """A per-connection counter restarts at 1 and so means nothing to the next one."""
     from felix_api.routes._streaming import stream_cursor
