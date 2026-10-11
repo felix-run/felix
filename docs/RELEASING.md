@@ -42,7 +42,7 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
    ```bash
    make install-full
    make check                       # ruff + ty + pytest w/ coverage floor + format check
-   uv run felix bundle-manifests
+   uv run felix bundle-manifests --strict
    make eval                         # the smoke eval (--mock) in memory, then the counter-smoke,
                                      # which proves the scorer can still reject an answer
    uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
