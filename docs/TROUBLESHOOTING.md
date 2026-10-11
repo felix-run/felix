@@ -67,7 +67,8 @@ extra that is not installed. CI installs `--all-extras` for exactly this reason.
 make install-full    # uv sync --all-extras --dev
 ```
 
-`make type` checks for this and says so before running. Note that `ty check` runs over `packages
+`make type` checks for this first: on a lean venv it prints `SKIPPED type check` and lets `make check`
+continue, and under `CI` or `STRICT=1` (as `make check-ci` sets) it fails instead. Note that `ty check` runs over `packages
 apps` only — tests are excluded on purpose, because fakes and fixtures trip it without adding
 production signal.
 

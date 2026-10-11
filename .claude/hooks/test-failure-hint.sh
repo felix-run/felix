@@ -19,7 +19,7 @@ esac
 hint=""
 case "$OUT" in
   *"connection to server"*|*OperationalError*)
-    hint="Postgres/Valkey is not reachable. For tests use ./scripts/test.sh (memory:// stores, no services). For the app use 'make up' then 'make migrate'." ;;
+    hint="Postgres/Valkey is not reachable. For tests use ./scripts/test.sh (memory:// stores, no services). For the app use 'make up', or 'make db migrate' to run it from the checkout." ;;
   *"Unknown bundled manifest"*)
     hint="load_bundled() resolves manifests/ from the repo root, cwd, then the packaged bundled/ dir — run from the repo root, and check the manifest name matches the file stem in manifests/." ;;
   *"Unknown pattern"*|*"unknown pattern"*)
@@ -35,7 +35,7 @@ esac
 case "$CMD" in *"ty check"*) hint="${hint:-'ty check' runs over 'packages apps' in CI, not tests. Unresolved imports are errors; most other findings are warnings by design (see [tool.ty.rules] in pyproject.toml).}" ;; esac
 
 [ -z "$hint" ] && [ "$db_refused" = 1 ] &&
-  hint="Postgres/Valkey is not reachable. For tests use ./scripts/test.sh (memory:// stores, no services). For the app use 'make up' then 'make migrate'."
+  hint="Postgres/Valkey is not reachable. For tests use ./scripts/test.sh (memory:// stores, no services). For the app use 'make up', or 'make db migrate' to run it from the checkout."
 
 [ -z "$hint" ] && exit 0
 jq -cn --arg ctx "Felix hint: $hint" '{hookSpecificOutput:{hookEventName:"PostToolUseFailure",additionalContext:$ctx}}'
