@@ -16,10 +16,12 @@ if TYPE_CHECKING:
 # a newline, a NUL, a leading dash, an RTL override — accepted and handed to the
 # filesystem. The lookahead is what excludes `.` and `..` while still allowing the
 # dotfiles that instruction-file keys may legitimately name.
-# `~` is a key character the library uses (`skill-library/{tenant}/~{digest}/…`, a personal
-# library), so it is allowed: `Path` never expands it, and the containment check below holds
-# whatever a segment says. Without it every personal-library write failed on this store.
-_SAFE_SEGMENT = re.compile(r"\A(?!\.\.?\Z)[A-Za-z0-9._~-]+\Z")
+_SAFE_SEGMENT = re.compile(r"\A(?!\.\.?\Z)[A-Za-z0-9._-]+\Z")
+# The one other segment a key may hold: a personal skill library's, `~` and the owner's 32-hex
+# digest (`skill-library/{tenant}/~{digest}/…`, `skills/library_keys.py`). Its own shape rather
+# than `~` in `_SAFE_SEGMENT`, which is also the tenant id rule (`auth/context.TENANT_ID_RE`) and
+# must not let `~` into a tenant id. Without it every personal-library write failed on this store.
+_LIBRARY_SEGMENT = re.compile(r"\A~[0-9a-f]{32}\Z")
 
 
 class FilesystemObjectStore:
@@ -40,7 +42,7 @@ class FilesystemObjectStore:
         landed — symlinks included, which no amount of string checking can see.
         """
         segments = [s for s in key.strip("/").split("/") if s]
-        if not segments or not all(_SAFE_SEGMENT.match(s) for s in segments):
+        if not segments or not all(_SAFE_SEGMENT.match(s) or _LIBRARY_SEGMENT.match(s) for s in segments):
             raise ValueError(f"invalid object key: {key!r}")
         path = self._root.joinpath(*segments).resolve()
         try:
