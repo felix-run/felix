@@ -97,16 +97,17 @@ def test_every_overlay_is_validated_by_ci() -> None:
     the matching `make up-*` target.
     """
     root = COMPOSE.parent
-    workflow = (Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
+    repo = Path(__file__).resolve().parents[2]
+    workflow = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    script = (repo / "scripts" / "check-compose.sh").read_text(encoding="utf-8")
+    assert "run: ./scripts/check-compose.sh" in workflow, "the CI docker job no longer runs the compose check"
     overlays = sorted(p.name for p in root.glob("compose.*.yml"))
     assert overlays, "no overlays found — has deploy/docker been restructured?"
 
-    missing = [name for name in overlays if name not in workflow]
+    missing = [name for name in overlays if name not in script]
     assert not missing, (
-        f"overlays no CI step validates: {missing}. Add them to the docker job's "
-        "`Compose config` step, or they are checked by nothing."
+        f"overlays no CI step validates: {missing}. Add them to scripts/check-compose.sh, "
+        "which the docker job runs, or they are checked by nothing."
     )
 
 

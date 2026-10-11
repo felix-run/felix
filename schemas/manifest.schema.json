@@ -890,6 +890,74 @@
       "title": "Guardrails",
       "type": "object"
     },
+    "HookRule": {
+      "additionalProperties": false,
+      "description": "One manifest hook: on `event`, ask the operator-registered `endpoint` (an id from\n`FELIX_WEBHOOK_ENDPOINTS`, never a URL) with a signed request, and act on its answer.",
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "session_start",
+            "user_prompt_submit",
+            "pre_tool_use",
+            "post_tool_use",
+            "stop",
+            "subagent_stop"
+          ],
+          "title": "Event",
+          "type": "string"
+        },
+        "type": {
+          "const": "http",
+          "default": "http",
+          "title": "Type",
+          "type": "string"
+        },
+        "endpoint": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Tools",
+          "type": "array"
+        },
+        "timeout_ms": {
+          "default": 3000,
+          "maximum": 10000,
+          "minimum": 100,
+          "title": "Timeout Ms",
+          "type": "integer"
+        },
+        "on_error": {
+          "default": "allow",
+          "enum": [
+            "allow",
+            "block"
+          ],
+          "title": "On Error",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "event",
+        "endpoint"
+      ],
+      "title": "HookRule",
+      "type": "object"
+    },
     "HttpFetchToolRef": {
       "additionalProperties": false,
       "description": "Read a model-supplied URL over HTTP(S).\n\nThe inverse of `McpServerRef`-style integrations and of `HttpExecutor`: the destination\nis chosen by the model, not the manifest, so `path_prefix` is how an author narrows it\nback down. Bounded here rather than at the tool because a manifest is the only place\nthat knows what this agent should be allowed to read.",
@@ -2350,6 +2418,14 @@
         },
         "permissions": {
           "$ref": "#/$defs/PermissionsSpec"
+        },
+        "hooks": {
+          "items": {
+            "$ref": "#/$defs/HookRule"
+          },
+          "maxItems": 16,
+          "title": "Hooks",
+          "type": "array"
         },
         "aggregator_prompt": {
           "default": "",

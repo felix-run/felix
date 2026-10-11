@@ -8,15 +8,14 @@ OpenAI, A2A, MCP, and SSE.
 ## Development
 
 ```bash
-cp .env.example .env
-# openssl rand -hex 32  → set POSTGRES_PASSWORD
-
-make install      # lean core + dev
-pre-commit install # ruff lint/format on commit
-make check        # ruff + ty + pytest + format check (matches CI)
-make up           # Compose: api, worker, Postgres+pgvector, Valkey
-make migrate
+make bootstrap    # tools check, .env with generated passwords, lean install, pre-commit hook
+make check        # ruff + ty + pytest + format check (ty is skipped, loudly, on a lean install)
+make up           # Compose: migrate, api, worker, scheduler, Postgres+pgvector, Valkey
 ```
+
+`make help` lists every target by group. `make check-ci` adds the rest of what CI gates on
+that needs no infrastructure, and it fails rather than skips `ty` on a lean install. Run
+`make install-full` first.
 
 Optional:
 
@@ -38,8 +37,8 @@ make install-full        # all extras
   `felix.plugins` entry points (see `felix.plugins`).
 - `make type` (and CI's typecheck job) needs the optional extras: unresolved
   imports are errors by design, and a lean venv cannot resolve
-  `boto3`, `duckdb`, `playwright`, `presidio`, … Run `make install-full` before
-  `make check`, or expect `make type` to tell you to.
+  `boto3`, `duckdb`, `playwright`, `presidio`, … On a lean install `make check`
+  skips it with a notice; `make install-full` makes it run.
 - Tests: `./scripts/test.sh` — it sets the in-memory stores the suite needs. A bare
   `uv run pytest` picks up `.env` and fails against a real Postgres. CI runs the same script
   after a lean, frozen `uv sync --frozen --dev`.

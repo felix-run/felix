@@ -79,6 +79,9 @@ class WebhookEndpoint:
     # lets one tenant's run arrive signed with the secret another tenant's receiver trusts.
     tenants: frozenset[str] | None = None
     private: bool = False
+    # Open to manifest hooks (`manifest_hooks.py`), which send prompts, tool arguments and results
+    # -- far more than a run notification. Its own decision, off by default.
+    hooks: bool = False
 
     def allows(self, tenant_id: str) -> bool:
         return self.tenants is None or tenant_id in self.tenants
@@ -131,12 +134,16 @@ def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
         private = spec.get("private", False)
         if not isinstance(private, bool):
             raise ValueError(f"endpoint {name!r} `private` must be true or false")
+        hooks = spec.get("hooks", False)
+        if not isinstance(hooks, bool):
+            raise ValueError(f"endpoint {name!r} `hooks` must be true or false")
         out[name] = WebhookEndpoint(
             name=name,
             url=url,
             secret=secret,
             tenants=None if tenants == "*" else frozenset(tenants),
             private=private,
+            hooks=hooks,
         )
     return out
 
@@ -219,22 +226,28 @@ def _payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _post(settings: Settings, endpoint: WebhookEndpoint, headers: dict[str, str], body: bytes) -> int:
+def endpoint_client(settings: Settings, endpoint: WebhookEndpoint, timeout_s: float) -> Any:
+    """The HTTP client a delivery to `endpoint` uses: the egress-pinned one, or -- for an endpoint
+    the operator marked `private` -- a plain one. Shared with manifest hooks (`manifest_hooks.py`)."""
     import httpx
     from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S
 
-    timeout = httpx.Timeout(float(settings.webhook_timeout_seconds), connect=DEFAULT_CONNECT_TIMEOUT_S)
+    timeout = httpx.Timeout(timeout_s, connect=min(DEFAULT_CONNECT_TIMEOUT_S, timeout_s))
     if endpoint.private:
         # The operator marked this endpoint as reachable on a private network, which the egress
         # guard exists to refuse. Operator configuration, never a manifest value; redirects are
         # still not followed, and no proxy from the environment is picked up.
-        client = httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False)
-    else:
-        from felix.security.egress import safe_async_client
+        return httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False)
+    from felix.security.egress import safe_async_client
 
-        allow_http = settings.environment == "development" and settings.allow_insecure
-        client = safe_async_client(timeout=timeout, allow_http=allow_http)
+    allow_http = settings.environment == "development" and settings.allow_insecure
+    return safe_async_client(timeout=timeout, allow_http=allow_http)
+
+
+async def _post(settings: Settings, endpoint: WebhookEndpoint, headers: dict[str, str], body: bytes) -> int:
     from felix.security.egress import post_for_status
+
+    client = endpoint_client(settings, endpoint, float(settings.webhook_timeout_seconds))
 
     # Bounded as a whole as well as per read, so a receiver dripping bytes cannot hold the sweep.
     return await post_for_status(

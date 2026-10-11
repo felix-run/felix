@@ -39,7 +39,7 @@ esac
 if [ -f .env ]; then
   grep -qE '^FELIX_DATABASE_URL=' .env || echo "NOTE: .env has no FELIX_DATABASE_URL; Settings defaults to localhost Postgres."
 else
-  echo "NOTE: .env missing — 'cp .env.example .env' before 'make dev' / 'make up'."
+  echo "NOTE: .env missing — 'make bootstrap' writes one before 'make dev' / 'make up'."
 fi
 
 if command -v docker >/dev/null 2>&1; then

@@ -12,25 +12,31 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 ## Commands
 
 ```bash
+make bootstrap          # fresh clone: tools check, .env with generated passwords, install, pre-commit
 make install            # uv sync --dev (lean core; CI lint/type jobs use --all-extras)
 make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
 make test-cov           # the suite with coverage against the floor; `check` and CI both run this
-make check-ci           # check + bundle, schema-check, contract-check, toolkit, eval, SRI, pre-commit (each also a target)
+make check-ci           # check + bundle, schema-check, contract-check, toolkit, eval, lock-check, deps-age, SRI, pre-commit
+make compose-check / helm-lint   # CI's docker and helm checks, locally (need docker / helm)
 make contract           # regenerate the wire contract: schemas/openapi.json + schemas/sse-events.json
 make e2e                # tests/e2e only: the real app over HTTP, scripted model
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL; + _REDIS_URL as CI)
 make lint / fmt / type / test
 make dev                # API on :8080 with FELIX_AUTH_MODE=none, fs object store
+make db                 # only Postgres + Valkey in Docker on localhost — `make db migrate dev`
 make cli                # httpx REPL client (clients/cli.py)
 make migrate            # felix migrate head (Alembic)
 make doctor             # felix doctor — config/connectivity preflight
 make up / up-lite / up-gcp / up-full   # Compose overlays under deploy/docker/
+make help               # every target, grouped; generated from each target's `## description`
 ```
 
 `make type` and CI both run `ty check packages apps`; tests are excluded on purpose (fakes trip `ty`).
 Both need the optional extras installed (`make install-full`) — unresolved imports are errors, so a
-lean venv reports every optional dependency as one. `make type` checks for this and says so.
+lean venv reports every optional dependency as one. On a lean venv `make type` (so `make check`) skips
+with a `SKIPPED type check` notice; under `CI` or `STRICT=1`, which `make check-ci` sets, it fails instead.
+A fresh worktree is lean: run `make install-full`, or gate with `STRICT=1 make check`.
 
 ### Running tests
 

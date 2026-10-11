@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from felix.auth.mgmt import SCOPE_APPROVALS_READ, holds_mgmt_scopes
 from felix.context import AuthContext, RequestContext, async_run_with_context, get_context, try_get_context
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
+from felix.governance.screening import InboundScreeningError
 from felix.idempotency import (
     IdempotencyConflict,
     IdempotencyStore,
@@ -1409,6 +1410,11 @@ async def chat_stream(
             # Typed like the non-streaming 502, with the upstream body kept to the log.
             log_gateway_error(logger, exc)
             yield error_frame(client_safe_message(exc), kind="model_gateway_error")
+        except InboundScreeningError as exc:
+            # Refused inside the run, after the 200 -- a `user_prompt_submit` hook: typed, so a
+            # client can show it as a refusal rather than an outage.
+            refusal = str(getattr(exc, "code", "content_screening_denied"))
+            yield error_frame(client_safe_message(exc), kind=refusal)
         except Exception as exc:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.
