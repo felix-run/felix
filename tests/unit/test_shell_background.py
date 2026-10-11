@@ -251,7 +251,7 @@ def test_a_state_directory_that_is_not_private_is_refused(
 ) -> None:
     base = bg.background_base(root)
     if make_unsafe == "open to others":
-        os.chmod(base, 0o755)
+        os.chmod(base, 0o750)  # open to its group: enough to refuse, and not to the world
     else:
         base.rmdir()
         os.symlink(tmp_path, base)
