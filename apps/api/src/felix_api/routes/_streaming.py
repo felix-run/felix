@@ -95,6 +95,29 @@ def wait_before_deadline(timeout: float, deadline_ms: float | None, *, floor: fl
     return timeout if remaining <= 0 else min(timeout, max(floor, remaining))
 
 
+# The metadata a client folds a row with, passed through as the snapshot sends it. Named, not
+# copied whole, for the reason `thinking` is filtered below: stored metadata also holds what is
+# meant for the provider or the server alone. `parent_id` places a turn on its branch;
+# `attachments` are the images a message or tool result carried (`felix-file://` references);
+# `usage` is the call's token block; the rest are a workspace edit's note (`type`, `path`, `op`,
+# `bytes`, `to_path`, `kind`, `files`) and whether the model reads a custom entry (`in_context`).
+# Without them a durable run drew no screenshots, no usage and every workspace note as a generic
+# one until the run ended and the client re-read the snapshot.
+SESSION_EVENT_METADATA = (
+    "parent_id",
+    "attachments",
+    "usage",
+    "type",
+    "path",
+    "op",
+    "bytes",
+    "to_path",
+    "kind",
+    "files",
+    "in_context",
+)
+
+
 def session_event_frame(event: SessionEvent, cursor: int) -> str:
     """One `session_event` SSE frame.
 
@@ -143,8 +166,11 @@ def session_event_frame(event: SessionEvent, cursor: int) -> str:
     # `metadata.thinking` key the snapshot uses, which lets a client fold both with one
     # function. Omitted when there is nothing readable, like the keys above.
     thinking = readable_thinking(md.get("thinking"))
+    shown: dict[str, Any] = {key: md[key] for key in SESSION_EVENT_METADATA if md.get(key) is not None}
     if thinking:
-        data["metadata"] = {"thinking": thinking}
+        shown["thinking"] = thinking
+    if shown:
+        data["metadata"] = shown
     return frame({"event": "session_event", "data": data}, cursor=cursor)
 
 
