@@ -41,7 +41,16 @@ name, `422 reserved_path`, or more than 2,000 entries, `409 too_many_entries` wi
 sent `expected_count` refuses `409 workspace_changed` with the folder's file `count` now, and removes
 a symlink inside as the link, never its target; a rename never replaces anything and never moves a
 folder into itself), `exec` (a
-`shell_tools` command, run by the shell tool's own exec path in the sandbox), `clone` (a thread's
+`shell_tools` command, run by the shell tool's own exec path in the sandbox), `exec_start`,
+`exec_output` and `exec_kill` (a background command: started under a supervisor that outlives the
+call — the helper run with `--supervise`, the harness's `shell_background.py` ported — read since
+the last read or, with no `id`, listed, and ended; none of them queues behind a long `exec`, and every
+one keeps the scope dirty, since the command writes while it runs — a checkpoint clears that only
+if nothing marked the scope written while it ran. `destroy` and `clone` run with nothing beside
+them: calls already in flight finish first and new ones wait, so a poll cannot restart a Container
+that is being destroyed. It lives as
+long as the Container: a sandbox stops after `INACTIVITY_TIMEOUT_MS` with no operation, so an
+unpolled background command ends with it), `clone` (a thread's
 repository, into its empty `/workspace`, through the `github.com` intercept in `src/github.ts`,
 which adds the person's token outside the container and allows only that one repository's fetch),
 `git` and `lstat` (read-only, for the harness's repository listing and `publish_commits`: git run

@@ -399,6 +399,190 @@ async def test_an_unreachable_gateway_runs_nothing_anywhere(tmp_path: Path, gate
     assert not any(tmp_path.rglob("made.txt"))
 
 
+# --- background commands in the sandbox -----------------------------------------------------
+
+
+@pytest.fixture
+def background_state(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    from tests.support.background_state import isolate_background_state
+
+    isolate_background_state(monkeypatch, tmp_path_factory)
+
+
+def _background_tools(settings: Settings, timeout_ms: int = 10_000) -> dict[str, Any]:
+    from felix.manifests.schema import ShellToolRef
+    from felix.tools.shell import tools_from_shell_refs
+
+    ref = ShellToolRef(name="run", commands=_COMMANDS, timeout_ms=timeout_ms, background=True)
+    return {t.name: t for t in tools_from_shell_refs([ref], settings=settings)}
+
+
+async def _bg(tools: dict[str, Any], name: str, thread: str = THREAD, **args: Any) -> Any:
+    out = tool_output_content(await tools[name].executor.execute(args, ToolInvocationCtx(thread_id=thread)))
+    try:
+        return json.loads(out)
+    except ValueError:
+        return out
+
+
+def _comparable(answer: Any, ids: dict[str, str]) -> Any:
+    """`answer` with what a run cannot reproduce named instead: an id by its order, and no duration."""
+    if isinstance(answer, dict):
+        return {k: _comparable(ids.setdefault(v, f"id{len(ids)}") if k == "id" else v, ids)
+                for k, v in answer.items() if k != "duration_ms"}  # fmt: skip
+    if isinstance(answer, list):
+        return [_comparable(a, ids) for a in answer]
+    return answer
+
+
+async def _until_done(tools: dict[str, Any], process_id: str) -> dict[str, Any]:
+    out, err = "", ""
+    for _ in range(50):
+        read = await _bg(tools, "shell_output", id=process_id, wait_ms=500)
+        out, err = out + read["stdout"], err + read["stderr"]
+        if read["status"] != "running":
+            break
+    return {**read, "stdout": out, "stderr": err}
+
+
+# What a start hands the command: its stdin, its cwd, and an environment with nothing of the API's.
+_CALLER_ARGS = 'cat; echo "[${FELIX_SECRET_FOR_TEST:-clean}]"; basename "$PWD"'
+
+
+async def _background_session(settings: Settings) -> list[Any]:
+    tools = _background_tools(settings)
+    out: list[Any] = []
+    async with _request(settings):
+        await _call("write_file", {"path": "sub/a.txt", "content": "a"})
+        started = await _bg(
+            tools,
+            "run",
+            argv=["sh", "-c", "echo out; echo err >&2; sleep 0.5; exit 3"],
+            run_in_background=True,
+        )
+        out.append(started)
+        out.append(await _until_done(tools, started["id"]))
+        sleeper = await _bg(tools, "run", argv=["sh", "-c", "sleep 30"], run_in_background=True)
+        out.append(await _bg(tools, "shell_kill", id=sleeper["id"]))
+        out.append(
+            await _bg(tools, "run", argv=["sh", "-c", "sleep 30"], cwd="missing", run_in_background=True)
+        )
+        made = await _bg(
+            tools, "run", argv=["sh", "-c", "sleep 0.3; echo made > made.txt"], run_in_background=True
+        )
+        out.append(made)
+        out.append(await _until_done(tools, made["id"]))
+        out.append(await _call("read_file", {"path": "made.txt"}))
+        out.append(await _bg(tools, "shell_output"))
+        out.append(await _bg(tools, "shell_output", id="0" * 32))
+        out.append(await _bg(tools, "run", argv=["rm", "-rf", "/"], run_in_background=True))
+        given = await _bg(
+            tools, "run", argv=["sh", "-c", _CALLER_ARGS], cwd="sub", stdin="piped\n", run_in_background=True
+        )
+        out.append(await _until_done(tools, given["id"]))
+    async with _request(settings):
+        short = _background_tools(settings, timeout_ms=500)
+        late = await _bg(short, "run", argv=["sh", "-c", "sleep 30"], run_in_background=True)
+        out.append(await _until_done(short, late["id"]))
+    ids: dict[str, str] = {}
+    return [_comparable(a, ids) for a in out]
+
+
+async def test_background_commands_answer_on_hosted_as_they_do_locally(
+    tmp_path: Path, gateway: FakeGateway, background_state: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FELIX_SECRET_FOR_TEST", "leaked")
+    allowed = {"shell_allowed_commands": ", ".join(_COMMANDS)}
+    transcript = await _background_session(_settings(tmp_path / "hosted", "hosted", **allowed))
+    reference = await _background_session(_settings(tmp_path / "reference", "local", **allowed))
+    assert transcript == reference
+    started, done, killed, missing, made, made_done, made_file, listed, unknown, refused, given, late = (
+        transcript
+    )
+    assert started["status"] == "running" and started["argv"] == [
+        "sh",
+        "-c",
+        "echo out; echo err >&2; sleep 0.5; exit 3",
+    ]
+    assert (done["status"], done["exit_code"], done["stdout"], done["stderr"]) == (
+        "exited",
+        3,
+        "out\n",
+        "err\n",
+    )
+    assert killed["status"] == "killed"
+    assert missing.startswith("[shell denied]"), "a missing cwd is refused as the foreground refuses it"
+    assert made["status"] == "running" and made_done["status"] == "exited"
+    assert json.loads(made_file)["content"] == "made\n"
+    assert [p["status"] for p in listed["processes"]] == ["exited", "killed", "exited"]
+    assert unknown.startswith("[shell] no background command")
+    assert refused.startswith("[shell denied]")
+    assert (given["status"], given["stdout"]) == ("exited", "piped\n[clean]\nsub\n")
+    assert late["status"] == "timed_out", "the tool's timeout_ms bounds a background command"
+
+
+async def test_a_background_command_is_reached_only_from_its_own_thread(
+    tmp_path: Path, gateway: FakeGateway, background_state: None
+) -> None:
+    settings = _settings(tmp_path, "hosted", shell_allowed_commands=", ".join(_COMMANDS))
+    tools = _background_tools(settings)
+    async with _request(settings):
+        started = await _bg(tools, "run", argv=["sh", "-c", "sleep 30"], run_in_background=True)
+    async with _request(settings, thread="acme:t2"):
+        other = await _bg(tools, "shell_kill", thread="acme:t2", id=started["id"])
+        listed = await _bg(tools, "shell_output", thread="acme:t2")
+    async with _request(settings):
+        ended = await _bg(tools, "shell_kill", id=started["id"])
+    assert isinstance(other, str) and other.startswith("[shell] no background command")
+    assert listed == {"processes": []}
+    assert ended["status"] == "killed"
+    scope = f"{TENANT}/{thread_key(TENANT, THREAD)}"
+    assert [op for s, op in gateway.calls if s == scope and op.startswith("exec")] == [
+        "exec_start",
+        "exec_kill",
+    ]
+    assert scope in gateway.checkpoints, "a background command's scope is checkpointed like any written one"
+
+
+async def test_an_unreachable_gateway_is_unavailable_not_a_refusal(
+    tmp_path: Path, gateway: FakeGateway, background_state: None
+) -> None:
+    from felix.tools.errors import ToolErrorCode, read_tool_error_code
+
+    gateway.down = True
+    settings = _settings(tmp_path, "hosted", shell_allowed_commands=", ".join(_COMMANDS))
+    tools = _background_tools(settings)
+    async with _request(settings):
+        for name, args in (
+            ("run", {"argv": ["sh", "-c", "sleep 1"], "run_in_background": True}),
+            ("shell_output", {}),
+            ("shell_kill", {"id": "0" * 32}),
+        ):
+            out = await tools[name].executor.execute(args, ToolInvocationCtx(thread_id=THREAD))
+            assert read_tool_error_code(out) is ToolErrorCode.TRANSPORT_UNAVAILABLE, tool_output_content(out)
+            assert "the hosted workspace is unavailable" in tool_output_content(out)
+
+
+async def test_a_busy_sandbox_is_a_refusal_the_model_can_act_on(
+    tmp_path: Path, gateway: FakeGateway, background_state: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.tools.errors import ToolErrorCode, read_tool_error_code
+
+    from tests.support.workspace_gateway_fake import _helper
+
+    monkeypatch.setattr(_helper(), "MAX_RUNNING", 1)
+    settings = _settings(tmp_path, "hosted", shell_allowed_commands=", ".join(_COMMANDS))
+    tools = _background_tools(settings)
+    async with _request(settings):
+        first = await _bg(tools, "run", argv=["sh", "-c", "sleep 30"], run_in_background=True)
+        out = await tools["run"].executor.execute(
+            {"argv": ["sh", "-c", "sleep 30"], "run_in_background": True}, ToolInvocationCtx(thread_id=THREAD)
+        )
+        await _bg(tools, "shell_kill", id=first["id"])
+    assert read_tool_error_code(out) is ToolErrorCode.PERMISSION_DENIED
+    assert "already running here" in tool_output_content(out)
+
+
 # --- carrying local scopes into their sandboxes ---------------------------------------------
 
 

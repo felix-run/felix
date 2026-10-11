@@ -2250,6 +2250,11 @@
           "default": false,
           "title": "Fatal",
           "type": "boolean"
+        },
+        "background": {
+          "default": false,
+          "title": "Background",
+          "type": "boolean"
         }
       },
       "required": [

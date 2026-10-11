@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import signal
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -212,77 +215,147 @@ async def _feed(proc: asyncio.subprocess.Process, data: bytes | None) -> None:
         proc.stdin.close()
 
 
+Refuse = Callable[[str, str], ToolOutput]
+
+
+def shell_refusal(tool: str, reason: str, message: str) -> ToolOutput:
+    """A refused shell call. A tool error, not a wrapper deny -- no governance wrapper produced it --
+    but counted, so a model probing the allowlist shows up on the same dashboards a policy deny does
+    rather than as a quiet string in the transcript."""
+    record_counter("felix_shell_denied", {"tool": tool, "reason": reason})
+    return tool_error_output(ToolErrorCode.PERMISSION_DENIED, f"[shell denied] {message}")
+
+
+@dataclass(frozen=True, slots=True)
+class HostedPlace:
+    """The scope's sandbox, through the hosted workspace gateway."""
+
+    settings: Any
+    scope: Any
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerPlace:
+    """`felix-shell-runner`, told the scope's directory relative to its own workspace root."""
+
+    url: str
+    token: str
+    root: Path
+    scope: str
+
+
+@dataclass(frozen=True, slots=True)
+class LocalPlace:
+    """This process: a development box only."""
+
+    root: Path
+
+
+ShellPlace = HostedPlace | RunnerPlace | LocalPlace
+
+
+def shell_place(settings: Any, refuse: Refuse) -> ShellPlace | ToolOutput:
+    """Where a shell call runs, or the tool error saying it runs nowhere. The one choice: a
+    command, a background start and that command's reads and end all ask it, so an id is looked up
+    where it was made.
+
+    Under the hosted workspace backend, the scope's sandbox, where its files are; it never falls
+    back to this host. With a runner, the runner, which repeats the allowlist and the cwd against
+    its own configuration; a runner that cannot be reached fails the call, never the branch below.
+    Otherwise this process, whatever the settings say about runners or backends (the hosted
+    backend's `deployment` scope reaches here), so only a development box may. Checked at boot and
+    compile too; this holds for settings that never went through either."""
+    hosted = _hosted_scope(settings)
+    if hosted is not None:
+        return HostedPlace(settings, hosted)
+    try:
+        root = workspace_root()
+    except ValueError as exc:
+        return refuse("cwd", str(exc))
+    url = str(getattr(settings, "shell_runner_url", "") or "").strip()
+    if url:
+        if _is_thread_checkout(root, settings):
+            # The runner resolves `cwd` under its own FELIX_WORKSPACE_ROOT and has no thread's
+            # checkout: sent there, the command would run in the shared workspace while the
+            # model believes it is in the repository.
+            return tool_error_output(
+                ToolErrorCode.TRANSPORT_UNAVAILABLE,
+                "[shell] this thread works in its own repository checkout, which the remote shell "
+                "runner cannot reach; shell commands are unavailable here",
+            )
+        return RunnerPlace(url, _runner_token(settings), root, _scope_on_runner(root, settings))
+    refusal = local_exec_refusal(settings)
+    if refusal is not None:
+        return refuse("isolation", refusal)
+    return LocalPlace(root)
+
+
 class _ShellExecutor:
     transport = "shell"
 
     def __init__(
-        self, *, name: str, prefixes: list[tuple[str, ...]], timeout_s: float, settings: Any
+        self,
+        *,
+        name: str,
+        prefixes: list[tuple[str, ...]],
+        timeout_s: float,
+        settings: Any,
+        background: bool = False,
     ) -> None:
         self._name = name
         self._prefixes = prefixes
         self._timeout_s = timeout_s
         self._settings = settings
-
-    def _refuse(self, reason: str, message: str) -> ToolOutput:
-        # A refusal is a tool error, not a wrapper deny — no governance wrapper produced it —
-        # but it is counted, so a model probing the allowlist shows up on the same dashboards
-        # a policy deny does rather than as a quiet string in the transcript.
-        record_counter("felix_shell_denied", {"tool": self._name, "reason": reason})
-        return tool_error_output(ToolErrorCode.PERMISSION_DENIED, f"[shell denied] {message}")
+        self._background = background
+        self._refuse: Refuse = functools.partial(shell_refusal, name)
 
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         _ = ctx
         argv = [str(a) for a in (args.get("argv") or [])]
         # The operator allowlist is read per call from the request's settings, not the copy
         # the tool was bound with: "checked per call" has to mean against what the host allows now.
-        req = try_get_context()
-        settings = req.settings if req is not None and req.settings is not None else self._settings
+        settings = request_settings(self._settings)
         try:
             assert_argv_allowed(argv, self._prefixes, settings)
         except ShellNotAllowedError as exc:
             return self._refuse("argv", str(exc))
         stdin = args.get("stdin")
         stdin_text = str(stdin)[:_MAX_STDIN_CHARS] if stdin is not None else None
-        hosted = _hosted_scope(settings)
-        if hosted is not None:
-            # Under the hosted workspace backend the command runs in the scope's sandbox, where
-            # its files are. Every check above has run here; it never falls back to this host.
-            return await self._run_hosted(settings, hosted, argv, str(args.get("cwd") or "."), stdin_text)
-        try:
-            root = workspace_root()
-            cwd = resolve_cwd(root, str(args.get("cwd") or "."))
-        except ValueError as exc:
-            return self._refuse("cwd", str(exc))
-        runner_url = str(getattr(settings, "shell_runner_url", "") or "").strip()
-        if runner_url:
-            if _is_thread_checkout(root, settings):
-                # The runner resolves `cwd` under its own FELIX_WORKSPACE_ROOT and has no thread's
-                # checkout: sent there, the command would run in the shared workspace while the
-                # model believes it is in the repository.
-                return tool_error_output(
-                    ToolErrorCode.TRANSPORT_UNAVAILABLE,
-                    "[shell] this thread works in its own repository checkout, which the remote shell "
-                    "runner cannot reach; shell commands are unavailable here",
-                )
-            # Remote mode. Every check above has run here, in the API, and the runner repeats
-            # the allowlist and the cwd against its own configuration. What it must never do
-            # is come back to the branch below: a runner that cannot be reached fails the call.
-            return await self._run_remote(
-                runner_url,
-                str(getattr(settings, "shell_runner_token", "") or ""),
-                argv,
-                str(cwd.relative_to(root)),
-                stdin_text,
-                _scope_on_runner(root, settings),
+        place = shell_place(settings, self._refuse)
+        if not isinstance(place, HostedPlace | RunnerPlace | LocalPlace):
+            return place
+        cwd_arg = str(args.get("cwd") or ".")
+        cwd: Path | None = None
+        if not isinstance(place, HostedPlace):
+            # The sandbox resolves its own, the same way.
+            try:
+                cwd = resolve_cwd(place.root, cwd_arg)
+            except ValueError as exc:
+                return self._refuse("cwd", str(exc))
+            cwd_arg = str(cwd.relative_to(place.root))
+        # Only a tool bound with `background: true` was offered the argument.
+        if self._background and args.get("run_in_background"):
+            from felix.tools.shell_background_tools import start_in_background
+
+            return await start_in_background(
+                place,
+                self._refuse,
+                argv=argv,
+                cwd=cwd,
+                cwd_rel=cwd_arg,
+                stdin=stdin_text,
+                timeout_s=self._timeout_s,
             )
-        # The exec below is in this process, whatever the settings say about runners or backends
-        # (the hosted backend's `deployment` scope reaches here), so only a development box may.
-        # Checked at boot and compile too; this holds for settings that never went through either.
-        refusal = local_exec_refusal(settings)
-        if refusal is not None:
-            return self._refuse("isolation", refusal)
+        match place:
+            case HostedPlace():
+                return await self._run_hosted(place.settings, place.scope, argv, cwd_arg, stdin_text)
+            case RunnerPlace():
+                return await self._run_remote(place.url, place.token, argv, cwd_arg, stdin_text, place.scope)
+        assert cwd is not None
         try:
-            result = await exec_argv(argv, cwd=cwd, root=root, stdin=stdin_text, timeout_s=self._timeout_s)
+            result = await exec_argv(
+                argv, cwd=cwd, root=place.root, stdin=stdin_text, timeout_s=self._timeout_s
+            )
         except OSError as exc:
             return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
         return json.dumps(result)
@@ -309,7 +382,7 @@ class _ShellExecutor:
         try:
             result = RunnerResult.model_validate(out)
         except ValidationError:
-            return _runner_unavailable("returned a malformed result")
+            return runner_unavailable("returned a malformed result")
         # argv is what this process asked for, not what the sandbox says it ran.
         return json.dumps({**result.model_dump(), "argv": argv})
 
@@ -323,44 +396,67 @@ class _ShellExecutor:
             body["scope"] = scope
         if stdin is not None:
             body["stdin"] = stdin
-        deadline_s = self._timeout_s + RUNNER_GRACE_S
-        try:
-            # httpx's timeout is per operation — connect, each read — so a runner that sends a
-            # byte every few seconds never trips it. This bounds the whole exchange: the API's
-            # tool call ends at the command's own budget plus the grace, whatever the runner does.
-            async with (
-                asyncio.timeout(deadline_s),
-                _runner_client(deadline_s) as client,
-                client.stream(
-                    "POST", url.rstrip("/") + "/run", json=body, headers={"authorization": f"Bearer {token}"}
-                ) as resp,
-            ):
-                status = resp.status_code
-                raw = await _read_capped(resp, MAX_RUNNER_RESPONSE_BYTES)
-        except httpx.TimeoutException, TimeoutError:
-            return _runner_unavailable("did not answer in time")
-        except (httpx.HTTPError, _ResponseTooLarge) as exc:
-            # The class name only: an httpx message can carry the URL, and the URL is the
-            # operator's to read in config, not the model's to read in a transcript.
-            return _runner_unavailable(f"is unreachable ({type(exc).__name__})")
-        return self._map_runner_response(status, raw, argv, cwd)
+        answer = await runner_post(url, token, "/run", body, self._timeout_s + RUNNER_GRACE_S)
+        if not isinstance(answer, tuple):
+            return answer
+        return self._map_runner_response(*answer, argv, cwd)
 
     def _map_runner_response(self, status: int, raw: bytes, argv: list[str], cwd: str) -> ToolOutput:
         if status == 200:
             try:
                 result = RunnerResult.model_validate_json(raw)
             except ValidationError:
-                return _runner_unavailable("returned a malformed result")
+                return runner_unavailable("returned a malformed result")
             # argv and cwd are what this process asked for, not what the runner says it ran.
             return json.dumps({**result.model_dump(), "argv": argv, "cwd": cwd})
-        detail = _runner_detail(raw)
+        detail = runner_detail(raw)
         if status == 403:
             return self._refuse("runner", f"the shell runner refused it: {detail}")
         if status == 401:
-            return _runner_unavailable("rejected the token (FELIX_SHELL_RUNNER_TOKEN must match)")
+            return runner_unavailable("rejected the token (FELIX_SHELL_RUNNER_TOKEN must match)")
         if status == 422 and detail:
             return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {detail}")
-        return _runner_unavailable(f"answered HTTP {status}")
+        return runner_unavailable(f"answered HTTP {status}")
+
+
+async def runner_post(
+    url: str,
+    token: str,
+    path: str,
+    body: dict[str, Any],
+    deadline_s: float,
+    consequence: str = "the command did not run",
+) -> tuple[int, bytes] | ToolOutput:
+    """One call to the shell runner: its status and capped body, or the tool error saying why
+    there is none, and `consequence` of that."""
+    try:
+        # httpx's timeout is per operation — connect, each read — so a runner that sends a
+        # byte every few seconds never trips it. This bounds the whole exchange: the API's
+        # tool call ends at the command's own budget plus the grace, whatever the runner does.
+        async with (
+            asyncio.timeout(deadline_s),
+            _runner_client(deadline_s) as client,
+            client.stream(
+                "POST", url.rstrip("/") + path, json=body, headers={"authorization": f"Bearer {token}"}
+            ) as resp,
+        ):
+            return resp.status_code, await _read_capped(resp, MAX_RUNNER_RESPONSE_BYTES)
+    except httpx.TimeoutException, TimeoutError:
+        return runner_unavailable("did not answer in time", consequence)
+    except (httpx.HTTPError, _ResponseTooLarge) as exc:
+        # The class name only: an httpx message can carry the URL, and the URL is the
+        # operator's to read in config, not the model's to read in a transcript.
+        return runner_unavailable(f"is unreachable ({type(exc).__name__})", consequence)
+
+
+def request_settings(bound: Any) -> Any:
+    """The request's settings, or the ones a tool was bound with outside a request."""
+    req = try_get_context()
+    return req.settings if req is not None and req.settings is not None else bound
+
+
+def _runner_token(settings: Any) -> str:
+    return str(getattr(settings, "shell_runner_token", "") or "")
 
 
 class RunnerResult(BaseModel):
@@ -413,7 +509,7 @@ async def _read_capped(resp: httpx.Response, limit: int) -> bytes:
     return bytes(buf)
 
 
-def _runner_detail(raw: bytes) -> str:
+def runner_detail(raw: bytes) -> str:
     try:
         data = json.loads(raw)
     except ValueError:
@@ -422,10 +518,10 @@ def _runner_detail(raw: bytes) -> str:
     return str(message)[:500] if message else ""
 
 
-def _runner_unavailable(what: str) -> ToolOutput:
-    # Fail closed, and say so: the command did not run anywhere.
+def runner_unavailable(what: str, consequence: str = "the command did not run") -> ToolOutput:
+    # Fail closed, and say what that meant: for `/run`, that the command did not run anywhere.
     return tool_error_output(
-        ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] the shell runner {what}; the command did not run"
+        ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] the shell runner {what}; {consequence}"
     )
 
 
@@ -522,18 +618,29 @@ def tools_from_shell_refs(
                 name=ref.name,
                 description=ref.description
                 or f"Run a command in the workspace checkout, without a shell. Allowed: {allowed}.",
-                args=ShellArgs,
+                args=background_args() if ref.background else ShellArgs,
                 executor=_ShellExecutor(
                     name=ref.name,
                     prefixes=[split_prefix(c) for c in ref.commands],
                     timeout_s=timeout_s,
                     settings=settings,
+                    background=ref.background,
                 ),
                 source="shell",
                 fatal=ref.fatal,
             )
         )
+    if any(ref.background for ref in refs):
+        from felix.tools.shell_background_tools import background_tools
+
+        out.extend(background_tools(settings))
     return out
+
+
+def background_args() -> type[ShellArgs]:
+    from felix.tools.shell_background_tools import ShellBackgroundArgs
+
+    return ShellBackgroundArgs
 
 
 __all__ = [
@@ -542,10 +649,21 @@ __all__ = [
     "MAX_RUNNER_DURATION_MS",
     "MAX_RUNNER_RESPONSE_BYTES",
     "MAX_TOTAL_OUTPUT_BYTES",
+    "HostedPlace",
+    "LocalPlace",
+    "Refuse",
+    "RunnerPlace",
     "RunnerResult",
     "ShellArgs",
+    "ShellPlace",
     "exec_argv",
+    "request_settings",
     "resolve_cwd",
+    "runner_detail",
+    "runner_post",
+    "runner_unavailable",
+    "shell_place",
+    "shell_refusal",
     "tools_from_shell_refs",
 ]
 

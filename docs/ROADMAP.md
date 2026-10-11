@@ -577,9 +577,18 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       composition both render sites call). *Follow-ups:* the compacting strategy still sizes the
       window on the full results, so it can compact before clearing would have made room; a router
       passes its cleared strategy to its children, so a child is cleared by the router's setting
-      too. *Next:* persistent shell sessions
-      and background processes in the shell runner, file checkpoints restored by `/chat/rewind`,
-      and a git worktree per child task.
+      too. Background commands (`shell_tools[].background`): `run_in_background` starts a command
+      under a detached supervisor (`tools/shell_background.py`, stdlib only, ported into the
+      gateway helper) and answers an id; `shell_output` reads what it wrote since the last read and
+      `shell_kill` ends its group. All three exec places — development box, shell runner (`/start`,
+      `/output`, `/kill`), hosted sandbox (`exec_start`/`exec_output`/`exec_kill`) — run the same
+      code, and the hosted and local backends answer a session identically. No shell interpreter:
+      a persistent `bash` session was declined, since it would void the argv allowlist.
+      *Follow-ups:* the hosted supervisor's survival past the helper's exit, and tini as the
+      Container's PID 1, are pinned only against the fake gateway, not a deployed Container; a
+      background command ends when its hosted sandbox idles out; caps are per root and per host,
+      not per tenant. *Next:* file checkpoints restored by `/chat/rewind`, and a git worktree per child
+      task.
 - [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
       pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
       `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per

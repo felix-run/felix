@@ -34,10 +34,12 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.schema import ShellToolRef
 from felix.shell_runner import create_runner_app, run_until_disconnected
 from felix.tools import shell as shell_mod
+from felix.tools import shell_background
 from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.shell import MAX_OUTPUT_BYTES, exec_argv, tools_from_shell_refs
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 
+from tests.support.background_state import isolate_background_state
 from tests.support.git_fixture import git
 from tests.support.loopback_http import Request, respond, serve
 
@@ -59,6 +61,12 @@ RESULT_KEYS = {
     "duration_ms",
 }
 _HEARTBEAT = "import time, pathlib, sys; p = pathlib.Path(sys.argv[1]); [p.write_text(str(time.time())) or time.sleep(0.05) for _ in iter(int, 1)]"
+
+
+@pytest.fixture(autouse=True)
+def _background_state(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Background commands keep their state in a directory of this test's own."""
+    isolate_background_state(monkeypatch, tmp_path_factory)
 
 
 def _settings(ws: Path, allowed: str, *, url: str = "", token: str = TOKEN) -> Settings:
@@ -583,3 +591,196 @@ async def test_the_real_runner_refuses_what_its_operator_does_not_list(
     out = await _call(_tool(settings, ["touch"]), settings, {"argv": ["touch", str(marker)]})
     assert read_tool_error_code(out) == ToolErrorCode.PERMISSION_DENIED, tool_output_content(out)
     assert not marker.exists()
+
+
+# ---------------------------------------------------------------------------
+# Background commands on the runner
+# ---------------------------------------------------------------------------
+
+BEARER = {"authorization": f"Bearer {TOKEN}"}
+
+
+@pytest.mark.parametrize("path", ["/start", "/output", "/kill"])
+async def test_every_background_endpoint_requires_the_token(tmp_path: Path, path: str) -> None:
+    marker = tmp_path / "touched"
+    body = {"argv": ["touch", str(marker)]} if path == "/start" else {"id": "0" * 32}
+    async with _runner(tmp_path, "touch") as client:
+        resp = await client.post(path, json=body)
+    assert resp.status_code == 401
+    await asyncio.sleep(0.3)
+    assert not marker.exists()
+
+
+async def test_a_background_start_rechecks_argv_against_the_runners_allowlist(tmp_path: Path) -> None:
+    marker = tmp_path / "touched"
+    async with _runner(tmp_path, "git status") as client:
+        resp = await client.post("/start", json={"argv": ["touch", str(marker)]}, headers=BEARER)
+    assert resp.status_code == 403 and resp.json()["reason"] == "argv"
+    await asyncio.sleep(0.3)
+    assert not marker.exists()
+
+
+async def test_a_background_id_is_found_only_in_the_scope_that_made_it(tmp_path: Path) -> None:
+    (tmp_path / ".felix-scopes" / "acme" / "shared").mkdir(parents=True)
+    async with _runner(tmp_path, "sleep") as client:
+        started = await client.post(
+            "/start", json={"argv": ["sleep", "30"], "scope": ".felix-scopes/acme/shared"}, headers=BEARER
+        )
+        process_id = started.json()["id"]
+        elsewhere = await client.post("/kill", json={"id": process_id}, headers=BEARER)
+        ended = await client.post(
+            "/kill", json={"id": process_id, "scope": ".felix-scopes/acme/shared"}, headers=BEARER
+        )
+    assert started.status_code == 200
+    assert elsewhere.status_code == 404 and elsewhere.json() == {"message": "no such background command here"}
+    assert ended.json()["status"] == "killed"
+
+
+async def test_background_tools_run_on_the_runner_not_here(tmp_path: Path, route_to_runner: Any) -> None:
+    api_ws, runner_ws = tmp_path / "api", tmp_path / "runner"
+    api_ws.mkdir()
+    runner_ws.mkdir()
+    route_to_runner(runner_ws, "pwd, sleep")
+    settings = _settings(api_ws, "pwd, sleep", url="http://shell")
+    ref = ShellToolRef(name="run", commands=["pwd", "sleep"], timeout_ms=5000, background=True)
+    run, output, kill = tools_from_shell_refs([ref], settings=settings)
+    started = _ok(await _call(run, settings, {"argv": ["pwd"], "run_in_background": True}))
+    assert started["argv"] == ["pwd"]
+    for _ in range(20):
+        read = _ok(await _call(output, settings, {"id": started["id"], "wait_ms": 500}))
+        if read["status"] != "running":
+            break
+    assert (read["status"], read["stdout"]) == ("exited", f"{runner_ws.resolve()}\n")
+    sleeper = _ok(await _call(run, settings, {"argv": ["sleep", "30"], "run_in_background": True}))
+    assert _ok(await _call(kill, settings, {"id": sleeper["id"]}))["status"] == "killed"
+    assert not shell_background.background_base(api_ws.resolve()).exists() or not any(
+        shell_background.background_base(api_ws.resolve()).iterdir()
+    ), "nothing was started on the API's side"
+
+
+async def test_a_malformed_background_answer_is_closed(tmp_path: Path) -> None:
+    answers = iter([b'{"id": "not-an-id", "status": "running"}', b'{"processes": "everything"}'])
+
+    def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
+        respond(writer, next(answers), ctype="application/json")
+
+    async with serve(_responder) as url:
+        settings = _settings(tmp_path, "sleep", url=url)
+        ref = ShellToolRef(name="run", commands=["sleep"], background=True)
+        run, output, _ = tools_from_shell_refs([ref], settings=settings)
+        started = await _call(run, settings, {"argv": ["sleep", "1"], "run_in_background": True})
+        listed = await _call(output, settings, {})
+    for out in (started, listed):
+        assert tool_output_content(out).startswith(
+            "[shell] the answer about the background command was malformed"
+        )
+
+
+async def test_a_thread_checkout_never_reaches_the_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runner has no thread's checkout: every call there -- a command, a background start, a
+    read, an end -- would act on the shared workspace while the model believes it is in its repo."""
+    shared, checkout = tmp_path / "shared", tmp_path / "checkout"
+    shared.mkdir()
+    checkout.mkdir()
+    monkeypatch.setattr(shell_mod, "workspace_root", lambda: checkout.resolve())
+    seen: list[Request] = []
+
+    def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
+        seen.append(req)
+        respond(writer, b"{}", ctype="application/json")
+
+    async with serve(_responder) as url:
+        settings = _settings(shared, "ls", url=url)
+        run, output, kill = tools_from_shell_refs(
+            [ShellToolRef(name="run", commands=["ls"], background=True)], settings=settings
+        )
+        answers = [
+            await _call(run, settings, {"argv": ["ls"]}),
+            await _call(run, settings, {"argv": ["ls"], "run_in_background": True}),
+            await _call(output, settings, {}),
+            await _call(kill, settings, {"id": "0" * 32}),
+        ]
+    assert seen == []
+    for out in answers:
+        assert read_tool_error_code(out) is ToolErrorCode.TRANSPORT_UNAVAILABLE
+        assert "its own repository checkout" in tool_output_content(out)
+
+
+async def test_a_started_commands_argv_is_what_was_asked_not_what_the_runner_says(tmp_path: Path) -> None:
+    claimed = {
+        "id": "a" * 32, "argv": ["something", "else"], "cwd": ".", "status": "running",
+        "exit_code": None, "error": None, "truncated": False, "duration_ms": 1,
+    }  # fmt: skip
+
+    def _responder(req: Request, writer: asyncio.StreamWriter) -> None:
+        respond(writer, json.dumps(claimed).encode(), ctype="application/json")
+
+    async with serve(_responder) as url:
+        settings = _settings(tmp_path, "sleep", url=url)
+        (run, *_) = tools_from_shell_refs(
+            [ShellToolRef(name="run", commands=["sleep"], background=True)], settings=settings
+        )
+        started = _ok(await _call(run, settings, {"argv": ["sleep", "1"], "run_in_background": True}))
+    assert started["argv"] == ["sleep", "1"] and started["id"] == "a" * 32
+
+
+async def test_a_runner_start_hands_the_command_what_the_call_gave(
+    tmp_path: Path, route_to_runner: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stdin, cwd and the tool's timeout reach the command on the runner, and the API's own
+    environment does not."""
+    monkeypatch.setenv("FELIX_SECRET_FOR_TEST", "leaked")
+    (tmp_path / "sub").mkdir()
+    route_to_runner(tmp_path, "sh")
+    settings = _settings(tmp_path, "sh", url="http://shell")
+
+    async def _done(timeout_ms: int, argv: list[str], **args: Any) -> dict[str, Any]:
+        ref = ShellToolRef(name="run", commands=["sh"], timeout_ms=timeout_ms, background=True)
+        run, output, _ = tools_from_shell_refs([ref], settings=settings)
+        started = _ok(await _call(run, settings, {"argv": argv, "run_in_background": True, **args}))
+        out = ""
+        for _ in range(40):
+            read = _ok(await _call(output, settings, {"id": started["id"], "wait_ms": 500}))
+            out += read["stdout"]
+            if read["status"] != "running":
+                return {**read, "stdout": out}
+        raise AssertionError("never finished")
+
+    given = await _done(
+        10_000,
+        ["sh", "-c", 'cat; echo "[${FELIX_SECRET_FOR_TEST:-clean}]"; basename "$PWD"'],
+        cwd="sub",
+        stdin="piped\n",
+    )
+    assert (given["status"], given["stdout"]) == ("exited", "piped\n[clean]\nsub\n")
+    assert (await _done(500, ["sh", "-c", "sleep 30"]))["status"] == "timed_out"
+
+
+async def test_the_runner_counts_each_tenants_share_by_its_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shell_background, "MAX_RUNNING_OWNER", 1)
+    for scope in ("acme/shared", "acme/" + "1" * 40, "globex/shared"):
+        (tmp_path / ".felix-scopes" / scope).mkdir(parents=True)
+    async with _runner(tmp_path, "sleep") as client:
+
+        async def start(scope: str) -> httpx.Response:
+            body = {"argv": ["sleep", "30"], "scope": f".felix-scopes/{scope}"}
+            return await client.post("/start", json=body, headers=BEARER)
+
+        first = await start("acme/shared")
+        second = await start("acme/" + "1" * 40)
+        other = await start("globex/shared")
+        for answer in (first, other):
+            await client.post(
+                "/kill",
+                json={
+                    "id": answer.json()["id"],
+                    "scope": answer.request.content and json.loads(answer.request.content)["scope"],
+                },
+                headers=BEARER,
+            )
+    assert first.status_code == 200 and other.status_code == 200
+    assert second.status_code == 403 and second.json()["reason"] == "busy"
