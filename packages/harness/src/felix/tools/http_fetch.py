@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.manifests.schema import HttpFetchToolRef
 from felix.security.egress import safe_async_client
-from felix.security.host_allowlist import EgressBound, url_host
+from felix.security.host_allowlist import EgressBound, check_host, url_host
 from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import (
@@ -223,7 +223,7 @@ class _HttpFetchExecutor:
         as_text: bool = True,
         egress: EgressBound | None = None,
     ) -> None:
-        self._egress = egress
+        self._egress = egress or EgressBound()
         self._path_prefix = path_prefix
         self._allow_http = allow_http
         self._timeout_s = timeout_ms / 1000
@@ -247,11 +247,9 @@ class _HttpFetchExecutor:
             # gets the detail in the log, caller gets the same line either way.
             logger.warning("http_fetch refused url=%s reason=%s", url, exc)
             raise EgressBlocked(_BLOCKED) from None
-        if self._egress is not None and not self._egress.allows(url_host(url)):
-            # The same line as any refusal: the list is the operator's, and the transport refuses
-            # each redirect hop on these terms too.
-            logger.warning("http_fetch refused url=%s reason=not in allow_hosts", url)
-            raise EgressBlocked(_BLOCKED)
+        # The agent's own hosts, before a client opens; the transport refuses each redirect hop on
+        # the same terms.
+        check_host(self._egress, url_host(url))
         if self._path_prefix and not _within_prefix(url, self._path_prefix):
             # Not a secret: the prefix is operator-set and is already in the tool
             # description, so telling the model is what lets it correct itself.

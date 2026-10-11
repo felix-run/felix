@@ -189,9 +189,9 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
         # The agent's own hosts (`spec.network.allow_hosts`), on the same terms: each hop, here.
         # `raw_host` is the ASCII (punycode) name the patterns are written in; `host` is decoded.
         if self._egress is not None:
-            host = request.url.raw_host.decode("ascii", errors="replace")
-            if not self._egress.allows(host):
-                _refuse(host, "", "not in allow_hosts")
+            from felix.security.host_allowlist import check_host
+
+            check_host(self._egress, request.url.raw_host.decode("ascii", errors="replace"))
         return await super().handle_async_request(request)
 
 

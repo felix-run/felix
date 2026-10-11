@@ -1424,6 +1424,18 @@ class Spec(_Strict):
             )
         return self
 
+    def declared_urls(self) -> list[str]:
+        """Every URL this manifest names for its tools to reach -- what `network.allow_hosts` is
+        checked against, at write here and against a parent's list at compile (`builder.py`). A
+        new URL-bearing outbound ref belongs in this list."""
+        return [
+            *(r.url for r in self.mcp if r.url),
+            *(r.url for r in self.peers),
+            *(r.gateway_url for r in self.containers),
+            *(r.path_prefix for r in self.http_tools if r.path_prefix),
+            *(r.path_prefix for r in self.browser_tools if r.path_prefix),
+        ]
+
     @model_validator(mode="after")
     def _declared_hosts_are_allowed(self) -> Spec:
         """Every URL the manifest itself names reaches a host `network.allow_hosts` allows --
@@ -1432,18 +1444,11 @@ class Spec(_Strict):
             return self
         from felix.security.host_allowlist import HostAllowlist, hosts_outside
 
-        urls = [
-            *(r.url for r in self.mcp if r.url),
-            *(r.url for r in self.peers),
-            *(r.gateway_url for r in self.containers),
-            *(r.path_prefix for r in self.http_tools if r.path_prefix),
-            *(r.path_prefix for r in self.browser_tools if r.path_prefix),
-        ]
-        outside = hosts_outside(HostAllowlist(tuple(self.network.allow_hosts)), urls)
+        outside = hosts_outside(HostAllowlist(tuple(self.network.allow_hosts)), self.declared_urls())
         if outside:
             raise ValueError(
-                f"network.allow_hosts does not allow {', '.join(sorted(set(outside)))}, which this "
-                "manifest's own tools reach (mcp_servers, peers, containers, http_tools, browser_tools)"
+                f"network.allow_hosts does not allow {', '.join(sorted(set(outside)))}, "
+                "which this manifest's own tools reach"
             )
         return self
 

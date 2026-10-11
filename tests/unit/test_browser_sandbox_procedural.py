@@ -80,9 +80,29 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
         async def pdf(self) -> bytes:
             return b"%PDF"
 
-    class _Browser:
+    contexts: list[_Context] = []
+
+    class _Context:
+        """What the guard is installed on: every page in it, popups included."""
+
+        def __init__(self, service_workers: str | None) -> None:
+            self.service_workers = service_workers
+            self.routes: list[str] = []
+            self.socket_routes: list[str] = []
+
+        async def route(self, pattern: str, _handler: Any) -> None:
+            self.routes.append(pattern)
+
+        async def route_web_socket(self, pattern: str, _handler: Any) -> None:
+            self.socket_routes.append(pattern)
+
         async def new_page(self) -> _Page:
             return _Page()
+
+    class _Browser:
+        async def new_context(self, service_workers: str | None = None) -> _Context:
+            contexts.append(_Context(service_workers))
+            return contexts[-1]
 
         async def close(self) -> None:
             return None
@@ -122,6 +142,10 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
         f"the navigation host was not pinned at launch: {launched_args}"
     )
     assert "hello from page" in (out if isinstance(out, str) else out.content)
+    [context] = contexts
+    assert context.service_workers == "block", "a service worker's fetches bypass route"
+    assert context.routes == ["**/*"] and context.socket_routes == ["**/*"], "guard the context, sockets too"
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launched_args[0]
 
     blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())
     assert "must start with" in (blocked if isinstance(blocked, str) else blocked.content)

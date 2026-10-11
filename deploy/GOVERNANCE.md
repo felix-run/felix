@@ -794,23 +794,44 @@ spec:
 - **Unset** leaves the agent as it was. An **empty list** allows nothing.
 - **Enforced where the model picks the destination.** `http_fetch` checks the URL before it
   opens a client and the guarded transport checks again on every redirect hop, with the same
-  `egress_blocked` line as any refusal (`felix_egress_blocked{reason="not in allow_hosts"}`). The
-  browser checks the navigation and every request the page makes, so a page on a listed host
-  cannot load from, post to or redirect to one that is not. A page's CDN must be listed or its
-  assets are aborted.
+  `egress_blocked` line as any refusal (`felix_egress_blocked{reason="not in allow_hosts"}`).
+  The list is checked *before* anything resolves: a lookup of `<secret>.attacker.example` is a
+  leak to that name's nameserver even when the request is then refused.
+- **The browser** checks the navigation, then guards its whole browser context: every request
+  any page in it makes, popups (`window.open`) included, and every WebSocket. Service workers are
+  blocked, since their fetches bypass the interceptor, and WebRTC's UDP is disabled
+  (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`). A page's CDN must be listed or
+  its assets are aborted. A model URL containing a backslash, whitespace or a control character
+  is refused: Chromium's parser and the checker's disagree on them. Still advisory: DNS
+  prefetch by the page, which is a lookup rather than a request.
 - **Checked against what the manifest names.** An `mcp_servers` or `peers` URL, a container
-  `gateway_url`, or an `http_tools`/`browser_tools` `path_prefix` on a host the list does not allow
-  is refused when the manifest is written, so the list is the agent's whole reachable surface.
+  `gateway_url`, or an `http_tools`/`browser_tools` `path_prefix` on a host the list does not
+  allow is refused when the manifest is written (`Spec.declared_urls`).
+- **A2A peers are pinned.** Under a list, a `peer__*` tool loses its `manifest` argument: the
+  agent that answers on the far side compiles there with no bound, so the model may not choose
+  which one it is.
 - **Children answer to it.** A sub-agent or `task` child compiles under its parent's list as well
   as its own, and a manifest URL outside a parent's list fails that compile. A child two parents
   share is rebuilt under each one's list, never reused from a looser one. A background `task`
   child runs in the worker on a run of its own, so the lists above it are stored on the durable
   run (`egress_ceilings`), re-validated when it resumes, and bind its tools there.
-- **Not covered:** a command the model runs (`shell_tools`, a sandbox) opens its own sockets; the
-  runner or sandbox network is the boundary there (see *Shell tools*). Operator traffic -- hooks,
-  completion webhooks, push, model providers -- is not the agent's and is not bound by it. Web
-  search reaches the operator's search endpoint; the results are text, and following one is a
+- **Not covered.** The list bounds the requests Felix itself sends for the model. It does not
+  reach a process that opens its own sockets, nor what a server does on the far side:
+  - `shell_tools` and sandboxes: the runner's or sandbox's network is the boundary (*Shell tools*);
+  - stdio MCP servers, which run on the API host with its network (`FELIX_MCP_STDIO_ALLOWED_COMMANDS`);
+  - a remote MCP server or A2A peer whose own tools fetch: it is listed, so it is trusted, and
+    what it reaches is its operator's control;
+  - container gateways' and sandboxes' outbound traffic;
+  - tools a plugin binds (`deps.extra_tools`), which are not handed the agent's bound.
+
+  Operator traffic -- hooks, completion webhooks, push, model providers -- is not the agent's and
+  is not bound by it. Web search reaches the operator's search endpoint; following a result is a
   fetch, which is bound.
+- **A host is not a confinement on a shared host.** `*.github.io`, `*.vercel.app`, `*.co.uk` or
+  `docs.google.com` each admit pages anyone can publish to or post through (a form endpoint is a
+  GET away). Only `*.<top-level domain>` is refused. On a multi-tenant host, pair the list with an
+  `http_tools` `path_prefix`, or treat the list as a reachability control rather than an
+  exfiltration one.
 
 **What is still advisory:** cross-host subresources and redirects *in the browser tool*.
 Those keep resolving normally and are checked per request but not pinned, because denying

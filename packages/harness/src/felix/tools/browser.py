@@ -13,10 +13,11 @@ from urllib.parse import urlparse
 from felix_ai.types import ImageAttachment
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.logging_setup import loggable
 from felix.manifests.schema import BrowserToolRef
 from felix.observability.metrics import record_counter
 from felix.security.egress import approved_addresses
-from felix.security.host_allowlist import EgressBound, url_host
+from felix.security.host_allowlist import EgressBound, check_host, url_host
 from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url_async
 from felix.tools.types import (
     Tool,
@@ -52,6 +53,16 @@ def _load_playwright() -> Any:
 _SAFE_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 
 
+# A model URL is parsed here by httpx, by `urlparse` for the pin, and by Chromium's own WHATWG
+# parser for the load, and they disagree on a backslash: `https://evil.com\@allowed.com/` is
+# `allowed.com` to the first two and `evil.com` to the third. Whitespace and control characters
+# are stripped or kept differently too. None belongs in a URL a model means, so it is refused.
+_AMBIGUOUS_URL = re.compile(r"[\\\s\x00-\x1f\x7f]")
+
+# WebRTC opens UDP to STUN/TURN servers of the page's choosing, which no request interceptor sees.
+_NO_WEBRTC_UDP = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+
+
 def ipaddress_is_literal(host: str) -> bool:
     try:
         ipaddress.ip_address(host)
@@ -81,9 +92,9 @@ class _BrowserExecutor:
         egress: EgressBound | None = None,
     ) -> None:
         self._op = op
-        self._egress = egress
+        self._egress = egress or EgressBound()
         self._timeout_ms = timeout_ms
-        self._path_prefix = path_prefix.rstrip("/")
+        self._path_prefix = path_prefix
         self._allow_http = allow_http
         self._binding = binding or "chromium"
 
@@ -94,20 +105,29 @@ class _BrowserExecutor:
         so a host whose nameserver blackholes queries would otherwise block the event loop
         per request — the same defect as resolving in a pydantic validator, on a hotter path.
         """
+        # The agent's own hosts first, and without resolving: the lookup below would otherwise
+        # send a refused name -- `<secret>.attacker.example` -- to the attacker's nameserver.
+        try:
+            check_host(self._egress, url_host(url))
+        except EgressBlocked as exc:
+            raise ValueError(str(exc)) from None
         await assert_safe_outbound_url_async(url, allow_http=self._allow_http)
-        # The agent's own hosts: the navigation and every request the page makes, so a page on an
-        # allowed host cannot load, post to, or redirect to one that is not.
-        if self._egress is not None and not self._egress.allows(url_host(url)):
-            raise ValueError("egress_blocked: destination not permitted")
 
     async def _check_url(self, url: str) -> None:
         """Checks for the top-level navigation the model asked for."""
+        from felix.tools.http_fetch import _within_prefix
+
+        if _AMBIGUOUS_URL.search(url):
+            raise ValueError("url must not contain backslashes, whitespace or control characters")
         await self._check_egress(url)
-        if self._path_prefix and not url.startswith(self._path_prefix):
+        # Origins compared as origins: a text `startswith` let `https://docs.x.com.evil.com/` and
+        # `https://docs.x.com@evil.com/` through a `https://docs.x.com/` prefix.
+        if self._path_prefix and not _within_prefix(url, self._path_prefix):
             raise ValueError(f"url must start with {self._path_prefix!r}")
 
-    async def _install_egress_guard(self, page: Any) -> None:
-        """Re-validate every request the page makes.
+    async def _install_egress_guard(self, target: Any) -> None:
+        """Re-validate every request the browser context makes -- every page in it, popups
+        (`window.open`) included, which a guard on one page never saw -- and every WebSocket.
 
         The URL was checked once and then handed to `page.goto()`, but Chromium follows
         3xx redirects, loads subresources, and runs JS — and the URL is model-supplied.
@@ -120,13 +140,27 @@ class _BrowserExecutor:
             try:
                 await self._check_egress(request.url)
             except ValueError as exc:
-                logger.warning("browser blocked egress to %s (%s)", request.url, exc)
+                logger.warning("browser blocked egress to %s (%s)", loggable(request.url, limit=300), exc)
                 record_counter("felix_browser_egress_blocked", {"reason": str(exc)[:40]})
                 await route.abort()
                 return
             await route.continue_()
 
-        await page.route("**/*", _guard)
+        async def _guard_socket(ws: Any) -> None:
+            # A WebSocket is not a request `route` intercepts; unrouted, one carried a page's data
+            # to any host. Routed, it reaches the server only when the same checks pass.
+            try:
+                await self._check_egress(ws.url)
+            except ValueError as exc:
+                logger.warning("browser blocked websocket to %s (%s)", loggable(ws.url, limit=300), exc)
+                record_counter("felix_browser_egress_blocked", {"reason": "websocket"})
+                await ws.close()
+                return
+            ws.connect_to_server()
+
+        await target.route("**/*", _guard)
+        if hasattr(target, "route_web_socket"):
+            await target.route_web_socket("**/*", _guard_socket)
 
     async def execute(self, args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         _ = ctx
@@ -150,10 +184,13 @@ class _BrowserExecutor:
         try:
             async with async_playwright() as p:
                 launcher = getattr(p, self._binding, p.chromium)
-                browser = await launcher.launch(headless=True, args=launch_args)
-                page = await browser.new_page()
+                browser = await launcher.launch(headless=True, args=[*launch_args, _NO_WEBRTC_UDP])
                 try:
-                    await self._install_egress_guard(page)
+                    # One context, guarded as a whole, with service workers off: a worker's
+                    # fetches bypass `route`, and a page could install one to send from.
+                    context = await browser.new_context(service_workers="block")
+                    await self._install_egress_guard(context)
+                    page = await context.new_page()
                     await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
                     return await self._extract(page, url)
                 finally:

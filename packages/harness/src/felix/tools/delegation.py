@@ -84,7 +84,7 @@ def make_task_tool(
     background: bool = False,
     max_background: int = 3,
     manifest_hooks: ManifestHooks | None = None,
-    egress: EgressBound | None = None,
+    egress: EgressBound = EgressBound(),
 ) -> Tool:
     """`task(agent, prompt)` over `children`: manifest name -> (compiled agent, description, the
     manifest it compiled from), in declaration order. `ceiling` is the delegating agent's own
@@ -198,7 +198,7 @@ async def _start_in_background(
     prompt: str,
     ceiling: EffectiveLimits,
     max_background: int,
-    egress: EgressBound | None = None,
+    egress: EgressBound,
 ) -> ToolOutput:
     """Enqueue the child as a durable run on a thread of its own, and say how to read it."""
     from felix.durability.fibers import TooManyChildren
@@ -241,7 +241,7 @@ async def _start_in_background(
             parent_thread_id=parent,
             ceilings=[residual(c, req.limit_state) for c in (*req.limit_state.ceilings, ceiling)],
             max_children=max_background,
-            egress_ceilings=(egress or EgressBound()).as_state(),
+            egress_ceilings=egress.as_state(),
         )
     except TooManyChildren as full:
         return tool_error_output(
