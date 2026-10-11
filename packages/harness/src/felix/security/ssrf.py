@@ -16,6 +16,8 @@ import logging
 import socket
 from urllib.parse import urlparse
 
+from felix.logging_setup import loggable
+
 logger = logging.getLogger("felix.security.ssrf")
 
 # Hostname suffixes that only resolve inside a cluster or cloud environment.
@@ -147,6 +149,11 @@ def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addres
     return None
 
 
+# The one line every egress refusal carries, whichever guard refused -- the address check, the
+# agent's `allow_hosts`, the dial. Two wordings would tell the model which one it hit.
+BLOCKED_MESSAGE = "egress_blocked: destination not permitted"
+
+
 class EgressBlocked(ValueError):
     """A dial refused by the egress guard.
 
@@ -186,11 +193,13 @@ async def assert_safe_outbound_url_async(url: str, *, allow_http: bool = False) 
             timeout=_RESOLVE_BUDGET_S,
         )
     except TimeoutError:
-        logger.warning("ssrf: resolution exceeded %.0fs for %s; refusing", _RESOLVE_BUDGET_S, url)
+        logger.warning(
+            "ssrf: resolution exceeded %.0fs for %s; refusing", _RESOLVE_BUDGET_S, loggable(url, limit=300)
+        )
         raise EgressBlocked("egress_blocked: destination could not be verified") from None
     except ValueError as exc:
-        logger.warning("ssrf: refused %s (%s)", url, exc)
-        raise EgressBlocked("egress_blocked: destination not permitted") from None
+        logger.warning("ssrf: refused %s (%s)", loggable(url, limit=300), exc)
+        raise EgressBlocked(BLOCKED_MESSAGE) from None
 
 
 def assert_safe_outbound_url_for_hosts(

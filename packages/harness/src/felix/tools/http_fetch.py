@@ -26,9 +26,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.logging_setup import loggable
 from felix.manifests.schema import HttpFetchToolRef
 from felix.security.egress import safe_async_client
-from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url
+from felix.security.host_allowlist import EgressBound, check_host, url_host, within_prefix
+from felix.security.ssrf import BLOCKED_MESSAGE, EgressBlocked, assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 from felix.tools.types import (
     Tool,
@@ -51,10 +53,10 @@ MAX_REDIRECTS = 5
 # Every egress refusal returns this exact line, whatever the reason and whichever layer
 # raised it. Distinguishing "does not resolve" from "resolves into private space" from
 # "blocked by scheme" would hand the model — and whatever is steering it — a probe for
-# internal addressing, and this string goes straight into the transcript. It mirrors
-# `felix.security.egress._BLOCKED_MESSAGE`; the tests assert on equality with it, so a
-# refusal cannot be confused with an unrelated failure that merely happens to be an error.
-_BLOCKED = "egress_blocked: destination not permitted"
+# internal addressing, and this string goes straight into the transcript. It is
+# `ssrf.BLOCKED_MESSAGE`, the one line every egress guard uses; the tests assert on equality with
+# it, so a refusal cannot be confused with an unrelated failure that merely happens to be an error.
+_BLOCKED = BLOCKED_MESSAGE
 
 # What is worth handing to a model as text. Anything else returns a description instead of
 # its bytes: a model cannot use a JPEG, and base64 of one would spend the context window to
@@ -179,28 +181,6 @@ def html_to_text(html: str) -> str:
     return parser.text() or NO_READABLE_TEXT
 
 
-def _within_prefix(url: str, prefix: str) -> bool:
-    """Is `url` inside `prefix`, comparing origins as origins rather than as text?
-
-    A raw `startswith` gets the host wrong in both directions. `https://docs.felix.run` (the
-    schema now appends the slash, but a bare `startswith` would still be doing string work on
-    a structured value) matched `https://docs.felix.run.evil.com/`, and `HTTPS://Docs.Felix.Run/x`
-    — same origin by every rule that matters — matched nothing. Host and scheme are
-    case-insensitive per RFC 3986; the path is not.
-    """
-    from urllib.parse import urlsplit
-
-    u, p = urlsplit(url), urlsplit(prefix)
-    if u.scheme.lower() != p.scheme.lower():
-        return False
-    # `netloc` carries userinfo and port; comparing hostname and port separately keeps
-    # `https://user@docs.felix.run/` from being treated as a different origin, and keeps
-    # `https://evil.com@docs.felix.run/` from being read as the prefix host by a text match.
-    if (u.hostname or "").lower() != (p.hostname or "").lower() or u.port != p.port:
-        return False
-    return u.path.startswith(p.path)
-
-
 def _media_type(content_type: str) -> str:
     return content_type.split(";", 1)[0].strip().lower()
 
@@ -220,7 +200,9 @@ class _HttpFetchExecutor:
         timeout_ms: int = DEFAULT_FETCH_TIMEOUT_MS,
         max_bytes: int = DEFAULT_MAX_BYTES,
         as_text: bool = True,
+        egress: EgressBound = EgressBound(),
     ) -> None:
+        self._egress = egress
         self._path_prefix = path_prefix
         self._allow_http = allow_http
         self._timeout_s = timeout_ms / 1000
@@ -242,9 +224,12 @@ class _HttpFetchExecutor:
             # internal addressing, which is the reason `EgressBlocked` carries a fixed
             # message at dial time; the syntactic check needs the same treatment. Operator
             # gets the detail in the log, caller gets the same line either way.
-            logger.warning("http_fetch refused url=%s reason=%s", url, exc)
+            logger.warning("http_fetch refused url=%s reason=%s", loggable(url, limit=300), exc)
             raise EgressBlocked(_BLOCKED) from None
-        if self._path_prefix and not _within_prefix(url, self._path_prefix):
+        # The agent's own hosts, before a client opens; the transport refuses each redirect hop on
+        # the same terms.
+        check_host(self._egress, url_host(url))
+        if self._path_prefix and not within_prefix(url, self._path_prefix):
             # Not a secret: the prefix is operator-set and is already in the tool
             # description, so telling the model is what lets it correct itself.
             raise _PrefixRefused(f"url must start with {self._path_prefix!r}")
@@ -317,6 +302,7 @@ class _HttpFetchExecutor:
                 asyncio.timeout(self._timeout_s),
                 safe_async_client(
                     allow_http=self._allow_http,
+                    egress=self._egress,
                     timeout=timeout,
                     follow_redirects=False,
                 ) as client,
@@ -333,15 +319,17 @@ class _HttpFetchExecutor:
             # `EgressBlocked`. Uncaught it propagated out of the executor entirely — past
             # secret masking, content screening, guardrails and artifact spill, none of which
             # wrap a raise — and `fatal: true` would have ended the run on a bad redirect.
-            logger.warning("http_fetch refused a hop from url=%s reason=%s", url, exc)
+            logger.warning("http_fetch refused a hop from url=%s reason=%s", loggable(url, limit=300), exc)
             return f"http_fetch_error: {_BLOCKED}"
         except TimeoutError:
-            logger.warning("http_fetch timed out url=%s after %.1fs", url, self._timeout_s)
+            logger.warning(
+                "http_fetch timed out url=%s after %.1fs", loggable(url, limit=300), self._timeout_s
+            )
             return "http_fetch_error: timed out"
         except httpx.HTTPError as exc:
             # The type is useful to the model; the message is not, and asyncio embeds the
             # dialled address in `ConnectError`.
-            logger.warning("http_fetch failed url=%s error=%s", url, exc)
+            logger.warning("http_fetch failed url=%s error=%s", loggable(url, limit=300), exc)
             return f"http_fetch_error: {type(exc).__name__}"
 
     def _render(self, resp: Any, body: bytes, truncated: bool) -> str:
@@ -381,6 +369,7 @@ def tools_from_http_fetch_refs(
     refs: list[HttpFetchToolRef],
     *,
     allow_http: bool = False,
+    egress: EgressBound = EgressBound(),
 ) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
@@ -400,6 +389,7 @@ def tools_from_http_fetch_refs(
             timeout_ms=int(ref.timeout_ms or DEFAULT_FETCH_TIMEOUT_MS),
             max_bytes=int(ref.max_bytes or DEFAULT_MAX_BYTES),
             as_text=ref.format == "text",
+            egress=egress,
         )
         desc = ref.description or "Fetch a URL over HTTP(S) and return its contents."
         if ref.path_prefix:

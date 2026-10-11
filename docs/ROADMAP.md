@@ -546,8 +546,13 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       expansion on `/chat` and `/v1` (any other slash is sent as written), and `GET /v1/models`
       lists them as `felix.commands`. Output styles: `spec.output_styles` (inline prose, a `default`),
       chosen per thread by `POST /chat/style`, appended to the top-level agent's system prompt;
-      listed on `/v1/models`, shown on the snapshot. *Next:*
-      `spec.network.allow_hosts`, landed with *credentials the model never holds*.
+      listed on `/v1/models`, shown on the snapshot. Per-agent egress: `spec.network.allow_hosts`
+      (host, `*.` subdomain or IP patterns), enforced by `http_fetch` per hop in the guarded
+      transport (the browser is refused under a list: interception cannot confine it), checked against the manifest's own
+      URLs at write; children compile under their parents' lists, background children carry them
+      on the durable run. *Next:* *credentials the model never holds*, onto the same transport; the
+      browser behind a local proxy enforcing the bound -- every socket, workers' included -- which
+      lifts the refusal of `browser_tools` under a list.
 - [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
       background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
       worktree per child task, and clearing of stale tool results.
@@ -726,11 +731,10 @@ end to end, and these turned up. Each was re-checked against `main` on 2026-10-1
 fallback one had already been fixed by `parse_schedule`). They came from reading, not from a run,
 so under the meta-work budget only the first is exempt as a security defect; the rest are queued.
 
-- [ ] **Browser `path_prefix` is a raw `startswith` (security).** `tools/browser.py` strips the
-      prefix's trailing slash and then checks `url.startswith(prefix)`, so `https://docs.felix.run/`
-      admits `https://docs.felix.run.evil.com/`; and the prefix is checked on the first navigation
-      only — redirects get the egress check, not the prefix. `http_fetch._within_prefix` already
-      compares origins and re-checks every hop: reuse it, and plant both cases in a test.
+- [ ] **Browser `path_prefix` holds the first navigation only (security).** The navigation is
+      compared as an origin and a normalised path (`security.host_allowlist.within_prefix`, shared
+      with `http_fetch`), but redirects and subresources get the SSRF check, not the prefix. Apply
+      it to redirects of the main frame in the route guard, and plant the case in a test.
 - [ ] **Sandbox `path_prefix` confines nothing.** `tools/sandboxes.py` checks `path` against the
       prefix with a raw `startswith`, and `path` is then never passed to the container. Either
       pass it and check it properly, or drop the field from the ref.

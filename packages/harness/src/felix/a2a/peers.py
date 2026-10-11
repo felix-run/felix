@@ -24,6 +24,15 @@ class PeerArgs(BaseModel):
     manifest: str | None = Field(default=None, description="Optional peer manifest name override.")
 
 
+class PinnedPeerArgs(BaseModel):
+    """`PeerArgs` without the override, for an agent under `network.allow_hosts`: the agent that
+    answers on the far side compiles there with no bound, so the model may not pick it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, description="Message to send to the peer agent.")
+
+
 # A peer call runs an entire agent turn on the far side, so its ceiling is the loosest of
 # the outbound integrations. Connect is pinned separately for the same reason as elsewhere:
 # a raised request ceiling must not become a raised ceiling on reaching a dead host.
@@ -99,13 +108,13 @@ def _legacy_text(result: dict[str, Any]) -> str:
     return str(result)
 
 
-def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
+def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False, pin_manifest: bool = False) -> Tool:
     assert_safe_outbound_url(ref.url, allow_http=allow_http, resolve=False)
     url = ref.url.rstrip("/")
     # Accept bare host or /a2a path.
     endpoint = url if url.endswith("/a2a") else f"{url}/a2a"
 
-    async def handler(args: PeerArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+    async def handler(args: PeerArgs | PinnedPeerArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -117,8 +126,10 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
                 },
             },
         }
-        if args.manifest:
-            payload["params"]["manifest"] = args.manifest  # type: ignore[index]
+        # Pinned, never forwarded -- whatever arrived -- rather than trusting the schema alone.
+        override = None if pin_manifest or isinstance(args, PinnedPeerArgs) else args.manifest
+        if override:
+            payload["params"]["manifest"] = override  # type: ignore[index]
         async with safe_async_client(allow_http=allow_http, timeout=_peer_timeout(ref)) as client:
             resp = await client.post(endpoint, json=payload, headers=_auth_headers(ref.auth))
             resp.raise_for_status()
@@ -130,7 +141,7 @@ def make_peer_tool(ref: A2APeerRef, *, allow_http: bool = False) -> Tool:
     return define_tool(
         name=f"peer__{ref.name}",
         description=f"Send a message to peer agent '{ref.name}' at {ref.url}.",
-        args=PeerArgs,
+        args=PinnedPeerArgs if pin_manifest else PeerArgs,
         handler=handler,
         is_peer=True,
         source=f"peer:{ref.name}",
@@ -142,11 +153,12 @@ def tools_from_peers(
     refs: list[A2APeerRef],
     *,
     allow_http: bool = False,
+    pin_manifest: bool = False,
 ) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
         try:
-            out.append(make_peer_tool(ref, allow_http=allow_http))
+            out.append(make_peer_tool(ref, allow_http=allow_http, pin_manifest=pin_manifest))
         except Exception:
             logger.warning("failed to bind peer tool %s", ref.name, exc_info=True)
     return out

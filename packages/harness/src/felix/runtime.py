@@ -203,6 +203,8 @@ async def build_tenant_agent(
     the sub-agents its pin verified rather than whatever resolves a moment later;
     `tests/unit/test_invariants.py` holds the call sites to it.
     """
+    from felix.security.host_allowlist import run_bound
+
     session_store, session_strategy = session_plumbing(settings, manifest, tenant_id)
     store = object_store if object_store is not None else default_object_store(settings)
 
@@ -216,6 +218,9 @@ async def build_tenant_agent(
         skill_owner=skill_owner,
         workspace_root=workspace_root or getattr(settings, "workspace_root", None) or None,
         load_agents_md=load_agents_md or bool(getattr(settings, "load_agents_md", False)),
+        # The `allow_hosts` lists this run inherited -- a background `task` child's parents',
+        # restored by the fiber onto its context -- above everything this compile builds.
+        egress=run_bound(),
     )
     deps.sub_agent_builder = _tenant_sub_agent_builder(settings, tenant_id, deps, sub_agents or {})
     return await build_agent(manifest, deps=deps, settings=settings)

@@ -684,6 +684,13 @@ async def _run_fiber_step(
                 )
 
                 req_ctx.limit_state.ceilings = restore_ceilings(state)
+                # And the hosts every agent above it may reach (`spec.network.allow_hosts`).
+                # Put on the context the compile below reads once, at its root (`run_bound`).
+                from felix.security.host_allowlist import EGRESS_CEILINGS_EXTRA, EgressBound
+
+                egress = EgressBound.from_state(state.get("egress_ceilings"))
+                if egress.restricted:
+                    req_ctx.extras[EGRESS_CEILINGS_EXTRA] = egress
                 if isinstance(state.get("expires_at"), int):
                     req_ctx.extras[RUN_NOT_AFTER_EXTRA] = state["expires_at"]
                 if state.get("parent_thread_id"):

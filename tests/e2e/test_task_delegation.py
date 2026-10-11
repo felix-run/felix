@@ -677,3 +677,39 @@ async def test_a_background_child_does_not_take_its_own_default_style(boot: Any)
         [system] = [m.content for m in app.spy.prompts[2] if m.role == "system"]
     assert system.startswith("You research.")
     assert "SHOUT EVERYTHING." not in system
+
+
+async def test_a_background_child_answers_to_its_parents_allow_hosts(
+    boot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker compiles the child as a run of its own: the parent's list rides the run.
+
+    `allowed.test` and `other.test` are the same loopback server under two names, so the only
+    thing that can refuse one and serve the other is the list -- not a lookup that failed.
+    """
+    from felix.durability import fibers as F
+    from felix.security import ssrf
+
+    from tests.support.loopback_http import respond, serve
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["127.0.0.1"] if host.endswith(".test") else [])
+    fetcher = _agent(
+        "e2e-researcher",
+        system_prompt={"inline": "You research."},
+        http_tools=[{"name": "fetch", "allow_any_host": True}],
+    )
+    lead = _bg_lead(network={"allow_hosts": ["allowed.test"]})
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "Read the page.")]), ScriptedTurn(content="Started it.")]
+    async with serve(lambda req, w: respond(w, b"THE-PAGE")) as base:
+        port = base.rsplit(":", 1)[1]
+        async with boot(script, manifests={"e2e-lead": lead, "e2e-researcher": fetcher}) as app:
+            assert (await _chat(app)).status_code == 200
+            calls = [
+                ToolCall(id="f1", name="fetch", args={"url": f"http://allowed.test:{port}/"}),
+                ToolCall(id="f2", name="fetch", args={"url": f"http://other.test:{port}/"}),
+            ]
+            app.spy.push(ScriptedTurn(tool_calls=calls), ScriptedTurn(content="Done."))
+            await F.resume_due_fibers(app.settings)
+            shown = _text(app.spy.prompts[-1])
+    assert "THE-PAGE" in shown, "the listed host is reachable from the child"
+    assert shown.count("THE-PAGE") == 1 and "egress_blocked: destination not permitted" in shown
