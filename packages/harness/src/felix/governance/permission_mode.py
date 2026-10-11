@@ -52,7 +52,13 @@ PLAN_APPROVAL_TTL_SECONDS = 1800
 
 # The workspace tools that change files. `accept_edits` waives approvals for these and for the
 # manifest's own `permissions.edit_tools`.
-WORKSPACE_EDIT_TOOLS: tuple[str, ...] = ("write_file", "edit_file", "delete_file", "rename_file")
+WORKSPACE_EDIT_TOOLS: tuple[str, ...] = (
+    "write_file",
+    "edit_file",
+    "multi_edit",
+    "delete_file",
+    "rename_file",
+)
 
 _RUN_STATE_EXTRA = "permission_mode_run_state"
 

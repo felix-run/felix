@@ -767,11 +767,25 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
 # The tools `register_workspace_tools` binds, by name: what a manifest's `spec.tools` lists to work
 # in the harness's workspace (`felix.usage.catalog.workspace_summary` reads it).
 WORKSPACE_TOOL_NAMES = frozenset(
-    {"list_dir", "read_file", "write_file", "edit_file", "delete_file", "rename_file", "search_files"}
+    {
+        "list_dir",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "multi_edit",
+        "delete_file",
+        "rename_file",
+        "search_files",
+        "glob",
+    }
 )
 
 
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
+    # Composed from the operations above, so imported here: it imports this module.
+    from felix.tools.workspace_composed import register_composed_tools
+
+    register_composed_tools(provider)
     provider.register(
         "list_dir",
         lambda: define_tool(

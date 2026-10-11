@@ -37,9 +37,13 @@ logger = logging.getLogger("felix.manifests.delete_gate")
 # (family, writers, the tools that must be gated like them). Server tools bind through
 # `spec.tools`; client tools are declared in `spec.client_tools` and run in the caller's client.
 FAMILIES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("server", ("write_file", "edit_file"), ("delete_file", "rename_file")),
+    ("server", ("write_file", "edit_file", "multi_edit"), ("delete_file", "rename_file")),
     ("client", ("local_write", "local_edit"), ("local_delete", "local_rename")),
 )
+
+# A writer that can do what another one does: gated whenever that one is. Not every writer -- gating
+# `write_file` and not `edit_file` is an author's choice the gate leaves alone.
+SAME_POWER: dict[str, str] = {"multi_edit": "edit_file"}
 
 # One log line per (tenant, manifest, gaps) per process: the check runs on every compile, which is
 # every request. Keyed on the gaps themselves so a new version that changes them is said again.
@@ -62,8 +66,8 @@ class DeleteGateGap:
         verb = "is" if len(self.ungated) == 1 else "are"
         return (
             f"approval rule `{self.rule}` gates {self.writer}, but {tools} {verb} bound with no "
-            f"approval rule, so the agent can delete or move files without asking when it must ask "
-            f"to write them; add {tools} to rule `{self.rule}`"
+            f"approval rule, so the agent can change, delete or move files without asking when it "
+            f"must ask to write them; add {tools} to rule `{self.rule}`"
         )
 
 
@@ -79,14 +83,19 @@ def bound_tool_names(manifest: Any) -> set[str]:
 
 
 def delete_gate_gaps(manifest: Any) -> list[DeleteGateGap]:
-    """Each family in which a bound writer is gated and a bound delete or rename is not."""
+    """Each family in which a bound writer is gated and a bound delete, rename, or tool with that
+    writer's power (`SAME_POWER`) is not."""
     bound = bound_tool_names(manifest)
     gaps: list[DeleteGateGap] = []
     for family, writers, changers in FAMILIES:
         gated = [(w, rules[0]) for w in writers if w in bound and (rules := gating_rules(manifest, w))]
         if not gated:
             continue
-        ungated = tuple(c for c in changers if c in bound and not gating_rules(manifest, c))
+        # A delete or a rename, and a tool with the same power as a gated writer: `multi_edit` is
+        # several `edit_file`s, so leaving it ungated beside a gated `edit_file` is the same hole.
+        gated_names = {w for w, _ in gated}
+        same_power = tuple(t for t, like in SAME_POWER.items() if like in gated_names and t in writers)
+        ungated = tuple(c for c in (*same_power, *changers) if c in bound and not gating_rules(manifest, c))
         if ungated:
             writer, rule = gated[0]
             gaps.append(DeleteGateGap(family=family, writer=writer, rule=rule, ungated=ungated))
