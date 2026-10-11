@@ -48,7 +48,12 @@ _NAME_CHARS_MESSAGE = (
 )
 
 BUNDLE_DIRS = ("scripts", "references", "assets", "evals")
-ALLOWED_ROOT_FILES = ("plugin.json",)
+# A license file at the root, so a skill that came with one keeps it: a third party's terms
+# usually require the notice to travel with the files, and an imported skill whose SKILL.md
+# says "terms in LICENSE.txt" should not be saved without that file. Read on demand like any
+# other bundle file, never put in the model's context.
+LICENSE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt")
+ALLOWED_ROOT_FILES = ("plugin.json", *LICENSE_FILES)
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}\Z")
 
 FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n(.*)\Z", re.DOTALL)
@@ -439,6 +444,7 @@ def extract_discovery_meta(files: Mapping[str, str]) -> tuple[str, str] | None:
 __all__ = [
     "ALLOWED_ROOT_FILES",
     "BUNDLE_DIRS",
+    "LICENSE_FILES",
     "MAX_BUNDLE_BYTES",
     "MAX_BUNDLE_FILES",
     "MAX_DESCRIPTION_CHARS",
