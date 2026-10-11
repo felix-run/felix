@@ -16,7 +16,10 @@ if TYPE_CHECKING:
 # a newline, a NUL, a leading dash, an RTL override — accepted and handed to the
 # filesystem. The lookahead is what excludes `.` and `..` while still allowing the
 # dotfiles that instruction-file keys may legitimately name.
-_SAFE_SEGMENT = re.compile(r"\A(?!\.\.?\Z)[A-Za-z0-9._-]+\Z")
+# `~` is a key character the library uses (`skill-library/{tenant}/~{digest}/…`, a personal
+# library), so it is allowed: `Path` never expands it, and the containment check below holds
+# whatever a segment says. Without it every personal-library write failed on this store.
+_SAFE_SEGMENT = re.compile(r"\A(?!\.\.?\Z)[A-Za-z0-9._~-]+\Z")
 
 
 class FilesystemObjectStore:
