@@ -37,7 +37,7 @@ logger = logging.getLogger("felix.manifests.delete_gate")
 # (family, writers, the tools that must be gated like them). Server tools bind through
 # `spec.tools`; client tools are declared in `spec.client_tools` and run in the caller's client.
 FAMILIES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("server", ("write_file", "edit_file"), ("delete_file", "rename_file")),
+    ("server", ("write_file", "edit_file", "multi_edit"), ("delete_file", "rename_file")),
     ("client", ("local_write", "local_edit"), ("local_delete", "local_rename")),
 )
 

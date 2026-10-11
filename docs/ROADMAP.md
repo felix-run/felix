@@ -556,9 +556,14 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       *Follow-ups:* MCP HTTP servers onto the same map; the browser behind a local proxy enforcing
       the bound -- every socket, workers' included -- which lifts the refusal of `browser_tools`
       under a list.
-- [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
-      background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
-      worktree per child task, and clearing of stale tool results.
+- [~] **W3 — coding toolset.** *Landed:* `glob` (the backend's `tree` walk filtered with
+      `full_match`, files only) and `multi_edit` (ordered exact-string edits, all or none: read,
+      apply in memory with `edit_file`'s rules, `write_file_checked` against the read's digest),
+      both composed from existing backend operations so the hosted gateway needs nothing new.
+      `apply_patch` was folded into `multi_edit`: a unified diff is a second grammar for the same
+      change, and exact strings are what models already produce for `edit_file`. *Next:*
+      persistent shell sessions and background processes in the shell runner, file checkpoints
+      restored by `/chat/rewind`, a git worktree per child task, and clearing of stale tool results.
 - [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
       pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
       `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per

@@ -767,11 +767,51 @@ async def _search_files(args: SearchFilesArgs) -> ToolOutput:
 # The tools `register_workspace_tools` binds, by name: what a manifest's `spec.tools` lists to work
 # in the harness's workspace (`felix.usage.catalog.workspace_summary` reads it).
 WORKSPACE_TOOL_NAMES = frozenset(
-    {"list_dir", "read_file", "write_file", "edit_file", "delete_file", "rename_file", "search_files"}
+    {
+        "list_dir",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "multi_edit",
+        "delete_file",
+        "rename_file",
+        "search_files",
+        "glob",
+    }
 )
 
 
 def register_workspace_tools(provider: InMemoryToolProvider) -> None:
+    # Composed from the operations above, so imported here: it imports this module.
+    from felix.tools.workspace_composed import GlobArgs, MultiEditArgs, _glob, _multi_edit
+
+    provider.register(
+        "glob",
+        lambda: define_tool(
+            name="glob",
+            replay_safe=True,
+            read_only=True,
+            description=(
+                "Find workspace files by name pattern: `*` within a name, `**` across folders "
+                "(`**/*.py`, `src/**/test_*.py`). Returns paths, not contents."
+            ),
+            args=GlobArgs,
+            handler=_glob,
+        ),
+    )
+    provider.register(
+        "multi_edit",
+        lambda: define_tool(
+            name="multi_edit",
+            description=(
+                "Apply several exact-string edits to one workspace file, in order, each to the "
+                "result of the one before. All land or none do. Use it for several changes to one "
+                "file instead of repeated edit_file calls."
+            ),
+            args=MultiEditArgs,
+            handler=_multi_edit,
+        ),
+    )
     provider.register(
         "list_dir",
         lambda: define_tool(
