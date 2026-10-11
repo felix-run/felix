@@ -561,7 +561,13 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       apply in memory with `edit_file`'s rules, `write_file_checked` against the read's digest),
       both composed from existing backend operations so the hosted gateway needs nothing new.
       `apply_patch` was folded into `multi_edit`: a unified diff is a second grammar for the same
-      change, and exact strings are what models already produce for `edit_file`. *Next:*
+      change, and exact strings are what models already produce for `edit_file`. `glob` matches a
+      segment at a time with `fnmatch` (atomic per `*`; `PurePath.full_match`'s one regex ran for
+      minutes on `*a*a*a*a*a*a*b`), bounded wildcards, off the loop on a deadline. Hosted writes
+      and edits now share the checked write's per-path lock. *Follow-ups:* the compare in the
+      gateway helper's `write`, through its replace-by-rename, so a hosted checked write is one
+      atomic call (it is three today, and truncates in place); a `tree` rooted at `glob`'s `path`
+      (hosted walks the whole scope, one gateway `list` per folder). *Next:*
       persistent shell sessions and background processes in the shell runner, file checkpoints
       restored by `/chat/rewind`, a git worktree per child task, and clearing of stale tool results.
 - [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,

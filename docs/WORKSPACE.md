@@ -99,7 +99,8 @@ the natural place for a hosted backend to create a sandbox on first use). And th
 data, not formatted text: the tools still build every string the model sees. Failures cross the seam
 as the exceptions the tools already mapped (`ValueError`, `NotAFileError`, `OSError`), plus
 `EditRefused` for an edit the model can correct. The regex screen and the search deadline stay in the
-tool; the backend compiles its own copy of the pattern, since a compiled pattern is not something
+tool -- as does `glob`'s: a pattern matched a segment at a time with `fnmatch` (whose regex is atomic
+per `*`), at most 8 wildcards and 4 `**`, filtered off the event loop on a 5 s deadline; the backend compiles its own copy of the pattern, since a compiled pattern is not something
 every backend can be sent. `shell`, the image tools' `path`, `publish_commits` and the context-file
 loader still use `workspace_root()` and the local primitives: they need a real directory, and moving
 them is phase 3's question.

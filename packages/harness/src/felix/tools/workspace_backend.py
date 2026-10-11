@@ -240,9 +240,11 @@ class WorkspaceBackend(Protocol):
         """Replace `path` with `data` whole, unless the caller's view of it is stale.
 
         With `expected_sha256`, the file's current digest is compared under the same per-path
-        lock the tools' writes take, and a mismatch -- or a missing file -- raises
-        `WorkspaceChanged` without writing. Without it the write is unconditional. Either way the
-        file is replaced atomically (written to a sibling and renamed), never truncated in place.
+        lock the tools' writes take in this process, and a mismatch -- or a missing file -- raises
+        `WorkspaceChanged` without writing. Without it the write is unconditional. Locally the
+        file is replaced atomically (written to a sibling and renamed); the hosted backend's
+        compare and write are separate gateway calls, and its write truncates in place
+        (`HostedBackend.write_file_checked` says what that leaves open).
         """
         ...
 
