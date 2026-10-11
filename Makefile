@@ -114,8 +114,8 @@ check-ci: check bundle schema-check contract-check toolkit eval lock-check deps-
 	uv run pre-commit run --all-files
 
 # check-ci's parts, runnable alone: each is the fast answer to "did I break X".
-bundle:  ## every bundled manifest validates (felix bundle-manifests)
-	uv run felix bundle-manifests
+bundle:  ## every bundled manifest validates with no warnings (felix bundle-manifests --strict)
+	uv run felix bundle-manifests --strict
 
 schema-check:  ## schemas/manifest.schema.json is current
 	uv run python scripts/gen-manifest-schema.py --check

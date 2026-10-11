@@ -571,22 +571,36 @@ def sessions_backfill_previews(
 @app.command("bundle-manifests")
 def bundle_manifests(
     out: Path | None = typer.Option(None, "--out", "-o", help="Write JSON Schema / bundle summary here."),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Exit 1 when any bundled manifest has warnings, after printing every one.",
+    ),
 ) -> None:
     """Validate bundled manifests and list them as JSON on stdout.
 
     `--out` writes the same list plus the generated JSON Schema; stdout carries the list
     alone, because the schema is large and this stream is usually read by a human. The
-    summary line goes to stderr either way, so stdout stays parseable.
+    summary line and any warnings go to stderr either way, so stdout stays parseable.
+    `--strict` exits 1, before writing anything, when any manifest has a warning.
     """
+    from felix.manifests.governance import manifest_warnings
     from felix.manifests.loader import list_bundled, load_bundled
     from felix.manifests.schema import Manifest
 
     names = list_bundled()
+    warned = 0
     for name in names:
-        load_bundled(name)
+        # The same sentences `validate-manifest` prints and `PUT /manifests` returns.
+        for warning in manifest_warnings(load_bundled(name)):
+            warned += 1
+            typer.echo(f"warning {name}: {warning}", err=True)
     # stderr: stdout is the JSON below, and `felix bundle-manifests > bundle.json` should be
     # a file a parser can read rather than a summary line with JSON stuck to it.
     typer.echo(f"validated {len(names)} manifests: {', '.join(names)}", err=True)
+    if strict and warned:
+        typer.echo(f"strict: {warned} warning(s) are failures under --strict", err=True)
+        raise typer.Exit(1)
     schema = Manifest.model_json_schema()
     payload = {"manifests": names, "json_schema": schema}
     if out is not None:
@@ -621,7 +635,9 @@ def _assert_outbound_hosts_resolve(manifest: Any, _settings: Any = None) -> None
 
 @app.command("validate-manifest")
 def validate_manifest_cmd(
-    path: Path = typer.Argument(..., help="Path to a felix/v1 Agent YAML or JSON file."),
+    paths: list[Path] = typer.Argument(
+        ..., help="One or more felix/v1 Agent YAML or JSON files.", show_default=False
+    ),
     environment: str = typer.Option(
         "development",
         "--environment",
@@ -633,9 +649,36 @@ def validate_manifest_cmd(
         "--resolve-egress/--no-resolve-egress",
         help="Resolve every outbound hostname and reject blocked addresses (needs DNS).",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Exit 1 when any manifest has warnings, after printing every one (CI gate).",
+    ),
 ) -> None:
-    """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
+    """Validate manifests: schema, opt-in governance frameworks, write refusals (GitOps CI).
+
+    Every path is checked and reported before the exit status is decided, so one run names
+    every problem. Exit 1 when any path is invalid or fails governance, or — with `--strict` —
+    carries a warning; otherwise 0.
+    """
     from felix.config import Settings
+
+    _load_plugins()
+    settings = Settings(environment=environment)  # type: ignore[arg-type]
+    failed = 0
+    warned = 0
+    for path in paths:
+        verdict = _validate_one_manifest(path, settings, resolve_egress=resolve_egress)
+        failed += verdict is None
+        warned += bool(verdict)
+    if strict and warned:
+        rprint(f"[red]strict[/red]: {warned} manifest(s) with warnings fail under --strict")
+    if failed or (strict and warned):
+        raise SystemExit(1)
+
+
+def _validate_one_manifest(path: Path, settings: Any, *, resolve_egress: bool) -> list[str] | None:
+    """Validate and report one manifest: its warnings, or `None` when it is refused."""
     from felix.manifests.governance import (
         GovernanceError,
         manifest_warnings,
@@ -644,9 +687,8 @@ def validate_manifest_cmd(
     )
     from felix.manifests.loader import load_manifest_file
     from felix.patterns.registry import list_patterns
+    from rich.markup import escape
 
-    _load_plugins()
-    settings = Settings(environment=environment)  # type: ignore[arg-type]
     try:
         manifest = load_manifest_file(path)
         validate_governance(manifest, settings)
@@ -667,17 +709,18 @@ def validate_manifest_cmd(
             _assert_outbound_hosts_resolve(manifest)
     except GovernanceError as exc:
         rprint(f"[red]governance fail[/red] {path}: {exc}")
-        raise SystemExit(1) from exc
+        return None
     except Exception as exc:
         rprint(f"[red]invalid[/red] {path}: {exc}")
-        raise SystemExit(1) from exc
-    # Printed, never fatal: the store takes these too (`PUT /manifests` returns them as
-    # `warnings`), so failing CI on them would refuse what the API accepts.
-    from rich.markup import escape
-
-    for warning in manifest_warnings(manifest):
+        return None
+    # Printed, and fatal only under `--strict`: the store takes these too (`PUT /manifests`
+    # returns them as `warnings`), so failing by default would refuse what the API accepts.
+    # `--strict` is the operator opting a CI gate into holding their own manifests tighter.
+    warnings = manifest_warnings(manifest)
+    for warning in warnings:
         rprint(f"[yellow]warning[/yellow] {escape(str(path))}: {escape(warning)}")
     rprint(f"[green]ok[/green] {path} ({manifest.metadata.name})")
+    return warnings
 
 
 @dataclass(frozen=True)
