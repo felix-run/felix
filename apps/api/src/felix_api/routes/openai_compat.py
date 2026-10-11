@@ -15,6 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
 from felix.governance.reply import REPLY_TEXT_EVENTS
+from felix.governance.screening import InboundScreeningError
 from felix.logging_setup import loggable
 from felix.manifests.inbound_auth import InboundAuthError
 from felix.manifests.loader import list_bundled
@@ -201,6 +202,12 @@ async def _stream_completion(
     except ModelGatewayError as exc:
         log_gateway_error(logger, exc)
         yield completion.error_chunk(client_safe_message(exc), "model_gateway_error", "model_unavailable")
+        yield DONE
+        return
+    except InboundScreeningError as exc:
+        # The input was refused inside the run, after the 200: typed, and not a server failure.
+        code = getattr(exc, "code", "content_screening_denied")
+        yield completion.error_chunk(client_safe_message(exc), "invalid_request_error", code)
         yield DONE
         return
     except Exception as exc:
@@ -430,6 +437,11 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         except SecretNotFoundError as exc:
             # A manifest's `secret:` ref the deployment has not provisioned: the same 503.
             return _error_json(client_safe_message(exc), "server_error", "secret_not_found", 503)
+        except InboundScreeningError as exc:
+            # Refused inside the run: a `user_prompt_submit` hook (`blocked_by_hook`), or screening
+            # that ran in the agent. The caller's input was refused, not a server fault.
+            code = getattr(exc, "code", "content_screening_denied")
+            return _error_json(client_safe_message(exc), "invalid_request_error", code, exc.status_code)
 
     content = result.final.content if result.final else ""
     return completion.response(content, finish_reason_for(result.stop_reason), _usage_payload(req_ctx))

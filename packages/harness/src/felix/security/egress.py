@@ -216,6 +216,37 @@ def safe_async_client(
     )
 
 
+async def post_for_json(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    content: bytes,
+    headers: dict[str, str],
+    deadline_s: float,
+    max_bytes: int,
+) -> tuple[int, Any]:
+    """POST `content` and return `(status, parsed JSON body)`, reading at most `max_bytes`.
+
+    For a request/response call to an operator's endpoint -- a manifest hook. Bounded like
+    `post_for_status` (the client's per-read timeout, `deadline_s` for the whole call) and by
+    size: a body past `max_bytes` raises `ValueError` rather than being read into memory. The
+    client is the caller's and is closed here.
+    """
+    import json
+
+    async with (
+        asyncio.timeout(deadline_s),
+        client,
+        client.stream("POST", url, content=content, headers=headers) as resp,
+    ):
+        body = bytearray()
+        async for chunk in resp.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > max_bytes:
+                raise ValueError("response body too large")
+        return resp.status_code, json.loads(bytes(body)) if body else None
+
+
 async def post_for_status(
     client: httpx.AsyncClient,
     url: str,

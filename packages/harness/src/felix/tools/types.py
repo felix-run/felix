@@ -170,6 +170,8 @@ FAILURE_CONTENT_PREFIXES: tuple[str, ...] = (
     "[approval ",
     # `governance/permission_mode.py`: a tool that can change things, refused in plan mode.
     "[plan mode]",
+    # `manifest_hooks.py`: a `pre_tool_use` hook refused the call.
+    "[hook denied]",
 )
 
 

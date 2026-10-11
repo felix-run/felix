@@ -1721,6 +1721,53 @@ plus the `felix_approval_waived` counter.
 `deep`'s `plan_create` / `plan_update_step` are added by the pattern after the wrapper stack and
 write only the plans store; they are not governed by plan mode.
 
+## Manifest hooks
+
+`spec.hooks` sends a run's lifecycle events to an endpoint the **operator** registered in
+`FELIX_WEBHOOK_ENDPOINTS` **with `"hooks": true`** — a manifest names an id, never a URL, and an
+endpoint not open to the run's tenant, or not opened to hooks, is never contacted. Registering an
+endpoint for run notifications does not open it to hooks: a hook sends far more. Each call is a
+Standard Webhooks–signed POST (the endpoint's secret), egress-pinned unless the endpoint is marked
+`private`, bounded by the hook's `timeout_ms` (≤ 10 s), all of one event's hooks together by 15 s,
+and the answer by 64 KiB.
+
+| Event | Sent | A `block` answer |
+|---|---|---|
+| `session_start` | the thread's first run | refuses the run (`422 blocked_by_hook:<id>: <reason>`; a typed `blocked_by_hook` error frame on a stream) |
+| `user_prompt_submit` | each run, after inbound screening, before the model | refuses the run, nothing written |
+| `pre_tool_use` | before a call to a **bound** tool (`tools` globs narrow it) | refuses the call (`[hook denied]` with the reason screened and fenced; audited as `policy_deny`) |
+| `post_tool_use` | after a call returns or raises, with its result | — |
+| `stop` | when the agent would finish, with its answer | sends it back (≤ 3 per run, never on the last step) |
+| `subagent_stop` | when a `task` child finishes, with its answer | — |
+
+**Where `pre_tool_use` sits.** In the tool runner, before the governance wrappers: a call's
+arguments reach the hook before policies, permission mode and approvals see the call. An `allow`
+cannot bypass any of them; a `block` refuses first. A tool name the agent does not have is refused
+without asking any hook.
+
+**What leaves the deployment.** The prompt, a bound tool's arguments and result (after secret
+masking, which runs inside the tool), and the agent's answer, each cut to 32,000 characters — only
+to an endpoint the operator opened to hooks for the tenant.
+
+**What comes back.** `additional_context` and a `stop` reason are the hook's text and may relay what
+it was sent, so each is screened like an untrusted tool result (`[quarantined] …` when flagged),
+fenced as reference material from that hook, capped at 8,000 characters per event across all its
+hooks, and **transient**: attached to the run's first model call, to the tool result, or — for
+`stop` — to the next model call only. None is stored as a turn a later run would replay.
+
+**Failure.** An unreachable or slow endpoint, a non-2xx status, or an answer outside the contract is
+an error, and the hook's `on_error` decides: `allow` (the default — advisory) carries on, `block`
+refuses what the hook guards, so a hook used as a control fails closed. A `stop` hook that errors
+lets the agent finish whatever `on_error` says. A `stop` continuation leaves the answer it rejected
+in the transcript, followed by the next one: two assistant turns in a row on replay, which both
+wires accept (the Messages API combines them). Every call is a `hook_call` audit row and
+`felix_hook_calls`.
+
+Hooks fire only on patterns that run them (`react`, `deep`); a manifest with `spec.hooks` on any
+other pattern is refused at compile. A durable run re-sends `session_start`/`user_prompt_submit`
+when a crashed run resumes. These are distinct from the in-process plugin hooks in `felix.hooks`,
+which are global, Python, and fail open.
+
 ## Session leases
 
 A lease keeps two clients from driving one thread at once. It holds **one exclusive hold**

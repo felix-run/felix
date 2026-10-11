@@ -3,7 +3,7 @@ name: governance-pipeline
 description: How Felix compiles a manifest into a governed agent and how the tool wrapper stack works — secret masking, policies, command and content screening, limits, guardrails, judges, approvals, artifact spill — including how to add a new control in the right slot. Use when editing manifests/builder.py, adding or debugging a governance control, tracing why a tool call was blocked, masked, or paused for approval, or reviewing security-relevant agent behavior.
 allowed-tools: Read Grep Glob Bash(uv run:*)
 metadata:
-  covers: felix/governance/, felix/approvals/, felix/audit/
+  covers: felix/governance/, felix/approvals/, felix/audit/, felix/manifest_hooks.py
 ---
 
 # The governance pipeline
@@ -60,6 +60,10 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
    - Sees tool output → after the call, later in the stack (content screening, guardrails, judges).
    - Blocks execution pending a human → approvals, late so cheaper checks reject first.
    - Rewrites output for storage → artifact spill, after the controls.
+   - Not a wrapper at all → `spec.hooks` (`felix/manifest_hooks.py`): an operator endpoint asked on
+     lifecycle events. `pre_tool_use` runs in `ToolRunner.dispatch`, *before* this stack; its
+     answer's text (deny reason, `additional_context`, stop reason) is screened, fenced and
+     transient, and `on_error` decides an unreachable hook. Endpoints must opt in (`hooks: true`).
    - Depends on the thread's permission mode → permission mode, just outside approvals: plan mode
      refuses a non-read-only tool before anyone is asked to approve it, and the mode it resolves is
      what `waives_approval` reads inside approvals (`governance/permission_mode.py`).

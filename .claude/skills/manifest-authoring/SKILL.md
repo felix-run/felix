@@ -71,6 +71,7 @@ Copy `manifests/governed.yaml` when the agent needs governance — it is the ful
 | `peers` | `a2a/peers.py:tools_from_peers` → `peer__name` |
 | `delegation` | `tools/delegation.py:make_task_tool` → `task` (+ `task_result` with `background`, a durable run per child); children compiled beside `sub_agents` in `builder.py` (`schema.child_agent_names`), pinned in `manifests/pin.py`; refused alongside `sub_agents` |
 | `permissions` | `governance/permission_mode.py` — `apply_permission_mode` (plan mode refuses non-`read_only` tools), `waives_approval` read by `apply_approvals`, `exit_plan_mode` bound in `builder.py` with the built-in `plan-approval` rule; the mode itself is thread meta set by `POST /chat/mode` |
+| `hooks` | `felix/manifest_hooks.py:ManifestHooks` — signed requests to `FELIX_WEBHOOK_ENDPOINTS` ids; fired by `patterns/react.py` (`_entry_hooks`: session_start, user_prompt_submit; `_stop_hook`), `patterns/tool_runner.py` (pre/post tool) and `tools/delegation.py` (subagent_stop); refused on a pattern registered without `honours_hooks` |
 | `a2a` | the published agent card: `a2a/card.py`, served by `routes/well_known.py` |
 | `browser_tools` / `sandboxes` / `containers` / `queues` / `client_tools` | `tools/{browser,sandboxes,queues,client_bridge}.py` |
 | `shell_tools` / `workspace` | `tools/shell.py`, `shell_runner.py`, `security/shell_policy.py`; `tools/workspace_*.py` (and the outermost `apply_workspace_scope`); both have refusals in `manifests/governance.py` |

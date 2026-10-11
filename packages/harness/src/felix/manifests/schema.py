@@ -1006,6 +1006,40 @@ class Guardrails(_Strict):
     judges: list[JudgeRule] = Field(default_factory=list)
 
 
+# The run's lifecycle points a manifest hook can attach to (`felix/manifest_hooks.py`). Closed:
+# each is a place in the react loop that calls it, and an event nothing fires is a hook that
+# validates and never runs.
+HookEventName = Literal[
+    "session_start", "user_prompt_submit", "pre_tool_use", "post_tool_use", "stop", "subagent_stop"
+]
+_TOOL_HOOK_EVENTS = ("pre_tool_use", "post_tool_use")
+MAX_HOOK_TIMEOUT_MS = 10_000
+
+
+class HookRule(_Strict):
+    """One manifest hook: on `event`, ask the operator-registered `endpoint` (an id from
+    `FELIX_WEBHOOK_ENDPOINTS`, never a URL) with a signed request, and act on its answer."""
+
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    event: HookEventName
+    # The handler. `http` is a signed POST to `endpoint`; the field exists so a second handler
+    # kind arrives as a variant rather than a reshaping of every stored manifest.
+    type: Literal["http"] = "http"
+    endpoint: str = Field(min_length=1, max_length=64)
+    # Tool names or globs, for the tool events. Empty: every tool.
+    tools: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+    timeout_ms: int = Field(default=3000, ge=100, le=MAX_HOOK_TIMEOUT_MS)
+    # What an unreachable, slow or malformed hook means: `allow` carries on (the hook is
+    # advisory), `block` refuses what it guards (the hook is a control).
+    on_error: Literal["allow", "block"] = "allow"
+
+    @model_validator(mode="after")
+    def _tools_only_on_tool_events(self) -> HookRule:
+        if self.tools and self.event not in _TOOL_HOOK_EVENTS:
+            raise ValueError(f"hooks[{self.id}].tools applies only to {', '.join(_TOOL_HOOK_EVENTS)}")
+        return self
+
+
 # Closed on purpose (see `governance/permission_mode.py`): each mode says which existing control
 # runs, so a plugin-defined one would be a governance bypass with a name.
 PermissionModeName = Literal["default", "accept_edits", "plan", "bypass"]
@@ -1232,6 +1266,16 @@ class Spec(_Strict):
     # Binds the `task` tool. Unset binds nothing.
     delegation: DelegationSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
+    hooks: list[HookRule] = Field(default_factory=list, max_length=16)
+
+    @field_validator("hooks")
+    @classmethod
+    def _hook_ids_unique(cls, hooks: list[HookRule]) -> list[HookRule]:
+        ids = [h.id for h in hooks]
+        if len(set(ids)) != len(ids):
+            raise ValueError("hooks ids must be unique")
+        return hooks
+
     aggregator_prompt: str = ""
     #: Rounds for the multi-agent patterns — `groupchat`, `plan_execute` and friends. A `react`
     #: agent's loop is bounded by `recursion_limit` below and never reads this; setting it on
@@ -1447,6 +1491,7 @@ __all__ = [
     "GovernanceSpec",
     "Greeting",
     "Guardrails",
+    "HookRule",
     "Limits",
     "Manifest",
     "Metadata",
