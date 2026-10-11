@@ -149,7 +149,9 @@ anything`, all `invalid_arguments` the model can act on. Neither is replay-safe.
 binds `write_file` binds these with it, and one that gates `write_file` gates these too
 (`tests/unit/test_workspace_delete_rename_tools.py` holds every bundled manifest to that, and the
 `local_delete` / `local_rename` client tools to the same rule against `local_write`): a delete
-has no undo, so it is never gated less than a write. On `hosted` a deployment whose gateway
+has no undo, so it is never gated less than a write. An operator's manifest that does gate one
+less is warned about (`felix validate-manifest`, `warnings` on `PUT /manifests/{name}`, a log line
+at compile) by the same check, `felix/manifests/delete_gate.py`, and still loads. On `hosted` a deployment whose gateway
 predates the operations answers these tools `transport_unavailable`, as it answers the pane `503`.
 
 ### Scope

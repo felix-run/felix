@@ -1569,6 +1569,23 @@ tool, a rule naming it **literally** wins over one matching by pattern, and amon
 last declared wins. That makes globbing non-weakening: a pattern can only gate a tool nothing
 gated before, and never displaces a stricter literal rule.
 
+**A delete is never gated less than a write.** A manifest whose approval rule gates a bound
+`write_file` or `edit_file` while it binds `delete_file` or `rename_file` with no rule over it
+lets the agent remove a file it would have had to ask to change -- and a delete has no undo. The
+client family is held to the same rule: `local_write` / `local_edit` against `local_delete` /
+`local_rename`. Such a manifest is **warned about, not refused**
+(`felix/manifests/delete_gate.py`): `felix validate-manifest` prints
+``warning <path>: approval rule `workspace-write` gates write_file, but delete_file is bound with
+no approval rule, …; add delete_file to rule `workspace-write` `` and still exits 0;
+`PUT /manifests/{name}` stores it and returns the same sentences in the response's `warnings`
+list (always present, `[]` when there is nothing to say); and the compile logs each one once per
+process for a given manifest content and counts `felix_delete_gated_less_than_write`. A warning
+because a manifest stored before these tools existed and since edited to bind one is a working
+agent; refusing it would make an upgrade an outage. "Gated" is any rule whose `tools` matches the
+name, globs and `when_args` rules included. Gating the delete and not the write is a choice and is
+not reported. Every bundled manifest is held to it by
+`tests/unit/test_workspace_delete_rename_tools.py`, through the same check.
+
 
 | Field | Behaviour |
 |-------|-----------|

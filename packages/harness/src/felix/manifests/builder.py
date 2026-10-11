@@ -1566,6 +1566,13 @@ def _warn_imported_skills_are_unscreened(m: Manifest, catalog: Any) -> None:
     record_counter("felix_imported_skills_unscreened", {"manifest_id": m.metadata.name})
 
 
+def _warn_ungated_deletes(m: Manifest) -> None:
+    from felix.manifests.delete_gate import warn_ungated_deletes
+
+    req = try_get_context()
+    warn_ungated_deletes(m, req.auth.tenant_id if req is not None else "")
+
+
 def bind_decider(spec: DeciderSpec, settings: Any) -> MeteredDecider | None:
     """`spec.decider`, built once per compile, or None when the manifest names none.
 
@@ -2172,6 +2179,9 @@ async def build_agent(
         _warn_max_turns_does_not_bound_this_loop(m)
         _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
         _warn_screenshots_are_quarantined(m)
+        # A delete or rename bound with no rule over it, beside a gated write: the agent could
+        # remove what it must ask to change. Warned, never refused; see `delete_gate`.
+        _warn_ungated_deletes(m)
 
         # Governance pipeline (order matters — matches TS builder). The workspace scope binds
         # last, outermost: not a control, but the directory every control and preview runs over.
