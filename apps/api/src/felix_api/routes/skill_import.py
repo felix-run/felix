@@ -110,7 +110,8 @@ async def import_from_source(body: ImportIn, request: Request, response: Respons
     A new skill starts at 0.1.0. A skill the library already imported from the same source gets
     a new version -- unless its files are unchanged, which answers 200 with `unchanged: true`
     and the existing version, saving nothing. A name the library holds from anywhere else is 409
-    `origin_mismatch`. `dropped_files` lists what the import left out.
+    `origin_mismatch`. `dropped_files` lists what the import left out; `relocated_files` maps each
+    file it moved under `references/` or `assets/` to where it went.
 
     Never published here: `publish: true` is 422 `publish_not_allowed`. Third-party text is
     reviewed first, then published with `POST /skill-library/{name}/versions/{version}/publish`.
@@ -133,7 +134,12 @@ async def import_from_source(body: ImportIn, request: Request, response: Respons
     if result.unchanged:
         response.status_code = 200
     written = await written_version(ctx, by, result.version, publish=False)
-    return {**written, "unchanged": result.unchanged, "dropped_files": result.dropped_files}
+    return {
+        **written,
+        "unchanged": result.unchanged,
+        "dropped_files": result.dropped_files,
+        "relocated_files": result.relocated_files,
+    }
 
 
 # -- updates ---------------------------------------------------------------------------------
@@ -240,5 +246,6 @@ async def update_from_upstream(
         **written,
         "unchanged": result.unchanged,
         "dropped_files": result.dropped_files,
+        "relocated_files": result.relocated_files,
         "diff": ctx.redact({"diff": diff})["diff"],
     }

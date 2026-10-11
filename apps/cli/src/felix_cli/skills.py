@@ -134,6 +134,8 @@ def add_cmd(
         typer.echo(f"{name}@{version} is already {where}; nothing saved.")
         return
     typer.echo(f"{name}@{version} saved as a draft from {where}.")
+    for src, dest in (row.get("relocated_files") or {}).items():
+        typer.echo(f"moved {clean(src)} -> {clean(dest)}", err=True)
     for path in row.get("dropped_files") or []:
         typer.echo(f"dropped {clean(path)}", err=True)
     _review_hint(name, version)
@@ -278,6 +280,8 @@ def update_cmd(
         typer.echo(f"{skill}@{version} is already {where}; nothing saved.")
         return
     typer.echo(f"{skill}@{version} saved as a draft from {where}.")
+    for src, dest in (row.get("relocated_files") or {}).items():
+        typer.echo(f"moved {clean(src)} -> {clean(dest)}", err=True)
     for path in row.get("dropped_files") or []:
         typer.echo(f"dropped {clean(path)}", err=True)
     _print_diff(row.get("diff") or {})

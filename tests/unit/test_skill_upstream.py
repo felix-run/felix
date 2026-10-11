@@ -883,3 +883,23 @@ async def test_one_sweep_runs_at_a_time(settings: Settings, store: MemoryObjectS
     async with sweep_lock(settings) as jobs:
         assert jobs is not None, "the skill_jobs lease is another row"
         assert (await _sweep(_swept(1), gh, at=T0 + 3_600_000))["checked"] == 1
+
+
+async def test_files_an_import_moved_are_no_change_to_a_check(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    # Kept under references/ and the SKILL.md rewritten to match: a check must compare them where
+    # the import saved them, or every such skill would read as changed at its source forever.
+    body = "# Triage\n\nPick a queue from queues/.\n"
+    gh.push(REPO, _tree({NAME: {**_files(body), "queues/finance.md": b"# Finance\n"}}))
+    await _import(settings, store, gh)
+
+    found = await _check(settings, store, gh)
+
+    assert found["update_available"] is False
+    assert found["diff"]["files"] == []
+
+    # And a real change to a moved file is reported at the path it was saved under.
+    gh.push(REPO, _tree({NAME: {**_files(body), "queues/finance.md": b"# Finance\n\nOver 500.\n"}}))
+    changed = await _check(settings, store, gh)
+    assert [f["path"] for f in changed["diff"]["files"]] == ["references/queues/finance.md"]

@@ -106,7 +106,11 @@ async def diff_versions(
 
 
 async def _diff_upstream(
-    session: importer.Session, kept: list[TreeEntry], base: Mapping[str, bytes], base_version: str
+    session: importer.Session,
+    kept: list[TreeEntry],
+    base: Mapping[str, bytes],
+    base_version: str,
+    plan: Mapping[str, str],
 ) -> dict[str, Any]:
     """The kept files at the resolved commit against the stored ``base``, fetching only what the
     tree's blob ids say changed -- and of that, only text, in path order, until the diff budget is
@@ -115,7 +119,9 @@ async def _diff_upstream(
     A fetched file is sanitised as an import would save it (`importer.read_text_files`): a
     SKILL.md whose description an import would clamp is compared clamped, and text that is not
     UTF-8, which an import drops, counts as absent."""
-    upstream = {e.path: e for e in kept}
+    # Keyed by bundle path, as the stored version is: a file an import moved under `references/`
+    # compares with where it was saved, not with a path the bundle never held.
+    upstream = {plan[e.path]: e for e in kept}
     builder = DiffBuilder()
     to_read: list[TreeEntry] = []
     for path in sorted(base.keys() | upstream.keys()):
@@ -133,17 +139,18 @@ async def _diff_upstream(
             to_read.append(entry)
     for at in range(0, len(to_read), _FETCH_BATCH):
         batch = to_read[at : at + _FETCH_BATCH]
-        texts = await importer.read_text_files(session, batch) if not builder.exhausted else {}
+        texts = await importer.read_text_files(session, batch, plan) if not builder.exhausted else {}
         for entry in batch:
-            stored = base.get(entry.path)
-            old = Content.of(entry.path, stored) if stored is not None else None
-            if builder.exhausted and entry.path not in texts:
-                builder.add(entry.path, old, Content(entry.size))
+            path = plan[entry.path]
+            stored = base.get(path)
+            old = Content.of(path, stored) if stored is not None else None
+            if builder.exhausted and path not in texts:
+                builder.add(path, old, Content(entry.size))
                 continue
-            data = texts.get(entry.path)
+            data = texts.get(path)
             if data != stored:
-                new = Content.of(entry.path, data) if data is not None else None
-                await asyncio.to_thread(builder.add, entry.path, old, new)
+                new = Content.of(path, data) if data is not None else None
+                await asyncio.to_thread(builder.add, path, old, new)
     return {"compared_with": base_version, **builder.result()}
 
 
@@ -281,7 +288,7 @@ async def check_upstream(
         committed_at = await session.gh.last_changed(
             session.source, snap.resolved.commit, session.source.path
         )
-        diff = await _diff_upstream(session, snap.kept, base, base_version)
+        diff = await _diff_upstream(session, snap.kept, base, base_version, snap.plan)
     cooldown = session.cooldown
     if other_ref is None:
         await importer.record_upstream(
