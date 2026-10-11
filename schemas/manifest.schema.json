@@ -1636,6 +1636,70 @@
       "title": "OutboundAuth",
       "type": "object"
     },
+    "OutputStyle": {
+      "additionalProperties": false,
+      "description": "How the agent writes its answers -- terse, explanatory, a teaching voice -- chosen per\nconversation. `prompt` joins the system prompt of the agent the person is talking to.",
+      "properties": {
+        "name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "prompt": {
+          "maxLength": 16000,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "prompt"
+      ],
+      "title": "OutputStyle",
+      "type": "object"
+    },
+    "OutputStylesSpec": {
+      "additionalProperties": false,
+      "description": "The styles a conversation may pick (`POST /chat/style`), and the one it starts in.",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        },
+        "styles": {
+          "items": {
+            "$ref": "#/$defs/OutputStyle"
+          },
+          "maxItems": 16,
+          "title": "Styles",
+          "type": "array"
+        }
+      },
+      "title": "OutputStylesSpec",
+      "type": "object"
+    },
     "PermissionsSpec": {
       "additionalProperties": false,
       "description": "Which permission modes a conversation with this agent may be in, and which it starts in.\n\n`plan` runs only read-only tools until a person approves the plan (`exit_plan_mode`);\n`accept_edits` waives approvals for the workspace's edit tools and `edit_tools`; `bypass`\nwaives every approval, and is honoured only for a caller holding `approvals:bypass`.",
@@ -2444,6 +2508,9 @@
         },
         "permissions": {
           "$ref": "#/$defs/PermissionsSpec"
+        },
+        "output_styles": {
+          "$ref": "#/$defs/OutputStylesSpec"
         },
         "hooks": {
           "items": {

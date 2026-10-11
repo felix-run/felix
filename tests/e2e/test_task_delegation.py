@@ -658,3 +658,22 @@ async def test_a_thread_may_have_only_so_many_background_children_in_flight(boot
         app.spy.push(ScriptedTurn(tool_calls=[_bg("c3", "third")]), ScriptedTurn(content="started again"))
         assert (await _chat(app, text="and now?")).status_code == 200
         assert len(F._memory_fibers) == 2, "a finished child frees its slot"
+
+
+async def test_a_background_child_does_not_take_its_own_default_style(boot: Any) -> None:
+    """It compiles in the worker as a run of its own; it still answers its parent, not a person."""
+    from felix.durability import fibers as F
+
+    styled = _agent(
+        "e2e-researcher",
+        system_prompt={"inline": "You research."},
+        output_styles={"default": "loud", "styles": [{"name": "loud", "prompt": "SHOUT EVERYTHING."}]},
+    )
+    script = [ScriptedTurn(tool_calls=[_bg("c1", "Survey the field.")]), ScriptedTurn(content="Started it.")]
+    async with boot(script, manifests={"e2e-lead": _bg_lead(), "e2e-researcher": styled}) as app:
+        assert (await _chat(app)).status_code == 200
+        app.spy.push(ScriptedTurn(content="The field is crowded."))
+        await F.resume_due_fibers(app.settings)
+        [system] = [m.content for m in app.spy.prompts[2] if m.role == "system"]
+    assert system.startswith("You research.")
+    assert "SHOUT EVERYTHING." not in system

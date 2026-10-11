@@ -31,6 +31,10 @@ class PatternDescriptor:
     # for the same reason: a manifest's hooks reach every pattern context, and one that ignored
     # them would compile an author's controls into nothing.
     honours_hooks: bool = False
+    # Whether the answer the person reads is written under this agent's own system prompt, where
+    # `spec.output_styles` appends the chosen style. A router's chosen child writes it under the
+    # child's prompt, so a style declared on the router would change nothing.
+    honours_output_styles: bool = False
 
 
 _patterns: dict[str, PatternDescriptor] = {}
@@ -43,9 +47,14 @@ def register_pattern(
     kind: PatternKind = "single-agent",
     honours_output_schema: bool = False,
     honours_hooks: bool = False,
+    honours_output_styles: bool = False,
 ) -> None:
     _patterns[name] = PatternDescriptor(
-        build=build, kind=kind, honours_output_schema=honours_output_schema, honours_hooks=honours_hooks
+        build=build,
+        kind=kind,
+        honours_output_schema=honours_output_schema,
+        honours_hooks=honours_hooks,
+        honours_output_styles=honours_output_styles,
     )
 
 
@@ -74,6 +83,12 @@ def honours_hooks(name: str) -> bool:
     return desc is not None and desc.honours_hooks
 
 
+def honours_output_styles(name: str) -> bool:
+    """Whether this pattern's own system prompt writes the answer, so a chosen style reaches it."""
+    desc = _patterns.get(name)
+    return desc is not None and desc.honours_output_styles
+
+
 def is_multi_agent_pattern(name: str) -> bool:
     desc = _patterns.get(name)
     return desc is not None and desc.kind == "multi-agent"
@@ -92,6 +107,7 @@ __all__ = [
     "get_pattern_descriptor",
     "honours_hooks",
     "honours_output_schema",
+    "honours_output_styles",
     "is_multi_agent_pattern",
     "list_patterns",
     "register_pattern",

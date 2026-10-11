@@ -45,7 +45,13 @@ from felix.manifests.schema import (
 from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
-from felix.patterns.registry import get_pattern, honours_hooks, honours_output_schema, list_patterns
+from felix.patterns.registry import (
+    get_pattern,
+    honours_hooks,
+    honours_output_schema,
+    honours_output_styles,
+    list_patterns,
+)
 from felix.patterns.types import Agent
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
@@ -1786,6 +1792,12 @@ async def build_agent(
 
         validate_governance(m, deps.settings)
         assert_cost_limit_is_measurable(m, deps.settings)
+        # The conversation's chosen style, at the end of the prompt (the notice goes at the top).
+        # Only for the agent the request names: its children compiled above, with it on
+        # `deps.compiling`.
+        from felix.output_styles import apply_output_style
+
+        system_prompt = await apply_output_style(system_prompt or "", m, top_level=not deps.compiling)
         if m.spec.governance.transparency_notice:
             system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
 
@@ -2266,6 +2278,14 @@ async def build_agent(
             raise ValueError(
                 f"Pattern '{m.spec.pattern}' does not support spec.hooks (manifest '{m.metadata.name}'). "
                 f"Patterns that do: {', '.join(sorted(p for p in list_patterns() if honours_hooks(p)))}"
+            )
+        if m.spec.output_styles.styles and not honours_output_styles(m.spec.pattern):
+            # Refused for the same reason: on a router the chosen child writes the answer under
+            # its own prompt, and a style the person picked would be stored and change nothing.
+            raise ValueError(
+                f"Pattern '{m.spec.pattern}' does not support spec.output_styles "
+                f"(manifest '{m.metadata.name}'). Patterns that do: "
+                f"{', '.join(sorted(p for p in list_patterns() if honours_output_styles(p)))}"
             )
         if m.spec.output_schema is not None and not honours_output_schema(m.spec.pattern):
             # Refused rather than dropped. Every pattern receives `output_schema` in its build
