@@ -86,6 +86,8 @@ class ToolRunner:
     tool_map: dict[str, Tool]
     manifest_id: str
     tool_execution: str = "sequential"
+    # `spec.hooks`, built: `pre_tool_use` before a call, `post_tool_use` after it.
+    hooks: Any | None = None
     # How many more tool images this run may keep; see `felix.tools.tool_images`.
     image_budget: ImageBudget = field(default_factory=ImageBudget)
 
@@ -146,6 +148,38 @@ class ToolRunner:
                 terminate,
                 True,
             )
+        if self.hooks is not None and self.hooks.has("pre_tool_use"):
+            outcome = await self.hooks.fire(
+                "pre_tool_use",
+                {"manifest_id": self.manifest_id, "tool_name": call.name, "args": call.args},
+                tool_name=call.name,
+            )
+            if outcome.blocked:
+                record_counter(
+                    "felix_tool_calls",
+                    {
+                        "transport": _transport_of(self.tool_map.get(call.name)),
+                        "status": "denied",
+                        "manifest_id": self.manifest_id,
+                    },
+                )
+                emit_agent_audit(
+                    "policy_deny",
+                    status="denied",
+                    manifest_id=self.manifest_id,
+                    payload=_call_row(call, thread_id, control="manifest_hook", hook=outcome.hook_id),
+                )
+                return (
+                    None,
+                    ChatMessage(
+                        role="tool",
+                        tool_call_id=call.id,
+                        name=call.name,
+                        content=f"[hook denied] {outcome.hook_id}: {outcome.reason or 'refused'}",
+                    ),
+                    False,
+                    True,
+                )
 
         async def _run(span: Any) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
             tool = self.tool_map.get(call.name)
@@ -365,6 +399,21 @@ class ToolRunner:
             if after and after.get("content") is not None:
                 content = _applied_hook_content(after["content"], content, call.name)
                 rewritten = True
+            if self.hooks is not None and self.hooks.has("post_tool_use") and not denied:
+                observed = await self.hooks.fire(
+                    "post_tool_use",
+                    {
+                        "manifest_id": self.manifest_id,
+                        "tool_name": call.name,
+                        "args": call.args,
+                        "is_error": bool(err),
+                        "result": content if isinstance(content, str) else str(content),
+                    },
+                    tool_name=call.name,
+                )
+                if observed.contexts and isinstance(content, str):
+                    content = f"{content}\n\n{observed.context_block()}"
+                    rewritten = True
         except Exception:
             logger.warning("post-call handling failed for %s; the tool already ran", call.name, exc_info=True)
             record_counter(

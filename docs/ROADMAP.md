@@ -1063,9 +1063,10 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       accept_edits | plan | bypass`, `spec.permissions`, `POST /chat/mode`) as one deliberate new
       wrapper slot just outside approvals; plan mode runs only `read_only` tools and ends through
       `exit_plan_mode` and the built-in `plan-approval` rule; `bypass` needs `approvals:bypass`,
-      checked at set and per run. *Next:* declarative `spec.hooks`
-      with `session_start`, `user_prompt_submit`, `stop` and `subagent_stop` events, delivered over
-      signed HTTP or a sandbox command; `/name args` resolved against `spec.prompts`; output styles;
+      checked at set and per run. Declarative `spec.hooks` (session_start, user_prompt_submit,
+      pre/post tool, stop, subagent_stop) over signed HTTP to registered endpoints, `on_error`
+      per hook. *Next:* sandbox-command hook handlers (needs the shell isolation routing pulled
+      out of the shell tool); `/name args` resolved against `spec.prompts`; output styles;
       `spec.network.allow_hosts`, landed with *credentials the model never holds*.
 - [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
       background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git

@@ -81,6 +81,7 @@ def make_task_tool(
     ceiling: EffectiveLimits,
     background: bool = False,
     max_background: int = 3,
+    hooks: Any | None = None,
 ) -> Tool:
     """`task(agent, prompt)` over `children`: manifest name -> (compiled agent, description, the
     manifest it compiled from), in declaration order. `ceiling` is the delegating agent's own
@@ -157,8 +158,15 @@ def make_task_tool(
         finally:
             req.limit_state.ceilings.remove(ceiling)
             await emit_side_event(req.thread_id, "subagent_end", {"agent": name, "outcome": outcome})
-        answer = result.final.content if result.final else ""
-        return str(answer) if answer else f"[task] agent '{name}' returned no answer"
+        answer = str(result.final.content or "") if result.final else ""
+        reply = answer or f"[task] agent '{name}' returned no answer"
+        if hooks is not None and hooks.has("subagent_stop"):
+            observed = await hooks.fire(
+                "subagent_stop", {"agent": name, "outcome": outcome, "answer": answer}
+            )
+            if observed.contexts:
+                reply = f"{reply}\n\n{observed.context_block()}"
+        return reply
 
     return define_tool(
         name=TASK_TOOL_NAME,

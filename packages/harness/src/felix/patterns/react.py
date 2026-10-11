@@ -234,6 +234,9 @@ class _ReactAgent:
     # The compile's `ReplyScreen` chain, when reply controls are on: memory capture extracts
     # from the reply as the controls ship it, not as the model wrote it.
     reply_screen: Any | None = None
+    # `spec.hooks`, built (`felix.manifest_hooks.ManifestHooks`): session_start and
+    # user_prompt_submit at the top of a run, pre/post tool in the tool runner, stop below.
+    hooks: Any | None = None
     tool_execution: str = "sequential"
     steering_mode: str = "all"
     follow_up_mode: str = "all"
@@ -254,6 +257,7 @@ class _ReactAgent:
             tool_map=self._tool_map,
             manifest_id=self.manifest_id,
             tool_execution=self.tool_execution,
+            hooks=self.hooks,
         )
 
     async def _active_tools(self, messages: list[ChatMessage]) -> list[Tool]:
@@ -885,6 +889,56 @@ class _ReactAgent:
             return True
         return False
 
+    async def _entry_hooks(self, input: InvokeInput, tenant_id: str) -> list[ChatMessage]:
+        """Fire `session_start` (a thread's first run) and `user_prompt_submit`; raise `HookBlocked`
+        on a refusal, else return their context as transient guidance.
+
+        First thing in a run, so a refused prompt leaves nothing behind: no queue, no append."""
+        if self.hooks is None:
+            return []
+        from felix.manifest_hooks import HookBlocked
+
+        prompt = next((str(m.content or "") for m in reversed(input.messages) if m.role == "user"), "")
+        data = {"manifest_id": self.manifest_id, "prompt": prompt}
+        guidance: list[ChatMessage] = []
+        events: list[str] = []
+        if self.hooks.has("session_start") and input.thread_id and self.session_store is not None:
+            # No event yet, not "no metadata": the route writes the thread's metadata (its pin, its
+            # preview) before the run, so `thread_exists` already answers yes on the first run.
+            head = await self.session_store.open(input.thread_id).head()
+            if not head.get("seq"):
+                events.append("session_start")
+        if self.hooks.has("user_prompt_submit"):
+            events.append("user_prompt_submit")
+        for event in events:
+            outcome = await self.hooks.fire(event, data)
+            if outcome.blocked:
+                raise HookBlocked(outcome.hook_id, outcome.reason)
+            if outcome.contexts:
+                guidance.append(ChatMessage(role="user", content=outcome.context_block(), transient=True))
+        return guidance
+
+    async def _stop_hook(self, final: ChatMessage, continuations: int, step: int) -> ChatMessage | None:
+        """Ask the `stop` hooks whether the agent may finish. A message to continue with, or None.
+
+        Bounded twice: `MAX_STOP_CONTINUATIONS` per run, and the recursion limit -- a hook sending
+        the agent back on the run's last step would end it at `max_turns` with nothing said."""
+        from felix.manifest_hooks import MAX_STOP_CONTINUATIONS
+
+        if self.hooks is None or not self.hooks.has("stop") or continuations >= MAX_STOP_CONTINUATIONS:
+            return None
+        if step + 1 >= self.recursion_limit:
+            return None
+        outcome = await self.hooks.fire(
+            "stop", {"manifest_id": self.manifest_id, "final": str(final.content or "")}
+        )
+        if not outcome.blocked:
+            return None
+        note = f"[hook {outcome.hook_id}] Not finished yet: {outcome.reason or 'continue the task'}"
+        if outcome.contexts:
+            note = f"{note}\n\n{outcome.context_block()}"
+        return ChatMessage(role="user", content=note)
+
     async def _transient_guidance(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
         """Messages for this run's first model call only — see `ChatMessage.transient`.
 
@@ -1108,6 +1162,9 @@ class _ReactAgent:
         called through the streaming path. It does not gate any state change: everything
         that touches the session, the audit log or the budget happens either way.
         """
+        tenant_id = input.tenant_id or "default"
+        # Before anything is written: a refused prompt must leave the thread as it was.
+        hook_guidance = await self._entry_hooks(input, tenant_id)
         # First: `_persist_model_change` below is already an append.
         await self._sync_leaf(input.thread_id)
         if not getattr(input, "thinking_level", None) and input.thread_id:
@@ -1116,7 +1173,6 @@ class _ReactAgent:
                 input.thinking_level = level  # type: ignore[attr-defined]
         model = self._resolve_model(input)
         await self._persist_model_change(input)
-        tenant_id = input.tenant_id or "default"
         if input.thread_id:
             await ensure_run_queue(tenant_id, input.thread_id)
             await clear_abort(tenant_id, input.thread_id)
@@ -1127,7 +1183,7 @@ class _ReactAgent:
         # Per-request guidance, attached at the tail of the run's first model call (and its
         # overflow retry) and never added to `messages` — which is what gets persisted and what
         # the cache prefix is.
-        transient = await self._transient_guidance(messages, tenant_id)
+        transient = [*await self._transient_guidance(messages, tenant_id), *hook_guidance]
 
         interrupted = _interrupted_tool_results(messages, self._tool_map)
         if interrupted:
@@ -1212,6 +1268,7 @@ class _ReactAgent:
         if notes_thread:
             await mark_run_active(tenant_id, notes_thread)
         try:
+            stop_continuations = 0
             for _step in range(self.recursion_limit):
                 if input.thread_id and await is_aborted(tenant_id, input.thread_id):
                     await self._append_produced(
@@ -1356,6 +1413,13 @@ class _ReactAgent:
                         usage=usage_block,
                         status=self._note_stop_reason(stop_reason, input.thread_id),
                     )
+                    keep_going = await self._stop_hook(assistant, stop_continuations, _step)
+                    if keep_going is not None:
+                        stop_continuations += 1
+                        messages.append(keep_going)
+                        produced.append(keep_going)
+                        await self._append_produced(input.thread_id, [keep_going])
+                        continue
                     delivered: list[ChatMessage] = []
                     async for ev in self._deliver_follow_ups(
                         tenant_id,
@@ -1581,6 +1645,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         skill_suggester=ctx.get("skill_suggester"),
         procedural_memory=ctx.get("procedural_memory"),
         reply_screen=ctx.get("reply_screen"),
+        hooks=ctx.get("hooks"),
         tool_execution=tool_exec,
         steering_mode=steer_mode,
         follow_up_mode=follow_mode,
@@ -1593,6 +1658,6 @@ async def _build_react(ctx: PatternBuildContext) -> Agent:
     return build_react_agent(ctx)
 
 
-register_pattern("react", _build_react, kind="single-agent", honours_output_schema=True)
+register_pattern("react", _build_react, kind="single-agent", honours_output_schema=True, honours_hooks=True)
 
 __all__ = ["build_react_agent"]

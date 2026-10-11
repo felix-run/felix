@@ -26,6 +26,7 @@ from felix.governance.permission_mode import (
 )
 from felix.governance.reply import ReplyScreen, screen_session_store
 from felix.limits import EffectiveLimits, effective_limits
+from felix.manifest_hooks import ManifestHooks
 from felix.manifests.loader import load_bundled, parse_manifest
 from felix.manifests.schema import (
     ApprovalRule,
@@ -44,7 +45,7 @@ from felix.manifests.schema import (
 from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
 from felix.observability.tracing import manifest_span
-from felix.patterns.registry import get_pattern, honours_output_schema, list_patterns
+from felix.patterns.registry import get_pattern, honours_hooks, honours_output_schema, list_patterns
 from felix.patterns.types import Agent
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
@@ -2116,6 +2117,11 @@ async def build_agent(
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
 
+        # `spec.hooks`, built once: the loop, the tool runner and the `task` tool fire the same set.
+        manifest_hooks: ManifestHooks | None = (
+            ManifestHooks(list(m.spec.hooks), m.metadata.name) if m.spec.hooks else None
+        )
+
         # Delegation → the `task` tool. Bound last of the spec's tools, so the collision check
         # below sees every other one, and before the governance pipeline, so policies,
         # approvals, limits and content screening wrap it like any other tool. Not in a
@@ -2145,6 +2151,7 @@ async def build_agent(
                     },
                     ceiling=effective_limits(m.spec.limits),
                     background=m.spec.delegation.background,
+                    hooks=manifest_hooks,
                     max_background=m.spec.delegation.max_background,
                 )
             )
@@ -2243,6 +2250,13 @@ async def build_agent(
                 f"Unknown pattern '{m.spec.pattern}' for manifest '{m.metadata.name}' — "
                 f"registered: {', '.join(list_patterns()) or '(none)'}"
             )
+        if m.spec.hooks and not honours_hooks(m.spec.pattern):
+            # Refused, like an unhonoured output schema: hooks an author wrote as controls must not
+            # compile into nothing on a pattern whose loop never fires them.
+            raise ValueError(
+                f"Pattern '{m.spec.pattern}' does not support spec.hooks (manifest '{m.metadata.name}'). "
+                f"Patterns that do: {', '.join(sorted(p for p in list_patterns() if honours_hooks(p)))}"
+            )
         if m.spec.output_schema is not None and not honours_output_schema(m.spec.pattern):
             # Refused rather than dropped. Every pattern receives `output_schema` in its build
             # context and only some read it, so the alternative is a manifest that declares an
@@ -2273,6 +2287,7 @@ async def build_agent(
                 "extensions": dict(m.spec.extensions),
                 "recursion_limit": m.spec.recursion_limit,
                 "output_schema": m.spec.output_schema,
+                "hooks": manifest_hooks,
                 "max_turns": m.spec.max_turns,
                 "aggregator_prompt": m.spec.aggregator_prompt,
                 "session_store": session_store,

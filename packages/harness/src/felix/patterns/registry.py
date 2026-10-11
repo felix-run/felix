@@ -27,6 +27,10 @@ class PatternDescriptor:
     # A flag rather than a list of pattern names in the manifest schema: the registry is open,
     # so a plugin's pattern must be able to say yes for itself.
     honours_output_schema: bool = False
+    # Whether this builder hands `ctx["hooks"]` (`spec.hooks`) to a loop that fires them. Declared
+    # for the same reason: a manifest's hooks reach every pattern context, and one that ignored
+    # them would compile an author's controls into nothing.
+    honours_hooks: bool = False
 
 
 _patterns: dict[str, PatternDescriptor] = {}
@@ -38,8 +42,11 @@ def register_pattern(
     *,
     kind: PatternKind = "single-agent",
     honours_output_schema: bool = False,
+    honours_hooks: bool = False,
 ) -> None:
-    _patterns[name] = PatternDescriptor(build=build, kind=kind, honours_output_schema=honours_output_schema)
+    _patterns[name] = PatternDescriptor(
+        build=build, kind=kind, honours_output_schema=honours_output_schema, honours_hooks=honours_hooks
+    )
 
 
 def get_pattern(name: str) -> PatternBuilder | None:
@@ -61,6 +68,12 @@ def honours_output_schema(name: str) -> bool:
     return desc is not None and desc.honours_output_schema
 
 
+def honours_hooks(name: str) -> bool:
+    """Whether this pattern will actually fire a manifest's `spec.hooks`."""
+    desc = _patterns.get(name)
+    return desc is not None and desc.honours_hooks
+
+
 def is_multi_agent_pattern(name: str) -> bool:
     desc = _patterns.get(name)
     return desc is not None and desc.kind == "multi-agent"
@@ -77,6 +90,7 @@ __all__ = [
     "PatternKind",
     "get_pattern",
     "get_pattern_descriptor",
+    "honours_hooks",
     "honours_output_schema",
     "is_multi_agent_pattern",
     "list_patterns",
