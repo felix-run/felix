@@ -1666,6 +1666,13 @@ async def _build_react(ctx: PatternBuildContext) -> Agent:
     return build_react_agent(ctx)
 
 
-register_pattern("react", _build_react, kind="single-agent", honours_output_schema=True, honours_hooks=True)
+register_pattern(
+    "react",
+    _build_react,
+    kind="single-agent",
+    honours_output_schema=True,
+    honours_hooks=True,
+    honours_output_styles=True,
+)
 
 __all__ = ["build_react_agent"]

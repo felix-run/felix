@@ -2193,6 +2193,47 @@
         "title": "OutdatedItemOut",
         "type": "object"
       },
+      "OutputStyleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "manifest": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The agent the thread talks to, required with a style, which must be one it declares.",
+            "title": "Manifest"
+          },
+          "style": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A declared style, or null for the default.",
+            "title": "Style"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "title": "OutputStyleRequest",
+        "type": "object"
+      },
       "PermissionModeRequest": {
         "additionalProperties": false,
         "properties": {
@@ -10284,6 +10325,80 @@
           }
         },
         "summary": "Chat Stream Resume",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/style": {
+      "post": {
+        "description": "Set how the thread's agent writes: one of the manifest's `spec.output_styles`, or `null`\nfor its default. Takes effect from the next run. Checked against `manifest` now, so a typo is\na 422 rather than a style that quietly never applies; a thread that later runs a manifest\nwithout it falls back to that manifest's default. `manifest` is needed only to check a named\nstyle. Not audited: a style is presentation, the author's own text, not a control.",
+        "operationId": "chat_output_style_chat_style_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutputStyleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Chat Output Style Chat Style Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`lease_read_only`: the `X-Felix-Lease-Token` presented is an observer's. `lease_held`: another holder has the thread exclusively. Only sent when the header is, unless `FELIX_LEASE_ENFORCE=strict`, where a request without it is `lease_held` too."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Output Style",
         "tags": [
           "Threads"
         ]

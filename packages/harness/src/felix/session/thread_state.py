@@ -38,7 +38,8 @@ if TYPE_CHECKING:
 _meta_by_thread: dict[str, dict[str, Any]] = {}
 
 # Fields a caller clears by passing `None`; any other `None` is "leave it alone".
-_NULLABLE = frozenset({"session_name", "parent_session_id", "model_id"})
+# `output_style`: null is "back to the manifest's default", which a write must be able to say.
+_NULLABLE = frozenset({"session_name", "parent_session_id", "model_id", "output_style"})
 
 # Set in a row's `labels_json` by every writer that keeps `leaf_event_id` current: an append
 # (`_PostgresSession.store_leaf`), a fork or a rewind (`persist_leaf`). A row without it was

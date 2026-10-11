@@ -176,7 +176,14 @@ async def _build_plan_execute(ctx: PatternBuildContext) -> Agent:
 # `_DelegatingAgent`, which passes no options, so a schema would shape an intermediate turn at
 # best. Flipping one of these to `True` means threading `output_schema` onto that turn first.
 # `deep` is react with plan tools: the inner react agent gets the context, hooks and all.
-register_pattern("deep", _build_deep, kind="single-agent", honours_output_schema=True, honours_hooks=True)
+register_pattern(
+    "deep",
+    _build_deep,
+    kind="single-agent",
+    honours_output_schema=True,
+    honours_hooks=True,
+    honours_output_styles=True,
+)
 register_pattern("router", _build_router, kind="multi-agent", honours_output_schema=True)
 register_pattern("parallel", _build_parallel, kind="multi-agent", honours_output_schema=True)
 # Not `honours_output_schema`, and not an oversight. `groupchat`'s answer is the last
