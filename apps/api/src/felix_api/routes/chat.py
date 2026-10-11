@@ -783,7 +783,7 @@ def _allowlisted_model(manifest: Any, model_id: str | None, settings: Any = None
     return model_id
 
 
-async def _apply_template(
+async def _expand_prompts(
     messages: list[ChatMessage],
     *,
     manifest: Any,
@@ -793,25 +793,28 @@ async def _apply_template(
     tenant_id: str,
     object_store: Any | None = None,
 ) -> list[ChatMessage]:
-    if not template:
-        return messages
-    from felix.prompts import expand_named_prompt
+    """The caller's messages with each `/name args` turn expanded, and `template`, if named,
+    appended as a user turn of its own. Before inbound screening, which must see the expansion."""
+    from felix.prompts import PromptUnavailable, expand_named_prompt
+    from felix.prompts.commands import expand_commands
 
     try:
-        text = await expand_named_prompt(
-            manifest,
-            template,
-            template_args,
-            object_store=object_store,
-            workspace_root=getattr(settings, "workspace_root", None),
-            tenant_id=tenant_id,
+        messages = await expand_commands(
+            manifest, messages, settings=settings, tenant_id=tenant_id, object_store=object_store
         )
-    except LookupError as exc:
-        # Names the template the caller asked for, which the caller supplied.
-        raise HTTPException(
-            status_code=404, detail=client_safe_message(exc, authored_for_clients=True)
-        ) from exc
-    return [*messages, ChatMessage(role="user", content=text)]
+        if template:
+            text = await expand_named_prompt(
+                manifest,
+                template,
+                template_args,
+                object_store=object_store,
+                workspace_root=getattr(settings, "workspace_root", None),
+                tenant_id=tenant_id,
+            )
+            messages = [*messages, ChatMessage(role="user", content=text)]
+    except PromptUnavailable as exc:
+        raise HTTPException(status_code=404, detail=client_safe_message(exc)) from exc
+    return messages
 
 
 IDEMPOTENCY_HEADER = "idempotency-key"
@@ -888,7 +891,8 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = _caller_messages(body.messages)
-    messages = await _apply_template(
+    # Before screening: a command's expansion is the user's turn and is screened as one.
+    messages = await _expand_prompts(
         messages,
         manifest=resolved.manifest,
         template=body.template,
@@ -1318,7 +1322,8 @@ async def chat_stream(
         raise
     model_id = _allowlisted_model(resolved.manifest, body.model, settings)
     messages = _caller_messages(body.messages)
-    messages = await _apply_template(
+    # Before screening: a command's expansion is the user's turn and is screened as one.
+    messages = await _expand_prompts(
         messages,
         manifest=resolved.manifest,
         template=body.template,

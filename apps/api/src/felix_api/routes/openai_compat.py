@@ -362,6 +362,21 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
     from felix.patterns.model_vision import caller_images_on_user_turns, unseeable_image_problem
 
     messages = caller_images_on_user_turns(messages)
+    from felix.prompts import PromptUnavailable
+    from felix.prompts.commands import expand_commands
+
+    # Before screening: a command's expansion is the user's turn and is screened as one.
+    try:
+        messages = await expand_commands(
+            resolved.manifest,
+            messages,
+            settings=settings,
+            tenant_id=auth.tenant_id,
+            object_store=getattr(request.app.state, "object_store", None),
+        )
+    except PromptUnavailable as exc:
+        # A declared command whose prompt expands to nothing, or too many commands.
+        return _error_json(client_safe_message(exc), "invalid_request_error", "prompt_unavailable", 404)
     if problem := unseeable_image_problem(resolved.manifest, messages, settings):
         return _error_json(problem, "invalid_request_error", "model_not_vision_capable", 422)
     # Imported here rather than at module scope to keep the governance package off the

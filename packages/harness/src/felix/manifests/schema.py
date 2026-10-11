@@ -179,12 +179,20 @@ class SystemPrompt(_Strict):
 
 
 class PromptTemplateSpec(_Strict):
-    """Named user-message template expanded via ``$1`` / ``$@`` / ``${1:-default}``."""
+    """Named user-message template expanded via ``$1`` / ``$@`` / ``${1:-default}``.
+
+    Run by a request's `template` field, or by a user turn written `/name args` when `name` is a
+    command name (letters, digits, `-`, `_`): `felix.prompts.commands`.
+    """
 
     name: str = Field(min_length=1, max_length=64)
     body: str = ""
     # Object-store / workspace key; used when body is empty or as override source.
     file: str | None = None
+    #: One line a client shows beside `/name` in its command menu (`felix.commands`).
+    description: str | None = Field(default=None, max_length=200)
+    #: The arguments, as a client hints them after the name: `<file> [focus]`.
+    argument_hint: str | None = Field(default=None, max_length=80)
 
 
 class SkillRef(_Strict):
