@@ -1943,9 +1943,11 @@ cycle's, and the route contracts below are the next capability-adjacent step.
   - [ ] Test follow-ups: ~20 `**kw` settings helpers and ~170 inline `Settings(database_url=
         "memory://…")` calls onto `make_settings` (then an invariant against new literals), 89
         hand-built ASGI clients onto `app_client`, 66 `parents[N]` onto `tests/support/paths.py`.
-  - [ ] Onboarding: `make bootstrap`, `make db` for the without-Compose path, a `make check` that
-        works on a lean install, generated `make help`, and local targets for the CI-only lock,
-        dependency-age, helm and compose checks.
+  - [x] Onboarding: `make bootstrap`, `make db` for the without-Compose path, a `make check` that
+        skips ty loudly on a lean install (and `check-ci` that fails it), generated `make help`, local
+        lock/deps-age/compose/helm checks (Compose via one script CI shares), a README that starts
+        with building your own agent, and a README for the plugin example. felix-web's getting
+        started page follows in its own PR.
   - [ ] Layout: `clients/cli.py` becomes `felix chat`, root `skills/` moves under `manifests/self/`,
         `ROADMAP.md` shipped entries go to `HISTORY.md`.
   - [ ] Module splits, one per PR: `manifests/builder.py` (2,270 lines), `patterns/react.py`.

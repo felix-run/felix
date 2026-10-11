@@ -739,7 +739,7 @@ def test_the_coverage_floor_is_what_check_and_ci_both_run() -> None:
     """
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-    target = re.search(r"^test-cov:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    target = re.search(r"^test-cov:.*\n((?:\t.*\n)+)", makefile, re.MULTILINE)
     assert target is not None, "Makefile has no `test-cov` target — CI's Pytest step points at it"
     recipe = target.group(1)
     assert "./scripts/test.sh" in recipe and "--cov" in recipe, (
@@ -755,6 +755,56 @@ def test_the_coverage_floor_is_what_check_and_ci_both_run() -> None:
         "nothing, and the floor is the whole reason CI measures it"
     )
     assert int(floor.group(1)) >= 79, f"coverage floor ratcheted down to {floor.group(1)}"
+
+
+def test_a_lean_type_check_skips_only_outside_the_strict_gates() -> None:
+    """`make type` skips on a lean venv so `make check` can run there; `check-ci` must not.
+
+    The skip is a control that looks present and does nothing, and only two lines keep it
+    honest: `check-ci` exporting STRICT, and the `type` recipe reading it. Delete either and
+    every gate stays green while ty never runs.
+    """
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    assert re.search(r"^check-ci: export STRICT := 1$", makefile, re.MULTILINE), (
+        "`make check-ci` no longer exports STRICT=1, so a lean venv skips ty there too"
+    )
+    recipe = re.search(r"^type:.*\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert recipe is not None, "Makefile has no `type` target"
+    body = recipe.group(1)
+    assert "STRICT" in body and "CI" in body and "ty check packages apps" in body, (
+        f"`make type` no longer fails its skip under STRICT/CI, or no longer runs ty:\n{body}"
+    )
+    check = re.search(r"^check:.*\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert check is not None and "WITHOUT the type check" in check.group(1), (
+        "`make check` no longer says, as its last line, that it passed without ty on a lean venv"
+    )
+
+
+def test_env_example_references_resolve_through_settings(tmp_path: Path) -> None:
+    """`.env.example` spells the database URL and the S3 secret as `${...}` references.
+
+    pydantic-settings expands them through python-dotenv. Should that ever stop, the app would
+    send the literal text `${POSTGRES_PASSWORD}` as the password, which reads as a wrong one.
+    """
+    from felix.config import Settings
+
+    env = tmp_path / ".env"
+    text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    env.write_text(
+        text.replace(
+            "POSTGRES_PASSWORD=change-me-use-openssl-rand-hex-32", "POSTGRES_PASSWORD=pg-probe"
+        ).replace("MINIO_ROOT_PASSWORD=change-me-use-openssl-rand-hex-32", "MINIO_ROOT_PASSWORD=minio-probe"),
+        encoding="utf-8",
+    )
+    import os
+
+    ambient = {k: os.environ.pop(k) for k in ("FELIX_DATABASE_URL", "FELIX_S3_SECRET_KEY") if k in os.environ}
+    try:
+        settings = Settings(_env_file=env)  # type: ignore[call-arg]
+    finally:
+        os.environ.update(ambient)
+    assert "felix:pg-probe@" in settings.database_url and "${" not in settings.database_url
+    assert settings.s3_secret_key == "minio-probe"
 
 
 def test_the_eval_counter_smoke_runs_in_both_gates() -> None:

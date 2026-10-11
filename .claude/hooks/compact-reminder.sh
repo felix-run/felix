@@ -6,7 +6,7 @@ Felix invariants to keep after compaction:
 - A test that cannot fail is worse than no test: prove a new one fails without the change. Method and tooling: .claude/rules/felix-invariants.md.
 - Absence rots fastest. Re-grep the tree at HEAD before acting on "nothing reads this" — never on an earlier note in this session.
 - Validating a value for one grammar does not validate it for the next: re-check separators when it crosses into a command line, header, URL, or query.
-- Tests: ./scripts/test.sh (memory:// stores). Full gate: make check (ruff + ty + pytest + format check); CI types only 'packages apps'.
+- Tests: ./scripts/test.sh (memory:// stores). Full gate: make check (ruff + ty + pytest + format check) — on a lean venv it skips ty and says so last; use STRICT=1 make check or make check-ci. CI types only 'packages apps'.
 TXT
 # toolkit:enum wrapper-order (scripts/validate-toolkit.py compares the next line with the code)
 echo '- Governance wrapper order in manifests/builder.py is load-bearing: secret masking -> policies -> command screening -> content screening -> limits -> guardrails -> judges -> approvals -> permission mode -> artifact spill -> workspace scope.'

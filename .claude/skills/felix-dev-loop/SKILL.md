@@ -49,7 +49,8 @@ never a module-level `pytest.importorskip` — that one silently removes a file 
 
 **`make check`** — the edit loop's gate: `ruff check`, `ty check packages apps`, the suite with the
 coverage floor (`make test-cov`), `ruff format --check`. `make type` needs `make install-full`: a
-lean venv reports every optional import as unresolved.
+lean venv reports every optional import as unresolved, so there it prints `SKIPPED type check` and
+`make check` goes on. A skipped type check is not a passed one: gate with `STRICT=1 make check`.
 
 **`make check-ci`** — `check` plus everything CI gates on that needs no service:
 `make bundle` (every manifest loads), `make schema-check` (`schemas/manifest.schema.json` matches
@@ -82,14 +83,13 @@ make doctor           # config + connectivity preflight
 ```
 
 A fresh worktree has a lean venv: run `make install-full` there before `make check`, or the type
-gate fails its guard after the whole suite has already run.
+gate is skipped (and `make check-ci` fails on it).
 
 Full stack (Postgres+pgvector, Valkey, worker, scheduler):
 
 ```bash
-cp .env.example .env         # set POSTGRES_PASSWORD: openssl rand -hex 32
-make up                      # or make up-lite on a 2–4 GiB host
-make migrate                 # uv run felix migrate head
+make bootstrap               # .env with generated passwords, install, pre-commit (once)
+make up                      # or make up-lite on a 2–4 GiB host; migrates before the api starts
 curl -s localhost:8080/health | jq
 ```
 

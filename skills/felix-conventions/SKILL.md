@@ -41,8 +41,8 @@ decision that needs a written reason next to it.
 - `make type` and CI both run `ty check packages apps`. Tests are excluded on purpose, because
   the fakes trip `ty`.
 - Type checking needs the optional extras installed (`make install-full`). In a lean venv every
-  optional dependency reports as an unresolved import, which is an error; `make type` checks for
-  this and says so.
+  optional dependency reports as an unresolved import, which is an error. On a lean venv `make type`
+  skips with a `SKIPPED type check` notice; `STRICT=1` (or `make check-ci`) makes the skip a failure.
 - Python 3.14 is the target, so 3.14 syntax is fine — including PEP 758 unparenthesized multiple
   exception types (`except A, B:`). That is valid, not a Python 2 leftover.
 
