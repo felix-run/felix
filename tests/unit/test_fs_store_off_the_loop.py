@@ -53,3 +53,17 @@ async def test_a_traversal_key_is_still_refused(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError, match="invalid object key"):
             await op
+
+
+async def test_a_personal_library_key_is_stored(tmp_path: Path) -> None:
+    """The skill library keys a personal library as `~{digest}`; this store refused every write
+    of one with `invalid object key`, so no personal skill could be saved on it. That shape
+    exactly, and no other use of `~`: a lone one, or one in front of anything but a digest, is
+    still refused."""
+    store = _store(tmp_path)
+    key = "skill-library/default/~b859e8736fd79a2e5951a785f27eadb1/notes/0.1.0/SKILL.md"
+    await store.put(key, b"# notes")
+    assert await store.get(key) == b"# notes"
+    for bad in ("~/x", "a/~root/x", "a/x~/y", "~B859E8736FD79A2E5951A785F27EADB1/x"):
+        with pytest.raises(ValueError, match="invalid object key"):
+            await store.put(bad, b"y")
