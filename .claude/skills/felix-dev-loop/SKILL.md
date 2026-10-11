@@ -78,7 +78,7 @@ why each one is off (`E731`, `SIM102`, `ASYNC109/240`, `RUF001/002`, …).
 make install          # uv sync --dev — the lean core
 make install-full     # uv sync --all-extras --dev — needed for `make type`
 make dev              # Granian on :8080, FELIX_AUTH_MODE=none, fs object store
-make cli              # httpx REPL against a running API
+make cli              # felix chat: a chat REPL against a running API
 make doctor           # config + connectivity preflight
 ```
 

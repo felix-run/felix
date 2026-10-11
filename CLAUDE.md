@@ -25,7 +25,7 @@ make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DA
 make lint / fmt / type / test
 make dev                # API on :8080 with FELIX_AUTH_MODE=none, fs object store
 make db                 # only Postgres + Valkey in Docker on localhost — `make db migrate dev`
-make cli                # httpx REPL client (clients/cli.py)
+make cli                # felix chat: a chat REPL against a running API
 make migrate            # felix migrate head (Alembic)
 make doctor             # felix doctor — config/connectivity preflight
 make up / up-lite / up-gcp / up-full   # Compose overlays under deploy/docker/
@@ -166,7 +166,7 @@ spends real money — it needs a model key and refuses to run without one.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
   <!-- toolkit:enum cli-commands -->
-- `apps/cli` (`felix`) — `migrate | eval | mint-jwt | login | ingest-docs | skills | workspace | sessions | bundle-manifests | validate-manifest | doctor | version`.
+- `apps/cli` (`felix`) — `migrate | eval | mint-jwt | login | chat | ingest-docs | skills | workspace | sessions | bundle-manifests | validate-manifest | doctor | version`.
 - `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus four
   underscore-prefixed modules that carry no route: `_skill_library_models.py` holds the
   `/skill-library` request and response models, `_skill_library_http.py` the helpers its two route
@@ -177,7 +177,9 @@ spends real money — it needs a model key and refuses to run without one.
   same tail over the same log and are kept together so they cannot drift).
 - `apps/worker` (`felix-worker`, `felix-scheduler`) — Taskiq broker + cron tasks.
 - `manifests/` — bundled agents (`quick`, `deep`, `router`, `governed`, …); `governed.yaml` is the fullest example of the schema.
-- `skills/<name>/SKILL.md` — Agent Skills, referenced from a manifest's `spec.skills`.
+- `skills/<name>/SKILL.md` — the bundled Agent Skills every install serves, referenced from a manifest's
+  `spec.skills`. The image copies them in. The self-build stack's own skills live beside its manifests in
+  `manifests/self/skills/`, served through `FELIX_SKILLS_DIR`.
 
 ### The compile pipeline (the thing to understand first)
 

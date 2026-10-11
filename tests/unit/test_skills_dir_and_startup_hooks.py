@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 from felix.config import Settings
 
+from tests.support.factories import make_settings
+
 
 def _write_skill(root: Path, name: str, description: str) -> None:
     d = root / name
@@ -70,7 +72,8 @@ async def test_the_configured_dir_wins_over_a_same_named_bundled_skill(
     assert catalog.get("shared").description == "From the configured directory."
 
 
-async def test_an_unset_or_missing_dir_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_an_unset_or_missing_dir_is_ignored_by_the_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loader degrades; it is the boot check below that refuses a missing directory."""
     from felix.skills.loader import _configured_skills_dir
 
     monkeypatch.setattr("felix.config.get_settings", lambda: Settings(skills_dir=""))
@@ -78,6 +81,14 @@ async def test_an_unset_or_missing_dir_is_ignored(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("felix.config.get_settings", lambda: Settings(skills_dir="/no/such/dir"))
     assert _configured_skills_dir() is None
+
+
+def test_a_set_but_missing_skills_dir_refuses_to_boot(tmp_path: Path) -> None:
+    """Silently empty, the self stack served its agents stubs for their ticket contract."""
+    with pytest.raises(RuntimeError, match="FELIX_SKILLS_DIR='/no/such/dir' is not a directory"):
+        make_settings(skills_dir="/no/such/dir").validate_runtime()
+    make_settings(skills_dir=str(tmp_path)).validate_runtime()
+    make_settings(skills_dir="").validate_runtime()
 
 
 def test_a_raising_startup_hook_does_not_kill_the_api(

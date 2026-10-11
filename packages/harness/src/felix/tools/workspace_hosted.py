@@ -42,12 +42,18 @@ import httpx
 from felix.tools.workspace import NotAFileError
 from felix.tools.workspace_backend import (
     CheckedWriteResult,
+    DeleteFolderResult,
     DeleteResult,
     EditRefused,
     EditResult,
+    FolderChanged,
+    FolderTooLarge,
     ListResult,
+    NotAFolderError,
     ReadResult,
+    RenameFolderResult,
     RenameResult,
+    ReservedPathError,
     SearchResult,
     TreeResult,
     WorkspaceChanged,
@@ -104,6 +110,10 @@ def _raise_for(code: str, message: str, kind: str = "") -> None:
             raise NotADirectoryError(message)
         case "not_a_file":
             raise NotAFileError(message)
+        case "not_a_folder":
+            raise NotAFolderError(message)
+        case "reserved_path":
+            raise ReservedPathError(message.removeprefix("reserved path: "))
         case "edit_refused":
             raise EditRefused(message)
         case "target_exists":
@@ -192,6 +202,12 @@ class HostedBackend:
             raise _unavailable(f"the gateway answered {resp.status_code} with no JSON object")
         if resp.status_code == 200 and isinstance(answer.get("result"), dict):
             return answer["result"]
+        count = answer.get("count")
+        if answer.get("error") in ("too_many_entries", "too_deep") and isinstance(count, int):
+            raise FolderTooLarge(count, deep=answer.get("error") == "too_deep")
+        if answer.get("error") == "workspace_changed" and isinstance(count, int):
+            # A folder delete whose `expected_count` the tree no longer has: its file count now.
+            raise FolderChanged(count)
         if answer.get("error") == "workspace_changed":
             # The helper compared the file in the sandbox and found it other than the caller read it:
             # its digest and size now, or null for a file that is gone or over the read cap.
@@ -384,6 +400,27 @@ class HostedBackend:
             bytes=int(out["bytes"]),
             sha256=sha if isinstance(sha, str) else None,
         )
+
+    async def delete_dir(
+        self, scope: WorkspaceScope | None, path: str, *, expected_count: int | None = None
+    ) -> DeleteFolderResult:
+        """One gateway call: the helper counts, compares and removes in one process, and the gateway
+        runs a scope's changing operations one at a time, so nothing sent to the sandbox lands between."""
+        if self._is_local(scope):
+            return await self._local().delete_dir(scope, path, expected_count=expected_count)
+        assert scope is not None
+        out = await self._call(scope, "delete_folder", {"path": path, "expected_count": expected_count})
+        self._written(scope)
+        return DeleteFolderResult(path=str(out["path"]), files=int(out["files"]))
+
+    async def rename_dir(self, scope: WorkspaceScope | None, path: str, to_path: str) -> RenameFolderResult:
+        """One gateway call, checked and moved in the sandbox as `delete_dir` is."""
+        if self._is_local(scope):
+            return await self._local().rename_dir(scope, path, to_path)
+        assert scope is not None
+        out = await self._call(scope, "rename_folder", {"path": path, "to_path": to_path})
+        self._written(scope)
+        return RenameFolderResult(path=str(out["path"]), to_path=str(out["to_path"]))
 
     async def exec(
         self, scope: WorkspaceScope, argv: list[str], cwd: str, stdin: str | None, timeout_ms: int

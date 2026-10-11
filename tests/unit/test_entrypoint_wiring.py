@@ -42,6 +42,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.git_fixture import git
+
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "deploy"
 
@@ -429,3 +431,54 @@ def test_every_process_that_runs_a_turn_hydrates_secrets() -> None:
         "a process that runs agent turns does not hydrate secrets, so its audit, session "
         "and fiber redaction see an empty list:\n  " + "\n  ".join(missing)
     )
+
+
+def test_the_image_ships_every_directory_the_loaders_read_from_the_repo_root() -> None:
+    """A loader that reads `<repo>/<dir>` at runtime finds it in the image only if the Dockerfile
+    copies it there.
+
+    `skills/` was not copied, so inside the image every bundled manifest's `calculator-help` ref
+    resolved to an empty stub, and nothing said so: the loader treats a missing directory as an
+    empty catalog. The directories come from the loaders themselves, so moving one moves the
+    assertion with it.
+    """
+    from felix.manifests.loader import _default_bundled_dir as manifests_dir
+    from felix.skills.loader import _bundled_dir_candidates
+
+    read_from_root = {manifests_dir(), _bundled_dir_candidates()[0], ROOT / "migrations"}
+    for directory in read_from_root:
+        assert directory.parent == ROOT and directory.is_dir(), f"{directory} is not a repo-root directory"
+
+    dockerfile = (ROOT / "deploy" / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    for directory in sorted(read_from_root):
+        name = directory.name
+        assert re.search(rf"^COPY {name} \./{name}$", dockerfile, re.MULTILINE), (
+            f"the image never copies {name}/, which the runtime reads from the repo root"
+        )
+        # Every file under it must survive .dockerignore, or the COPY ships a hollow directory:
+        # a `**/*.md` tidy-up would drop every SKILL.md and leave each skill an empty stub.
+        # Tracked files only: `__pycache__` and other local litter are meant to stay out.
+        tracked = git(ROOT, "ls-files", "--", name).split()
+        assert tracked, f"git tracks nothing under {name}/"
+        dropped = [rel for rel in tracked if _dockerignored(ROOT / rel)]
+        assert dropped == [], f".dockerignore keeps these out of the image: {dropped[:5]}"
+
+
+def _dockerignored(path: Path) -> bool:
+    """Docker's .dockerignore rule for one file: patterns in order, the last match wins, `!`
+    re-includes, and a pattern matching a parent directory excludes everything under it.
+    `*` does not cross `/` and `**` does, which is what `PurePosixPath.full_match` does too."""
+    from pathlib import PurePosixPath
+
+    rel = PurePosixPath(path.relative_to(ROOT).as_posix())
+    candidates = [rel, *list(rel.parents)[:-1]]
+    excluded = False
+    for raw in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        negate = line.startswith("!")
+        pattern = line.lstrip("!").strip("/")
+        if any(candidate.full_match(pattern) for candidate in candidates):
+            excluded = not negate
+    return excluded

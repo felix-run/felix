@@ -137,6 +137,33 @@ gateway call can land between them. The helper's copy is ported from `workspace_
 to it by `PortedCodeTests`; a gateway deployed before these operations answers them `404`, which the
 harness reports as `503 workspace_unavailable`.
 
+**The pane's folder delete and rename (2026-10-10).** Two more, for the operator only -- no tool
+calls them, and the agent's `delete_file` and `rename_file` stay files-only:
+`delete_dir(scope, path, *, expected_count)` and `rename_dir(scope, path, to_path)`. Both refuse the
+root, a path that is not a directory (`NotAFolderError`, `400 not_a_directory`), a symlink as
+everywhere, and a path through or a tree holding a reserved name (`ReservedPathError`,
+`400 reserved_path`: a folder with a `.git` in it is a repository, and the pane does not remove or
+move one). Both walk the tree by descriptor first (`_folder_census`), one descriptor per level,
+following nothing, and refuse a tree over 2,000 entries of any kind (`_MAX_FOLDER_ENTRIES`;
+`FolderTooLarge`, `409 {detail: too_many_entries, count}`, the count stopping one past the cap) or
+nested past the walk's 64 levels (`409 too_deep`) before anything is changed. The delete compares
+`expected_count` -- the regular files the operator was shown, not directories -- with the count it
+just took (`FolderChanged`, `409 {detail: workspace_changed, count}`), then removes deepest first:
+`unlinkat` for anything that is not a directory, which removes a symlink itself and never what it
+points at, inside the scope or out of it, and `AT_REMOVEDIR` once a directory is empty. The rename is
+one `renameat`, refused into itself or below itself (lexically exact, since nothing is followed) and
+onto anything that exists (`409 target_exists`, `to_path == path` included); `to_path`'s parents are
+made only after every check has passed. Locally the count and the change run on a worker thread while
+the tree is held: a folder operation marks its tree (the rename marks both ends), takes every
+existing path lock under it, and every write waits on the mark before taking its own path's lock --
+so a write to a new name inside cannot land between the count and the removal. As with every lock
+here it is process-local; a `shell` command or another process is not ordered against it. On
+`hosted` they are the helper's `delete_folder` and `rename_folder` operations, ported from
+`workspace_local.py` and held to it by `PortedCodeTests`; a gateway deployed before them answers
+`404`, which the harness reports as `503 workspace_unavailable`. The note to the agent is the same
+`workspace_edit` entry with `kind: "folder"` (and `files` for a delete), and says the folder and
+everything in it is gone, or that paths under the old name are now under the new one.
+
 **The agent's delete and rename (2026-10-10).** The same two operations back two tools,
 `delete_file` (`{path}` → `{path, deleted: true}`) and `rename_file` (`{path, to_path}` →
 `{path, to_path, bytes}`), in `WORKSPACE_TOOL_NAMES` beside the other five. The model sends no
@@ -527,8 +554,9 @@ and a `scope: thread` workspace starts empty. So:
 6. **Reading a workspace from chat-ui.** ~~The web client's "Touched this session" list is derived from
    tool arguments today. The export route in phase 4 is the natural source for a real file list, and
    the client should wait for it rather than invent one.~~ Answered by `GET /chat/workspace/tree`,
-   `GET /chat/workspace/file`, `POST /chat/workspace/write`, `POST /chat/workspace/delete` and
-   `POST /chat/workspace/rename` (the file pane, above).
+   `GET /chat/workspace/file`, `POST /chat/workspace/write`, `POST /chat/workspace/delete`,
+   `POST /chat/workspace/rename`, `POST /chat/workspace/delete_folder` and
+   `POST /chat/workspace/rename_folder` (the file pane, above).
 
 ## Review checklist for each phase
 

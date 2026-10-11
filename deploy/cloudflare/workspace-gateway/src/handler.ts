@@ -35,17 +35,21 @@ export interface Env {
 
 export const MIN_TOKEN_CHARS = 32;
 
+/** The refusals that carry a `count` (a folder operation's): nothing else passes one through. */
+const COUNTED: ReadonlySet<ErrorCode> = new Set(['too_many_entries', 'too_deep', 'workspace_changed']);
+
 const ROUTE = /^\/v1\/workspaces\/([^/]+)\/([^/]+)\/([^/]+)$/;
 
 function refuse(
   error: ErrorCode,
   message: string,
   kind?: string,
-  current?: { sha256: string | null; bytes: number | null },
+  current?: { sha256: string | null; bytes: number | null } | { count: number },
 ): Response {
   // `kind` (the helper's exception name, for a filesystem failure) lets the harness raise the same
   // exception the local backend would, so a tool words the failure the same on both. `current` is
-  // a `workspace_changed` refusal's file as it is now, which the harness returns to its caller.
+  // a `workspace_changed` refusal's file as it is now, which the harness returns to its caller --
+  // or, for a folder operation, `count`: the folder's file count now, or the entries it walked.
   return Response.json({ error, message, ...(kind ? { kind } : {}), ...(current ?? {}) }, {
     status: STATUS[error],
   });
@@ -137,9 +141,11 @@ export default {
           answer.error,
           answer.message,
           answer.kind,
-          answer.error === 'workspace_changed'
-            ? { sha256: answer.sha256 ?? null, bytes: answer.bytes ?? null }
-            : undefined,
+          typeof answer.count === 'number' && COUNTED.has(answer.error)
+            ? { count: answer.count }
+            : answer.error === 'workspace_changed'
+              ? { sha256: answer.sha256 ?? null, bytes: answer.bytes ?? null }
+              : undefined,
         );
   },
 };

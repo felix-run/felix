@@ -19,7 +19,6 @@ htmlcov
 .cursor
 agent-transcripts
 **/node_modules
-clients
 scripts
 tests
 docs

@@ -205,6 +205,64 @@ class SearchTests(HelperCase):
         self.assertEqual(len(self.ok("search", query="needle", max_hits=5)["hits"]), 5)
 
 
+class FolderTests(HelperCase):
+    def _tree(self) -> list[str]:
+        return sorted(p.relative_to(self.base).as_posix() for p in self.base.rglob("*"))
+
+    def test_a_delete_counts_removes_and_leaves_a_links_target(self) -> None:
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not yours")
+        (self.ws / "d" / "e").mkdir(parents=True)
+        (self.ws / "d" / "a.md").write_text("a")
+        (self.ws / "d" / "e" / "b.md").write_text("b")
+        os.symlink(outside, self.ws / "d" / "e" / "out")
+        os.symlink(outside / "secret.txt", self.ws / "d" / "s.txt")
+        out = self.call("delete_folder", path="d", expected_count=3)
+        self.assertEqual(
+            out, {"ok": False, "error": "workspace_changed", "message": out["message"], "count": 2}
+        )
+        self.assertTrue((self.ws / "d" / "a.md").exists())
+        self.assertEqual(self.ok("delete_folder", path="d", expected_count=2), {"path": "d", "files": 2})
+        self.assertEqual(self._tree(), ["outside", "outside/secret.txt", "workspace"])
+
+    def test_a_delete_refuses_before_it_removes_anything(self) -> None:
+        (self.ws / "r" / ".git").mkdir(parents=True)
+        (self.ws / "r" / "x").write_text("x")
+        (self.ws / "f").write_text("f")
+        (self.ws / "w").mkdir()
+        for i in range(4):
+            (self.ws / "w" / str(i)).write_text("x")
+        before = self._tree()
+        self.assertEqual(self.refused("delete_folder", "reserved_path", path="r"), "reserved path: r/.git")
+        self.refused("delete_folder", "not_a_folder", path="f")
+        self.refused("delete_folder", "invalid_path", path=".")
+        self.refused("delete_folder", "not_found", path="nope")
+        self.refused("delete_folder", "bad_request", path="w", expected_count=-1)
+        self.refused("delete_folder", "bad_request", path="w", expected_count=True)
+        previous, felix_fs._MAX_FOLDER_ENTRIES = felix_fs._MAX_FOLDER_ENTRIES, 3
+        try:
+            out = self.call("delete_folder", path="w")
+        finally:
+            felix_fs._MAX_FOLDER_ENTRIES = previous
+        self.assertEqual((out["error"], out["count"]), ("too_many_entries", 4))
+        self.assertEqual(self._tree(), before)
+
+    def test_a_rename_moves_the_tree_and_replaces_nothing(self) -> None:
+        (self.ws / "a" / "b").mkdir(parents=True)
+        (self.ws / "a" / "b" / "c.md").write_text("c")
+        (self.ws / "t").mkdir()
+        self.refused("rename_folder", "target_exists", path="a", to_path="t")
+        self.refused("rename_folder", "target_exists", path="a", to_path="a")
+        self.refused("rename_folder", "invalid_path", path="a", to_path="a/b/z")
+        self.refused("rename_folder", "reserved_path", path="a", to_path=".git")
+        self.assertEqual(
+            self.ok("rename_folder", path="a", to_path="x/y/a"), {"path": "a", "to_path": "x/y/a"}
+        )
+        self.assertEqual((self.ws / "x" / "y" / "a" / "b" / "c.md").read_text(), "c")
+        self.assertFalse((self.ws / "a").exists())
+
+
 class GitTests(HelperCase):
     """The `git` op is `_git_exec` in /workspace: stdout from the start, base64, capped."""
 
@@ -312,6 +370,18 @@ class PortedCodeTests(unittest.TestCase):
         "_still_regular",
         "_delete_checked",
         "_rename_checked",
+        # The file pane's folder delete and rename: counted, checked and acted on in one process.
+        "pane_hides",
+        "ReservedPathError",
+        "NotAFolderError",
+        "FolderTooLarge",
+        "FolderChanged",
+        "_folder_parts",
+        "_open_folder",
+        "_folder_census",
+        "_remove_tree",
+        "_delete_folder",
+        "_rename_folder",
         # shell.py: the one exec path, so a sandboxed command is bounded and killed the same way.
         # `_child_env` is deliberately not here: the sandbox has no harness environment to scrub.
         "_Stream",
@@ -369,6 +439,12 @@ class PortedCodeTests(unittest.TestCase):
             "_EDIT_TMP_PREFIX",
         ):
             self.assertEqual(getattr(felix_fs, name), getattr(workspace, name), name)
+
+    def test_the_helpers_folder_rules_are_the_backends(self) -> None:
+        from felix.tools import workspace_backend
+
+        for name in ("PANE_HIDDEN_DIRS", "PANE_HIDDEN_PREFIX", "_MAX_FOLDER_ENTRIES"):
+            self.assertEqual(getattr(felix_fs, name), getattr(workspace_backend, name), name)
 
     def test_the_helpers_exec_bounds_are_the_shell_tools(self) -> None:
         from felix.manifests.schema import MAX_INTEGRATION_TIMEOUT_MS

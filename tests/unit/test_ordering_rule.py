@@ -41,8 +41,8 @@ EXEMPT = {
     "tools/workspace_local.py:list_dir": "ends on the entry's exact name, unique within one directory",
 }
 
-# Sites that may tie and matter — debt from `docs/ROADMAP.md`, "More listings whose two arms can
-# disagree about order". Fix one and this test tells you to delete its entry.
+# Sites that may tie and matter — debt from "More listings whose two arms can disagree about
+# order", now in `docs/HISTORY.md`. Fix one and this test tells you to delete its entry.
 KNOWN_OPEN: dict[str, str] = {
     # Empty since `list_approvals`, `list_plans` and `consolidate_pools` gained their id
     # tiebreaks. Debt found later goes here, with a line saying what ties — never into EXEMPT.

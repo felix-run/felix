@@ -33,6 +33,10 @@ PROTECTED_PATHS: tuple[str, ...] = (
     "migrations/**",
     "deploy/**",
     "manifests/self/**",
+    # The bundled skills join the self agents' catalog as host-trusted text, and .dockerignore
+    # decides which of the protected files the image actually ships.
+    "skills/**",
+    ".dockerignore",
     "docs/SELF.md",
     "scripts/felix_boundary.py",
     "tests/unit/test_*_manifest.py",

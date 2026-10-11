@@ -24,6 +24,7 @@ import re
 import secrets
 import stat
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -54,13 +55,20 @@ from felix.tools.workspace import (
     workspace_parts,
 )
 from felix.tools.workspace_backend import (
+    _MAX_FOLDER_ENTRIES,
     CheckedWriteResult,
+    DeleteFolderResult,
     DeleteResult,
     EditRefused,
     EditResult,
+    FolderChanged,
+    FolderTooLarge,
     ListResult,
+    NotAFolderError,
     ReadResult,
+    RenameFolderResult,
     RenameResult,
+    ReservedPathError,
     SearchResult,
     TreeResult,
     WorkspaceChanged,
@@ -111,6 +119,71 @@ def _write_lock(target: Path) -> asyncio.Lock:
 
 def _lock_key(root: Path, rel: str) -> Path:
     return root if rel == "." else root.joinpath(*rel.split("/"))
+
+
+# Trees a folder operation holds, by lock key, each with the event it sets when it lets go. A
+# path's lock covers one name; a folder delete or rename changes every name under it, including
+# ones no lock exists for yet, so it marks the tree as well and every write waits on the mark.
+_busy_trees: dict[str, asyncio.Event] = {}
+
+
+def _under(key: str, tree: str) -> bool:
+    return key == tree or key.startswith(tree + os.sep)
+
+
+async def _wait_for_trees(keys: list[str], *, either_way: bool = False) -> None:
+    """Until no folder operation holds a tree over any of `keys` -- or, `either_way`, under one,
+    which is what another folder operation must also wait for."""
+    while True:
+        held = [
+            done
+            for tree, done in _busy_trees.items()
+            if any(_under(k, tree) or (either_way and _under(tree, k)) for k in keys)
+        ]
+        if not held:
+            return
+        await held[0].wait()
+
+
+@contextlib.asynccontextmanager
+async def _path_locks(targets: set[Path]) -> AsyncIterator[None]:
+    """Each path's lock, in one order whatever the call, once no folder operation holds a tree
+    over any of them. There is no `await` between the last check and the first acquire that
+    could let a folder operation in: an uncontended lock is taken without yielding, and a
+    contended one is queued behind a holder the folder operation also queues behind."""
+    keys = sorted(targets, key=str)
+    await _wait_for_trees([str(k) for k in keys])
+    async with contextlib.AsyncExitStack() as stack:
+        for key in keys:
+            await stack.enter_async_context(_write_lock(key))
+        yield
+
+
+@contextlib.asynccontextmanager
+async def _tree_locks(targets: list[Path]) -> AsyncIterator[None]:
+    """Hold every tree in `targets` for a folder operation.
+
+    Marked first, so a write that has not yet taken its path's lock waits; then every lock that
+    already exists under a tree is taken, in the order `_path_locks` takes them, so a write that
+    has one finishes before the walk begins. The locks are process-local, as every write's here
+    is: a `shell` command or a run in another process is not ordered against this.
+    """
+    trees = [str(t) for t in targets]
+    await _wait_for_trees(trees, either_way=True)
+    done = asyncio.Event()
+    for tree in trees:
+        _busy_trees[tree] = done
+    try:
+        held = sorted({k for k in _write_locks if any(_under(k, t) for t in trees)})
+        async with contextlib.AsyncExitStack() as stack:
+            for key in held:
+                await stack.enter_async_context(_write_locks[key])
+            yield
+    finally:
+        for tree in trees:
+            if _busy_trees.get(tree) is done:
+                del _busy_trees[tree]
+        done.set()
 
 
 def _create_edit_temp(parent: int) -> tuple[int, str]:
@@ -444,6 +517,160 @@ def _rename_checked(
     return rel, to_rel, current, size
 
 
+def _folder_parts(path: str) -> list[str]:
+    """`path` as a folder operation may name it: never the root, nothing reserved on the way."""
+    parts = workspace_parts(path)
+    if not parts:
+        raise ValueError("the workspace root is not a folder that can be deleted or moved")
+    for i, part in enumerate(parts):
+        if pane_hides(part):
+            raise ReservedPathError("/".join(parts[: i + 1]))
+    return parts
+
+
+def _open_folder(parent: int, leaf: str, rel: str) -> int:
+    """The directory `leaf` in `parent`, opened following nothing. A symlink is refused as every
+    path is, and anything else that is not a directory is `NotAFolderError`. `lstat` first, so
+    the refusal says which; the open is what holds the line."""
+    mode = os.stat(leaf, dir_fd=parent, follow_symlinks=False).st_mode
+    if stat.S_ISLNK(mode):
+        raise SymlinkRefusedError(rel)
+    if not stat.S_ISDIR(mode):
+        raise NotAFolderError(rel)
+    return open_at(parent, leaf, _DIR_FLAGS, rel)
+
+
+def _folder_census(top: int, rel: str) -> int:
+    """The regular files under the directory `top`, walked by descriptor with nothing followed.
+
+    Everything a folder operation refuses about the tree is found here, before anything acts on
+    it: a reserved name anywhere inside (`ReservedPathError`), more than `_MAX_FOLDER_ENTRIES`
+    entries of any kind, or nesting past `_MAX_SEARCH_DEPTH` (`FolderTooLarge`). One descriptor
+    per level, as the tree walk holds; the count stops one past the cap.
+    """
+    files = entries = 0
+    stack = [(top, rel, _dir_batch(top))]
+    try:
+        while stack:
+            fd, here, pending = stack[-1]
+            if not pending:
+                stack.pop()
+                if fd != top:
+                    os.close(fd)
+                continue
+            name, st = pending.pop()
+            child = _child_rel(here, name)
+            if pane_hides(name):
+                raise ReservedPathError(child)
+            entries += 1
+            if entries > _MAX_FOLDER_ENTRIES:
+                raise FolderTooLarge(entries)
+            if not stat.S_ISDIR(st.st_mode):
+                if stat.S_ISREG(st.st_mode):
+                    files += 1
+                continue
+            if len(stack) > _MAX_SEARCH_DEPTH:
+                raise FolderTooLarge(entries, deep=True)
+            sub = open_at(fd, name, _DIR_FLAGS, child)
+            stack.append((sub, child, _dir_batch(sub)))
+    finally:
+        for fd, _, _ in stack:
+            if fd != top:
+                os.close(fd)
+    return files
+
+
+def _remove_tree(top: int, rel: str) -> None:
+    """Empty the directory `top`, deepest first, following nothing.
+
+    Anything that is not a directory is `unlinkat`-ed by name, which removes a symlink itself and
+    never what it points at, wherever that is. A directory is opened with `O_NOFOLLOW`, emptied,
+    closed and then removed by name from its parent (`AT_REMOVEDIR`), so a link swapped in for one
+    is refused rather than walked.
+    """
+    stack = [(top, rel, _dir_batch(top), "")]
+    try:
+        while stack:
+            fd, here, pending, name_in_parent = stack[-1]
+            if not pending:
+                stack.pop()
+                if fd != top:
+                    os.close(fd)
+                    os.rmdir(name_in_parent, dir_fd=stack[-1][0])
+                continue
+            name, st = pending.pop()
+            child = _child_rel(here, name)
+            if stat.S_ISDIR(st.st_mode):
+                sub = open_at(fd, name, _DIR_FLAGS, child)
+                stack.append((sub, child, _dir_batch(sub), name))
+                continue
+            os.unlink(name, dir_fd=fd)
+    finally:
+        for fd, _, _, _ in stack:
+            if fd != top:
+                os.close(fd)
+
+
+def _delete_folder(root: Path, path: str, expected_count: int | None) -> tuple[str, int]:
+    """Count, compare, then remove the tree at `path`: one synchronous call, under the tree's
+    locks. Returns `(path, files)` with the path as the tools report it."""
+    _folder_parts(path)
+    with open_workspace_parent(root, path) as (parent, leaf, rel):
+        if leaf is None:
+            raise ValueError("the workspace root is not a folder that can be deleted or moved")
+        top = _open_folder(parent, leaf, rel)
+        try:
+            files = _folder_census(top, rel)
+            if expected_count is not None and files != expected_count:
+                raise FolderChanged(files)
+            _remove_tree(top, rel)
+        finally:
+            os.close(top)
+        os.rmdir(leaf, dir_fd=parent)
+    return rel, files
+
+
+def _rename_folder(root: Path, path: str, to_path: str) -> tuple[str, str]:
+    """Move the tree at `path` to `to_path` with one `renameat`, replacing nothing.
+
+    The source is refused as a delete refuses it, its tree included; the destination may not be
+    the source (`FileExistsError`, as anything else there is) or below it (ValueError), which is
+    exact by components because no symlink is ever followed. The destination's missing
+    directories are made only after every check has passed. Returns `(path, to_path)`.
+    """
+    parts = _folder_parts(path)
+    to_parts = _folder_parts(to_path)
+    if to_parts == parts:
+        raise FileExistsError(errno.EEXIST, "the destination exists", "/".join(to_parts))
+    if to_parts[: len(parts)] == parts:
+        raise ValueError("a folder cannot be moved into itself")
+    with contextlib.ExitStack() as stack:
+        src_dir, src_leaf, rel = stack.enter_context(open_workspace_parent(root, path))
+        if src_leaf is None:
+            raise ValueError("the workspace root is not a folder that can be deleted or moved")
+        top = _open_folder(src_dir, src_leaf, rel)
+        try:
+            _folder_census(top, rel)
+        finally:
+            os.close(top)
+        try:
+            dst_dir, dst_leaf, to_rel = stack.enter_context(open_workspace_parent(root, to_path, create=True))
+        except NotADirectoryError:
+            raise ValueError("the destination's directory is a file") from None
+        if dst_leaf is None:
+            raise ValueError("the workspace root is not a folder that can be deleted or moved")
+        try:
+            there = os.stat(dst_leaf, dir_fd=dst_dir, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            there = None
+        if there is not None and stat.S_ISLNK(there):
+            raise SymlinkRefusedError(to_rel)
+        if there is not None:
+            raise FileExistsError(errno.EEXIST, "the destination exists", to_rel)
+        os.rename(src_leaf, dst_leaf, src_dir_fd=src_dir, dst_dir_fd=dst_dir)
+    return rel, to_rel
+
+
 class LocalBackend:
     """The workspace on this host's filesystem. Stateless: the locks are module-level, so two
     instances order their writes against each other as one would."""
@@ -488,7 +715,7 @@ class LocalBackend:
         root = self._root(scope)
         rel = "/".join(workspace_parts(path)) or "."
         flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
-        async with _write_lock(_lock_key(root, rel)):
+        async with _path_locks({_lock_key(root, rel)}):
             with open_workspace_parent(root, path, create=True) as (parent, leaf, rel):
                 if leaf is None:
                     raise NotAFileError(rel)
@@ -516,7 +743,7 @@ class LocalBackend:
         """
         root = self._root(scope)
         rel = "/".join(workspace_parts(path)) or "."
-        async with _write_lock(_lock_key(root, rel)):
+        async with _path_locks({_lock_key(root, rel)}):
             with open_workspace_parent(root, path) as (parent, leaf, rel):
                 if leaf is None:
                     raise NotAFileError(rel)
@@ -575,7 +802,7 @@ class LocalBackend:
         """
         root = self._root(scope)
         rel = "/".join(workspace_parts(path)) or "."
-        async with _write_lock(_lock_key(root, rel)):
+        async with _path_locks({_lock_key(root, rel)}):
             rel = await asyncio.to_thread(_write_checked, root, path, data, expected_sha256)
         return CheckedWriteResult(path=rel, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
 
@@ -585,7 +812,7 @@ class LocalBackend:
         """The compare and the unlink on a worker thread under the path's lock, as a checked write."""
         root = self._root(scope)
         rel = "/".join(workspace_parts(path)) or "."
-        async with _write_lock(_lock_key(root, rel)):
+        async with _path_locks({_lock_key(root, rel)}):
             rel = await asyncio.to_thread(_delete_checked, root, path, expected_sha256)
         return DeleteResult(path=rel)
 
@@ -603,13 +830,31 @@ class LocalBackend:
         # A set: renaming a file onto itself takes its one lock once (asyncio's lock is not
         # reentrant), and is then refused as a destination that exists.
         targets = {_lock_key(root, "/".join(workspace_parts(p)) or ".") for p in (path, to_path)}
-        async with contextlib.AsyncExitStack() as stack:
-            for target in sorted(targets, key=str):
-                await stack.enter_async_context(_write_lock(target))
+        async with _path_locks(targets):
             rel, to_rel, sha, size = await asyncio.to_thread(
                 _rename_checked, root, path, to_path, expected_sha256
             )
         return RenameResult(path=rel, to_path=to_rel, bytes=size, sha256=sha)
+
+    async def delete_dir(
+        self, scope: WorkspaceScope | None, path: str, *, expected_count: int | None = None
+    ) -> DeleteFolderResult:
+        """The count, the compare and the removal on a worker thread while the tree is held
+        (`_tree_locks`), so no write from this process lands in it between the three."""
+        root = self._root(scope)
+        rel = "/".join(workspace_parts(path)) or "."
+        async with _tree_locks([_lock_key(root, rel)]):
+            rel, files = await asyncio.to_thread(_delete_folder, root, path, expected_count)
+        return DeleteFolderResult(path=rel, files=files)
+
+    async def rename_dir(self, scope: WorkspaceScope | None, path: str, to_path: str) -> RenameFolderResult:
+        """Under both trees -- the source, and the destination, which a write could otherwise
+        create a name in between the check and the move."""
+        root = self._root(scope)
+        trees = [_lock_key(root, "/".join(workspace_parts(p)) or ".") for p in (path, to_path)]
+        async with _tree_locks(trees):
+            rel, to_rel = await asyncio.to_thread(_rename_folder, root, path, to_path)
+        return RenameFolderResult(path=rel, to_path=to_rel)
 
     async def search(
         self, scope: WorkspaceScope | None, path: str, query: str, regex: bool, max_hits: int

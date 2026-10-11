@@ -133,10 +133,12 @@ example already in the tree.
 ```bash
 uv run felix validate-manifest manifests/<name>.yaml -e development
 uv run felix validate-manifest manifests/<name>.yaml -e production   # governance-bearing
-uv run felix bundle-manifests                                        # all bundled manifests still load
+uv run felix bundle-manifests --strict                               # all bundled manifests still load, warning-free
 ```
 
-CI runs `bundle-manifests` before pytest, so a broken manifest fails the whole build.
+CI runs `bundle-manifests --strict` before pytest, so a broken manifest -- or a bundled one
+that gains a warning -- fails the whole build. `validate-manifest --strict` exits 1 on a
+warning too; without it, warnings print and the exit stays 0.
 
 `validate-manifest` runs the schema, the governance frameworks, the refusals `PUT /manifests`
 makes (`validate_for_write`, so `ok` means the store would take it), the pattern registry (an

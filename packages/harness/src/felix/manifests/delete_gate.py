@@ -7,7 +7,7 @@ a file it would have had to ask to change — the opposite of what the rule was 
 
 One definition, used everywhere the question is asked:
 
-* `felix validate-manifest` prints each gap as a warning and still exits 0;
+* `felix validate-manifest` prints each gap as a warning and still exits 0 (1 under `--strict`);
 * `PUT /manifests/{name}` returns them in the response's `warnings` list;
 * `build_agent` logs each once per process for a given manifest content (`warn_ungated_deletes`);
 * the bundled-manifest test (`tests/unit/test_workspace_delete_rename_tools.py`) asserts none of

@@ -29,6 +29,9 @@ logger = logging.getLogger("felix.workspace_notes")
 
 NoteOp = Literal["write", "delete", "rename"]
 NOTE_OPS: tuple[NoteOp, ...] = ("write", "delete", "rename")
+# What a note is about. `folder` only from the file pane's folder routes, and only with `delete` or
+# `rename`; a file note leaves `kind` out of its metadata and its frame, as it always has.
+NoteKind = Literal["file", "folder"]
 
 # The `metadata.type` a note's session entry carries. (The frame a live run emits is the
 # literal `workspace_note` in `patterns/react.py`: the wire-contract scan reads literals.)
@@ -44,16 +47,21 @@ QUEUE_TTL_SECONDS = 3600
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceNote:
-    """One operator change to one workspace file."""
+    """One operator change to one workspace file, or to one folder and everything in it."""
 
     path: str
     op: NoteOp = "write"
     bytes: int | None = None
     to_path: str | None = None
+    kind: NoteKind = "file"
+    # A folder delete: how many files went with it.
+    files: int | None = None
 
     def text(self) -> str:
         """What the model reads. Rendered here, never taken from the client."""
         here = _code(self.path)
+        if self.kind == "folder":
+            return self._folder_text(here)
         if self.op == "delete":
             return (
                 f"The operator deleted {here} from the workspace. It no longer exists; anything "
@@ -72,6 +80,31 @@ class WorkspaceNote:
             "earlier in this conversation is stale; read it again before relying on or editing it."
         )
 
+    def _folder_text(self, here: str) -> str:
+        if self.op == "rename":
+            there = _code(self.to_path or "")
+            return (
+                f"The operator renamed the folder {here} to {there} in the workspace. {here} no longer "
+                f"exists: paths under {here} are now under {there}; read them again before relying on "
+                "or editing them."
+            )
+        count = self.files or 0
+        files = f"{count:,} file" + ("" if count == 1 else "s")
+        return (
+            f"The operator deleted the folder {here} ({files}) from the workspace. It and everything "
+            "in it no longer exist; anything you read from it earlier in this conversation is out of "
+            "date. Do not recreate anything in it unless you are asked to."
+        )
+
+    def _shape(self, out: dict[str, Any]) -> dict[str, Any]:
+        if self.to_path is not None:
+            out["to_path"] = self.to_path
+        if self.kind == "folder":
+            out["kind"] = "folder"
+            if self.files is not None:
+                out["files"] = self.files
+        return out
+
     def metadata(self) -> dict[str, Any]:
         """The session entry's metadata, `in_context` included."""
         md: dict[str, Any] = {
@@ -82,30 +115,37 @@ class WorkspaceNote:
             "source": "operator",
             "in_context": True,
         }
-        if self.to_path is not None:
-            md["to_path"] = self.to_path
-        return md
+        return self._shape(md)
 
     def event_data(self) -> dict[str, Any]:
         """The `workspace_note` frame's payload."""
-        data: dict[str, Any] = {"path": self.path, "op": self.op, "bytes": self.bytes}
-        if self.to_path is not None:
-            data["to_path"] = self.to_path
-        return data
+        return self._shape({"path": self.path, "op": self.op, "bytes": self.bytes})
 
     def to_json(self) -> str:
-        return json.dumps({"path": self.path, "op": self.op, "bytes": self.bytes, "to_path": self.to_path})
+        return json.dumps(
+            {
+                "path": self.path,
+                "op": self.op,
+                "bytes": self.bytes,
+                "to_path": self.to_path,
+                "kind": self.kind,
+                "files": self.files,
+            }
+        )
 
     @classmethod
     def from_json(cls, raw: str) -> WorkspaceNote:
         data = json.loads(raw)
         op = str(data.get("op") or "write")
         size = data.get("bytes")
+        files = data.get("files")
         return cls(
             path=str(data["path"]),
             op=op if op in NOTE_OPS else "write",  # type: ignore[arg-type]
             bytes=int(size) if size is not None else None,
             to_path=str(data["to_path"]) if data.get("to_path") is not None else None,
+            kind="folder" if data.get("kind") == "folder" else "file",
+            files=int(files) if files is not None else None,
         )
 
 
@@ -266,6 +306,7 @@ async def drain(tenant_id: str, thread_id: str) -> list[WorkspaceNote]:
 __all__ = [
     "NOTE_ENTRY_TYPE",
     "NOTE_OPS",
+    "NoteKind",
     "NoteOp",
     "WorkspaceNote",
     "coalesce",

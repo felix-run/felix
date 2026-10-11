@@ -113,6 +113,65 @@ class RenameResult:
     sha256: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DeleteFolderResult:
+    path: str
+    # Regular files removed: what the operator was shown and confirmed (`expected_count`).
+    files: int
+
+
+@dataclass(frozen=True, slots=True)
+class RenameFolderResult:
+    path: str
+    to_path: str
+
+
+# The most entries -- files, directories, links, anything -- a folder operation walks. A delete
+# past it is refused before anything is removed, and so is a rename, which walks the tree to find
+# a reserved name inside it. Bounded so one request cannot hold a scope's locks over a tree of any
+# size: the pane lists far fewer than this before it says its tree was cut.
+_MAX_FOLDER_ENTRIES = 2_000
+
+
+class ReservedPathError(ValueError):
+    """A folder operation's tree holds, or its path names, something the pane never touches
+    (`pane_hides`): a repository's `.git`, the scopes directory, an edit's temporary file."""
+
+    def __init__(self, shown: str) -> None:
+        super().__init__(f"reserved path: {shown}")
+
+
+class NotAFolderError(ValueError):
+    """A folder operation's path names something other than a directory."""
+
+
+class FolderTooLarge(Exception):
+    """A folder operation refused before acting: more than `_MAX_FOLDER_ENTRIES` entries
+    (`count` is how many were seen, which stops one past the cap), or deeper than the walk goes."""
+
+    def __init__(self, count: int, *, deep: bool = False) -> None:
+        super().__init__("too_deep" if deep else "too_many_entries")
+        self.count = count
+        self.deep = deep
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        return {"detail": "too_deep" if self.deep else "too_many_entries", "count": self.count}
+
+
+class FolderChanged(Exception):
+    """A folder delete found a different number of files than the caller showed the operator.
+    `count` is the number there now; nothing was removed."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__("workspace_changed")
+        self.count = count
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        return {"detail": "workspace_changed", "count": self.count}
+
+
 class EditRefused(Exception):
     """An edit the model can correct: no match, several, identical strings, over a size cap."""
 
@@ -216,6 +275,29 @@ class WorkspaceBackend(Protocol):
         """
         ...
 
+    async def delete_dir(
+        self, scope: WorkspaceScope | None, path: str, *, expected_count: int | None = None
+    ) -> DeleteFolderResult:
+        """Remove the directory at `path` and everything in it, for the operator's file pane.
+
+        Walks by descriptor and follows nothing: a symlink inside is removed as the link, never its
+        target. Refuses the root and a path that is not a directory (`NotAFolderError`), a symlink
+        (ValueError), a tree holding a reserved name (`ReservedPathError`) and one over
+        `_MAX_FOLDER_ENTRIES` entries (`FolderTooLarge`). With `expected_count`, a tree whose
+        regular-file count differs raises `FolderChanged`. Every refusal comes before the first
+        removal, and the count and the removal run under the backend's locks for the tree.
+        """
+        ...
+
+    async def rename_dir(self, scope: WorkspaceScope | None, path: str, to_path: str) -> RenameFolderResult:
+        """Move the directory at `path` to `to_path` in the same scope, for the file pane.
+
+        One rename, never replacing anything (`FileExistsError`, `to_path == path` included), never
+        into itself or below itself (ValueError). `to_path`'s missing parents are made. Refused as
+        `delete_dir` refuses its source, including a tree holding a reserved name or past the cap.
+        """
+        ...
+
 
 def current_workspace_scope() -> tuple[Settings, WorkspaceScope | None]:
     """This call's settings and scope, from the request context; scope None outside a request."""
@@ -244,12 +326,18 @@ def get_workspace_backend(settings: Settings) -> WorkspaceBackend:
 __all__ = [
     "PANE_HIDDEN_DIRS",
     "CheckedWriteResult",
+    "DeleteFolderResult",
     "DeleteResult",
     "EditRefused",
     "EditResult",
+    "FolderChanged",
+    "FolderTooLarge",
     "ListResult",
+    "NotAFolderError",
     "ReadResult",
+    "RenameFolderResult",
     "RenameResult",
+    "ReservedPathError",
     "SearchResult",
     "TreeResult",
     "WorkspaceBackend",

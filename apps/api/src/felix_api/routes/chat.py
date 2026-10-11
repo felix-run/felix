@@ -280,6 +280,59 @@ class WorkspaceRenameRequest(BaseModel):
         return _one_line_path(value) or value
 
 
+class WorkspaceDeleteFolderRequest(BaseModel):
+    """Remove one workspace folder and everything in it, from the file pane."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path of the folder to delete.")
+    expected_count: int | None = Field(
+        default=None,
+        ge=0,
+        description="How many files the operator was shown in the folder (`GET /chat/workspace/tree`, "
+        "files only, not directories). When set, the delete is refused (409 `workspace_changed`, with "
+        "the `count` there now) unless the folder still holds exactly that many.",
+    )
+    manifest: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="The manifest a thread that has never run will run under. Ignored once it has.",
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        return _one_line_path(value) or value
+
+
+class WorkspaceRenameFolderRequest(BaseModel):
+    """Move one workspace folder to another path in the same workspace, from the file pane."""
+
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    path: str = Field(min_length=1, max_length=4096, description="Workspace path of the folder to move.")
+    to_path: str = Field(
+        min_length=1,
+        max_length=4096,
+        description="Where it goes. Must not exist, and must not be inside `path`; missing directories "
+        "on the way are made.",
+    )
+    manifest: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="The manifest a thread that has never run will run under. Ignored once it has.",
+    )
+
+    @field_validator("path", "to_path")
+    @classmethod
+    def _one_line(cls, value: str) -> str:
+        return _one_line_path(value) or value
+
+
 class WorkspaceTreeEntryOut(BaseModel):
     path: str
     type: Literal["file", "dir"]
@@ -339,6 +392,33 @@ class WorkspaceRenameOut(BaseModel):
         "at the new path. Null for a file over the 512,000-byte read cap."
     )
     event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
+
+
+class WorkspaceDeleteFolderOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="Where the delete note went: as `/workspace/edited`."
+    )
+    path: str = Field(description="The folder deleted, normalised as the workspace tools report it.")
+    files: int = Field(description="How many files were removed with it.")
+    event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
+
+
+class WorkspaceRenameFolderOut(BaseModel):
+    status: Literal["queued", "recorded"] = Field(
+        description="Where the rename note went: as `/workspace/edited`."
+    )
+    path: str = Field(description="The path the folder was at, normalised as the workspace tools report it.")
+    to_path: str = Field(description="The path it is at now, normalised the same way.")
+    event_id: str | None = Field(default=None, description="The note's session entry, when `recorded`.")
+
+
+class WorkspaceFolderRefusedOut(BaseModel):
+    detail: Literal["workspace_changed", "too_many_entries", "too_deep"]
+    count: int = Field(
+        description="`workspace_changed`: the folder's file count now. `too_many_entries`: the entries "
+        "walked before stopping, one past the 2,000 cap. `too_deep`: the entries walked before the "
+        "nesting limit."
+    )
 
 
 class WorkspaceChangedOut(BaseModel):
@@ -1494,10 +1574,15 @@ def _workspace_refusal(exc: Exception, *, missing_dir_is_404: bool = True) -> HT
     host (`workspace_root does not exist: /srv/...`), which a client has no business reading.
     """
     from felix.tools.workspace import NotAFileError
+    from felix.tools.workspace_backend import NotAFolderError, ReservedPathError
     from felix.tools.workspace_hosted import GatewayUnavailable
 
     if isinstance(exc, NotAFileError | IsADirectoryError):
         return HTTPException(status_code=400, detail="not_a_file")
+    if isinstance(exc, ReservedPathError):
+        return HTTPException(status_code=400, detail="reserved_path")
+    if isinstance(exc, NotAFolderError):
+        return HTTPException(status_code=400, detail="not_a_directory")
     if isinstance(exc, GatewayUnavailable | TimeoutError):
         return HTTPException(status_code=503, detail="workspace_unavailable")
     if isinstance(exc, ValueError):
@@ -1558,6 +1643,19 @@ def _pane_parts(path: str) -> list[str]:
     if any(pane_hides(part) for part in parts):
         raise HTTPException(status_code=400, detail="reserved_path")
     return parts
+
+
+def _pane_folder_parts(path: str) -> list[str]:
+    """`path` as a folder route may name it: as `_pane_parts`, and never the workspace root."""
+    from felix.tools.workspace import workspace_parts
+
+    try:
+        parts = workspace_parts(path)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_path") from None
+    if not parts:
+        raise HTTPException(status_code=400, detail="invalid_path")
+    return _pane_parts(path)
 
 
 _PaneThread = Annotated[
@@ -1891,6 +1989,160 @@ async def chat_workspace_rename(
     return WorkspaceRenameOut(
         status=status, path=moved.path, to_path=moved.to_path, sha256=moved.sha256, event_id=event_id
     )
+
+
+_FOLDER_REFUSALS = (
+    "`too_many_entries` (body carries `count`): the folder holds more than 2,000 entries of any "
+    "kind. `too_deep`: it nests deeper than the workspace walk goes. Also `workspace_unavailable` as "
+    "on the reads, and the lease refusals (`lease_read_only`, `lease_held`) as on `/chat/steer`."
+)
+_FOLDER_400 = {
+    "model": WorkspaceErrorOut,
+    "description": "`invalid_thread_id`; `invalid_path` (the workspace root, absolute, escaping, "
+    "through a symlink, or the folder itself a symlink); `reserved_path` (the path is inside, or the "
+    "folder holds, `.git`, `.felix-scopes` or an edit's temporary file); `not_a_directory` (the path "
+    "is a file).",
+}
+
+
+@router.post(
+    "/workspace/delete_folder",
+    response_model=WorkspaceDeleteFolderOut,
+    responses={
+        **_WORKSPACE_READ_ERRORS,
+        400: _FOLDER_400,
+        409: {
+            "model": WorkspaceFolderRefusedOut | WorkspaceErrorOut,
+            "description": "`workspace_changed` (body carries `count`, the folder's file count now): "
+            f"`expected_count` no longer matches. {_FOLDER_REFUSALS} Nothing was deleted.",
+        },
+    },
+)
+async def chat_workspace_delete_folder(
+    body: WorkspaceDeleteFolderRequest, request: Request, lease_token: LeaseToken = None
+) -> Any:
+    """Delete one workspace folder and everything in it, and tell the agent.
+
+    For the operator's file pane; the agent's own tools remove files only. The folder is walked
+    without following any symlink: a link inside is removed as the link, and what it points at --
+    inside the workspace or out of it -- is never touched. Refused before anything is removed: the
+    workspace root, a path that is not a directory (`400 not_a_directory`), a folder that holds a
+    reserved name anywhere inside (`400 reserved_path`), one over 2,000 entries
+    (`409 too_many_entries`), and, with `expected_count`, one whose file count is not the count the
+    operator was shown (`409 workspace_changed`). The count and the removal run under the same
+    locks the agent's writes take in this process.
+
+    Then the agent is told, as `POST /chat/workspace/edited` would tell it, that the folder and its
+    files are gone (`op: delete`, `kind: folder`, `files`). Audited as `workspace_delete_folder`.
+    Lease-guarded like `/chat/steer`.
+    """
+    from felix.tools.workspace_backend import FolderChanged, FolderTooLarge, get_workspace_backend
+    from felix.workspace_notes import WorkspaceNote
+
+    settings = request.app.state.settings
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    _pane_folder_parts(body.path)
+    auth, workspace = await _thread_workspace(request, body.thread_id, body.manifest)
+    backend = get_workspace_backend(settings)
+    # Its own request context, as a file delete has, so the hosted backend backs up the scope.
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=workspace.manifest or "", thread_id=thread)
+    try:
+        async with async_run_with_context(ctx):
+            deleted = await backend.delete_dir(workspace.scope, body.path, expected_count=body.expected_count)
+    except (FolderChanged, FolderTooLarge) as exc:
+        return JSONResponse(status_code=409, content=exc.detail)
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from None
+
+    note = WorkspaceNote(path=deleted.path, op="delete", kind="folder", files=deleted.files)
+    status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
+    _audit_workspace_change(
+        request,
+        auth,
+        "workspace_delete_folder",
+        workspace,
+        {"thread_id": thread, "path": deleted.path, "files": deleted.files},
+    )
+    return WorkspaceDeleteFolderOut(status=status, path=deleted.path, files=deleted.files, event_id=event_id)
+
+
+@router.post(
+    "/workspace/rename_folder",
+    response_model=WorkspaceRenameFolderOut,
+    responses={
+        **_WORKSPACE_READ_ERRORS,
+        400: {
+            **_FOLDER_400,
+            "description": _FOLDER_400["description"]
+            + " Also `invalid_path` for a `to_path` inside `path`, or one whose directory on the way is "
+            "a file.",
+        },
+        409: {
+            "model": WorkspaceFolderRefusedOut | WorkspaceErrorOut,
+            "description": "`target_exists`: something is already at `to_path` (the folder itself "
+            f"included). {_FOLDER_REFUSALS} Nothing was moved.",
+        },
+    },
+)
+async def chat_workspace_rename_folder(
+    body: WorkspaceRenameFolderRequest, request: Request, lease_token: LeaseToken = None
+) -> Any:
+    """Move one workspace folder to another path in the same workspace, and tell the agent.
+
+    For the operator's file pane; the agent's own tools move files only. One rename, which never
+    replaces anything (`409 target_exists`) and never puts a folder inside itself
+    (`400 invalid_path`). Directories `to_path` needs are made once every check has passed. Both
+    paths are held to the same rules as the folder delete's, and so is the tree being moved: a
+    folder holding a reserved name is `400 reserved_path`, one over 2,000 entries
+    `409 too_many_entries`.
+
+    Then the agent is told that paths under `path` are now under `to_path` (`op: rename`,
+    `kind: folder`). Audited as `workspace_rename_folder`. Lease-guarded like `/chat/steer`.
+    """
+    from felix.tools.workspace_backend import FolderTooLarge, get_workspace_backend
+    from felix.workspace_notes import WorkspaceNote
+
+    settings = request.app.state.settings
+    auth = _auth_from_request(request)
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    _pane_folder_parts(body.path)
+    _pane_folder_parts(body.to_path)
+    auth, workspace = await _thread_workspace(request, body.thread_id, body.manifest)
+    backend = get_workspace_backend(settings)
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=workspace.manifest or "", thread_id=thread)
+    try:
+        async with async_run_with_context(ctx):
+            moved = await backend.rename_dir(workspace.scope, body.path, body.to_path)
+    except FolderTooLarge as exc:
+        return JSONResponse(status_code=409, content=exc.detail)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="target_exists") from None
+    except (ValueError, OSError) as exc:
+        refusal = _workspace_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from None
+
+    note = WorkspaceNote(path=moved.path, op="rename", to_path=moved.to_path, kind="folder")
+    status, event_id = await _deliver_workspace_note(request, auth.tenant_id, thread, note)
+    _audit_workspace_change(
+        request,
+        auth,
+        "workspace_rename_folder",
+        workspace,
+        {"thread_id": thread, "path": moved.path, "to_path": moved.to_path},
+    )
+    return WorkspaceRenameFolderOut(status=status, path=moved.path, to_path=moved.to_path, event_id=event_id)
 
 
 @router.post("/tool_result", responses=LEASE_REFUSALS)

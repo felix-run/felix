@@ -1004,6 +1004,15 @@ class Settings(BaseSettings):
         if refusal is not None:
             raise RuntimeError(f"FELIX_SHELL_ALLOWED_COMMANDS is set, but {refusal}")
 
+    def _validate_skills_dir(self) -> None:
+        """A configured skills directory that is not there leaves every skill it should serve as an
+        empty stub, and in the self-build stack it also un-reserves those names against the skill
+        library, so an agent could draft its own `felix-self`. Refused, as a missing
+        FELIX_MANIFESTS_DIR is."""
+        raw = self.skills_dir.strip()
+        if raw and not Path(raw).expanduser().is_dir():
+            raise RuntimeError(f"FELIX_SKILLS_DIR={raw!r} is not a directory.")
+
     def _validate_manifests_dir(self) -> None:
         """A configured directory that is not there would leave its manifests unserved, quietly."""
         raw = self.manifests_dir.strip()
@@ -1087,6 +1096,7 @@ class Settings(BaseSettings):
         self._validate_skill_import()
         self._validate_shell_runner()
         self._validate_manifests_dir()
+        self._validate_skills_dir()
         self._validate_shell_isolation()
         self._validate_workspace_gateway()
         self._validate_configured_tenant_ids()

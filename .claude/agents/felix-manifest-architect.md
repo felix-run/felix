@@ -55,7 +55,7 @@ manifest that exercises it.
 ```bash
 uv run felix validate-manifest manifests/<name>.yaml -e development
 uv run felix validate-manifest manifests/<name>.yaml -e production   # governance-bearing manifests
-uv run felix bundle-manifests                                        # every bundled manifest still loads
+uv run felix bundle-manifests --strict                               # every bundled manifest still loads, warning-free
 ./scripts/test.sh tests/unit/test_manifest_schema.py tests/unit/test_manifest_governance.py
 ```
 

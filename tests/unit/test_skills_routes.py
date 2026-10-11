@@ -651,11 +651,11 @@ async def _catalogue_in_the_system_prompt(skills_dir: Path, *, declared_only: bo
     return agent.system_prompt or ""
 
 
-#: A skill this repo ships in `skills/`, which no test manifest declares. Its presence in a
+#: The skill this repo ships in `skills/`, which no test manifest declares. Its presence in a
 #: compiled prompt is the host library leaking in; its absence under `skills_declared_only`
 #: is the flag working. `internal-only` cannot play this role -- `skill_catalog_xml` renders
 #: `list_public()`, which filters `disable_model_invocation` out before the prompt is built.
-BUNDLED_SKILL = "felix-architecture"
+BUNDLED_SKILL = "calculator-help"
 
 
 async def test_the_compile_shows_the_model_only_what_the_manifest_declared(

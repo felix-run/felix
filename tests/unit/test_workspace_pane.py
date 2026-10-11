@@ -259,6 +259,180 @@ async def test_hosted_deletes_and_renames_are_checkpointed(tmp_path: Path, gatew
     assert [op for _, op in gateway.calls] == ["delete", "rename", "checkpoint"]
 
 
+@pytest.mark.parametrize("backend", ["local", "hosted"])
+async def test_both_backends_delete_a_folder_and_never_a_links_target(
+    tmp_path: Path, gateway: FakeGateway, backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.tools.workspace_backend import (
+        FolderChanged,
+        FolderTooLarge,
+        NotAFolderError,
+        ReservedPathError,
+    )
+
+    settings = _settings(tmp_path, backend)
+    here = _scope_dir(tmp_path, backend)
+    backend_ = get_workspace_backend(settings)
+    outside = tmp_path / "outside"
+    (outside / "dir").mkdir(parents=True)
+    (outside / "dir" / "secret.txt").write_text("not yours")
+    (here / "notes" / "a" / "b").mkdir(parents=True)
+    (here / "notes" / "one.md").write_text("1")
+    (here / "notes" / "a" / "two.md").write_text("2")
+    (here / "notes" / "a" / "b" / "three.md").write_text("3")
+    os.symlink(outside / "dir", here / "notes" / "a" / "out")
+    os.symlink(outside / "dir" / "secret.txt", here / "notes" / "secret.txt")
+    os.symlink(outside / "nothing", here / "notes" / "dangling")
+    (here / "keep.md").write_text("keep")
+    os.symlink(here / "keep.md", here / "notes" / "keep-link")
+    (here / "repo" / ".git").mkdir(parents=True)
+    (here / "repo" / "x.py").write_text("x")
+    (here / "f.txt").write_text("f")
+    os.symlink(here / "notes", here / "notes-link")
+
+    with pytest.raises(FolderChanged) as changed:
+        await backend_.delete_dir(SCOPE, "notes", expected_count=4)
+    assert changed.value.count == 3
+    with pytest.raises(ReservedPathError):
+        await backend_.delete_dir(SCOPE, "repo")
+    with pytest.raises(NotAFolderError):
+        await backend_.delete_dir(SCOPE, "f.txt")
+    for refused in (".", "notes-link", "../outside", "notes-link/a"):
+        with pytest.raises(ValueError):
+            await backend_.delete_dir(SCOPE, refused)
+    with pytest.raises(FileNotFoundError):
+        await backend_.delete_dir(SCOPE, "nope")
+    assert (here / "notes" / "a" / "b" / "three.md").exists() and (here / "repo" / "x.py").exists()
+
+    done = await backend_.delete_dir(SCOPE, "notes/a/..", expected_count=3)
+    assert (done.path, done.files) == ("notes", 3)
+    assert not (here / "notes").exists()
+    assert (outside / "dir" / "secret.txt").read_text() == "not yours"
+    assert (here / "keep.md").read_text() == "keep"
+    assert os.path.islink(here / "notes-link"), "a link to the deleted folder is left as it was"
+
+    (here / "wide").mkdir()
+    for i in range(5):
+        (here / "wide" / f"{i}").write_text("x")
+    # The cap where each backend's walk reads it: this process's module, or the helper's.
+    from tests.support.workspace_gateway_fake import _helper
+
+    monkeypatch.setattr(workspace_local if backend == "local" else _helper(), "_MAX_FOLDER_ENTRIES", 4)
+    with pytest.raises(FolderTooLarge) as large:
+        await backend_.delete_dir(SCOPE, "wide")
+    assert (large.value.count, large.value.detail) == (5, {"detail": "too_many_entries", "count": 5})
+    assert len(list((here / "wide").iterdir())) == 5
+
+
+@pytest.mark.parametrize("backend", ["local", "hosted"])
+async def test_both_backends_rename_a_folder_without_replacing_anything(
+    tmp_path: Path, gateway: FakeGateway, backend: str
+) -> None:
+    from felix.tools.workspace_backend import NotAFolderError, ReservedPathError
+
+    settings = _settings(tmp_path, backend)
+    here = _scope_dir(tmp_path, backend)
+    backend_ = get_workspace_backend(settings)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (here / "src" / "pkg").mkdir(parents=True)
+    (here / "src" / "pkg" / "m.py").write_text("m")
+    os.symlink(outside, here / "src" / "out")
+    (here / "taken").mkdir()
+    (here / "f.txt").write_text("f")
+    (here / "vendored" / ".git").mkdir(parents=True)
+    os.symlink(outside, here / "escape")
+
+    for taken in ("taken", "f.txt", "src", "./src/"):
+        with pytest.raises(FileExistsError):
+            await backend_.rename_dir(SCOPE, "src", taken)
+    for refused in ("src/pkg/inner", "src/new", ".", "escape/src", "../outside/src", "f.txt/src"):
+        with pytest.raises(ValueError):
+            await backend_.rename_dir(SCOPE, "src", refused)
+    for reserved in (".git", "lib/.felix-scopes"):
+        with pytest.raises(ReservedPathError):
+            await backend_.rename_dir(SCOPE, "src", reserved)
+    with pytest.raises(ReservedPathError):
+        await backend_.rename_dir(SCOPE, "vendored", "vendor")
+    with pytest.raises(NotAFolderError):
+        await backend_.rename_dir(SCOPE, "f.txt", "g")
+    with pytest.raises(FileNotFoundError):
+        await backend_.rename_dir(SCOPE, "nope", "g")
+    assert not (here / "lib").exists() and list(outside.iterdir()) == []
+
+    moved = await backend_.rename_dir(SCOPE, "src", "lib/v2/./src")
+    assert (moved.path, moved.to_path) == ("src", "lib/v2/src")
+    assert not (here / "src").exists()
+    assert (here / "lib" / "v2" / "src" / "pkg" / "m.py").read_text() == "m"
+    assert os.readlink(here / "lib" / "v2" / "src" / "out") == str(outside)
+
+
+async def test_hosted_folder_changes_are_checkpointed(tmp_path: Path, gateway: FakeGateway) -> None:
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+
+    settings = _settings(tmp_path, "hosted")
+    here = _scope_dir(tmp_path, "hosted")
+    (here / "a").mkdir()
+    (here / "b").mkdir()
+    ctx = RequestContext(settings=settings, auth=AuthContext(tenant_id=TENANT), thread_id=THREAD)
+    async with async_run_with_context(ctx):
+        await get_workspace_backend(settings).delete_dir(SCOPE, "a")
+        await get_workspace_backend(settings).rename_dir(SCOPE, "b", "c")
+    assert gateway.checkpoints == [f"{TENANT}/{thread_key(TENANT, THREAD)}"]
+    assert [op for _, op in gateway.calls] == ["delete_folder", "rename_folder", "checkpoint"]
+
+
+async def test_a_write_into_a_folder_being_deleted_waits_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder delete holds the tree, not only the files it found: a write to a new name in it,
+    sent while the delete is counting, lands after the delete and so is never half-counted."""
+    import asyncio
+    import threading
+
+    here = _scope_dir(tmp_path, "local")
+    (here / "d").mkdir()
+    (here / "d" / "x").write_text("x")
+    backend_ = get_workspace_backend(_settings(tmp_path, "local"))
+    counting, release = threading.Event(), threading.Event()
+    census = workspace_local._folder_census
+
+    def slow_census(top: int, rel: str) -> int:
+        counting.set()
+        release.wait(5)
+        return census(top, rel)
+
+    monkeypatch.setattr(workspace_local, "_folder_census", slow_census)
+    delete = asyncio.create_task(backend_.delete_dir(SCOPE, "d", expected_count=1))
+    await asyncio.to_thread(counting.wait, 5)
+    write = asyncio.create_task(backend_.write_file(SCOPE, "d/new.txt", b"new", False))
+    await asyncio.sleep(0.05)
+    assert not write.done(), "the write went ahead while the delete held the tree"
+    release.set()
+    assert (await delete).files == 1
+    await write
+    assert (here / "d" / "new.txt").read_bytes() == b"new"
+
+
+async def test_a_folder_delete_waits_for_a_write_already_under_way(tmp_path: Path) -> None:
+    """A write that holds its path's lock first finishes first, and is counted."""
+    import asyncio
+
+    here = _scope_dir(tmp_path, "local")
+    (here / "d").mkdir()
+    backend_ = get_workspace_backend(_settings(tmp_path, "local"))
+    key = workspace_local._lock_key(here, "d/held.txt")
+    lock = workspace_local._write_lock(key)
+    await lock.acquire()
+    delete = asyncio.create_task(backend_.delete_dir(SCOPE, "d", expected_count=1))
+    await asyncio.sleep(0.05)
+    assert not delete.done()
+    (here / "d" / "held.txt").write_text("landed while the lock was held")
+    lock.release()
+    assert (await delete).files == 1
+    assert not (here / "d").exists()
+
+
 async def test_crossing_local_renames_take_their_locks_in_one_order(tmp_path: Path) -> None:
     """`x -> y` and `y -> x` at once: each needs both locks, and taking them in argument order
     would let each hold one and wait on the other forever."""
@@ -415,6 +589,28 @@ async def test_the_sdk_deletes_and_renames_with_its_hash_and_lease(monkeypatch: 
         "thread_id": "t2",
         "path": "a.md",
         "to_path": "b/a.md",
+        "manifest": "cowork",
+    }
+    assert "x-felix-lease-token" not in rename.headers
+
+
+async def test_the_sdk_deletes_and_renames_folders(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _record(monkeypatch)
+    client = FelixClient(base_url="http://felix")
+    client.set_thread("t1")
+    await client.workspace_delete_folder("notes", expected_count=3, lease_token="tok")
+    await client.workspace_delete_folder("empty")
+    await client.workspace_rename_folder("a", "b/a", thread_id="t2", manifest="cowork")
+    delete, bare, rename = seen
+    assert (delete.method, delete.url.path) == ("POST", "/chat/workspace/delete_folder")
+    assert json.loads(delete.content) == {"thread_id": "t1", "path": "notes", "expected_count": 3}
+    assert delete.headers["x-felix-lease-token"] == "tok"
+    assert json.loads(bare.content) == {"thread_id": "t1", "path": "empty"}
+    assert (rename.method, rename.url.path) == ("POST", "/chat/workspace/rename_folder")
+    assert json.loads(rename.content) == {
+        "thread_id": "t2",
+        "path": "a",
+        "to_path": "b/a",
         "manifest": "cowork",
     }
     assert "x-felix-lease-token" not in rename.headers
