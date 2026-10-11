@@ -34,7 +34,8 @@ live runs. Deploy with Docker, Helm, AWS, or GCP on infrastructure you operate.
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/). It fetches Python 3.14 itself.
 - Docker with Compose v2, for the database and the full stack. The test suite does not need it.
-- A model key: Anthropic or OpenAI, or any provider in `.env.example`.
+- A model key. An agent that names no model runs on `claude-sonnet`, so Anthropic is the short path;
+  with only an OpenAI key, also set `FELIX_DEFAULT_MODEL_ID=gpt-4.1`. `.env.example` lists the rest.
 - `jq` for the examples below (optional).
 
 ### Set up
@@ -44,11 +45,13 @@ make bootstrap   # checks the tools, writes .env with generated passwords, insta
 make test        # the suite on in-memory stores: no database, no model key
 ```
 
-Put your model key in `.env` (`FELIX_ANTHROPIC_API_KEY` or `FELIX_OPENAI_API_KEY`).
+Put your model key in `.env`: `FELIX_ANTHROPIC_API_KEY`, or `FELIX_OPENAI_API_KEY` plus
+`FELIX_DEFAULT_MODEL_ID=gpt-4.1`.
 
 ### Build your first agent
 
-An agent is a manifest. Write one anywhere, for example `agents/triage.yaml`:
+An agent is a manifest. Write one in a directory of your own, outside the clone, for example
+`~/felix-agents/triage.yaml`:
 
 ```yaml
 # yaml-language-server: $schema=https://raw.githubusercontent.com/felix-run/felix/main/schemas/manifest.schema.json
@@ -62,8 +65,8 @@ spec:
   system_prompt:
     inline: |
       You triage incoming requests. Answer with one of bug, question or feature,
-      then one sentence on why. Use the calculator for any arithmetic.
-  tools: [calculator]
+      then one sentence on why.
+  tools: []   # built-ins, MCP servers and your own plugin tools go here
   auth:
     inbound:
       allow_anonymous: true   # local development only; drop it once callers carry a key
@@ -72,18 +75,24 @@ spec:
 Validate it, then serve it from this checkout with Postgres and Valkey in Docker:
 
 ```bash
-uv run felix validate-manifest agents/triage.yaml
-make db migrate                           # Postgres + Valkey on localhost, schema applied
-FELIX_MANIFESTS_DIR=agents make dev       # the API on :8080, serving manifests/ and agents/
+uv run felix validate-manifest ~/felix-agents/triage.yaml
+make db migrate                                # Postgres + Valkey on localhost, schema applied
+FELIX_MANIFESTS_DIR=~/felix-agents make dev    # the API on :8080, serving manifests/ and yours
+# in a second terminal:
 curl -s -X POST http://localhost:8080/chat -H 'content-type: application/json' \
   -d '{"manifest":"triage","messages":[{"role":"user","content":"The export button does nothing"}]}' | jq
 ```
 
-From there, the same manifest grows by adding primitives: more `tools`, `skills`, `memory`, MCP
+From there, the same manifest grows by adding primitives: `tools`, `skills`, `memory`, MCP
 servers and A2A peers, sub-agents and `delegation`, `approvals` and `guardrails`,
-`execution.mode: durable`, and a different `pattern`. `governed.yaml` uses most of them, and
-[docs.felix.run](https://docs.felix.run) covers each one. The editor schema in the header line
-completes and checks every field as you type.
+`execution.mode: durable`, and a different `pattern`.
+[Manifest capabilities](#manifest-capabilities) lists them,
+[`manifests/governed.yaml`](manifests/governed.yaml) uses most of them, and
+[docs.felix.run](https://docs.felix.run) covers each one. To give an agent a tool of your own, or a
+new pattern, model provider or store, write a plugin:
+[`examples/felix-plugin-example`](examples/felix-plugin-example) shows every seam, and
+[Extending Felix](#extending-felix) explains them. The editor schema in the header line completes
+and checks every field as you type.
 
 On a running stack, `PUT /manifests/<name>` with `{"manifest": {...}}` stores a manifest without
 a restart. That needs the `manifests:write` scope.
@@ -149,7 +158,7 @@ tenant rather than per caller, so `assistant` refuses anonymous requests — und
 make db migrate               # Postgres + Valkey in Docker on localhost; `make down` stops them
 make dev                      # Granian on :8080, FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
 make cli                      # httpx REPL client
-make check                    # ruff + ty + pytest + format check (matches CI)
+make check                    # ruff + ty + pytest + format check; STRICT=1 if the venv is lean
 ./scripts/test.sh -k <expr>   # one test; sets the in-memory stores the suite needs
 make help                     # every target, grouped
 ```

@@ -8,7 +8,7 @@ COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
 COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
 COMPOSE_SELF := $(COMPOSE) -f deploy/docker/compose.self.yml
 
-# Every target documents itself with a `## description` on its own line; `##@ Group` lines
+# Every target documents itself with a `## description` after its prerequisites; `##@ Group` lines
 # start a section. Generated, so a new target cannot be missing from it.
 help:  ## this list
 	@awk 'BEGIN {FS = ":.*## "; print "Felix dev targets:"} \
@@ -68,10 +68,10 @@ conformance:  ## store contract vs a real Postgres (FELIX_CONFORMANCE_DATABASE_U
 
 ##@ Gates
 
-lint:  ## ruff check
+lint:  ## ruff check over the repo
 	uv run ruff check .
 
-fmt:  ## ruff format
+fmt:  ## ruff format the repo in place
 	uv run ruff format .
 
 type:  ## ty over packages and apps (needs install-full; skipped with a notice on a lean venv)
@@ -81,14 +81,14 @@ type:  ## ty over packages and apps (needs install-full; skipped with a notice o
 	# boto3, duckdb, playwright, presidio, … CI installs --all-extras for
 	# exactly this reason. duckdb (warehouse) stands in for "the extras are there".
 	# On a lean venv this skips, loudly, so `make check` still runs the rest; under
-	# CI or STRICT=1 (which `check-ci` sets) a skip is a failure instead.
+	# CI=true or STRICT=1 (which `check-ci` sets) a skip is a failure instead.
 	@if ! uv run --no-sync python -c "import duckdb" >/dev/null 2>&1; then \
 		echo ""; \
 		echo "SKIPPED type check: ty needs the optional extras — run 'make install-full'."; \
 		echo "A lean venv reports every optional import as unresolved; CI type-checks"; \
 		echo "with --all-extras."; \
 		echo ""; \
-		[ -z "$$CI$$STRICT" ]; \
+		[ "$${CI:-}" != true ] && [ "$${STRICT:-}" != 1 ]; \
 	else \
 		echo "uv run ty check packages apps"; \
 		uv run ty check packages apps; \
@@ -96,11 +96,14 @@ type:  ## ty over packages and apps (needs install-full; skipped with a notice o
 
 check: lint type test-cov  ## lint + type + test-cov + format check — the everyday gate
 	uv run ruff format --check .
+	@uv run --no-sync python -c "import duckdb" >/dev/null 2>&1 || \
+		echo "make check passed WITHOUT the type check: this venv is lean (make install-full)."
 
 # Everything CI gates on that `check` does not: the structural and packaging jobs.
 # `make check` passing while CI failed meant these had to be remembered by hand.
 #
-# Two CI jobs are deliberately absent. `conformance` needs a database — it has its own
+# Four CI jobs are deliberately absent. `compose-check` and `helm-lint` need docker and
+# helm, and have their own targets. `conformance` needs a database — it has its own
 # target below. `lean` is meaningful only in a lean venv: scripts/lean-import-check.py
 # proves nothing when the extras are installed, and a gate that passes vacuously is worse
 # than no gate. tests/unit/test_invariants.py checks the same rule statically, in any venv.
@@ -111,7 +114,7 @@ check-ci: check bundle schema-check contract-check toolkit eval lock-check deps-
 	uv run pre-commit run --all-files
 
 # check-ci's parts, runnable alone: each is the fast answer to "did I break X".
-bundle:  ## felix bundle-manifests
+bundle:  ## every bundled manifest validates (felix bundle-manifests)
 	uv run felix bundle-manifests
 
 schema-check:  ## schemas/manifest.schema.json is current
@@ -133,15 +136,18 @@ eval:  ## eval smoke plus its counter-smoke, mocked model
 	# the CI eval job so the two cannot drift; the script's header explains its checks.
 	./scripts/eval-counter-smoke.sh
 
+# The same command as CI's lint job (ci.yml); change both together.
 lock-check:  ## uv.lock matches pyproject (CI's lint job)
 	uv lock --check
 
+# The 48h hold is policy, written here and in ci.yml's lint job (an invariant pins that copy).
 deps-age:  ## no locked dependency younger than 48h (CI's lint job; asks PyPI)
 	python3 scripts/check-dependency-age.py --hours 48
 
 compose-check:  ## every Compose overlay parses and renders as required (CI's docker job; needs docker)
 	./scripts/check-compose.sh
 
+# The same command as CI's helm job (ci.yml); change both together.
 helm-lint:  ## helm lint the chart (CI's helm job; needs helm)
 	helm lint deploy/helm/felix
 
@@ -159,7 +165,7 @@ contract:  ## regenerate schemas/openapi.json and schemas/sse-events.json (the w
 
 dev:  ## the API on :8080 from this checkout, auth=none (pair with `make db`)
 	@echo "Felix -> http://localhost:$${FELIX_PORT:-8080}"
-	@echo "Set ANTHROPIC_API_KEY / OPENAI_API_KEY, or a workers_ai entry in FELIX_MODEL_PROVIDER_OPTIONS."
+	@echo "Models: FELIX_ANTHROPIC_API_KEY in .env, or FELIX_OPENAI_API_KEY plus FELIX_DEFAULT_MODEL_ID=gpt-4.1."
 	FELIX_ALLOW_INSECURE=true FELIX_AUTH_MODE=none FELIX_HOST=127.0.0.1 \
 		FELIX_OBJECT_STORE=$${FELIX_OBJECT_STORE:-fs} \
 		uv run felix-api
@@ -183,13 +189,13 @@ doctor:  ## felix doctor — config and connectivity preflight
 cli:  ## httpx chat REPL against a running API
 	uv run python clients/cli.py
 
+##@ Docker Compose
+
 dev-key:  ## write a local admin API key into .env once (make up does this)
 	@./scripts/dev-key.sh
 
 metrics-token:  ## write the /metrics scrape credential into .env once
 	@./scripts/metrics-token.sh
-
-##@ Docker Compose
 
 up: dev-key  ## the stack in Docker: migrate, api :8080, worker, scheduler, Postgres, Valkey
 	$(COMPOSE) up --build
@@ -197,7 +203,7 @@ up: dev-key  ## the stack in Docker: migrate, api :8080, worker, scheduler, Post
 up-lite: dev-key  ## up with tighter memory caps for ~2–4 GiB hosts
 	$(COMPOSE_LITE) up --build
 
-up-gcp: dev-key  ## up with the gcp + lite overlays (published image, no DB/cache publish)
+up-gcp: dev-key  ## up -d with the gcp + lite overlays (published image, no DB/cache publish)
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-gcp} $(COMPOSE_GCP) up --build -d
 
 up-full: dev-key  ## up --profile full: MinIO and the aws extra
@@ -234,5 +240,5 @@ down:  ## stop every overlay's services (keeps volumes)
 down-all:  ## down and delete volumes — destroys local Postgres/Valkey/MinIO state
 	$(COMPOSE) --profile full down --remove-orphans --volumes
 
-docker-build:  ## build the felix:latest image (FELIX_DOCKER_EXTRAS selects extras)
+docker-build:  ## build the felix:latest image alone (FELIX_DOCKER_EXTRAS selects extras)
 	docker build -f deploy/docker/Dockerfile --build-arg FELIX_EXTRAS="$${FELIX_DOCKER_EXTRAS:-}" -t felix:latest .

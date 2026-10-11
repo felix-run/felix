@@ -18,7 +18,7 @@ ENV_FILE=".env"
 TOKEN_FILE="deploy/docker/.metrics-token"
 
 if [ ! -f "$ENV_FILE" ]; then
-  echo "error: no .env — run 'cp .env.example .env' and set POSTGRES_PASSWORD first." >&2
+  echo "error: no .env — run 'make bootstrap' first." >&2
   exit 1
 fi
 

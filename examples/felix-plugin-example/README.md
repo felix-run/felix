@@ -13,7 +13,8 @@ make dev
 curl -s http://localhost:8080/example/ping
 ```
 
-To remove it again: `uv pip uninstall felix-plugin-example`.
+It sits outside `uv.lock`, so the next `make install`, `make bootstrap` or `uv sync` removes it again;
+re-run the install after those. To remove it yourself: `uv pip uninstall felix-plugin-example`.
 
 ## What it registers
 

@@ -34,7 +34,7 @@ check() {
   echo "compose config: compose.yml $*"
   docker compose "${base[@]}" "$@" --project-directory . config --quiet
   [ -n "${GITHUB_ACTIONS:-}" ] && echo "::endgroup::"
-  return 0
+  return 0  # the test above is false outside Actions, and set -e would fail on it
 }
 check
 check -f deploy/docker/compose.lite.yml
