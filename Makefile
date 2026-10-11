@@ -186,8 +186,8 @@ seed:  ## seed the quick/deep/router manifests, a heartbeat job and a smoke data
 doctor:  ## felix doctor — config and connectivity preflight
 	uv run felix doctor
 
-cli:  ## httpx chat REPL against a running API
-	uv run python clients/cli.py
+cli:  ## felix chat: a chat REPL against a running API (args: uv run felix chat --help)
+	uv run felix chat
 
 ##@ Docker Compose
 

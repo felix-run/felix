@@ -17,7 +17,7 @@ No request here follows a redirect, even on a caller's client that would: a 307 
 bearer credential to wherever `Location` points.
 
 Saved tokens live in one file, one per server, and a token is only ever handed back for the
-server that minted it (`bearer_for`, which `FelixClient.from_login` and `clients/cli.py` use).
+server that minted it (`bearer_for`, which `FelixClient.from_login` and `felix chat` use).
 """
 
 from __future__ import annotations

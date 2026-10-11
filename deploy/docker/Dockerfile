@@ -86,6 +86,9 @@ COPY README.md LICENSE NOTICE ./
 COPY packages ./packages
 COPY apps ./apps
 COPY manifests ./manifests
+# The bundled Agent Skills (skills/calculator-help, …) the shipped manifests name. Without it a
+# manifest's `spec.skills` ref resolves to an empty stub inside the image and nothing says so.
+COPY skills ./skills
 COPY migrations ./migrations
 COPY alembic.ini ./
 

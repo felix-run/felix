@@ -48,6 +48,8 @@ ONE_PATH_PER_ENTRY = [
     "migrations/versions/0017_x.py",
     "deploy/docker/compose.yml",
     "manifests/self/contributor.yaml",
+    "skills/calculator-help/SKILL.md",
+    ".dockerignore",
     "docs/SELF.md",
     "scripts/felix_boundary.py",
     "tests/unit/test_contributor_manifest.py",
@@ -285,3 +287,67 @@ def test_print_closes_is_what_the_workflow_fetches_with(tmp_path: Path, capsys) 
     workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/felix-boundary.yml").read_text()
     assert "--print-closes body.md" in workflow
     assert "re.findall" not in workflow, "the workflow must not carry its own copy of the Closes pattern"
+
+
+def _self_manifests(root: Path) -> list[Path]:
+    """Every file the manifest loader would serve from manifests/self: all three suffixes."""
+    return sorted(
+        p for p in (root / "manifests" / "self").iterdir() if p.suffix in {".yaml", ".yml", ".json"}
+    )
+
+
+def test_every_skill_the_self_agents_load_is_inside_the_boundary() -> None:
+    """The skills the self-build agents load (`felix-self` is their ticket contract) are as
+    much the agents' constraints as their manifests, so a pull request may not edit them
+    either. They lived in the bundled `skills/`, outside every protected path, until they
+    moved under `manifests/self/skills/`; this keeps a later move from walking them back out.
+
+    Matched on the SKILL.md's own `name:`, which is what the loader keys on, not the directory.
+    """
+    from felix.manifests.loader import load_manifest_file
+    from felix.skills.loader import load_skills_from_dir
+
+    root = Path(__file__).resolve().parents[2]
+    skills_dir = root / "manifests" / "self" / "skills"
+    served = load_skills_from_dir(skills_dir).skills
+    manifests = _self_manifests(root)
+    assert manifests, "no self manifests found; has manifests/self moved?"
+    for path in manifests:
+        manifest = load_manifest_file(path)
+        for ref in manifest.spec.skills:
+            assert ref.name in served, (
+                f"{path.name} names {ref.name!r}, which manifests/self/skills does not serve"
+            )
+            rel = Path(served[ref.name].path).resolve().relative_to(root).as_posix()
+            assert boundary.protected([rel]) == [rel], f"{rel} is outside the self-modification boundary"
+    # The bundled catalog joins theirs too (they do not set skills_declared_only, so operator-
+    # published library skills can reach them), and it is host-trusted text: inside the boundary.
+    for skill_md in sorted((root / "skills").rglob("SKILL.md")):
+        rel = skill_md.relative_to(root).as_posix()
+        assert boundary.protected([rel]) == [rel], f"bundled {rel} is outside the self-modification boundary"
+
+
+def test_whatever_serves_the_self_manifests_also_serves_their_skills() -> None:
+    """Pointing FELIX_MANIFESTS_DIR at manifests/self without FELIX_SKILLS_DIR at its skills
+    serves the agents empty stubs for every skill they name, and nothing errors: the live
+    contributor eval ran that way for a commit."""
+    root = Path(__file__).resolve().parents[2]
+    sources = [
+        root / "deploy" / "docker" / "compose.self.yml",
+        *sorted((root / "scripts").glob("*.sh")),
+        *sorted((root / ".github" / "workflows").glob("*.yml")),
+    ]
+    callers = [
+        p
+        for p in sources
+        if "manifests/self" in p.read_text(encoding="utf-8")
+        and "FELIX_MANIFESTS_DIR" in p.read_text(encoding="utf-8")
+    ]
+    assert any(p.name == "compose.self.yml" for p in callers), (
+        "compose.self.yml no longer serves manifests/self"
+    )
+    for path in callers:
+        text = path.read_text(encoding="utf-8")
+        assert "FELIX_SKILLS_DIR" in text and "manifests/self/skills" in text, (
+            f"{path.relative_to(root)} serves manifests/self but not manifests/self/skills"
+        )

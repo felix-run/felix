@@ -18,7 +18,14 @@ from felix_ai.decide import ChoiceAnswer, NoulAnswer
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
-ENV = {"FELIX_DECISION_ROUTES": json.dumps({"e2e-decider": {"provider": "scripted", "model": "jev-latest"}})}
+from tests.support import paths
+
+ENV = {
+    "FELIX_DECISION_ROUTES": json.dumps({"e2e-decider": {"provider": "scripted", "model": "jev-latest"}}),
+    # A second host skill to rank against `calculator-help`: the self-build stack's skills, served
+    # the way that stack serves them, since the bundled `skills/` now ships only the one.
+    "FELIX_SKILLS_DIR": str(paths.ROOT / "manifests" / "self" / "skills"),
+}
 CALC = ToolCall(id="call-1", name="calculator", args={"expression": "2+2"})
 
 

@@ -596,7 +596,7 @@ _ENUM_INPUTS = [
     "apps/api/src/felix_api/routes",
     "packages/harness/src/felix/session/strategies.py",
     "apps/cli/src/felix_cli/main.py",
-    "skills/felix-architecture/SKILL.md",
+    "manifests/self/skills/felix-architecture/SKILL.md",
 ]
 
 

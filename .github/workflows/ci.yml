@@ -44,8 +44,9 @@ jobs:
               - 'tests/**'
               - 'migrations/**'
               - 'manifests/**'
+              # The bundled SKILL.md files: tests parse every one.
+              - 'skills/**'
               - 'scripts/**'
-              - 'clients/**'
               # Its tests are in tests/unit and hold it to the harness's workspace code.
               - 'deploy/cloudflare/workspace-gateway/helper/**'
               - 'alembic.ini'
