@@ -218,6 +218,20 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
         )
 
 
+def manifest_warnings(manifest: Manifest) -> list[str]:
+    """What an author should hear about a manifest the store would take anyway.
+
+    The counterpart of `validate_for_write`: those refuse, these never do. `PUT /manifests`
+    returns them as `warnings` and `felix validate-manifest` prints them, so the two surfaces an
+    author writes through say the same thing. A warning lives here, not as a refusal, when a
+    stored manifest carrying it is unwise rather than broken — an upgrade must not make it
+    unstorable.
+    """
+    from felix.manifests.delete_gate import delete_gate_warnings
+
+    return delete_gate_warnings(manifest)
+
+
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:
     """Fail closed when ``spec.governance.frameworks`` require missing controls.
 
@@ -280,6 +294,7 @@ __all__ = [
     "apply_transparency_notice",
     "assert_outbound_providers_allowed",
     "assert_stdio_allowed",
+    "manifest_warnings",
     "transparency_notice_text",
     "validate_for_write",
     "validate_governance",

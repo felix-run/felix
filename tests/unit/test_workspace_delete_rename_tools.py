@@ -24,9 +24,9 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.manifests.delete_gate import FAMILIES, bound_tool_names, delete_gate_gaps, gating_rules
 from felix.manifests.loader import load_manifest_file
 from felix.manifests.schema import Manifest
-from felix.manifests.tool_match import matches_any
 from felix.session.compaction import extract_file_ops_from_events
 from felix.session.types import SessionEvent
 from felix.tools import workspace_hosted
@@ -256,32 +256,24 @@ def test_compaction_counts_a_delete_and_both_ends_of_a_rename_as_changed() -> No
 
 # --- every bundled manifest: a delete is never gated less than a write ------------------
 
-SERVER_WRITERS = ("write_file", "edit_file")
-SERVER_CHANGERS = ("delete_file", "rename_file")
-CLIENT_WRITERS = ("local_write", "local_edit")
-CLIENT_CHANGERS = ("local_delete", "local_rename")
-
 
 def _bundled() -> list[Path]:
     return sorted((ROOT / "manifests").rglob("*.yaml"))
 
 
-def _gating_rules(manifest: Manifest, tool: str) -> list[str]:
-    return [rule.id for rule in manifest.spec.approvals if matches_any(rule.tools, tool)]
-
-
 def _parity_gaps(manifest: Manifest) -> list[str]:
-    """Each way `manifest` lets a delete or a rename through that it would not let a write through."""
-    spec = manifest.spec
-    bound = {str(t) for t in spec.tools} | {t.name for t in spec.client_tools}
+    """Each way `manifest` lets a delete or a rename through that it would not let a write through.
+
+    The gating half is `delete_gate`, the one definition operators are warned with too; binding
+    every changer beside a writer is a rule for what we ship only — an operator may bind a write
+    and no delete.
+    """
+    bound = bound_tool_names(manifest)
     gaps: list[str] = []
-    for writers, changers in ((SERVER_WRITERS, SERVER_CHANGERS), (CLIENT_WRITERS, CLIENT_CHANGERS)):
-        if not any(w in bound for w in writers):
-            continue
-        gaps += [f"binds {writers} but not {c}" for c in changers if c not in bound]
-        gated_writer = any(_gating_rules(manifest, w) for w in writers if w in bound)
-        if gated_writer:
-            gaps += [f"gates a writer but not {c}" for c in changers if not _gating_rules(manifest, c)]
+    for _family, writers, changers in FAMILIES:
+        if any(w in bound for w in writers):
+            gaps += [f"binds {writers} but not {c}" for c in changers if c not in bound]
+    gaps += [f"gates a writer but not {c}" for gap in delete_gate_gaps(manifest) for c in gap.ungated]
     return gaps
 
 
@@ -339,10 +331,8 @@ def test_cowork_declares_and_gates_the_delete_and_the_rename() -> None:
     assert "no undo" in delete.description.lower()
     assert "never overwrites" in rename.description.lower()
     # One rule for every change to the user's folder, so a delete waits exactly as a write does.
-    assert (
-        _gating_rules(cowork, "local_delete") == _gating_rules(cowork, "local_write") == ["workspace-write"]
-    )
-    assert _gating_rules(cowork, "local_rename") == ["workspace-write"]
+    assert gating_rules(cowork, "local_delete") == gating_rules(cowork, "local_write") == ["workspace-write"]
+    assert gating_rules(cowork, "local_rename") == ["workspace-write"]
     prompt = cowork.spec.system_prompt.inline or ""
     assert "local_delete" in prompt and "local_rename" in prompt
     assert workspace_summary(cowork)["tools"] == "client"

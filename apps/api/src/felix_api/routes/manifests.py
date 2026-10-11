@@ -12,7 +12,7 @@ from felix.auth.mgmt import (
     subject_from_request,
     tenant_id_from_request,
 )
-from felix.manifests.governance import GovernanceError, validate_for_write
+from felix.manifests.governance import GovernanceError, manifest_warnings, validate_for_write
 from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.manifests.schema import Manifest
 from felix.manifests.secret_refs import redact_manifest_secrets
@@ -183,7 +183,13 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
         created_by=subject_from_request(request),
         comment=body.comment,
     )
-    return {**row, "manifest": redact_manifest_secrets(row["manifest"])}
+    # Always present, never conditional, as on `PUT /eval/datasets`: a key that appears only
+    # sometimes reads as absent rather than empty. Stored either way — these never refuse.
+    return {
+        **row,
+        "manifest": redact_manifest_secrets(row["manifest"]),
+        "warnings": manifest_warnings(parsed),
+    }
 
 
 @write_router.post("/{name}/canary")

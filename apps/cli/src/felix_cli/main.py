@@ -636,7 +636,12 @@ def validate_manifest_cmd(
 ) -> None:
     """Validate a manifest schema + opt-in governance frameworks (GitOps CI)."""
     from felix.config import Settings
-    from felix.manifests.governance import GovernanceError, validate_for_write, validate_governance
+    from felix.manifests.governance import (
+        GovernanceError,
+        manifest_warnings,
+        validate_for_write,
+        validate_governance,
+    )
     from felix.manifests.loader import load_manifest_file
     from felix.patterns.registry import list_patterns
 
@@ -666,6 +671,12 @@ def validate_manifest_cmd(
     except Exception as exc:
         rprint(f"[red]invalid[/red] {path}: {exc}")
         raise SystemExit(1) from exc
+    # Printed, never fatal: the store takes these too (`PUT /manifests` returns them as
+    # `warnings`), so failing CI on them would refuse what the API accepts.
+    from rich.markup import escape
+
+    for warning in manifest_warnings(manifest):
+        rprint(f"[yellow]warning[/yellow] {escape(str(path))}: {escape(warning)}")
     rprint(f"[green]ok[/green] {path} ({manifest.metadata.name})")
 
 
