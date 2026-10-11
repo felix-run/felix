@@ -134,6 +134,8 @@ export class WorkspaceSandbox extends DurableObject<Env> {
         request.op === 'edit' ||
         request.op === 'delete' ||
         request.op === 'rename' ||
+        request.op === 'delete_folder' ||
+        request.op === 'rename_folder' ||
         request.op === 'exec')
     ) {
       this.ctx.storage.kv.put(DIRTY_KEY, true);

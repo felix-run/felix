@@ -1579,7 +1579,8 @@ client family is held to the same rule: `local_write` / `local_edit` against `lo
 `local_rename`. Such a manifest is **warned about, not refused**
 (`felix/manifests/delete_gate.py`): `felix validate-manifest` prints
 ``warning <path>: approval rule `workspace-write` gates write_file, but delete_file is bound with
-no approval rule, …; add delete_file to rule `workspace-write` `` and still exits 0;
+no approval rule, …; add delete_file to rule `workspace-write` `` and still exits 0 (1 under
+`--strict`, the CI gate; see [GitOps check](#gitops-check));
 `PUT /manifests/{name}` stores it and returns the same sentences in the response's `warnings`
 list (always present, `[]` when there is nothing to say); and the compile logs each one once per
 process for a given manifest content and counts `felix_delete_gated_less_than_write`. A warning
@@ -2196,6 +2197,18 @@ SHA, every scanner and base image by digest.
 
 ```bash
 felix validate-manifest path/to/agent.yaml -e production
+# several at once, failing on warnings as well as refusals
+felix validate-manifest agents/*.yaml -e production --strict
 # or in CI after editing manifests/
-uv run felix bundle-manifests
+uv run felix bundle-manifests --strict
 ```
+
+`validate-manifest` takes any number of paths and reports every one -- each refusal, each
+`warning` line -- before deciding the exit status. It exits **1** when any manifest is invalid
+or fails governance, the same code it always used. Warnings (today, a delete gated less than a
+write) are printed and exit **0** by default, because `PUT /manifests` stores those manifests
+too and a CI gate that refused them would refuse what the API accepts. `--strict` is the
+operator choosing to hold their own manifests tighter than the store does: any warning makes
+the run exit **1**, after all of them are printed. `bundle-manifests --strict` does the same
+for every bundled manifest, printing warnings to stderr so stdout stays JSON; this repository's
+CI and `make bundle` run it that way, so a bundled manifest that gains a warning fails the build.

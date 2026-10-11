@@ -494,6 +494,8 @@ def _driving_requests(thread: str) -> list[tuple[str, str, dict[str, Any] | None
         ("POST", "/chat/workspace/write", {"thread_id": thread, "path": "notes.md", "content": "x"}),
         ("POST", "/chat/workspace/delete", {"thread_id": thread, "path": "notes.md"}),
         ("POST", "/chat/workspace/rename", {"thread_id": thread, "path": "notes.md", "to_path": "n.md"}),
+        ("POST", "/chat/workspace/delete_folder", {"thread_id": thread, "path": "notes"}),
+        ("POST", "/chat/workspace/rename_folder", {"thread_id": thread, "path": "notes", "to_path": "n"}),
         ("POST", "/chat/sessions/name", {"thread_id": thread, "name": "taken over"}),
         ("POST", "/chat/sessions/label", {"thread_id": thread, "event_id": "e", "label": "x"}),
         ("POST", "/chat/thinking", {"thread_id": thread, "thinking_level": "high"}),

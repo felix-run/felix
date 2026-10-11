@@ -6200,6 +6200,99 @@
         "title": "WorkspaceChangedOut",
         "type": "object"
       },
+      "WorkspaceDeleteFolderOut": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The note's session entry, when `recorded`.",
+            "title": "Event Id"
+          },
+          "files": {
+            "description": "How many files were removed with it.",
+            "title": "Files",
+            "type": "integer"
+          },
+          "path": {
+            "description": "The folder deleted, normalised as the workspace tools report it.",
+            "title": "Path",
+            "type": "string"
+          },
+          "status": {
+            "description": "Where the delete note went: as `/workspace/edited`.",
+            "enum": [
+              "queued",
+              "recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "path",
+          "files"
+        ],
+        "title": "WorkspaceDeleteFolderOut",
+        "type": "object"
+      },
+      "WorkspaceDeleteFolderRequest": {
+        "additionalProperties": false,
+        "description": "Remove one workspace folder and everything in it, from the file pane.",
+        "properties": {
+          "expected_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many files the operator was shown in the folder (`GET /chat/workspace/tree`, files only, not directories). When set, the delete is refused (409 `workspace_changed`, with the `count` there now) unless the folder still holds exactly that many.",
+            "title": "Expected Count"
+          },
+          "manifest": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest a thread that has never run will run under. Ignored once it has.",
+            "title": "Manifest"
+          },
+          "path": {
+            "description": "Workspace path of the folder to delete.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "path"
+        ],
+        "title": "WorkspaceDeleteFolderRequest",
+        "type": "object"
+      },
       "WorkspaceDeleteOut": {
         "properties": {
           "event_id": {
@@ -6432,6 +6525,118 @@
           "content"
         ],
         "title": "WorkspaceFileOut",
+        "type": "object"
+      },
+      "WorkspaceFolderRefusedOut": {
+        "properties": {
+          "count": {
+            "description": "`workspace_changed`: the folder's file count now. `too_many_entries`: the entries walked before stopping, one past the 2,000 cap. `too_deep`: the entries walked before the nesting limit.",
+            "title": "Count",
+            "type": "integer"
+          },
+          "detail": {
+            "enum": [
+              "workspace_changed",
+              "too_many_entries",
+              "too_deep"
+            ],
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "count"
+        ],
+        "title": "WorkspaceFolderRefusedOut",
+        "type": "object"
+      },
+      "WorkspaceRenameFolderOut": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The note's session entry, when `recorded`.",
+            "title": "Event Id"
+          },
+          "path": {
+            "description": "The path the folder was at, normalised as the workspace tools report it.",
+            "title": "Path",
+            "type": "string"
+          },
+          "status": {
+            "description": "Where the rename note went: as `/workspace/edited`.",
+            "enum": [
+              "queued",
+              "recorded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "to_path": {
+            "description": "The path it is at now, normalised the same way.",
+            "title": "To Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "path",
+          "to_path"
+        ],
+        "title": "WorkspaceRenameFolderOut",
+        "type": "object"
+      },
+      "WorkspaceRenameFolderRequest": {
+        "additionalProperties": false,
+        "description": "Move one workspace folder to another path in the same workspace, from the file pane.",
+        "properties": {
+          "manifest": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The manifest a thread that has never run will run under. Ignored once it has.",
+            "title": "Manifest"
+          },
+          "path": {
+            "description": "Workspace path of the folder to move.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "to_path": {
+            "description": "Where it goes. Must not exist, and must not be inside `path`; missing directories on the way are made.",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "To Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "path",
+          "to_path"
+        ],
+        "title": "WorkspaceRenameFolderRequest",
         "type": "object"
       },
       "WorkspaceRenameOut": {
@@ -10407,6 +10612,116 @@
         ]
       }
     },
+    "/chat/workspace/delete_folder": {
+      "post": {
+        "description": "Delete one workspace folder and everything in it, and tell the agent.\n\nFor the operator's file pane; the agent's own tools remove files only. The folder is walked\nwithout following any symlink: a link inside is removed as the link, and what it points at --\ninside the workspace or out of it -- is never touched. Refused before anything is removed: the\nworkspace root, a path that is not a directory (`400 not_a_directory`), a folder that holds a\nreserved name anywhere inside (`400 reserved_path`), one over 2,000 entries\n(`409 too_many_entries`), and, with `expected_count`, one whose file count is not the count the\noperator was shown (`409 workspace_changed`). The count and the removal run under the same\nlocks the agent's writes take in this process.\n\nThen the agent is told, as `POST /chat/workspace/edited` would tell it, that the folder and its\nfiles are gone (`op: delete`, `kind: folder`, `files`). Audited as `workspace_delete_folder`.\nLease-guarded like `/chat/steer`.",
+        "operationId": "chat_workspace_delete_folder_chat_workspace_delete_folder_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceDeleteFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDeleteFolderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`; `invalid_path` (the workspace root, absolute, escaping, through a symlink, or the folder itself a symlink); `reserved_path` (the path is inside, or the folder holds, `.git`, `.felix-scopes` or an edit's temporary file); `not_a_directory` (the path is a file)."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/WorkspaceFolderRefusedOut"
+                    },
+                    {
+                      "$ref": "#/components/schemas/WorkspaceErrorOut"
+                    }
+                  ],
+                  "title": "Response 409 Chat Workspace Delete Folder Chat Workspace Delete Folder Post"
+                }
+              }
+            },
+            "description": "`workspace_changed` (body carries `count`, the folder's file count now): `expected_count` no longer matches. `too_many_entries` (body carries `count`): the folder holds more than 2,000 entries of any kind. `too_deep`: it nests deeper than the workspace walk goes. Also `workspace_unavailable` as on the reads, and the lease refusals (`lease_read_only`, `lease_held`) as on `/chat/steer`. Nothing was deleted."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace Delete Folder",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
     "/chat/workspace/edited": {
       "post": {
         "description": "Tell the agent the operator edited, deleted or renamed a workspace file directly.\n\nA run in flight reads it before its next model call, without cancelling any tool call\n(`status: queued`, and a `workspace_note` frame on that run's stream); otherwise it is\nappended to the thread for the next run (`status: recorded`). Either way it lands in the\nsession log once, as an in-context `custom` entry with `metadata.type: workspace_edit`.\nThe text the model reads is written by the server from these fields.",
@@ -10711,6 +11026,116 @@
           }
         },
         "summary": "Chat Workspace Rename",
+        "tags": [
+          "Threads"
+        ]
+      }
+    },
+    "/chat/workspace/rename_folder": {
+      "post": {
+        "description": "Move one workspace folder to another path in the same workspace, and tell the agent.\n\nFor the operator's file pane; the agent's own tools move files only. One rename, which never\nreplaces anything (`409 target_exists`) and never puts a folder inside itself\n(`400 invalid_path`). Directories `to_path` needs are made once every check has passed. Both\npaths are held to the same rules as the folder delete's, and so is the tree being moved: a\nfolder holding a reserved name is `400 reserved_path`, one over 2,000 entries\n`409 too_many_entries`.\n\nThen the agent is told that paths under `path` are now under `to_path` (`op: rename`,\n`kind: folder`). Audited as `workspace_rename_folder`. Lease-guarded like `/chat/steer`.",
+        "operationId": "chat_workspace_rename_folder_chat_workspace_rename_folder_post",
+        "parameters": [
+          {
+            "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+            "in": "header",
+            "name": "x-felix-lease-token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "This caller's session-lease token. When present, the request is refused (409 `lease_read_only` / `lease_held`) unless it is the thread's exclusive hold.",
+              "title": "X-Felix-Lease-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceRenameFolderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceRenameFolderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`invalid_thread_id`; `invalid_path` (the workspace root, absolute, escaping, through a symlink, or the folder itself a symlink); `reserved_path` (the path is inside, or the folder holds, `.git`, `.felix-scopes` or an edit's temporary file); `not_a_directory` (the path is a file). Also `invalid_path` for a `to_path` inside `path`, or one whose directory on the way is a file."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_found`: no such file. `unknown_manifest`: the `manifest` named does not resolve."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/WorkspaceFolderRefusedOut"
+                    },
+                    {
+                      "$ref": "#/components/schemas/WorkspaceErrorOut"
+                    }
+                  ],
+                  "title": "Response 409 Chat Workspace Rename Folder Chat Workspace Rename Folder Post"
+                }
+              }
+            },
+            "description": "`target_exists`: something is already at `to_path` (the folder itself included). `too_many_entries` (body carries `count`): the folder holds more than 2,000 entries of any kind. `too_deep`: it nests deeper than the workspace walk goes. Also `workspace_unavailable` as on the reads, and the lease refusals (`lease_read_only`, `lease_held`) as on `/chat/steer`. Nothing was moved."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`workspace_not_configured` (no FELIX_WORKSPACE_ROOT), `workspace_unavailable` (the hosted workspace gateway did not answer)."
+          }
+        },
+        "summary": "Chat Workspace Rename Folder",
         "tags": [
           "Threads"
         ]

@@ -35,7 +35,12 @@ harness ──HTTPS, bearer──▶ gateway Worker ──getByName(tenant/key)�
 `op` one of `prepare`, `list`, `read`, `write`, `edit`, `search` (the file operations), `delete` and
 `rename` (the operator's file pane: each compares the file's digest when sent `expected_sha256` and
 refuses `409 workspace_changed` with the file's `sha256` and `bytes` now; a rename never replaces
-anything, `409 target_exists`), `exec` (a
+anything, `409 target_exists`), `delete_folder` and `rename_folder` (the pane's folders: the tree is
+walked first with no link followed, and refused before anything changes when it holds a reserved
+name, `422 reserved_path`, or more than 2,000 entries, `409 too_many_entries` with `count`; a delete
+sent `expected_count` refuses `409 workspace_changed` with the folder's file `count` now, and removes
+a symlink inside as the link, never its target; a rename never replaces anything and never moves a
+folder into itself), `exec` (a
 `shell_tools` command, run by the shell tool's own exec path in the sandbox), `clone` (a thread's
 repository, into its empty `/workspace`, through the `github.com` intercept in `src/github.ts`,
 which adds the person's token outside the container and allows only that one repository's fetch),
@@ -55,6 +60,14 @@ npx wrangler deploy                             # builds the image: needs Docker
 ```
 
 The same token goes to the harness as `FELIX_WORKSPACE_GATEWAY_TOKEN`, with the Worker's URL.
+
+**Upgrading: the gateway first, then the harness.** A new harness operation is a new `op` here, and
+the helper that runs it ships in the image. A harness ahead of its gateway gets `404` for the new
+op, which it reports as the workspace being unavailable (`503 workspace_unavailable` on the file
+pane's routes) and nothing else; a gateway ahead of its harness only has an op nobody calls. The
+pane's `delete_folder` and `rename_folder` (2026-10-10) are such ops: redeploy this Worker
+(`npx wrangler deploy`, which rebuilds the image with the new helper) before the harness that
+calls them.
 
 `WORKSPACE_INSTANCE` (a plain var) sizes each sandbox: `standard-1` by default (1/2 vCPU, 4 GiB,
 8 GB disk), or `lite`, `standard-2`, `standard-3`, `standard-4`. Anything else and the gateway
