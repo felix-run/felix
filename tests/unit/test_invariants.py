@@ -739,7 +739,7 @@ def test_the_coverage_floor_is_what_check_and_ci_both_run() -> None:
     """
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
 
-    target = re.search(r"^test-cov:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    target = re.search(r"^test-cov:.*\n((?:\t.*\n)+)", makefile, re.MULTILINE)
     assert target is not None, "Makefile has no `test-cov` target — CI's Pytest step points at it"
     recipe = target.group(1)
     assert "./scripts/test.sh" in recipe and "--cov" in recipe, (

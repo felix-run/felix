@@ -365,47 +365,10 @@ jobs:
       # only thing standing between an overlay and a typo nobody notices until
       # someone runs the matching `make up-*` target.
       - name: Compose config
-        run: |
-          set -euo pipefail
-          # Each overlay passed as separate arguments rather than one splittable
-          # string: the combinations mirror the COMPOSE_* variables in the Makefile,
-          # so what CI validates is what `make up-*` actually runs.
-          check() {
-            echo "::group::compose.yml $*"
-            docker compose -f deploy/docker/compose.yml "$@" --project-directory . config --quiet
-            echo "::endgroup::"
-          }
-          check
-          check -f deploy/docker/compose.lite.yml
-          check -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
-          check -f deploy/docker/compose.pgbouncer.yml
-          check -f deploy/docker/compose.replicas.yml
-          check -f deploy/docker/compose.observability.yml
-          check -f deploy/docker/compose.self.yml
-          # Rendered-config assertions a parse cannot make: no Felix service still builds
-          # under the published-image overlay, and every one waits on the migration.
-          render() { docker compose -f deploy/docker/compose.yml "$@" --project-directory . config --format json; }
-          render | python3 scripts/check-compose-render.py
-          render -f deploy/docker/compose.self.yml | python3 scripts/check-compose-render.py
-          render -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml | python3 scripts/check-compose-render.py --published
-        env:
-          POSTGRES_PASSWORD: ci-compose-check-not-a-secret
-          MINIO_ROOT_PASSWORD: ci-compose-check-not-a-secret
-          # Compose requires an API key now that auth_mode defaults to api_key —
-          # the interpolation check has to supply one. `make up` generates a real
-          # key into .env; this value only has to be non-empty.
-          FELIX_AUTH_API_KEYS: '{"sk-ci-compose-check-not-a-secret":{"tenant_id":"default","sub":"ci","scopes":["admin"]}}'
-          # The gcp overlay pins `secrets_backend=gcp`, which refuses to interpolate
-          # without a project. Only needed because this step now validates that
-          # overlay at all — nothing did before, so nothing had hit this.
-          FELIX_GCP_PROJECT: ci-compose-check
-          # Likewise: the gcp overlay deploys a published image rather than building
-          # one, so it demands a tag. Any non-empty value satisfies an interpolation
-          # check -- this step parses the file, it does not pull anything.
-          FELIX_IMAGE_TAG: ci-compose-check
-          # The builder overlay refuses to start its shell runner without a bearer; `make
-          # up-self` generates one into .env. Any non-empty value satisfies the parse.
-          FELIX_SHELL_RUNNER_TOKEN: ci-compose-check-not-a-secret
+        # Every overlay combination `make up-*` runs, parsed and then rendered; the script
+        # supplies the non-empty values the interpolation needs. `make compose-check` runs
+        # the same script, so a local pass means a CI pass.
+        run: ./scripts/check-compose.sh
       # Layers are cached across runs in the Actions cache: the Dockerfile puts the dependency
       # install and the psycopg compile ahead of the sources, so a commit that changes only
       # Felix rebuilds only Felix. APT_REFRESH keys the runtime `apt-get upgrade` layer to the
