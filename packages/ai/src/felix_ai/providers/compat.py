@@ -114,8 +114,7 @@ _HOSTED: tuple[ProviderSpec, ...] = (
     # header rather than a different endpoint.
     #
     # This is an outbound HTTPS call to api.cloudflare.com, the same shape as any other
-    # hosted provider. It is not Cloudflare *compute* — Felix still runs where the operator
-    # runs it — and the no-Workers/DO/Hyperdrive invariant is unchanged.
+    # hosted provider.
     _compat(
         "workers_ai",
         "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",

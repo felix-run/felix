@@ -35,14 +35,11 @@ strong, consistent one.
    failure should degrade rather than fail the build. Never add one to a module top-level import.
 4. **Protocols, not vendors.** Storage, secrets, model providers, and the warehouse are swappable
    implementations behind Protocols. New infrastructure follows that shape.
-5. **No Cloudflare Workers / Durable Objects / Hyperdrive / Queues compute** — compute, not
-   vendor: `workers_ai` is a model provider and R2 is reachable via S3. Felix runs on
-   infrastructure the operator manages.
-6. **`packages/ai` never imports `felix`.** Model and decision providers, wire formats and the
+5. **`packages/ai` never imports `felix`.** Model and decision providers, wire formats and the
    catalog live there; the harness side is route resolution and metering. Read
    `.claude/skills/model-layer/SKILL.md` first; a new provider or decider is not done until its
    conformance arm passes.
-7. A new `FELIX_` setting means `felix/config.py` + `.env.example` + the README table, and a
+6. A new `FELIX_` setting means `felix/config.py` + `.env.example` + the README table, and a
    `validate_runtime()` guard if it creates an unsafe combination.
 
 ## Loop

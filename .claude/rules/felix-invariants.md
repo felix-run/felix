@@ -70,12 +70,6 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
 - **A model change needs an Alembic revision**, and published revisions are never edited.
 - **A new `FELIX_` setting** lands in `felix/config.py` + `.env.example` + the README table, with a
   `validate_runtime()` guard if it enables an unsafe combination.
-- **No Cloudflare Workers / Durable Objects / Hyperdrive / R2-binding / Queues compute.** Felix runs
-  on infrastructure the operator manages; Cloudflare DNS/CDN/TLS/WAF in front of an origin is fine.
-  The line is *compute*, not vendor: `workers_ai` is a registered model provider and `storage/s3.py`
-  reaches R2 through its S3 endpoint, because those are outbound HTTPS calls like any other
-  provider. What is forbidden is Felix *running on* Workers or Durable Objects, or depending on a
-  binding only reachable from inside them.
 - **Postgres is the system of record**; the warehouse is optional append-only spill written after
   the Postgres write.
 - **`felix-scheduler` runs alongside `felix-worker`**, or no periodic job fires.

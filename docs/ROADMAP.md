@@ -717,6 +717,58 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       "past this, continue on route X" instead. If it does, that is an explicit `on_budget:`
       field the compile pin sees, never an implicit downgrade.
 
+#### From drafting the toolkit skills (2026-10-10, #579)
+
+Writing `tools-runtime`, `durable-execution` and `skill-library` meant reading those subsystems
+end to end, and these turned up. Each was re-checked against `main` on 2026-10-11 (the cron
+fallback one had already been fixed by `parse_schedule`). They came from reading, not from a run,
+so under the meta-work budget only the first is exempt as a security defect; the rest are queued.
+
+- [ ] **Browser `path_prefix` is a raw `startswith` (security).** `tools/browser.py` strips the
+      prefix's trailing slash and then checks `url.startswith(prefix)`, so `https://docs.felix.run/`
+      admits `https://docs.felix.run.evil.com/`; and the prefix is checked on the first navigation
+      only — redirects get the egress check, not the prefix. `http_fetch._within_prefix` already
+      compares origins and re-checks every hop: reuse it, and plant both cases in a test.
+- [ ] **Sandbox `path_prefix` confines nothing.** `tools/sandboxes.py` checks `path` against the
+      prefix with a raw `startswith`, and `path` is then never passed to the container. Either
+      pass it and check it properly, or drop the field from the ref.
+- [ ] **Plugin cron tasks may never be scheduled.** `_register_plugin_cron_tasks` runs only in
+      the worker's `WORKER_STARTUP` hook; `felix_worker/main.py:scheduler_main` imports the tasks
+      module but never fires that hook, so its `LabelScheduleSource` may never see a `plugin_*`
+      task. Not confirmed against Taskiq; the two tests call the helper directly and cannot tell.
+      Prove it with a test that builds the scheduler's schedule list, then fix.
+- [ ] **A failed run's exception text reaches callers.** `durability/fibers.py` stores
+      `str(exc)` as the run's error, returned by `GET /chat/runs/{token}`, the durable stream's
+      `run_error` frame and webhook payloads; `jobs/scheduler.py` stores it in job runs, which
+      `routes/jobs.py` returns. The route-error-text scan misses stored state. Classify where it
+      is written (`client_safe_message`), per the invariant.
+- [ ] **Two answers to "is this in-memory?".** `session/store.py` (and session search and
+      `thread_state`) treat any URL containing `:memory:` or `sqlite` as in-memory;
+      `db/session.py:_use_memory`, behind the memory and plans stores, matches `memory://` only.
+      A `sqlite` URL would split the stores. One predicate, used everywhere.
+- [ ] **`plugin.json` egress is advisory.** `skills/plugin.py` validates
+      `network.allowed_hosts` carefully, and its only reader turns it into a low-severity scan
+      note. **Decide:** enforce it for the skill's tools, or say in the docs that it is a
+      declaration, not a control.
+- [ ] **The skill activation store has no conformance arm.** `skills/store.py` has a Postgres
+      store and a twin; every other skill store is in `tests/conformance/`.
+- [ ] **The hosted workspace backend runs on Workers.** `deploy/cloudflare/workspace-gateway` is a
+      Worker → Durable Object → Container chain that `FELIX_WORKSPACE_BACKEND=hosted` depends on,
+      against CLAUDE.md's "no Workers / Durable Objects compute" and the non-goal below. It is
+      opt-in and reached over HTTPS. **Decide:** amend the rule to allow an opt-in out-of-process
+      sandbox provider, or put another provider behind the same backend Protocol.
+- [ ] **PR quality gate misses tool files with containment checks.** `.claude/hooks/pr-quality-gate.sh`
+      does not match `artifacts.py`, `attachments.py`, `tool_images.py`, `image_tools.py`,
+      `document_search.py`, `queues.py` or `client_requests.py`. Fold into the toolkit staleness PR.
+- [ ] **Cleanup, one pass.** Stale text: the `tools.py` docstring in `skills/` (the authoring tools
+      are in `authoring.py`), the `_UNTRUSTED_TRANSPORTS` comment in `builder.py`,
+      `_streaming.py:_has_lapsed` ("no top-level handler"), and `tests/support/optional_deps.py`
+      naming the removed `test_temporal_backend.py`. Candidates for the **dead-code-audit** skill:
+      `Settings.webhook_secret` (hydrated, apparently unread — run webhooks sign per endpoint),
+      `SummarizingSessionStrategy` (exported, never built: `summarizing:N` builds the compacting
+      strategy), `EchoExecutor`, `client_bridge.prepare_waiter`, and the `mcp` extra (the MCP
+      client is hand-rolled JSON-RPC over httpx).
+
 #### From the governance mutation audit (Sep 2026, #141–#150)
 
 Carried forward intact. These are the exempt kind under the meta-work budget: several are
@@ -966,10 +1018,6 @@ cycle's, and the route contracts below are the next capability-adjacent step.
 - [!] **`FELIX_POLICY_BUNDLE_PUBKEY` / OPA** — no signed policy-bundle
       runtime in v1 (governance stays manifest compile + wrappers).
 - [!] **Commerce / billing plugin** — seam only; no Stripe in-tree.
-- [!] **Cloudflare compute in the harness** — Workers/DOs out of `felix`;
-      CF hosts web + named tunnel to GCE API only. Scoped to *compute*: the
-      `workers_ai` model provider is an outbound HTTPS call to api.cloudflare.com,
-      the same shape as every other hosted provider, and does not reopen this.
 - [!] **Merging web into `felix`** — keep repos split.
 - [!] **Third-party TUI / CBOR / npm package installer** — session/loop
       ideas only; composition is YAML + `felix.plugins` entry points.
