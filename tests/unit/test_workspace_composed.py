@@ -427,3 +427,29 @@ async def test_no_model_write_reaches_what_decides_what_git_runs(
         p.read_text() for p in here.rglob("*") if p.is_file() and p.name != "ok.txt"
     )
     assert json.loads(ordinary)["path"] == "src/ok.txt"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("to_path", [".gitattributes", "src/.gitattributes", ".GitAttributes", ".GIT/config"])
+async def test_a_rename_cannot_land_on_what_decides_what_git_runs(
+    tmp_path: Path, gateway: FakeGateway, backend: str, to_path: str
+) -> None:
+    """The one check every write, delete and rename uses: a rename was the way round the write's."""
+    here = _here(tmp_path, backend, gateway)
+    (here / "src").mkdir()
+    (here / "notes.txt").write_text("x\n")
+    async with _request(_settings(tmp_path, backend)):
+        out = await _call("rename_file", {"path": "notes.txt", "to_path": to_path})
+    assert out.startswith(f"{REFUSED} reserved path: {to_path}"), out
+    assert (here / "notes.txt").read_text() == "x\n"
+
+
+@pytest.mark.parametrize("path", [".GIT/config", ".Git/hooks/pre-commit", ".GITATTRIBUTES"])
+async def test_case_does_not_get_round_the_reserved_names(
+    tmp_path: Path, gateway: FakeGateway, path: str
+) -> None:
+    """A case-insensitive filesystem (macOS's default) serves `.GIT/config` as `.git/config`."""
+    _here(tmp_path, "local", gateway)
+    async with _request(_settings(tmp_path, "local")):
+        out = await _call("write_file", {"path": path, "content": "x\n"})
+    assert out.startswith(f"{REFUSED} reserved path: {path}"), out
