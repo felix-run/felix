@@ -217,7 +217,6 @@ PATH_PREFIXES = (
     "fixtures/",
     "docs/",
     "skills/",
-    "clients/",
     ".github/",
     ".claude/",
 )
@@ -381,7 +380,7 @@ EXPECTED_MARKERS: dict[str, set[str]] = {
     },
     ".claude/skills/model-layer/SKILL.md": {"decider-consumers"},
     ".claude/agents/felix-manifest-architect.md": {"session-strategies"},
-    "skills/felix-architecture/SKILL.md": {"wrapper-order"},
+    "manifests/self/skills/felix-architecture/SKILL.md": {"wrapper-order"},
 }
 
 
@@ -539,6 +538,11 @@ def code_cli_commands() -> set[str]:
             for kw in node.keywords:  # type: ignore[attr-defined]
                 if kw.arg == "name" and isinstance(kw.value, ast.Constant):
                     names.add(kw.value.value)
+        # `app.command("chat")(chat)`: a command defined in its own module, registered here.
+        elif isinstance(node, ast.Call) and on_app(node.func, "command"):
+            first = node.func.args[0] if node.func.args else None  # type: ignore[attr-defined]
+            if isinstance(first, ast.Constant):
+                names.add(first.value)
     return names
 
 
@@ -640,7 +644,12 @@ def check_enum(rel: str, key: str, block: str) -> None:
 
 
 def enum_sources() -> list[Path]:
-    sources = [ROOT / "CLAUDE.md", ROOT / "README.md", *sorted((ROOT / "skills").glob("*/SKILL.md"))]
+    sources = [
+        ROOT / "CLAUDE.md",
+        ROOT / "README.md",
+        *sorted((ROOT / "skills").glob("*/SKILL.md")),
+        *sorted((ROOT / "manifests" / "self" / "skills").glob("*/SKILL.md")),
+    ]
     # Pruned during the walk: `.claude/worktrees/` holds whole checkouts, venvs included, and
     # filtering them out afterwards made the main checkout's run three times slower.
     for directory, subdirs, files in os.walk(CLAUDE):

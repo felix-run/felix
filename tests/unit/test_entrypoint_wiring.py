@@ -429,3 +429,33 @@ def test_every_process_that_runs_a_turn_hydrates_secrets() -> None:
         "a process that runs agent turns does not hydrate secrets, so its audit, session "
         "and fiber redaction see an empty list:\n  " + "\n  ".join(missing)
     )
+
+
+def test_the_image_ships_every_directory_the_loaders_read_from_the_repo_root() -> None:
+    """A loader that reads `<repo>/<dir>` at runtime finds it in the image only if the Dockerfile
+    copies it there.
+
+    `skills/` was not copied, so inside the image every bundled manifest's `calculator-help` ref
+    resolved to an empty stub, and nothing said so: the loader treats a missing directory as an
+    empty catalog. The directories come from the loaders themselves, so moving one moves the
+    assertion with it.
+    """
+    from felix.manifests.loader import _default_bundled_dir as manifests_dir
+    from felix.skills.loader import _bundled_dir_candidates
+
+    read_from_root = {manifests_dir(), _bundled_dir_candidates()[0], ROOT / "migrations"}
+    for directory in read_from_root:
+        assert directory.parent == ROOT and directory.is_dir(), f"{directory} is not a repo-root directory"
+
+    dockerfile = (ROOT / "deploy" / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    ignored = {
+        line.strip().rstrip("/")
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith(("#", "!"))
+    }
+    for directory in sorted(read_from_root):
+        name = directory.name
+        assert re.search(rf"^COPY {name} \./{name}$", dockerfile, re.MULTILINE), (
+            f"the image never copies {name}/, which the runtime reads from the repo root"
+        )
+        assert name not in ignored, f".dockerignore keeps {name}/ out of the build context"

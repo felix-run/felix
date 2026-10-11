@@ -1,13 +1,11 @@
-"""`clients/cli.py` picks its bearer: `--token` wins, else the login saved for `--base`, else none.
+"""`felix chat` picks its bearer: `--token` wins, else the login saved for `--base`, else none.
 
-Driven through `main()` with `sys.argv`, so the argument parsing and the header it builds are the
-ones a person gets. The REPL loop is ended at the first prompt by an `EOFError`.
+Driven through the `felix` Typer app, so the argument parsing and the header it builds are the
+ones a person gets. The REPL sends one line, then input ends with an `EOFError`.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -16,16 +14,7 @@ import httpx
 import pytest
 from felix_client.login import LoginToken, save_token
 
-_REPL = Path(__file__).resolve().parents[2] / "clients" / "cli.py"
 _BASE = "https://felix.test"
-
-
-def _load_repl() -> Any:
-    spec = importlib.util.spec_from_file_location("felix_repl_under_test", _REPL)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.fixture
@@ -41,26 +30,35 @@ def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[httpx.Headers]
         )
     )
     headers: list[httpx.Headers] = []
-    real_client = httpx.Client
+    real_client = httpx.AsyncClient
 
     def handler(request: httpx.Request) -> httpx.Response:
         headers.append(request.headers)
-        return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(200, json={"final": {"role": "assistant", "content": "hi"}})
 
-    def client(**kwargs: Any) -> httpx.Client:
+    def client(**kwargs: Any) -> httpx.AsyncClient:
         return real_client(transport=httpx.MockTransport(handler), **kwargs)
 
-    def no_input(_: str = "") -> str:
-        raise EOFError
+    # One line, so one turn reaches the server, then the end of input.
+    lines = iter(["hello"])
 
-    monkeypatch.setattr(httpx, "Client", client)
-    monkeypatch.setattr("builtins.input", no_input)
+    def one_line(_: str = "") -> str:
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    monkeypatch.setattr("builtins.input", one_line)
     return headers
 
 
 def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
-    monkeypatch.setattr(sys, "argv", ["cli.py", *args])
-    _load_repl().main()
+    from felix_cli.main import app
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(app, ["chat", *args])
+    assert result.exit_code == 0, result.output
 
 
 def test_the_saved_login_for_this_server_is_sent(

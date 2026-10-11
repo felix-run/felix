@@ -19,7 +19,7 @@ Status updated in place as each piece lands; the ladder below is only as real as
 | This spec, the `felix_task` issue template, the PR contract, labels | `[x]` | docs/self-program |
 | Audit rows carry which control denied a call (`policy_deny.control`) | `[x]` | feat/audit-deny-control |
 | `McpServerRef.tools` allowlist, so the GitHub surface is enumerable | `[x]` | feat/mcp-tool-allowlist |
-| `manifests/triage.yaml` + `skills/felix-self` (rungs 0–1) | `[x]` | feat/triage-manifest |
+| `manifests/triage.yaml` + `manifests/self/skills/felix-self` (rungs 0–1) | `[x]` | feat/triage-manifest |
 | Governed shell tool (`spec.shell_tools`, `FELIX_SHELL_ALLOWED_COMMANDS`) | `[x]` | feat/shell-tool |
 | `contributor.yaml` v2 — runs the gates, publishes over GitHub MCP | `[x]` | feat/contributor-v2 |
 | Builder container (`deploy/docker/compose.self.yml`) | `[x]` | feat/builder-container |

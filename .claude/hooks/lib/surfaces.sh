@@ -39,7 +39,7 @@ surface_page() {
       echo "internals/observability.mdx (audit event catalog, metric/counter names, tracing spans)." ;;
     packages/harness/src/felix/config.py|deploy/*|.env.example|Makefile)
       echo "guide/deploy.mdx and guide/getting-started.mdx (env vars, Compose/Helm/AWS/GCP steps, lean-vs-full matrix)." ;;
-    packages/harness/src/felix/sdk.py|clients/cli.py)
+    packages/harness/src/felix/sdk.py)
       echo "guide/getting-started.mdx (Python client usage: prompt/stream/steer/follow_up/fork/rewind/set_model)." ;;
     packages/harness/src/felix/skills/*|skills/*/SKILL.md)
       echo "guide/concepts.mdx (Agent Skills: progressive disclosure, spec.skills wiring)." ;;

@@ -157,7 +157,7 @@ tenant rather than per caller, so `assistant` refuses anonymous requests — und
 ```bash
 make db migrate               # Postgres + Valkey in Docker on localhost; `make down` stops them
 make dev                      # Granian on :8080, FELIX_AUTH_MODE=none, FELIX_OBJECT_STORE=fs
-make cli                      # httpx REPL client
+make cli                      # felix chat: a chat REPL against a running API
 make check                    # ruff + ty + pytest + format check; STRICT=1 if the venv is lean
 ./scripts/test.sh -k <expr>   # one test; sets the in-memory stores the suite needs
 make help                     # every target, grouped
@@ -743,8 +743,10 @@ Two things to know before flipping an existing deployment:
 Sessions and skills:
 
 - **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills` (which *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue; set `spec.skills_declared_only: true` to make the declared names the whole set). `spec.personal_skills: read` also offers each authenticated caller the live skills in their own library, ahead of the tenant's, so one of theirs shadows a tenant skill of its name for them alone — never a skill the manifest names in `spec.skills`. It is `off` by default and refused with `skills_declared_only`; a durable run keeps the library of the caller who started it; an anonymous caller (and `auth_mode=none`) has none. A caller reads their own library at `/skill-library/~me` and, with `skills:personal`, writes it (within `FELIX_SKILL_PERSONAL_MAX_BYTES`, 50 MiB by default; see `deploy/GOVERNANCE.md`), and an administrator can list, read and archive anyone's. `spec.personal_skills: write` (which needs `spec.skill_authoring.enabled`) points the agent's authoring there too: `create_skill` saves into the caller's library and `update_skill` edits a skill in the library it came from, for a caller holding `skills:personal`; a caller without a library or the scope is refused, never redirected to the tenant's. An approval of such a save binds the library it goes into, and in publish mode a personal skill that would replace a tenant skill waits for its owner to publish it.
-  Bundled: `calculator-help`, plus the developer set used by the `contributor` manifest —
-  `felix-architecture`, `felix-conventions`, `felix-testing`, `felix-contributing`
+  Bundled, in every install's catalogue: `calculator-help`. The developer set the self-build
+  `contributor` and `triage` manifests use — `felix-architecture`, `felix-conventions`,
+  `felix-testing`, `felix-contributing`, `felix-self` — lives in `manifests/self/skills/` and is
+  served only by that stack (`FELIX_SKILLS_DIR` in `compose.self.yml`).
 <!-- toolkit:enum session-strategies -->
 - **Session strategies**: `compacting` (token-threshold), `windowed:N`, `summarizing:N` (compacting that keeps at least N turns), `semantic:N`, `full_replay`<!-- /toolkit:enum -->
   — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider

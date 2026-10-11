@@ -285,3 +285,28 @@ def test_print_closes_is_what_the_workflow_fetches_with(tmp_path: Path, capsys) 
     workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/felix-boundary.yml").read_text()
     assert "--print-closes body.md" in workflow
     assert "re.findall" not in workflow, "the workflow must not carry its own copy of the Closes pattern"
+
+
+def test_every_skill_the_self_agents_load_is_inside_the_boundary() -> None:
+    """The skills the self-build agents load (`felix-self` is their ticket contract) are as
+    much the agents' constraints as their manifests, so a pull request may not edit them
+    either. They lived in the bundled `skills/`, outside every protected path, until they
+    moved under `manifests/self/skills/`; this keeps a later move from walking them back out.
+    """
+    from felix.manifests.loader import load_manifest_file
+
+    root = Path(__file__).resolve().parents[2]
+    skills_dir = root / "manifests" / "self" / "skills"
+    named = {
+        ref.name
+        for path in sorted((root / "manifests" / "self").glob("*.yaml"))
+        for ref in load_manifest_file(path).spec.skills
+    }
+    assert named, "no self manifest names a skill; has manifests/self moved?"
+    for name in sorted(named):
+        skill_md = skills_dir / name / "SKILL.md"
+        assert skill_md.is_file(), (
+            f"{name} is not in manifests/self/skills/, where the self stack serves skills"
+        )
+        rel = skill_md.relative_to(root).as_posix()
+        assert boundary.protected([rel]) == [rel], f"{rel} is outside the self-modification boundary"

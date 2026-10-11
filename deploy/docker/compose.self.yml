@@ -48,6 +48,9 @@ x-self-env: &self-env
   # has the workspace and shell runner they need. From the image, never from /workspace: the
   # agent edits /workspace, and must not be able to edit the manifest that governs it.
   FELIX_MANIFESTS_DIR: /app/manifests/self
+  # Their skills likewise: felix-architecture, felix-self and the rest serve this stack's agents
+  # alone, so they are not in the bundled skills/ every install's catalog holds.
+  FELIX_SKILLS_DIR: /app/manifests/self/skills
   # Approvals must not be anonymous: under `none` the caller could approve its own mutation.
   # The base anchor already defaults to api_key; pinned here so an overlay cannot loosen it.
   FELIX_AUTH_MODE: api_key

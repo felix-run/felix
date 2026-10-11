@@ -1,4 +1,4 @@
-"""Felix CLI — migrate, eval, mint-jwt, login, ingest-docs, skills, bundle-manifests, version."""
+"""Felix CLI — migrate, eval, mint-jwt, login, chat, ingest-docs, skills, bundle-manifests, version."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import typer
 from rich import print as rprint
 
 from felix_cli import __version__
+from felix_cli.chat import chat
 from felix_cli.skills import skills_app
 
 if TYPE_CHECKING:
@@ -425,6 +426,9 @@ def ingest_docs(
 
 # `felix skills browse|add`: their own module, since they talk to a server, as `ingest-docs` does.
 app.add_typer(skills_app, name="skills")
+
+# `felix chat`: a REPL against a running server, in its own module for the same reason.
+app.command("chat")(chat)
 
 
 workspace_app = typer.Typer(name="workspace", help="Manage FELIX_WORKSPACE_ROOT.", no_args_is_help=True)
