@@ -513,6 +513,8 @@ def test_path_prefix_is_normalised_to_end_in_a_slash() -> None:
         ("https://docs.felix.run/guide/%2e%2e/evil", "https://docs.felix.run/guide/", False),
         ("https://docs.felix.run/guide%2f..%2fevil", "https://docs.felix.run/guide", False),
         ("https://docs.felix.run", "https://docs.felix.run/", True),  # an empty path is `/`
+        ("https://docs.felix.run/guide/x\\..\\..\\evil", "https://docs.felix.run/guide/", False),
+        ("https://docs.felix.run/guide/..;/evil", "https://docs.felix.run/guide/", False),
     ],
 )
 def test_prefix_matching_compares_origins_not_text(url: str, prefix: str, inside: bool) -> None:

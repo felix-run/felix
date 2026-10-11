@@ -440,3 +440,75 @@ async def test_an_unrestricted_browser_keeps_its_websockets(lookups: list[str]) 
     sock = _Socket("wss://anything.test/socket")
     await handler(sock)
     assert sock.connected
+
+
+async def test_a_restricted_browser_removes_workers_too(
+    lookups: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WebTransport lives in workers, where an init script never runs: under a list, no workers."""
+    from felix.tools import browser as browser_mod
+
+    scripts: list[str] = []
+
+    class _Page:
+        async def goto(self, *_a: Any, **_kw: Any) -> None:
+            return None
+
+        async def inner_text(self, _sel: str) -> str:
+            return "page"
+
+    class _Context:
+        async def add_init_script(self, script: str) -> None:
+            scripts.append(script)
+
+        async def route(self, *_a: Any) -> None:
+            return None
+
+        async def route_web_socket(self, *_a: Any) -> None:
+            return None
+
+        async def new_page(self) -> _Page:
+            return _Page()
+
+    class _Browser:
+        async def new_context(self, **_kw: Any) -> _Context:
+            return _Context()
+
+        async def close(self) -> None:
+            return None
+
+    class _PW:
+        class chromium:
+            @staticmethod
+            async def launch(**_kw: Any) -> _Browser:
+                return _Browser()
+
+        async def __aenter__(self) -> _PW:
+            return self
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr(browser_mod, "_load_playwright", lambda: _PW)
+    for egress in (EgressBound().under(["allowed.test"]), EgressBound()):
+        (tool,) = tools_from_browser_refs(
+            [BrowserToolRef(name="b", binding="chromium")], allow_http=True, egress=egress
+        )
+        assert await tool.executor.execute({"url": "http://allowed.test/"}) == "page"
+    restricted, unrestricted = scripts
+    assert '"Worker"' in restricted and '"SharedWorker"' in restricted
+    assert '"Worker"' not in unrestricted and '"WebTransport"' in unrestricted
+
+
+def test_a_restricted_agents_browser_must_be_chromium() -> None:
+    """The channels the list shuts are shut in Chromium; another engine would keep them open."""
+    firefox = {"browser_tools": [{"name": "b", "binding": "firefox"}]}
+    with pytest.raises(ManifestParseError, match="chromium"):
+        _manifest(network={"allow_hosts": ["*.example.com"]}, **firefox)
+    _manifest(**firefox)
+
+
+async def test_a_child_browser_on_another_engine_is_refused_under_a_parents_list() -> None:
+    child = _manifest("helper", browser_tools=[{"name": "b", "binding": "firefox"}])
+    with pytest.raises(ValueError, match="chromium"):
+        await _compile(_lead("lead", ["helper"], ["*.example.com"]), {"helper": child})

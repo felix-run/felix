@@ -150,9 +150,10 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
     assert context.service_workers == "block", "a service worker's fetches bypass route"
     assert context.routes == ["**/*"] and context.socket_routes == ["**/*"], "guard the context, sockets too"
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in launched_args[0]
-    assert "--disable-quic" in launched_args[0], "WebTransport runs over QUIC, from workers too"
     [script] = context.init_scripts
     assert "RTCPeerConnection" in script and "WebTransport" in script, "TURN over TCP needs no UDP"
+    assert "writable: false" in script
+    assert '"Worker"' not in script, "an unrestricted agent's pages keep their workers"
 
     blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())
     assert "must start with" in (blocked if isinstance(blocked, str) else blocked.content)

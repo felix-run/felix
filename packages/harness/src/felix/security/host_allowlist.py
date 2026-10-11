@@ -185,7 +185,10 @@ def within_prefix(url: str, prefix: str) -> bool:
     if (u.scheme, u.raw_host.lower(), u.port) != (p.scheme, p.raw_host.lower(), p.port):
         return False
     raw = u.raw_path.split(b"?", 1)[0].lower()
-    if b"%2f" in raw or b"%5c" in raw or any(seg in (".", "..") for seg in u.path.split("/")):
+    if b"%2f" in raw or b"%5c" in raw or b"\\" in raw:
+        return False
+    # `..;` and `.;` are dot segments to Tomcat and Spring, which drop what follows the `;`.
+    if any(seg in (".", "..") or seg.startswith(("..;", ".;")) for seg in u.path.split("/")):
         return False
     return u.path.startswith(p.path)
 

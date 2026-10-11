@@ -59,16 +59,27 @@ _SAFE_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 _AMBIGUOUS_URL = re.compile(r"[\\\s\x00-\x1f\x7f]")
 
 # Channels a page can open that no request interceptor sees. WebRTC reaches STUN/TURN servers of
-# the page's choosing -- over UDP, and over TCP when UDP is off -- so UDP is disabled here and the
-# API removed from every page (`_NO_SIDE_CHANNELS`). WebTransport runs over QUIC, including from a
-# worker the init script does not reach, so QUIC is disabled.
+# the page's choosing -- over UDP, and over TCP when UDP is off -- and WebTransport sends QUIC
+# straight to any address, `--disable-quic` notwithstanding. So UDP is disabled for WebRTC and both
+# APIs are removed from every page, frame and popup. An init script does not run in a worker,
+# where WebTransport also lives, so under `allow_hosts` workers are removed as well (service
+# workers are blocked for every agent).
 _NO_WEBRTC_UDP = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
-_NO_QUIC = "--disable-quic"
-_NO_SIDE_CHANNELS = """
-for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "WebTransport"]) {
-  try { Object.defineProperty(globalThis, name, { value: undefined, configurable: false }); } catch (e) {}
-}
-"""
+_SIDE_CHANNEL_APIS = ("RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "WebTransport")
+_WORKER_APIS = ("Worker", "SharedWorker")
+
+
+def _remove_apis(names: tuple[str, ...]) -> str:
+    """An init script leaving each of `names` undefined -- not writable, not configurable --
+    in every page, frame and popup."""
+    import json
+
+    return (
+        f"for (const name of {json.dumps(list(names))}) {{\n"
+        "  try { Object.defineProperty(globalThis, name, "
+        "{ value: undefined, writable: false, configurable: false }); } catch (e) {}\n"
+        "}\n"
+    )
 
 
 def _socket_as_http(url: str) -> str:
@@ -196,12 +207,13 @@ class _BrowserExecutor:
         try:
             async with async_playwright() as p:
                 launcher = getattr(p, self._binding, p.chromium)
-                browser = await launcher.launch(headless=True, args=[*launch_args, _NO_WEBRTC_UDP, _NO_QUIC])
+                browser = await launcher.launch(headless=True, args=[*launch_args, _NO_WEBRTC_UDP])
                 try:
                     # One context, guarded as a whole, with service workers off: a worker's
                     # fetches bypass `route`, and a page could install one to send from.
                     context = await browser.new_context(service_workers="block")
-                    await context.add_init_script(_NO_SIDE_CHANNELS)
+                    removed = _SIDE_CHANNEL_APIS + (_WORKER_APIS if self._egress.restricted else ())
+                    await context.add_init_script(_remove_apis(removed))
                     await self._install_egress_guard(context)
                     page = await context.new_page()
                     await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
