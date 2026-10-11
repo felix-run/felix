@@ -1,8 +1,17 @@
 name: Smoke
 
 # Prod health + one live chat turn against the API.
-# Does not block PR CI. Requires repo secret FELIX_SMOKE_API_KEY
-# (a key present in the server's FELIX_AUTH_API_KEYS map).
+# Does not block PR CI. Requires repo secret FELIX_SMOKE_API_KEY: a bearer the server accepts.
+# Production runs FELIX_AUTH_MODE=jwt, which takes no API keys -- an API-key secret failed every
+# run with `401 invalid_token` from the switch (2026-10-04) until 2026-10-11. It is a self-issued
+# JWT with no scopes (the chat routes this calls check none), minted on the VM and piped straight
+# into the secret, so it is never printed:
+#
+#   gcloud compute ssh felix-api --command "sudo docker exec felix-api-1 felix mint-jwt \
+#     --sub smoke-workflow --tenant default --scopes '' --ttl <seconds>" \
+#     | tail -1 | tr -d '\r\n' | gh secret set FELIX_SMOKE_API_KEY --repo felix-run/felix
+#
+# The current one expires 2027-01-02, with the chat-ui Worker's token: rotate both together.
 
 on:
   workflow_dispatch:
