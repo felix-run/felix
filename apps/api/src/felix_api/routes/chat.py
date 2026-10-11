@@ -503,6 +503,20 @@ class PermissionModeRequest(BaseModel):
     mode: PermissionModeName
 
 
+class OutputStyleRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    thread_id: str = Field(min_length=1)
+    manifest: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The agent the thread talks to, required with a style, which must be one it declares.",
+    )
+    style: str | None = Field(
+        default=None, max_length=64, description="A declared style, or null for the default."
+    )
+
+
 class ThinkingRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -2902,6 +2916,41 @@ async def chat_permission_mode(
     )
     record_mode_change(settings, auth.tenant_id, auth.principal_sub or "", thread, body.mode, via="route")
     return {"ok": True, "thread_id": thread, "mode": body.mode}
+
+
+@router.post("/style", responses=LEASE_REFUSALS)
+async def chat_output_style(
+    body: OutputStyleRequest, request: Request, lease_token: LeaseToken = None
+) -> dict[str, Any]:
+    """Set how the thread's agent writes: one of the manifest's `spec.output_styles`, or `null`
+    for its default. Takes effect from the next run. Checked against `manifest` now, so a typo is
+    a 422 rather than a style that quietly never applies; a thread that later runs a manifest
+    without it falls back to that manifest's default. `manifest` is needed only to check a named
+    style. Not audited: a style is presentation, the author's own text, not a control."""
+    from felix.session.thread_state import update_thread_meta
+
+    auth = _auth_from_request(request)
+    settings = request.app.state.settings
+    thread = effective_thread_id(auth.tenant_id, body.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=400, detail="invalid_thread_id")
+    await _refuse_unless_driver(request, thread, lease_token)
+    style = None
+    if body.style is not None:
+        if body.manifest is None:
+            raise HTTPException(status_code=422, detail="manifest_required")
+        try:
+            resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=None)
+        except (LookupError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="unknown_manifest") from exc
+        found = resolved.manifest.spec.output_styles.find(body.style)
+        if found is None:
+            raise HTTPException(status_code=422, detail="unknown_output_style")
+        style = found.name
+    await update_thread_meta(
+        settings=settings, tenant_id=auth.tenant_id, thread_id=thread, output_style=style
+    )
+    return {"ok": True, "thread_id": thread, "style": style}
 
 
 @router.post("/ask")

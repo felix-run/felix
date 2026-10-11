@@ -1055,6 +1055,41 @@ class HookRule(_Strict):
 PermissionModeName = Literal["default", "accept_edits", "plan", "bypass"]
 
 
+class OutputStyle(_Strict):
+    """How the agent writes its answers -- terse, explanatory, a teaching voice -- chosen per
+    conversation. `prompt` joins the system prompt of the agent the person is talking to."""
+
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    #: One line a client shows beside the name in its style picker.
+    description: str | None = Field(default=None, max_length=200)
+    # Inline only, never a file: a workspace file is one the agent may write, and this text
+    # lands in the system prompt.
+    prompt: str = Field(min_length=1, max_length=16_000)
+
+
+class OutputStylesSpec(_Strict):
+    """The styles a conversation may pick (`POST /chat/style`), and the one it starts in."""
+
+    #: A declared style's name; none means the system prompt as written.
+    default: str | None = None
+    styles: list[OutputStyle] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _names_resolve(self) -> OutputStylesSpec:
+        names = [s.name.lower() for s in self.styles]
+        if len(set(names)) != len(names):
+            raise ValueError("output_styles.styles names must be unique (ignoring case)")
+        if self.default is not None and self.default.lower() not in names:
+            raise ValueError("output_styles.default must name one of output_styles.styles")
+        return self
+
+    def find(self, name: str | None) -> OutputStyle | None:
+        """The style called `name`, ignoring case, or None."""
+        if not name:
+            return None
+        return next((s for s in self.styles if s.name.lower() == name.lower()), None)
+
+
 class PermissionsSpec(_Strict):
     """Which permission modes a conversation with this agent may be in, and which it starts in.
 
@@ -1276,6 +1311,7 @@ class Spec(_Strict):
     # Binds the `task` tool. Unset binds nothing.
     delegation: DelegationSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
+    output_styles: OutputStylesSpec = Field(default_factory=OutputStylesSpec)
     hooks: list[HookRule] = Field(default_factory=list, max_length=16)
 
     @field_validator("hooks")
@@ -1506,6 +1542,8 @@ __all__ = [
     "Manifest",
     "Metadata",
     "ModelSpec",
+    "OutputStyle",
+    "OutputStylesSpec",
     "PermissionsSpec",
     "Policy",
     "PromptTemplateSpec",

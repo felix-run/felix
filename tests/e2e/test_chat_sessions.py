@@ -500,6 +500,7 @@ def _driving_requests(thread: str) -> list[tuple[str, str, dict[str, Any] | None
         ("POST", "/chat/sessions/label", {"thread_id": thread, "event_id": "e", "label": "x"}),
         ("POST", "/chat/thinking", {"thread_id": thread, "thinking_level": "high"}),
         ("POST", "/chat/mode", {"thread_id": thread, "mode": "plan"}),
+        ("POST", "/chat/style", {"thread_id": thread, "manifest": "quick", "style": None}),
         ("POST", "/chat/compact", {"thread_id": thread, "manifest": "quick"}),
         ("DELETE", f"/chat/history/{thread}", None),
     ]

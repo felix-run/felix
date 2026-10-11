@@ -109,7 +109,14 @@ def catalog_from_manifest(
     if manifest is None:
         entry = model_catalog_entry(model_id=name)
         entry["felix"].update(
-            providerModel=None, description=None, starters=[], commands=[], greeting=None, workspace=None
+            providerModel=None,
+            description=None,
+            starters=[],
+            commands=[],
+            outputStyles=[],
+            defaultOutputStyle=None,
+            greeting=None,
+            workspace=None,
         )
         return entry
     if settings is None:
@@ -151,6 +158,12 @@ def catalog_from_manifest(
         {"name": p.name, "description": p.description, "argumentHint": p.argument_hint}
         for p in runnable_commands(manifest)
     ]
+    # The styles a conversation may pick (`POST /chat/style`), and the one it starts in.
+    styles = getattr(getattr(manifest, "spec", None), "output_styles", None)
+    entry["felix"]["outputStyles"] = [
+        {"name": s.name, "description": s.description} for s in getattr(styles, "styles", None) or []
+    ]
+    entry["felix"]["defaultOutputStyle"] = getattr(styles, "default", None)
     # `null` when the manifest declares none: the client's own greeting stands.
     entry["felix"]["greeting"] = (
         {"headline": declared.headline, "subtitle": declared.subtitle} if declared is not None else None
