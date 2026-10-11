@@ -834,6 +834,27 @@ async def test_a_rejected_draft_is_not_the_version_an_import_replaces(
     assert (result.version["version"], result.version["parent_version"]) == ("0.1.2", "0.1.0")
 
 
+async def test_an_import_whose_every_version_was_rejected_can_be_imported_again(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    # A reviewer turns the only import down; the name must not be held against the source for good.
+    await _import(settings, store, gh)
+    await library.reject(settings, "acme", NAME, "0.1.0", by="ops", note="not yet", owner=ORG_OWNER)
+
+    again = await _import(settings, store, gh)
+
+    # The same files: a rejected draft is not one a re-import would leave unchanged, so it saves a
+    # new draft for the reviewer, building on nothing -- the rejection stays in the history.
+    assert not again.unchanged
+    assert (again.version["version"], again.version["parent_version"], again.version["status"]) == (
+        "0.1.1",
+        None,
+        "draft",
+    )
+    lib = get_skill_library_store(settings, owner=ORG_OWNER)
+    assert await lib.version_ids("acme", NAME) == ["0.1.0", "0.1.1"]
+
+
 async def test_of_two_imports_racing_to_one_skill_one_saves(
     settings: Settings, store: MemoryObjectStore, gh: FakeRepos
 ) -> None:
