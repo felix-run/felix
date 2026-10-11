@@ -567,9 +567,19 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       and edits now share the checked write's per-path lock. *Follow-ups:* the compare in the
       gateway helper's `write`, through its replace-by-rename, so a hosted checked write is one
       atomic call (it is three today, and truncates in place); a `tree` rooted at `glob`'s `path`
-      (hosted walks the whole scope, one gateway `list` per folder). *Next:*
-      persistent shell sessions and background processes in the shell runner, file checkpoints
-      restored by `/chat/rewind`, a git worktree per child task, and clearing of stale tool results.
+      (hosted walks the whole scope, one gateway `list` per folder). Clearing stale tool results
+      (`spec.session.clear_tool_results: {keep_turns, min_chars}`): each render stubs a tool result
+      behind the newest `keep_turns`–`2·keep_turns − 1` user messages, over `min_chars` or carrying
+      an image, keeping the call paired and a spilled result's artifact id (parsed from the tail in
+      the exact shape `artifacts.spill_marker` writes, so a tool cannot forge one and a run of
+      `[artifact:` cannot stall the loop); the log is untouched, what a caller sent is never
+      rewritten, and clearing runs inside replay image screening (`model_view_strategy`, the one
+      composition both render sites call). *Follow-ups:* the compacting strategy still sizes the
+      window on the full results, so it can compact before clearing would have made room; a router
+      passes its cleared strategy to its children, so a child is cleared by the router's setting
+      too. *Next:* persistent shell sessions
+      and background processes in the shell runner, file checkpoints restored by `/chat/rewind`,
+      and a git worktree per child task.
 - [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
       pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
       `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per
