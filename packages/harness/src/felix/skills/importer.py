@@ -9,11 +9,13 @@ is a separate step a person takes after review, through the same gate an operato
 passes -- and an imported version, and every version built on one, is held to a stricter one
 (`publish_gate.gate_source`, `policy_for_source`: an advisory scan blocks).
 
-The bundle is sanitised before it is validated, as Skillist's mirror does: what the bundle format
-accepts is kept (`format.bundle_path_issue`, which includes a root license file) less `evals/`
-and dot-paths, everything else (examples, tests, a README) is dropped and reported, and an
-over-long description is clamped (`format.clamp_description`). The skill's name must be its
-folder's.
+The bundle is sanitised before it is validated, as Skillist's mirror does. What the bundle format
+accepts is kept where it is (`format.bundle_path_issue`, a root license file included), less
+`evals/` and dot-paths. A folder or file it has no place for is moved under `references/`
+(`assets/` for a binary asset), within the format's caps, and the SKILL.md's references to it are
+rewritten (`relocation_plan`). The rest -- `evals/`, tests, build output, what would not fit -- is
+dropped and reported. An over-long description is clamped (`format.clamp_description`). The
+skill's name must be its folder's.
 
 Change detection is a digest of the kept files' tree entries (`github.hash_tree_snapshot`), not
 the commit SHA: a repository commits constantly, and an unrelated commit -- or a change to a file
@@ -33,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
@@ -93,6 +96,9 @@ logger = logging.getLogger("felix.skills.importer")
 # toward the publish gate only when an operator wrote them (`publish_gate.eval_counts_for_gate`),
 # so a third party's are dropped rather than carried as if they were.
 KEPT_DIRS = frozenset(BUNDLE_DIRS) - {"evals"}
+# Folders an import drops rather than moving under `references/`: a third party's test suite and
+# build output are for its own repository, not for an agent reading the skill.
+NEVER_MOVED = frozenset({"tests", "test", "__pycache__", "node_modules"})
 # Skills one browse lists and reads a SKILL.md head for: each costs a GitHub call on the
 # deployment's token. A repository with more is listed in part (`truncated`); name a path.
 MAX_BROWSE_SKILLS = 50
@@ -255,9 +261,9 @@ async def github_session(
 
 
 def keeps_path(path: str) -> bool:
-    """Whether an import keeps a file: `SKILL.md`, and any path the bundle format accepts
-    (`format.bundle_path_issue`) but `evals/` and dot-paths -- a binary asset only under
-    `assets/`, the one place the format takes one."""
+    """Whether an import keeps a file *where it is*: `SKILL.md`, and any path the bundle format
+    accepts (`format.bundle_path_issue`) but `evals/` and dot-paths -- a binary asset only under
+    `assets/`, the one place the format takes one. What it keeps elsewhere is `relocation_plan`'s."""
     if path == "SKILL.md":
         return True
     if bundle_path_issue(path) is not None:
@@ -270,26 +276,110 @@ def keeps_path(path: str) -> bool:
     return not is_binary_asset_path(path) or path.startswith("assets/")
 
 
-def sanitize_bundle(raw: Mapping[str, bytes]) -> tuple[dict[str, str], list[str]]:
-    """The bundle an import saves, and the paths it dropped.
+def _moved_to(path: str) -> str | None:
+    """Where a file the format has no place for goes, or None to drop it. A third party's skill
+    keeps its material in folders of its own (`themes/`, `forms/`) or beside its SKILL.md
+    (`reference.md`), which the SKILL.md then names; dropping it left a skill pointing at files
+    it did not have. Text moves under `references/`, a binary asset under `assets/`, the path
+    otherwise unchanged. `evals/`, dot-paths and `NEVER_MOVED` folders are never moved: the first
+    would count toward the gate as the tenant's (`KEPT_DIRS`), the rest are the repository's own."""
+    segments = path.split("/")
+    if segments[0] == "evals" or any(s.startswith(".") for s in segments):
+        return None
+    if any(s in NEVER_MOVED for s in segments[:-1]):
+        return None
+    if segments[0] in BUNDLE_DIRS:
+        return None  # a bundle directory the format already judged, and refused
+    dest = f"assets/{path}" if is_binary_asset_path(path) else f"references/{path}"
+    return dest if bundle_path_issue(dest) is None else None
 
-    Kept paths per `keeps_path`; a binary asset becomes base64, as `binary.py` carries it; a text
-    file that is not UTF-8 is dropped; the SKILL.md description is clamped.
+
+def relocation_plan(sizes: Mapping[str, int]) -> dict[str, str]:
+    """Every file an import keeps, from its path in the source to its path in the bundle: the
+    same path for one the format takes as it is (`keeps_path`), `references/<path>` or
+    `assets/<path>` for one it has no place for (`_moved_to`). One plan for the import, the change
+    digest and the upstream diff, so the three agree on every path.
+
+    ``sizes`` is each source file's size. A move is made only while the bundle stays inside the
+    format's caps, counting the files kept in place first: a folder that imported before, with
+    its extra material dropped, must not start being refused as `source_too_large` because that
+    material is kept now. What does not fit, and a move onto a path already taken, is dropped."""
+    ordered = sorted(sizes)
+    plan = {p: p for p in ordered if keeps_path(p)}
+    taken = set(plan.values())
+    count = len(plan)
+    total = sum(_bundle_size(p, sizes[p]) for p in plan)
+    for path in ordered:
+        if path in plan:
+            continue
+        dest = _moved_to(path)
+        if dest is None or dest in taken or sizes[path] > MAX_BINARY_ASSET_BYTES:
+            continue
+        cost = _bundle_size(dest, sizes[path])
+        if count + 1 > MAX_BUNDLE_FILES or total + cost > MAX_BUNDLE_BYTES:
+            continue
+        plan[path] = dest
+        taken.add(dest)
+        count += 1
+        total += cost
+    return plan
+
+
+def _link_patterns(moved: Mapping[str, str]) -> list[tuple[re.Pattern[str], str]]:
+    """The SKILL.md references a move breaks, with what replaces each: a moved folder named with
+    a trailing slash (`themes/`, `./themes/x.md`), and a moved root file named in full
+    (`reference.md`). Bounded so that `references/themes/` and `my-themes/` are left alone; a root
+    file is rewritten only when its name has an extension, so a bare word in prose never is."""
+    patterns: list[tuple[re.Pattern[str], str]] = []
+    folders = sorted({src.split("/", 1)[0] for src in moved if "/" in src})
+    for folder in folders:
+        prefix = (
+            "assets"
+            if all(dest.startswith("assets/") for src, dest in moved.items() if src.startswith(f"{folder}/"))
+            else "references"
+        )
+        patterns.append((re.compile(rf"(?<![\w./-])(?:\./)?{re.escape(folder)}/"), f"{prefix}/{folder}/"))
+    for src, dest in sorted(moved.items()):
+        if "/" not in src and "." in src:
+            patterns.append((re.compile(rf"(?<![\w./-])(?:\./)?{re.escape(src)}(?![\w/-])"), dest))
+    return patterns
+
+
+def rewrite_links(skill_md: str, moved: Mapping[str, str]) -> str:
+    """``skill_md`` with every reference to a moved file pointed at where it now is."""
+    for pattern, replacement in _link_patterns(moved):
+        skill_md = pattern.sub(lambda _m, r=replacement: r, skill_md)
+    return skill_md
+
+
+def sanitize_bundle(
+    raw: Mapping[str, bytes], plan: Mapping[str, str] | None = None
+) -> tuple[dict[str, str], list[str]]:
+    """The bundle an import saves, keyed by bundle path, and the source paths it dropped.
+
+    Kept and placed per ``plan`` (`relocation_plan` of ``raw`` when none is given -- pass the
+    plan of the whole folder when ``raw`` is part of it, so the SKILL.md is rewritten alike); a
+    binary asset becomes base64, as `binary.py` carries it; a text file that is not UTF-8 is
+    dropped; the SKILL.md description is clamped and its references to moved files rewritten.
     """
+    if plan is None:
+        plan = relocation_plan({path: len(data) for path, data in raw.items()})
     files: dict[str, str] = {}
     dropped: list[str] = []
     for path, data in sorted(raw.items()):
-        if not keeps_path(path):
+        dest = plan.get(path)
+        if dest is None:
             dropped.append(path)
-        elif is_binary_asset_path(path):
-            files[path] = encode_base64(data)
+        elif is_binary_asset_path(dest):
+            files[dest] = encode_base64(data)
         else:
             try:
-                files[path] = data.decode("utf-8")
+                files[dest] = data.decode("utf-8")
             except UnicodeDecodeError:
                 dropped.append(path)
     if "SKILL.md" in files:
-        files["SKILL.md"] = clamp_description(files["SKILL.md"])
+        moved = {src: dest for src, dest in plan.items() if src != dest}
+        files["SKILL.md"] = rewrite_links(clamp_description(files["SKILL.md"]), moved)
     return files, dropped
 
 
@@ -323,7 +413,9 @@ def _frontmatter(skill_md: bytes) -> dict[str, Any]:
 
 def _folder_digest(tree: list[TreeEntry], source_path: str) -> str:
     """The digest an import of this folder would record: over the files it keeps."""
-    return hash_tree_snapshot(e for e in skill_file_entries(tree, source_path) if keeps_path(e.path))
+    entries = skill_file_entries(tree, source_path)
+    plan = relocation_plan({e.path: e.size for e in entries})
+    return hash_tree_snapshot(e for e in entries if e.path in plan)
 
 
 async def _listing_meta(gh: GitHubReader, source: GitHubSource, entry: TreeEntry) -> tuple[str | None, str]:
@@ -413,6 +505,8 @@ class ImportResult:
     version: dict[str, Any]
     unchanged: bool
     dropped_files: list[str] = field(default_factory=list)
+    # Files the format has no place for, kept under `references/` or `assets/`: source -> bundle.
+    relocated_files: dict[str, str] = field(default_factory=dict)
     # The version a new draft was built on: the newest that was not rejected, before it.
     parent: str | None = None
 
@@ -421,6 +515,7 @@ class ImportResult:
 class _Fetched:
     files: dict[str, str]
     dropped: list[str]
+    relocated: dict[str, str]
     parent: str | None
     committed_at: int | None
 
@@ -435,6 +530,8 @@ class Snapshot:
     kept: list[TreeEntry]
     tree_hash: str
     first_seen: int
+    # Each kept file's source path to its bundle path (`relocation_plan`).
+    plan: dict[str, str] = field(default_factory=dict)
 
 
 def _slug(source: GitHubSource) -> str:
@@ -484,14 +581,15 @@ async def _snapshot(
     entries = skill_file_entries(resolved.tree, source.path)
     if not any(e.path == "SKILL.md" for e in entries):
         raise ImportSourceNotFound(f"{source.canonical} holds no SKILL.md at {resolved.commit}")
-    kept = [e for e in entries if keeps_path(e.path)]
+    plan = relocation_plan({e.path: e.size for e in entries})
+    kept = [e for e in entries if e.path in plan]
     tree_hash = hash_tree_snapshot(kept)
     first_seen = (
         await get_sighting_store(settings).first_seen(
             tenant_id, [(source.canonical, tree_hash)], at=session.cooldown.now
         )
     )[(source.canonical, tree_hash)]
-    return Snapshot(resolved, entries, kept, tree_hash, first_seen)
+    return Snapshot(resolved, entries, kept, tree_hash, first_seen, plan)
 
 
 async def checked_snapshot(
@@ -513,12 +611,16 @@ async def checked_snapshot(
     return snap
 
 
-async def read_text_files(session: Session, entries: list[TreeEntry]) -> dict[str, bytes]:
-    """The text files among ``entries`` as an import would store them (`sanitize_bundle`): a
-    clamped SKILL.md description, and text that is not UTF-8 left out. Each read is checked
-    against its git object id and charged, as an import's is."""
+async def read_text_files(
+    session: Session, entries: list[TreeEntry], plan: Mapping[str, str]
+) -> dict[str, bytes]:
+    """The text files among ``entries`` as an import would store them (`sanitize_bundle`), keyed
+    by bundle path under ``plan`` -- the whole folder's, so a SKILL.md read alone is rewritten as
+    an import would rewrite it: a clamped description, references to moved files pointed at
+    where they went, and text that is not UTF-8 left out. Each read is checked against its git
+    object id and charged, as an import's is."""
     bodies = await _gather_limited((lambda e=e: session.gh.blob(session.source, e)) for e in entries)
-    texts, _ = sanitize_bundle(dict(zip((e.path for e in entries), bodies, strict=True)))
+    texts, _ = sanitize_bundle(dict(zip((e.path for e in entries), bodies, strict=True)), plan)
     return {path: text.encode("utf-8") for path, text in texts.items()}
 
 
@@ -534,11 +636,12 @@ async def _fetch(
     if unchanged is not None:
         return snap, ImportResult(version=unchanged, unchanged=True)
     bodies = await _gather_limited((lambda e=e: gh.blob(source, e)) for e in snap.kept)
-    files, dropped = sanitize_bundle(dict(zip((e.path for e in snap.kept), bodies, strict=True)))
-    dropped = sorted({*dropped, *(e.path for e in snap.entries if not keeps_path(e.path))})
+    files, dropped = sanitize_bundle(dict(zip((e.path for e in snap.kept), bodies, strict=True)), snap.plan)
+    dropped = sorted({*dropped, *(e.path for e in snap.entries if e.path not in snap.plan)})
     return snap, _Fetched(
         files=files,
         dropped=dropped,
+        relocated={src: dest for src, dest in snap.plan.items() if src != dest and dest in files},
         parent=parent,
         # Provenance only: the pusher sets it, so nothing decides on it.
         committed_at=await gh.last_changed(source, snap.resolved.commit, source.path),
@@ -628,7 +731,13 @@ async def import_skill(
     await record_upstream(
         settings, tenant_id, parsed, snap, session.cooldown.now, head=saved, cooldown=session.cooldown
     )
-    return ImportResult(version=saved, unchanged=False, dropped_files=fetched.dropped, parent=fetched.parent)
+    return ImportResult(
+        version=saved,
+        unchanged=False,
+        dropped_files=fetched.dropped,
+        relocated_files=fetched.relocated,
+        parent=fetched.parent,
+    )
 
 
 def state_of_snapshot(source: GitHubSource, snap: Snapshot, now: int) -> dict[str, Any]:
@@ -700,6 +809,8 @@ __all__ = [
     "keeps_path",
     "read_text_files",
     "record_upstream",
+    "relocation_plan",
+    "rewrite_links",
     "sanitize_bundle",
     "state_of_snapshot",
     "uncharged",
