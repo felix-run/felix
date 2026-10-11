@@ -1622,6 +1622,14 @@
           ],
           "default": null,
           "title": "Allow Hosts"
+        },
+        "credentials": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Credentials",
+          "type": "array"
         }
       },
       "title": "NetworkSpec",

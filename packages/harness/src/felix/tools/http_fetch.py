@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from felix.logging_setup import loggable
 from felix.manifests.schema import HttpFetchToolRef
 from felix.security.egress import safe_async_client
+from felix.security.egress_credentials import CredentialSet
 from felix.security.host_allowlist import EgressBound, check_host, url_host, within_prefix
 from felix.security.ssrf import BLOCKED_MESSAGE, EgressBlocked, assert_safe_outbound_url
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
@@ -201,8 +202,11 @@ class _HttpFetchExecutor:
         max_bytes: int = DEFAULT_MAX_BYTES,
         as_text: bool = True,
         egress: EgressBound = EgressBound(),
+        credentials: CredentialSet | None = None,
     ) -> None:
         self._egress = egress
+        # Attached by the transport, never by this tool: nothing here reads a value.
+        self._credentials = credentials
         self._path_prefix = path_prefix
         self._allow_http = allow_http
         self._timeout_s = timeout_ms / 1000
@@ -303,6 +307,7 @@ class _HttpFetchExecutor:
                 safe_async_client(
                     allow_http=self._allow_http,
                     egress=self._egress,
+                    credentials=self._credentials,
                     timeout=timeout,
                     follow_redirects=False,
                 ) as client,
@@ -370,6 +375,7 @@ def tools_from_http_fetch_refs(
     *,
     allow_http: bool = False,
     egress: EgressBound = EgressBound(),
+    credentials: CredentialSet | None = None,
 ) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
@@ -390,6 +396,7 @@ def tools_from_http_fetch_refs(
             max_bytes=int(ref.max_bytes or DEFAULT_MAX_BYTES),
             as_text=ref.format == "text",
             egress=egress,
+            credentials=credentials,
         )
         desc = ref.description or "Fetch a URL over HTTP(S) and return its contents."
         if ref.path_prefix:

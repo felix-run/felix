@@ -839,6 +839,12 @@ Storage and execution:
   Each worker polls for due fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 leaves only the
   once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,
   so a new run starts within about a second and one parked on an approval holds up no other
+- `spec.network.credentials: [github]` lets `http_fetch` call an authenticated API without the model
+  ever holding the key: the operator registers it in `FELIX_EGRESS_CREDENTIALS` (a JSON map of id →
+  `{host, path_prefix?, port?, header?, scheme?, secret, tenants}`), and the egress transport adds the
+  header to https requests for that exact host and path prefix, each redirect hop judged again. The
+  manifest must list the host in `network.allow_hosts`; an id not registered for the tenant fails
+  the compile. See `deploy/GOVERNANCE.md`.
 - `spec.execution.webhooks: [ops]` announces a durable run's end to operator-registered endpoints
   (`FELIX_WEBHOOK_ENDPOINTS`, a JSON map of id → `{url, secret, tenants, private?, hooks?}`): the worker
   POSTs `run.completed|failed|expired|dead` with the run view, signed per Standard Webhooks

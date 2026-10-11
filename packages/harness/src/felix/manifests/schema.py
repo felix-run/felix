@@ -1066,6 +1066,26 @@ class NetworkSpec(_Strict):
     """
 
     allow_hosts: list[str] | None = Field(default=None, max_length=MAX_REFS)
+    #: Operator-registered credentials (`FELIX_EGRESS_CREDENTIALS`) this agent's `http_fetch` may
+    #: send, by id: the egress transport adds them in transit, so the model never holds the key.
+    #: Each one's host must be in `allow_hosts`.
+    credentials: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+    @field_validator("credentials")
+    @classmethod
+    def _credential_ids(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
+                raise ValueError(f"network.credentials entry {name!r} is not a credential id")
+        return list(dict.fromkeys(v))
+
+    @model_validator(mode="after")
+    def _credentials_need_a_list(self) -> NetworkSpec:
+        if self.credentials and self.allow_hosts is None:
+            # An agent carrying authority has bounded egress, so what it reads with the key can only
+            # go where the list allows.
+            raise ValueError("network.credentials needs network.allow_hosts naming each credential's host")
+        return self
 
     @field_validator("allow_hosts")
     @classmethod
