@@ -140,8 +140,7 @@ EXPECTED = [
     "[tool error/invalid_arguments] symlinks are not followed in workspace paths: escape",
     "[tool error/invalid_arguments] path escapes workspace root",
     "[tool error/invalid_arguments] absolute paths are not allowed",
-    "[tool error/invalid_arguments] reserved path: .git/config "
-    "(inside .git or .felix-scopes, or an edit's temporary file)",
+    "[tool error/invalid_arguments] reserved path: .git/config (git's own files and the workspace's own)",
     "[tool error/invalid_arguments] b.txt already exists; rename_file never replaces anything -- "
     "choose another to_path, or delete the file there first",
     "[tool error/invalid_arguments] notes already exists; rename_file never replaces anything -- "
@@ -155,9 +154,8 @@ EXPECTED = [
     "[tool error/invalid_arguments] path escapes workspace root",
     "[tool error/invalid_arguments] the destination's directory is a file",
     "[tool error/invalid_arguments] reserved path: .git/hooks/pre-commit "
-    "(inside .git or .felix-scopes, or an edit's temporary file)",
-    "[tool error/invalid_arguments] reserved path: .git/config "
-    "(inside .git or .felix-scopes, or an edit's temporary file)",
+    "(git's own files and the workspace's own)",
+    "[tool error/invalid_arguments] reserved path: .git/config (git's own files and the workspace's own)",
 ]
 
 

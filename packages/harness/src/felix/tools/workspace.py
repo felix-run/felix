@@ -607,14 +607,18 @@ async def _edit_file(args: EditFileArgs) -> ToolOutput:
     )
 
 
+def _reserved(parts: list[str]) -> bool:
+    """Whether a model may not write, delete or rename the path `parts`: anything the file pane
+    hides (`pane_hides`) and any `.gitattributes`. Compared case-folded, because a
+    case-insensitive filesystem (macOS by default) treats `.GIT` as `.git`."""
+    folded = [part.casefold() for part in parts]
+    return any(pane_hides(part) for part in folded) or folded[-1:] == [".gitattributes"]
+
+
 def writable_file(path: str) -> None:
-    """Refuse, as ValueError, a path a model's write may not touch: anything inside `.git`, and
-    any `.gitattributes`. Both decide what git runs -- hooks, and filter, diff and merge drivers
-    by a name the repository picks -- so letting the model write them would turn any allowlisted
-    git command into running whatever it wrote (`deploy/GOVERNANCE.md`, *Shell tools*)."""
-    parts = workspace_parts(path)
-    if ".git" in parts or (parts and parts[-1] == ".gitattributes"):
-        raise ValueError(f"reserved path: {path} (git's own files decide what git runs)")
+    """Refuse, as ValueError, a path a model's write may not touch (`_reserved`)."""
+    if _reserved(workspace_parts(path)):
+        raise ValueError(f"reserved path: {path} (git's own files and the workspace's own)")
 
 
 def _changeable_file(path: str) -> None:
@@ -629,8 +633,8 @@ def _changeable_file(path: str) -> None:
     parts = workspace_parts(path)
     if not parts:
         raise NotAFileError(".")  # the root: a directory, and the one every other path is under
-    if any(pane_hides(part) for part in parts):
-        raise ValueError(f"reserved path: {path} (inside .git or .felix-scopes, or an edit's temporary file)")
+    if _reserved(parts):
+        raise ValueError(f"reserved path: {path} (git's own files and the workspace's own)")
 
 
 async def _delete_file(args: DeleteFileArgs) -> ToolOutput:
