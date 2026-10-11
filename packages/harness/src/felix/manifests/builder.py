@@ -13,8 +13,8 @@ from felix.auth.context import AuthContext
 from felix.context import try_get_context
 from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
-from felix.governance.image_screening import ImageScreener, screen_session_strategy
-from felix.governance.inbound import replay_screener, tool_image_screener
+from felix.governance.image_screening import ImageScreener
+from felix.governance.inbound import tool_image_screener
 from felix.governance.judges import judge_calls_out, judge_score
 from felix.governance.permission_mode import (
     EXIT_PLAN_TOOL_NAME,
@@ -54,6 +54,7 @@ from felix.patterns.registry import (
 )
 from felix.patterns.types import Agent
 from felix.security.host_allowlist import EgressBound, hosts_outside
+from felix.session.clearing import model_view_strategy
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
@@ -1751,7 +1752,8 @@ async def build_agent(
         # Every render of history screens its images, whoever renders it. Wrapping what the
         # enclosing compile already wrapped is what makes a router's screen hold for the
         # children it forwards the thread to: their own screen adds to it, never replaces it.
-        session_strategy = screen_session_strategy(deps.session_strategy, replay_screener(m, deps.settings))
+        # Stale tool results are stubbed first, when the manifest asks (`session/clearing.py`).
+        session_strategy = model_view_strategy(deps.session_strategy, m, deps.settings)
 
         if m.spec.delegation is not None and m.spec.sub_agents:
             # `sub_agents` makes the pattern a composite that binds no tools of its own, so a

@@ -748,6 +748,12 @@ Sessions and skills:
   rejects a request for length anyway. When the kept window starts mid-turn, that turn's opening
   user message is kept verbatim (up to 16,000 characters) and its earlier steps get a separate,
   smaller summary, so the request a long turn is working on is never reduced to a paraphrase
+- **Clearing stale tool results**: `spec.session.clear_tool_results: {keep_turns: 10, min_chars: 1000}`
+  (off by default) stubs, in what the model is sent, each older tool result over `min_chars` or
+  carrying an image. The newest `keep_turns` to `2 × keep_turns − 1` user messages stay whole: the
+  cut-off moves `keep_turns` at a time, so the cached prefix changes once a step, not every call.
+  The log keeps every result, a spilled one's stub names its artifact id, and what a caller sent is
+  never rewritten.
 
 A tool declares whether it may be re-run after a crash. A run that dies mid-tool leaves a call
 with no result, and the harness cannot tell from the outside whether the effect happened, so the

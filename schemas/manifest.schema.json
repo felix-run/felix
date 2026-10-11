@@ -2193,6 +2193,17 @@
           "default": false,
           "title": "Compact After Turn",
           "type": "boolean"
+        },
+        "clear_tool_results": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolResultClearing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "SessionSpec",
@@ -2762,6 +2773,27 @@
         }
       },
       "title": "SystemPrompt",
+      "type": "object"
+    },
+    "ToolResultClearing": {
+      "additionalProperties": false,
+      "description": "Stub old tool results in what the model is sent (`felix.session.clearing`): those behind\nthe newest `keep_turns` to `2 * keep_turns - 1` user messages, over `min_chars` or carrying an\nimage. The session log keeps them.",
+      "properties": {
+        "keep_turns": {
+          "default": 10,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Keep Turns",
+          "type": "integer"
+        },
+        "min_chars": {
+          "default": 1000,
+          "minimum": 0,
+          "title": "Min Chars",
+          "type": "integer"
+        }
+      },
+      "title": "ToolResultClearing",
       "type": "object"
     },
     "ToolsRetrievalSpec": {
