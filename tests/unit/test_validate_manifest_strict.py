@@ -42,7 +42,8 @@ def _write(tmp_path: Path, name: str, *, gate_delete: bool) -> Path:
 
 def _run(*args: str) -> tuple[int, str]:
     result = CliRunner().invoke(app, ["validate-manifest", *args, "--no-resolve-egress"])
-    return result.exit_code, " ".join(result.output.split())  # rich wraps long lines
+    # Rich wraps to the console width, mid-path included, so compare with no whitespace at all.
+    return result.exit_code, "".join(result.output.split())
 
 
 def test_a_warning_passes_by_default(tmp_path: Path) -> None:
@@ -56,7 +57,7 @@ def test_a_warning_fails_under_strict(tmp_path: Path) -> None:
     assert code == 1, out
     # Still reported in full, still `ok` as far as the store is concerned.
     assert "warning" in out and "delete_file" in out and "`gap-write`" in out, out
-    assert "ok" in out and "--strict" in out, out
+    assert "gap.yaml(gap)" in out and "--strict" in out, out
 
 
 def test_strict_passes_a_manifest_with_no_warning(tmp_path: Path) -> None:
@@ -75,8 +76,9 @@ def test_every_path_is_reported_before_the_exit(tmp_path: Path) -> None:
         code, out = _run(*args)
         assert code == expected, out
         assert "`first-write`" in out and "`second-write`" in out, out
-        assert out.count("add delete_file to rule") == 2, out
-        assert out.count(" ok ") == 3, out
+        assert out.count("adddelete_filetorule") == 2, out
+        for name in ("first", "clean", "second"):
+            assert f"{name}.yaml({name})" in out, out  # its `ok` line
 
 
 def test_an_invalid_path_does_not_hide_the_others(tmp_path: Path) -> None:
@@ -86,8 +88,8 @@ def test_an_invalid_path_does_not_hide_the_others(tmp_path: Path) -> None:
 
     code, out = _run(str(broken), str(gap))
     assert code == 1, out
-    assert "invalid" in out and "broken.yaml" in out, out
-    assert "`gap-write`" in out and "ok" in out, out
+    assert "invalid" in out and "broken.yaml:" in out, out
+    assert "`gap-write`" in out and "gap.yaml(gap)" in out, out
 
 
 def test_no_path_is_a_usage_error() -> None:
