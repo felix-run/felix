@@ -67,14 +67,15 @@ def test_browse_lists_what_add_takes(served: FakeRepos) -> None:
     assert f"{SOURCE}\tinvoice-triage\tRoute invoices to the right queue." in result.output
 
 
-def test_add_saves_a_draft_and_says_what_it_dropped(served: FakeRepos) -> None:
+def test_add_saves_a_draft_and_says_what_it_moved(served: FakeRepos) -> None:
     result = _run("add", SOURCE)
     assert result.exit_code == 0, result.output
     assert (
         "invoice-triage@0.1.0 saved as a draft from github:acme/skills/skills/invoice-triage @ "
         in result.output
     )
-    assert "dropped examples/one.md" in result.output
+    # A folder the format has no place for is kept under references/, and said so.
+    assert "moved examples/one.md -> references/examples/one.md" in result.output
     assert "then publish with POST /skill-library/invoice-triage/versions/0.1.0/publish" in result.output
 
     again = _run("add", SOURCE)
@@ -114,6 +115,9 @@ def _moved(served: FakeRepos, queues: bytes) -> str:
         "acme/skills",
         {
             "skills/invoice-triage/SKILL.md": skill_md("invoice-triage"),
+            # Still there: the import keeps it (under references/), so leaving it out would be
+            # a second change in every diff.
+            "skills/invoice-triage/examples/one.md": b"example\n",
             "skills/invoice-triage/references/q.md": queues,
         },
     )

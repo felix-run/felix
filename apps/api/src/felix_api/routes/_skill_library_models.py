@@ -353,10 +353,13 @@ class SkillImportOut(SkillWriteOut):
     # True when the library's newest version already holds exactly these files (the skill
     # folder's tree is unchanged): nothing was saved, and this is that version.
     unchanged: bool
-    # Files of the skill folder the import left out: anything outside `SKILL.md`, `plugin.json`,
-    # `scripts/`, `references/` and `assets/` (an `evals/` included), dot-paths, a binary file
-    # outside `assets/`, and text that is not UTF-8.
+    # Files of the skill folder the import left out: `evals/`, dot-paths, text that is not UTF-8,
+    # and what would not fit the bundle's caps or would land on a path already taken.
     dropped_files: list[str]
+    # Files the bundle format has no place for, kept anyway: each source path to where it went,
+    # `references/<path>` for text, `assets/<path>` for a binary asset. The SKILL.md's
+    # references to them are rewritten to match.
+    relocated_files: dict[str, str] = {}
 
 
 class BrowseItemOut(BaseModel):

@@ -302,12 +302,13 @@ def test_sanitising_keeps_the_bundle_layout_and_reports_the_rest() -> None:
         "assets/logo.png",
         "plugin.json",
         "references/a.md",
+        # A folder the format has no place for is kept under references/, not dropped.
+        "references/examples/foo.md",
         "scripts/run.sh",
     ]
     assert files["assets/logo.png"] == "iVBORw==", "a binary asset travels base64"
     assert dropped == [
         "evals/evals.json",
-        "examples/foo.md",
         "references/.cache/x",
         "references/latin1.md",
         "scripts/logo.png",
@@ -402,7 +403,7 @@ async def test_a_reimport_of_the_same_files_saves_nothing_even_across_commits(
     # An unrelated commit -- new SHA, same skill -- and a change to a file the import drops.
     files = dict(gh.repos[REPO].commits[gh.repos[REPO].refs["main"]])
     gh.push(REPO, {**files, "README.md": b"# skills, now with more words\n"})
-    gh.push(REPO, {**files, "skills/invoice-triage/examples/demo.md": b"# demo\n"})
+    gh.push(REPO, {**files, "skills/invoice-triage/evals/more.json": b"[]\n"})
     before = len(gh.requests)
 
     again = await _import(settings, store, gh)
@@ -1394,3 +1395,90 @@ async def test_browse_caps_how_many_skills_it_reads(
         listing = await _browse(settings, "acme", f"github:{REPO}", http=http)
     assert [i["name"] for i in listing["items"]] == ["s0", "s1"] and listing["truncated"] is True
     assert sum("/git/blobs/" in p for p in gh.paths()) == 2
+
+
+# -- files the format has no place for ----------------------------------------------------------
+
+
+def test_a_folder_of_its_own_is_kept_under_references_and_a_binary_asset_under_assets() -> None:
+    plan = importer.relocation_plan(
+        {
+            "SKILL.md": 10,
+            "references/a.md": 1,
+            "themes/arctic.md": 1,
+            "themes/deep/ocean.md": 1,
+            "reference.md": 1,
+            "showcase.pdf": 1,
+            "evals/x.json": 1,
+            ".github/ci.yml": 1,
+            "scripts/logo.png": 1,
+            "tests/test_it.py": 1,
+            "themes/__pycache__/x.pyc": 1,
+        }
+    )
+    assert plan == {
+        "SKILL.md": "SKILL.md",
+        "references/a.md": "references/a.md",
+        "themes/arctic.md": "references/themes/arctic.md",
+        "themes/deep/ocean.md": "references/themes/deep/ocean.md",
+        "reference.md": "references/reference.md",
+        "showcase.pdf": "assets/showcase.pdf",
+    }, "evals/, dot-paths, tests, build output and a bundle directory's refusal are never moved"
+
+
+def test_a_move_onto_a_path_already_taken_is_not_made() -> None:
+    plan = importer.relocation_plan({"SKILL.md": 1, "a.md": 1, "references/a.md": 1})
+    assert plan == {"SKILL.md": "SKILL.md", "references/a.md": "references/a.md"}
+
+
+def test_moves_stop_at_the_bundle_caps_rather_than_making_the_import_too_large() -> None:
+    from felix.skills.format import MAX_BUNDLE_FILES
+
+    sizes = {"SKILL.md": 1, **{f"examples/{i:04}.md": 1 for i in range(MAX_BUNDLE_FILES + 20)}}
+    plan = importer.relocation_plan(sizes)
+    assert len(plan) == MAX_BUNDLE_FILES
+    assert plan["SKILL.md"] == "SKILL.md", "what is kept in place is counted first"
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("Pick one from themes/ and apply it.", "Pick one from references/themes/ and apply it."),
+        ("Read `./themes/arctic.md`.", "Read `references/themes/arctic.md`."),
+        ("See [the reference](reference.md).", "See [the reference](references/reference.md)."),
+        ("Open showcase.pdf for examples.", "Open assets/showcase.pdf for examples."),
+        # Left alone: already where it went, a different folder, and a bare word in prose.
+        ("references/themes/arctic.md", "references/themes/arctic.md"),
+        ("my-themes/x.md", "my-themes/x.md"),
+        ("The reference is short.", "The reference is short."),
+    ],
+)
+def test_the_skill_md_is_pointed_at_where_the_moved_files_went(before: str, after: str) -> None:
+    moved = {
+        "themes/arctic.md": "references/themes/arctic.md",
+        "reference.md": "references/reference.md",
+        "showcase.pdf": "assets/showcase.pdf",
+    }
+    assert importer.rewrite_links(before, moved) == after
+
+
+async def test_an_import_keeps_a_skills_own_folder_and_says_where_it_went(
+    settings: Settings, store: MemoryObjectStore, gh: FakeRepos
+) -> None:
+    gh.push(
+        REPO,
+        {
+            "skills/invoice-triage/SKILL.md": skill_md(NAME, body="# Triage\n\nPick a queue from queues/.\n"),
+            "skills/invoice-triage/queues/finance.md": b"# Finance\n",
+        },
+    )
+
+    result = await _import(settings, store, gh)
+
+    assert result.relocated_files == {"queues/finance.md": "references/queues/finance.md"}
+    assert result.dropped_files == []
+    files = await library.read_version_files(
+        settings, "acme", NAME, result.version["version"], object_store=store, owner=ORG_OWNER
+    )
+    assert files["references/queues/finance.md"] == "# Finance\n"
+    assert "Pick a queue from references/queues/." in files["SKILL.md"]

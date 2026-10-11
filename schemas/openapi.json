@@ -3926,6 +3926,14 @@
             "title": "Reason",
             "type": "string"
           },
+          "relocated_files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Relocated Files",
+            "type": "object"
+          },
           "review_checks": {
             "items": {
               "$ref": "#/components/schemas/ReviewCheckOut"
@@ -4654,6 +4662,14 @@
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "relocated_files": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Relocated Files",
+            "type": "object"
           },
           "review_checks": {
             "items": {
@@ -14991,7 +15007,7 @@
     },
     "/skill-library/-/import": {
       "post": {
-        "description": "Fetch the skill at `source`, pinned to the commit `ref` resolves to, and save it as a draft.\n\nA new skill starts at 0.1.0. A skill the library already imported from the same source gets\na new version -- unless its files are unchanged, which answers 200 with `unchanged: true`\nand the existing version, saving nothing. A name the library holds from anywhere else is 409\n`origin_mismatch`. `dropped_files` lists what the import left out.\n\nNever published here: `publish: true` is 422 `publish_not_allowed`. Third-party text is\nreviewed first, then published with `POST /skill-library/{name}/versions/{version}/publish`.",
+        "description": "Fetch the skill at `source`, pinned to the commit `ref` resolves to, and save it as a draft.\n\nA new skill starts at 0.1.0. A skill the library already imported from the same source gets\na new version -- unless its files are unchanged, which answers 200 with `unchanged: true`\nand the existing version, saving nothing. A name the library holds from anywhere else is 409\n`origin_mismatch`. `dropped_files` lists what the import left out; `relocated_files` maps each\nfile it moved under `references/` or `assets/` to where it went.\n\nNever published here: `publish: true` is 422 `publish_not_allowed`. Third-party text is\nreviewed first, then published with `POST /skill-library/{name}/versions/{version}/publish`.",
         "operationId": "import_from_source_skill_library___import_post",
         "requestBody": {
           "content": {
