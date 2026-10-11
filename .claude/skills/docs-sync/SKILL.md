@@ -38,8 +38,8 @@ Full surface → page table: [references/page-map.md](references/page-map.md).
 
 ## Stale-truth traps specific to Felix
 
-- The runtime is **self-hosted Python** — no Cloudflare Workers / Durable Objects / Hyperdrive /
-  R2-binding compute. Cloudflare DNS/CDN/TLS/WAF in front of an origin is fine.
+- The runtime is **self-hosted Python** (Compose/Helm, `:8080`); a page describing it as a
+  Workers/Durable Objects service is describing the retired TypeScript prototype.
 - Default object store is **`fs`**, not S3/MinIO. MinIO is `--profile full` only.
 - **Postgres is the system of record**; the warehouse is optional append-only spill, default `none`.
 - **`felix-scheduler` is required alongside `felix-worker`** or no cron task fires.
