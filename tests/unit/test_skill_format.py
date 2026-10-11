@@ -232,6 +232,13 @@ def test_plugin_json_is_allowed_at_the_root() -> None:
     assert validate_skill_bundle(bundle, "my-skill").valid
 
 
+@pytest.mark.parametrize("path", ["LICENSE", "LICENSE.md", "LICENSE.txt"])
+def test_a_license_file_is_allowed_at_the_root(path: str) -> None:
+    bundle = create_skill_template("my-skill", "A skill that came with its license.")
+    bundle[path] = "MIT License"
+    assert validate_skill_bundle(bundle, "my-skill").valid
+
+
 _UNEXPECTED = "unexpected file path; use scripts/, references/, assets/, or evals/"
 _SEGMENT = "each path segment must be 1-128 characters of A-Z, a-z, 0-9, '.', '_' or '-'"
 _ESCAPE = "file path must be relative and must not contain '..' or a leading slash"
@@ -247,6 +254,9 @@ _ESCAPE = "file path must be relative and must not contain '..' or a leading sla
         ("docs/guide.md", _UNEXPECTED),
         ("Scripts/run.sh", _UNEXPECTED),  # case-sensitive
         ("PLUGIN.JSON", _UNEXPECTED),
+        # A license file only by its usual names.
+        ("license.txt", _UNEXPECTED),
+        ("COPYING", _UNEXPECTED),
         ("scripts/SKILL.md", "SKILL.md belongs only at the bundle root"),
         ("scripts/run me.sh", _SEGMENT),
         ("scripts/café.sh", _SEGMENT),
