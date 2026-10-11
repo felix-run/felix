@@ -153,7 +153,8 @@ async def test_browser_content_and_guards(monkeypatch: pytest.MonkeyPatch) -> No
     [script] = context.init_scripts
     assert "RTCPeerConnection" in script and "WebTransport" in script, "TURN over TCP needs no UDP"
     assert "writable: false" in script
-    assert '"Worker"' not in script, "an unrestricted agent's pages keep their workers"
+    # A worklet's module fetch never reaches `route`; Shared Storage worklets are the other door.
+    assert "Worklet.prototype, 'addModule'" in script and "sharedStorage" in script
 
     blocked = await tools[0].executor.execute({"url": "https://evil.example/x"}, ToolInvocationCtx())
     assert "must start with" in (blocked if isinstance(blocked, str) else blocked.content)

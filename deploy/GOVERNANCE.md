@@ -797,27 +797,15 @@ spec:
   `egress_blocked` line as any refusal (`felix_egress_blocked{reason="not in allow_hosts"}`).
   The list is checked *before* anything resolves: a lookup of `<secret>.attacker.example` is a
   leak to that name's nameserver even when the request is then refused.
-- **The browser** checks the navigation, then guards its whole browser context: every request
-  any page in it makes, popups (`window.open`) included, and every WebSocket (a `ws`/`wss` URL is
-  checked as the `http`/`https` handshake it is). The channels no interceptor sees are shut:
-  service workers are blocked; `RTCPeerConnection` and `WebTransport` are removed (not writable,
-  not configurable) from every page, frame and popup, since a TURN server reached over TCP
-  carries data the UDP flag (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`, also
-  set) does not stop, and WebTransport sends QUIC to any address whatever `--disable-quic` says.
-  An init script does not run in a worker, where WebTransport also exists, so under a list
-  `Worker` and `SharedWorker` are removed too and a page that needs them degrades. The browser
-  must be Chromium (`binding: chromium`), where these are enforced; another engine is refused at
-  write and compile. A page's CDN must be listed or its assets are aborted. A model URL
-  containing a backslash, whitespace or a control character is refused: Chromium's parser and
-  the checker's disagree on them. Still advisory: DNS prefetch and preconnect by the page, which
-  are lookups and bare connections rather than requests. The interceptor bounds where the browser
-  sends requests; a Chromium-level proxy enforcing the bound would bound every socket, and is the
-  stronger design (`docs/ROADMAP.md`). Without a list, a page's workers keep WebTransport, which
-  reaches any address over UDP outside the SSRF guard: block UDP egress from the API and worker at
-  the network layer if browser agents run unlisted.
+- **Not the browser.** A manifest with `allow_hosts` and `browser_tools` is refused at write, and
+  a child with `browser_tools` under a parent's list is refused at compile. A request interceptor
+  cannot confine Chromium: review found a page reaching unlisted hosts through WebRTC over TCP,
+  WebTransport in a worker, and worklet module fetches, none of which `route` sees. A browser
+  held to a list would look confined and not be; one behind a local proxy enforcing the bound is
+  the follow-up (`docs/ROADMAP.md`).
 - **Checked against what the manifest names.** An `mcp_servers` or `peers` URL, a container
-  `gateway_url`, or an `http_tools`/`browser_tools` `path_prefix` on a host the list does not
-  allow is refused when the manifest is written (`Spec.declared_urls`).
+  `gateway_url`, or an `http_tools` `path_prefix` on a host the list does not allow is refused
+  when the manifest is written (`Spec.declared_urls`).
 - **A2A peers are pinned.** Under a list, a `peer__*` tool loses its `manifest` argument: the
   agent that answers on the far side compiles there with no bound, so the model may not choose
   which one it is.
@@ -843,7 +831,21 @@ spec:
   GET away). Only `*.<top-level domain>` is refused. On a multi-tenant host, pair the list with an
   `http_tools` `path_prefix`, or treat the list as a reachability control rather than an
   exfiltration one. A prefix is compared with the path httpx actually sends: `..` segments are
-  resolved first, and an encoded dot segment or slash (`%2e%2e`, `%2f`), a backslash, or a `..;` segment is refused.
+  resolved first, and an encoded dot segment or slash (`%2e%2e`, `%2f`), a backslash, or a `..;`
+  segment is refused.
+
+**Every browser, list or not, shuts the channels its interceptor cannot see** -- each is a way
+past the SSRF check that guards every request. The guard sits on the whole browser context, popups
+included, and on WebSockets (a `ws`/`wss` URL is checked as the `http`/`https` handshake it is).
+Service workers are blocked. `RTCPeerConnection`, `WebTransport`, `sharedStorage` and
+`Worklet.prototype.addModule` are removed (not writable, not configurable) from every page, frame
+and popup, and WebRTC's UDP is disabled (`--force-webrtc-ip-handling-policy=disable_non_proxied_udp`)
+-- a TURN server over TCP needs the API removal, a worklet's module fetch never reaches `route`. A
+model URL containing a backslash, whitespace or a control character is refused, since Chromium's
+parser and the checker's disagree on them. **Still open:** an init script does not run in a worker,
+and a worker's `WebTransport` sends QUIC over UDP to any address outside the SSRF guard. Block UDP
+egress from the API and worker at the network layer where browser agents run on shared
+infrastructure.
 
 **What is still advisory:** cross-host subresources and redirects *in the browser tool*.
 Those keep resolving normally and are checked per request but not pinned, because denying

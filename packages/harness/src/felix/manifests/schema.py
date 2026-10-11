@@ -1433,7 +1433,6 @@ class Spec(_Strict):
             *(r.url for r in self.peers),
             *(r.gateway_url for r in self.containers),
             *(r.path_prefix for r in self.http_tools if r.path_prefix),
-            *(r.path_prefix for r in self.browser_tools if r.path_prefix),
         ]
 
     @model_validator(mode="after")
@@ -1444,11 +1443,12 @@ class Spec(_Strict):
             return self
         from felix.security.host_allowlist import HostAllowlist, hosts_outside
 
-        engines = sorted({r.binding for r in self.browser_tools if r.binding != "chromium"})
-        if engines:
+        if self.browser_tools:
+            # A page reaches hosts through channels no request interceptor sees (WebTransport in a
+            # worker, among others); held to a list, the browser would look confined and not be.
             raise ValueError(
-                f"network.allow_hosts needs browser_tools on chromium, not {', '.join(engines)}: "
-                "the channels it shuts in the browser are shut in Chromium"
+                "network.allow_hosts cannot be combined with browser_tools: the browser cannot be "
+                "held to a host list yet (deploy/GOVERNANCE.md)"
             )
         outside = hosts_outside(HostAllowlist(tuple(self.network.allow_hosts)), self.declared_urls())
         if outside:

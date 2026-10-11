@@ -157,11 +157,10 @@ def _check_declared_egress(m: Manifest, egress: EgressBound) -> None:
     """Refuse a manifest whose own URLs (`Spec.declared_urls`) reach a host its bound does not
     allow. The schema checked them against the manifest's own list at write; a parent's list, or a
     background child's inherited one, is only known at compile."""
-    engines = sorted({r.binding for r in m.spec.browser_tools if r.binding != "chromium"})
-    if egress.restricted and engines:
+    if egress.restricted and m.spec.browser_tools:
         raise ValueError(
-            f"manifest '{m.metadata.name}' binds browser_tools on {', '.join(engines)} under an agent "
-            "with network.allow_hosts, which is enforced in the browser on chromium only"
+            f"manifest '{m.metadata.name}' binds browser_tools under an agent with network.allow_hosts; "
+            "the browser cannot be held to a host list yet"
         )
     outside = hosts_outside(egress, m.spec.declared_urls())
     if outside:
@@ -1868,7 +1867,7 @@ async def build_agent(
 
                 _append_unique_tools(
                     resolved,
-                    tools_from_browser_refs(list(m.spec.browser_tools), allow_http=allow_http, egress=egress),
+                    tools_from_browser_refs(list(m.spec.browser_tools), allow_http=allow_http),
                 )
             except Exception:
                 logger.warning("browser tool binding failed", exc_info=True)

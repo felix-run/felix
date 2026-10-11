@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from felix.manifests.schema import BrowserToolRef
 from felix.observability.metrics import record_counter
 from felix.security.egress import approved_addresses
-from felix.security.host_allowlist import EgressBound, check_host, url_host, within_prefix
+from felix.security.host_allowlist import within_prefix
 from felix.security.ssrf import EgressBlocked, assert_safe_outbound_url_async
 from felix.tools.types import (
     Tool,
@@ -58,28 +58,30 @@ _SAFE_HOSTNAME = re.compile(r"^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$")
 # are stripped or kept differently too. None belongs in a URL a model means, so it is refused.
 _AMBIGUOUS_URL = re.compile(r"[\\\s\x00-\x1f\x7f]")
 
-# Channels a page can open that no request interceptor sees. WebRTC reaches STUN/TURN servers of
-# the page's choosing -- over UDP, and over TCP when UDP is off -- and WebTransport sends QUIC
-# straight to any address, `--disable-quic` notwithstanding. So UDP is disabled for WebRTC and both
-# APIs are removed from every page, frame and popup. An init script does not run in a worker,
-# where WebTransport also lives, so under `allow_hosts` workers are removed as well (service
-# workers are blocked for every agent).
+# Channels a page can open that no request interceptor sees, each one a way past the SSRF check
+# `_install_egress_guard` runs on every request. WebRTC reaches STUN/TURN servers of the page's
+# choosing -- over UDP, and over TCP when UDP is off -- so UDP is disabled and the API removed.
+# WebTransport sends QUIC straight to any address. A worklet's module fetch (`audioWorklet`,
+# Shared Storage) never reaches `route`. All are removed from every page, frame and popup. An init
+# script does not run in a worker, where WebTransport also exists: that one is open, and
+# `deploy/GOVERNANCE.md` says what an operator does about it. It is why a browser cannot run under
+# `network.allow_hosts`: confining it needs a proxy every socket goes through, not an interceptor.
 _NO_WEBRTC_UDP = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
-_SIDE_CHANNEL_APIS = ("RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "WebTransport")
-_WORKER_APIS = ("Worker", "SharedWorker")
-
-
-def _remove_apis(names: tuple[str, ...]) -> str:
-    """An init script leaving each of `names` undefined -- not writable, not configurable --
-    in every page, frame and popup."""
-    import json
-
-    return (
-        f"for (const name of {json.dumps(list(names))}) {{\n"
-        "  try { Object.defineProperty(globalThis, name, "
-        "{ value: undefined, writable: false, configurable: false }); } catch (e) {}\n"
-        "}\n"
-    )
+_SIDE_CHANNEL_APIS = (
+    "RTCPeerConnection",
+    "webkitRTCPeerConnection",
+    "RTCDataChannel",
+    "WebTransport",
+    "sharedStorage",
+)
+_SIDE_CHANNELS_INIT = (
+    "for (const name of " + json.dumps(list(_SIDE_CHANNEL_APIS)) + ") {\n"
+    "  try { Object.defineProperty(globalThis, name, "
+    "{ value: undefined, writable: false, configurable: false }); } catch (e) {}\n"
+    "}\n"
+    "try { Object.defineProperty(Worklet.prototype, 'addModule', "
+    "{ value: undefined, writable: false, configurable: false }); } catch (e) {}\n"
+)
 
 
 def _socket_as_http(url: str) -> str:
@@ -117,10 +119,8 @@ class _BrowserExecutor:
         path_prefix: str,
         allow_http: bool,
         binding: str,
-        egress: EgressBound = EgressBound(),
     ) -> None:
         self._op = op
-        self._egress = egress
         self._timeout_ms = timeout_ms
         self._path_prefix = path_prefix
         self._allow_http = allow_http
@@ -133,9 +133,6 @@ class _BrowserExecutor:
         so a host whose nameserver blackholes queries would otherwise block the event loop
         per request — the same defect as resolving in a pydantic validator, on a hotter path.
         """
-        # The agent's own hosts first, and without resolving: the lookup below would otherwise
-        # send a refused name -- `<secret>.attacker.example` -- to the attacker's nameserver.
-        check_host(self._egress, url_host(url))
         await assert_safe_outbound_url_async(url, allow_http=self._allow_http)
 
     async def _check_url(self, url: str) -> None:
@@ -163,7 +160,7 @@ class _BrowserExecutor:
             try:
                 await self._check_egress(request.url)
             except ValueError:
-                # The check that refused has logged it (`check_host`, the SSRF guard); one line per
+                # The SSRF guard that refused has logged it; one line per
                 # refusal, so a page cannot double what it writes to the log.
                 record_counter("felix_browser_egress_blocked", {"reason": "request"})
                 await route.abort()
@@ -212,8 +209,7 @@ class _BrowserExecutor:
                     # One context, guarded as a whole, with service workers off: a worker's
                     # fetches bypass `route`, and a page could install one to send from.
                     context = await browser.new_context(service_workers="block")
-                    removed = _SIDE_CHANNEL_APIS + (_WORKER_APIS if self._egress.restricted else ())
-                    await context.add_init_script(_remove_apis(removed))
+                    await context.add_init_script(_SIDE_CHANNELS_INIT)
                     await self._install_egress_guard(context)
                     page = await context.new_page()
                     await page.goto(url, timeout=timeout, wait_until="domcontentloaded")
@@ -295,7 +291,6 @@ def tools_from_browser_refs(
     refs: list[BrowserToolRef],
     *,
     allow_http: bool = False,
-    egress: EgressBound = EgressBound(),
 ) -> list[Tool]:
     out: list[Tool] = []
     for ref in refs:
@@ -306,7 +301,6 @@ def tools_from_browser_refs(
             path_prefix=ref.path_prefix,
             allow_http=allow_http,
             binding=ref.binding,
-            egress=egress,
         )
         desc = ref.description or f"Browser {ref.op} via Playwright ({ref.binding or 'chromium'})."
         out.append(

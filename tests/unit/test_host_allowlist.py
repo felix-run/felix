@@ -35,7 +35,6 @@ from tests.support.loopback_http import respond as _respond
 from tests.support.loopback_http import serve as _serve
 
 BLOCKED = "http_fetch_error: egress_blocked: destination not permitted"
-BROWSER_BLOCKED = "browser_error: egress_blocked: destination not permitted"
 
 
 @pytest.fixture
@@ -167,9 +166,8 @@ DECLARED = [
     {"peers": [{"name": "p", "url": "https://peer.elsewhere.io"}]},
     {"containers": [{"name": "c", "gateway_url": "https://gw.elsewhere.io", "image": "x"}]},
     {"http_tools": [{"name": "f", "path_prefix": "https://docs.elsewhere.io/"}]},
-    {"browser_tools": [{"name": "b", "binding": "chromium", "path_prefix": "https://docs.elsewhere.io/"}]},
 ]
-DECLARED_IDS = ["mcp", "peer", "container", "http_tools", "browser_tools"]
+DECLARED_IDS = ["mcp", "peer", "container", "http_tools"]
 
 
 @pytest.mark.parametrize("spec", DECLARED, ids=DECLARED_IDS)
@@ -221,17 +219,6 @@ async def test_http_fetch_refuses_a_host_and_a_redirect_hop_outside_the_bound(lo
     assert direct == BLOCKED
     assert "SECRET" not in hop and BLOCKED in hop
     assert "other.test" not in lookups
-
-
-async def test_the_browser_refuses_before_resolving(lookups: list[str]) -> None:
-    """A lookup of `<secret>.attacker.example` is itself the leak: the list is checked first."""
-    ref = BrowserToolRef(name="browse", binding="chromium")
-    (tool,) = tools_from_browser_refs([ref], allow_http=True, egress=EgressBound().under(["allowed.test"]))
-    await tool.executor._check_egress("https://allowed.test/page")
-    with pytest.raises(ValueError, match="egress_blocked"):
-        await tool.executor._check_egress("https://sk-live-secret.attacker.test/pixel.gif")
-    assert await tool.executor.execute({"url": "https://sk-live-secret.attacker.test/"}) == BROWSER_BLOCKED
-    assert lookups == ["allowed.test"]
 
 
 @pytest.mark.parametrize(
@@ -309,23 +296,6 @@ async def test_the_builder_binds_http_fetch_to_the_list(lookups: list[str]) -> N
     assert refused == BLOCKED
 
 
-async def test_the_builder_binds_the_browser_to_the_list(
-    lookups: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Without the bound the call gets as far as launching: here, a missing Playwright."""
-    from felix.tools import browser as browser_mod
-
-    def _absent() -> Any:
-        raise ImportError("no playwright")
-
-    monkeypatch.setattr(browser_mod, "_load_playwright", _absent)
-    browse = {"browser_tools": [{"name": "browse", "binding": "chromium"}]}
-    bound, _ = await _compile(_manifest(network={"allow_hosts": ["allowed.test"]}, **browse))
-    open_, _ = await _compile(_manifest(**browse))
-    assert await _run(_tool(bound, "browse"), {"url": "https://other.test/"}) == BROWSER_BLOCKED
-    assert "Playwright is not installed" in await _run(_tool(open_, "browse"), {"url": "https://other.test/"})
-
-
 async def test_a_background_childs_inherited_lists_bind_its_compile(lookups: list[str]) -> None:
     """Its parents' lists ride the run; `build_tenant_agent` seeds the root of its compile."""
     from felix.runtime import build_tenant_agent
@@ -389,7 +359,23 @@ async def test_an_internationalised_host_is_matched_by_its_punycode(monkeypatch:
             assert (await client.get(f"http://münchen.de:{_port(base)}/")).text == "OK"
 
 
-# --- the browser's WebSocket route ------------------------------------------------------
+# --- the browser: refused under a list, SSRF-guarded everywhere --------------------------
+
+
+def test_a_browser_cannot_be_held_to_a_list() -> None:
+    """A page reaches hosts through channels no interceptor sees: under a list, it would look
+    confined and not be. Refused until the browser runs behind a proxy enforcing the bound."""
+    browse = {"browser_tools": [{"name": "b", "binding": "chromium"}]}
+    with pytest.raises(ManifestParseError, match="browser_tools"):
+        _manifest(network={"allow_hosts": ["*.example.com"]}, **browse)
+    _manifest(**browse)
+
+
+async def test_a_child_browser_under_a_parents_list_is_refused_at_compile() -> None:
+    child = _manifest("helper", browser_tools=[{"name": "b", "binding": "chromium"}])
+    with pytest.raises(ValueError, match="browser_tools"):
+        await _compile(_lead("lead", ["helper"], ["*.example.com"]), {"helper": child})
+    await _compile(_lead("lead", ["helper"], None), {"helper": child})
 
 
 class _Socket:
@@ -405,7 +391,7 @@ class _Socket:
         self.closed = True
 
 
-async def _socket_handler(egress: EgressBound) -> Any:
+async def _socket_handler(*, allow_http: bool) -> Any:
     class _Context:
         async def route(self, _pattern: str, _handler: Any) -> None:
             return None
@@ -413,102 +399,19 @@ async def _socket_handler(egress: EgressBound) -> Any:
         async def route_web_socket(self, _pattern: str, handler: Any) -> None:
             self.socket_handler = handler
 
-    (tool,) = tools_from_browser_refs(
-        [BrowserToolRef(name="b", binding="chromium")], allow_http=True, egress=egress
-    )
+    (tool,) = tools_from_browser_refs([BrowserToolRef(name="b", binding="chromium")], allow_http=allow_http)
     context = _Context()
     await tool.executor._install_egress_guard(context)
     return context.socket_handler
 
 
-@pytest.mark.parametrize("scheme", ["ws", "wss"])
-async def test_a_websocket_to_a_listed_host_connects_and_others_close(
-    scheme: str, lookups: list[str]
-) -> None:
-    handler = await _socket_handler(EgressBound().under(["allowed.test"]))
-    allowed, other = _Socket(f"{scheme}://allowed.test/socket"), _Socket(f"{scheme}://other.test/socket")
-    await handler(allowed)
-    await handler(other)
-    assert allowed.connected and not allowed.closed
-    assert other.closed and not other.connected
-    assert "other.test" not in lookups
-
-
-async def test_an_unrestricted_browser_keeps_its_websockets(lookups: list[str]) -> None:
-    """The SSRF check speaks http(s): a `wss://` URL handed to it as-is refused every socket."""
-    handler = await _socket_handler(EgressBound())
-    sock = _Socket("wss://anything.test/socket")
-    await handler(sock)
-    assert sock.connected
-
-
-async def test_a_restricted_browser_removes_workers_too(
-    lookups: list[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """WebTransport lives in workers, where an init script never runs: under a list, no workers."""
-    from felix.tools import browser as browser_mod
-
-    scripts: list[str] = []
-
-    class _Page:
-        async def goto(self, *_a: Any, **_kw: Any) -> None:
-            return None
-
-        async def inner_text(self, _sel: str) -> str:
-            return "page"
-
-    class _Context:
-        async def add_init_script(self, script: str) -> None:
-            scripts.append(script)
-
-        async def route(self, *_a: Any) -> None:
-            return None
-
-        async def route_web_socket(self, *_a: Any) -> None:
-            return None
-
-        async def new_page(self) -> _Page:
-            return _Page()
-
-    class _Browser:
-        async def new_context(self, **_kw: Any) -> _Context:
-            return _Context()
-
-        async def close(self) -> None:
-            return None
-
-    class _PW:
-        class chromium:
-            @staticmethod
-            async def launch(**_kw: Any) -> _Browser:
-                return _Browser()
-
-        async def __aenter__(self) -> _PW:
-            return self
-
-        async def __aexit__(self, *a: object) -> None:
-            return None
-
-    monkeypatch.setattr(browser_mod, "_load_playwright", lambda: _PW)
-    for egress in (EgressBound().under(["allowed.test"]), EgressBound()):
-        (tool,) = tools_from_browser_refs(
-            [BrowserToolRef(name="b", binding="chromium")], allow_http=True, egress=egress
-        )
-        assert await tool.executor.execute({"url": "http://allowed.test/"}) == "page"
-    restricted, unrestricted = scripts
-    assert '"Worker"' in restricted and '"SharedWorker"' in restricted
-    assert '"Worker"' not in unrestricted and '"WebTransport"' in unrestricted
-
-
-def test_a_restricted_agents_browser_must_be_chromium() -> None:
-    """The channels the list shuts are shut in Chromium; another engine would keep them open."""
-    firefox = {"browser_tools": [{"name": "b", "binding": "firefox"}]}
-    with pytest.raises(ManifestParseError, match="chromium"):
-        _manifest(network={"allow_hosts": ["*.example.com"]}, **firefox)
-    _manifest(**firefox)
-
-
-async def test_a_child_browser_on_another_engine_is_refused_under_a_parents_list() -> None:
-    child = _manifest("helper", browser_tools=[{"name": "b", "binding": "firefox"}])
-    with pytest.raises(ValueError, match="chromium"):
-        await _compile(_lead("lead", ["helper"], ["*.example.com"]), {"helper": child})
+async def test_a_browser_websocket_passes_the_ssrf_check_as_its_handshake(lookups: list[str]) -> None:
+    """The SSRF check speaks http(s): a `wss://` URL handed to it as-is was refused every time.
+    Mapped, a socket to loopback is refused outside development and admitted in it."""
+    prod, dev = await _socket_handler(allow_http=False), await _socket_handler(allow_http=True)
+    for scheme in ("ws", "wss"):
+        refused, admitted = _Socket(f"{scheme}://box.test/socket"), _Socket(f"{scheme}://box.test/socket")
+        await prod(refused)
+        await dev(admitted)
+        assert refused.closed and not refused.connected
+        assert admitted.connected and not admitted.closed
