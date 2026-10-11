@@ -539,6 +539,9 @@ only works if a pass happens, and none had for about 110 items.
 
 #### D. Truth in advertising
 
+Small, and blocking for the adopter goal: anyone evaluating Felix on its governance claims reads
+`governed.yaml` first. Enforce or delete, per item.
+
 - [x] **`governed.yaml retention_days: 30` is inert.** Wired: the nightly sweep prunes the
       manifest's own `audit_events` past that many days, capped by `FELIX_AUDIT_RETENTION_DAYS`
       (a manifest shortens the deployment TTL, never extends it). Removed from

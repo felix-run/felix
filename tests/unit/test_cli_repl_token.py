@@ -15,6 +15,8 @@ import pytest
 from felix_client.login import LoginToken, save_token
 
 _BASE = "https://felix.test"
+# What the mocked server answers the next turn with; a test may replace it.
+_REPLY = {"next": httpx.Response(200, json={"final": {"role": "assistant", "content": "hi"}})}
 
 
 @pytest.fixture
@@ -34,7 +36,7 @@ def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[httpx.Headers]
 
     def handler(request: httpx.Request) -> httpx.Response:
         headers.append(request.headers)
-        return httpx.Response(200, json={"final": {"role": "assistant", "content": "hi"}})
+        return _REPLY["next"]
 
     def client(**kwargs: Any) -> httpx.AsyncClient:
         return real_client(transport=httpx.MockTransport(handler), **kwargs)
@@ -53,12 +55,13 @@ def sent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[httpx.Headers]
     return headers
 
 
-def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> None:
+def _run(monkeypatch: pytest.MonkeyPatch, *args: str) -> str:
     from felix_cli.main import app
     from typer.testing import CliRunner
 
     result = CliRunner().invoke(app, ["chat", *args])
     assert result.exit_code == 0, result.output
+    return result.output
 
 
 def test_the_saved_login_for_this_server_is_sent(
@@ -78,3 +81,28 @@ def test_another_servers_saved_login_is_not_sent(
 ) -> None:
     _run(monkeypatch, "--base", "https://elsewhere.test")
     assert "authorization" not in sent[0]
+
+
+def test_felix_api_key_is_read_like_the_sibling_commands(
+    sent: list[httpx.Headers], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FELIX_API_KEY", "from-env")
+    _run(monkeypatch, "--url", _BASE)
+    assert sent[0]["authorization"] == "Bearer from-env"
+
+
+def test_a_durable_run_that_did_not_complete_says_why(
+    sent: list[httpx.Headers], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dead fiber answered `agent> ` and nothing else: its final content is empty."""
+    dead = {"status": "dead", "final": {"role": "assistant", "content": ""}, "error": "step failed 3 times"}
+    monkeypatch.setitem(_REPLY, "next", httpx.Response(200, json=dead))
+    assert "agent> [run dead] step failed 3 times" in _run(monkeypatch, "--url", _BASE)
+
+
+def test_an_error_answer_is_printed_and_the_session_goes_on(
+    sent: list[httpx.Headers], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(_REPLY, "next", httpx.Response(503, json={"detail": "busy"}))
+    output = _run(monkeypatch, "--url", _BASE)
+    assert f"error: 503 from {_BASE}" in output and output.rstrip().endswith("bye")

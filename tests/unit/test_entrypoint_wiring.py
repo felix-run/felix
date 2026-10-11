@@ -42,6 +42,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.git_fixture import git
+
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "deploy"
 
@@ -448,14 +450,35 @@ def test_the_image_ships_every_directory_the_loaders_read_from_the_repo_root() -
         assert directory.parent == ROOT and directory.is_dir(), f"{directory} is not a repo-root directory"
 
     dockerfile = (ROOT / "deploy" / "docker" / "Dockerfile").read_text(encoding="utf-8")
-    ignored = {
-        line.strip().rstrip("/")
-        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith(("#", "!"))
-    }
     for directory in sorted(read_from_root):
         name = directory.name
         assert re.search(rf"^COPY {name} \./{name}$", dockerfile, re.MULTILINE), (
             f"the image never copies {name}/, which the runtime reads from the repo root"
         )
-        assert name not in ignored, f".dockerignore keeps {name}/ out of the build context"
+        # Every file under it must survive .dockerignore, or the COPY ships a hollow directory:
+        # a `**/*.md` tidy-up would drop every SKILL.md and leave each skill an empty stub.
+        # Tracked files only: `__pycache__` and other local litter are meant to stay out.
+        tracked = git(ROOT, "ls-files", "--", name).split()
+        assert tracked, f"git tracks nothing under {name}/"
+        dropped = [rel for rel in tracked if _dockerignored(ROOT / rel)]
+        assert dropped == [], f".dockerignore keeps these out of the image: {dropped[:5]}"
+
+
+def _dockerignored(path: Path) -> bool:
+    """Docker's .dockerignore rule for one file: patterns in order, the last match wins, `!`
+    re-includes, and a pattern matching a parent directory excludes everything under it.
+    `*` does not cross `/` and `**` does, which is what `PurePosixPath.full_match` does too."""
+    from pathlib import PurePosixPath
+
+    rel = PurePosixPath(path.relative_to(ROOT).as_posix())
+    candidates = [rel, *list(rel.parents)[:-1]]
+    excluded = False
+    for raw in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        negate = line.startswith("!")
+        pattern = line.lstrip("!").strip("/")
+        if any(candidate.full_match(pattern) for candidate in candidates):
+            excluded = not negate
+    return excluded

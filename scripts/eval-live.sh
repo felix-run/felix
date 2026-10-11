@@ -36,6 +36,8 @@ export FELIX_MEMORY_EMBEDDER="${FELIX_MEMORY_EMBEDDER:-none}"
 export FELIX_WORKSPACE_ROOT="${FELIX_WORKSPACE_ROOT:-$PWD}"
 # `contributor` and `triage` are not bundled; they live in manifests/self (README).
 export FELIX_MANIFESTS_DIR="${FELIX_MANIFESTS_DIR:-$PWD/manifests/self}"
+# And their skills: without this every skill `contributor` names resolves to an empty stub.
+export FELIX_SKILLS_DIR="${FELIX_SKILLS_DIR:-$PWD/manifests/self/skills}"
 
 uv run --no-sync felix eval --dataset "$DATASET" --manifest "$MANIFEST" --fixture "$FIXTURE" "$@" >"$OUT"
 code=$?

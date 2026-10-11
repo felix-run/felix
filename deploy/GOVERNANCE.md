@@ -314,7 +314,10 @@ their own object-store prefix (`skill-library/`), never under the operator's `sk
 
 **Precedence, when a library skill and an operator upload share a name.** Host skills (bundled,
 `FELIX_SKILLS_DIR`) always win, and the library refuses their names and the unversioned upload
-keys. Otherwise the library's live version answers an unpinned ref, and **an explicit pin to an
+keys. That holds only while those directories resolve. A `FELIX_SKILLS_DIR` that is set but
+missing refuses to boot (`validate_runtime`): served empty, its names would stop being reserved, and on
+the self-build stack, where it holds the agents' own skills under `manifests/self/skills/`, an agent
+could draft its own `felix-self`. Otherwise the library's live version answers an unpinned ref, and **an explicit pin to an
 operator upload wins**: a ref with `version: 0.1.0` is served `skills/{tenant}/{name}/0.1.0/SKILL.md`
 (or the shared `skills/{name}/0.1.0/SKILL.md`) when one exists, whatever the library holds. A pin is
 an author choosing reviewed bytes by their key, and a library an agent can draft into must not

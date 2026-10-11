@@ -494,11 +494,11 @@ and fixed; the comment at `fibers.py:36-46` is the record.
 
 ### C. Operator console
 
-Done — every item is in [HISTORY.md](HISTORY.md) under *Roadmap tidy (Oct 2026)*.
+Done — every item is in [HISTORY.md](HISTORY.md) under *Roadmap tidy: completed items folded in (Oct 2026)*.
 
 ### D. Truth in advertising
 
-Done — the items are in [HISTORY.md](HISTORY.md) under *Roadmap tidy (Oct 2026)*. Kept here
+Done — the items are in [HISTORY.md](HISTORY.md) under *Roadmap tidy: completed items folded in (Oct 2026)*. Kept here
 because it is still the first thing an adopter checks:
 
 Checked and *not* a gap, so nobody "fixes" it: `allow_unattended` is enforced — at compile, under
