@@ -13,8 +13,9 @@ import json
 import re
 from typing import Any
 
-# What a manifest may name: lowercase, so an id typed in two cases is one id.
-REGISTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# What a manifest may name: lowercase, so an id typed in two cases is one id. `\Z`, not `$`, which
+# also matches before a trailing newline.
+REGISTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 
 def parse_registry(raw: str, *, kind: str, shape: str) -> dict[str, dict[str, Any]]:

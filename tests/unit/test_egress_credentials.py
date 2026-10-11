@@ -106,6 +106,7 @@ def test_a_registered_credential_is_parsed_with_its_defaults() -> None:
         ({"secret": ""}, "`secret`"),
         ({"tenants": None}, "`tenants`"),
         ({"tenants": []}, "`tenants`"),
+        ({"tenants": [""]}, "`tenants`"),
     ],
 )
 def test_a_malformed_credential_fails_the_boot(spec: dict[str, Any], field: str) -> None:
@@ -145,8 +146,9 @@ def test_credentials_need_a_host_list_and_a_client() -> None:
     client that sends them, they would compile and do nothing."""
     with pytest.raises(ManifestParseError, match="allow_hosts"):
         _manifest(credentials=["api"])
-    with pytest.raises(ManifestParseError, match="credential id"):
-        _manifest(allow_hosts=["api.test"], credentials=["Not An Id"])
+    for bad in ("Not An Id", "api\n"):  # `$` matched before the newline
+        with pytest.raises(ManifestParseError, match="credential id"):
+            _manifest(allow_hosts=["api.test"], credentials=[bad])
     with pytest.raises(ManifestParseError, match="http_tools"):
         _manifest(fetch=False, allow_hosts=["api.test"], credentials=["api"])
     _manifest(allow_hosts=["api.test"], credentials=["api"])
