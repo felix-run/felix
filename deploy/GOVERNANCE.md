@@ -1758,6 +1758,25 @@ and the answer by 64 KiB.
 | `stop` | when the agent would finish, with its answer | sends it back (≤ 3 per run, never on the last step) |
 | `subagent_stop` | when a `task` child finishes, with its answer | — |
 
+**A hook on this host: run a sidecar, not a command.** There is no `type: command` handler, on
+purpose. Felix can exec only where its shell tools do — the hosted sandbox or the shell runner,
+inside the agent's workspace — and that is exactly where a governance hook must not run: the agent
+can write there (`write_file`, a shell tool, the repository it checked out), so it could rewrite the
+script that decides its own calls, or plant a module the hook imports (`python3 -c` and `-m` put
+the working directory on `sys.path`; `git` reads the repository's `.git/config`). A hook that the
+thing it governs can edit governs nothing. Run the hook as a small HTTP service the agent cannot
+reach the files of — a sidecar container or a process beside the API — and register it as a hooks
+endpoint marked `private`:
+
+```json
+{"local-policy": {"url": "https://policy.internal:9100/hook", "secret": "secret:POLICY_HOOK",
+                  "tenants": ["acme"], "private": true, "hooks": true}}
+```
+
+`private: true` lets it resolve to a private address; outside development the URL must still be
+https (an internal certificate, or a mesh that terminates TLS). The service verifies the Standard
+Webhooks signature, reads the event from the body, and answers the same JSON.
+
 **Where `pre_tool_use` sits.** In the tool runner, before the governance wrappers: a call's
 arguments reach the hook before policies, permission mode and approvals see the call. An `allow`
 cannot bypass any of them; a `block` refuses first. A tool name the agent does not have is refused
