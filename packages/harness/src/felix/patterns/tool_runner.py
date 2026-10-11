@@ -188,10 +188,15 @@ class ToolRunner:
                 tool_name=call.name,
             )
             if outcome.blocked:
+                from felix.manifest_hooks import fence, screened
+
+                # The reason is the hook's text, which may relay what it was sent: screened and
+                # fenced like a stop reason, since this message is stored with the turn.
+                reason = fence(outcome.hook_id, await screened(outcome.reason or "refused"))
                 return self._refuse(
                     call,
                     thread_id,
-                    f"[hook denied] {outcome.hook_id}: {outcome.reason or 'refused'}",
+                    f"[hook denied] {outcome.hook_id}\n{reason}",
                     control="manifest_hook",
                     hook=outcome.hook_id,
                 )

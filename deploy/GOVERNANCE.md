@@ -1735,7 +1735,7 @@ and the answer by 64 KiB.
 |---|---|---|
 | `session_start` | the thread's first run | refuses the run (`422 blocked_by_hook:<id>: <reason>`; a typed `blocked_by_hook` error frame on a stream) |
 | `user_prompt_submit` | each run, after inbound screening, before the model | refuses the run, nothing written |
-| `pre_tool_use` | before a call to a **bound** tool (`tools` globs narrow it) | refuses the call (`[hook denied]`, audited as `policy_deny`) |
+| `pre_tool_use` | before a call to a **bound** tool (`tools` globs narrow it) | refuses the call (`[hook denied]` with the reason screened and fenced; audited as `policy_deny`) |
 | `post_tool_use` | after a call returns or raises, with its result | — |
 | `stop` | when the agent would finish, with its answer | sends it back (≤ 3 per run, never on the last step) |
 | `subagent_stop` | when a `task` child finishes, with its answer | — |
@@ -1758,7 +1758,9 @@ hooks, and **transient**: attached to the run's first model call, to the tool re
 **Failure.** An unreachable or slow endpoint, a non-2xx status, or an answer outside the contract is
 an error, and the hook's `on_error` decides: `allow` (the default — advisory) carries on, `block`
 refuses what the hook guards, so a hook used as a control fails closed. A `stop` hook that errors
-lets the agent finish whatever `on_error` says. Every call is a `hook_call` audit row and
+lets the agent finish whatever `on_error` says. A `stop` continuation leaves the answer it rejected
+in the transcript, followed by the next one: two assistant turns in a row on replay, which both
+wires accept (the Messages API combines them). Every call is a `hook_call` audit row and
 `felix_hook_calls`.
 
 Hooks fire only on patterns that run them (`react`, `deep`); a manifest with `spec.hooks` on any

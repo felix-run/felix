@@ -82,7 +82,8 @@ async def test_pre_tool_use_blocks_the_call_and_the_tool_never_runs(boot: Any) -
         ) as app:
             assert (await _chat(app)).status_code == 200
             shown = _text(app.spy.prompts[1])
-    assert "[hook denied] h1: no arithmetic on Fridays" in shown
+    assert "[hook denied] h1" in shown and "no arithmetic on Fridays" in shown
+    assert '<hook_context hook="h1">' in shown, "the reason is fenced"
     assert "42" not in shown
     [request] = seen
     assert _signed(request)
@@ -199,7 +200,7 @@ async def test_an_unreachable_control_hook_blocks(boot: Any) -> None:
         async with boot(script, env=_env(url), manifests={"e2e-hooked": _agent(hooks)}) as app:
             await _chat(app)
             shown = _text(app.spy.prompts[1])
-    assert "[hook denied] h1: hook h1 could not be reached" in shown
+    assert "[hook denied] h1" in shown and "hook h1 could not be reached" in shown
     assert "42" not in shown
 
 
@@ -404,7 +405,7 @@ async def test_several_hooks_on_one_event_the_first_block_wins_and_earlier_conte
         await _chat(app)
         shown = _text(app.spy.prompts[1])
     assert [r["json"]["hook"] for r in seen] == ["a", "b"], "c is never asked"
-    assert "[hook denied] b: b says no" in shown
+    assert "[hook denied] b" in shown and "b says no" in shown
 
 
 def test_a_hook_timeout_is_bounded() -> None:
@@ -464,3 +465,15 @@ async def test_pre_tool_use_is_not_asked_about_a_tool_the_agent_does_not_have(bo
         await _chat(app)
         assert "unknown tool: exfiltrate" in _text(app.spy.prompts[1])
     assert seen == []
+
+
+async def test_a_deny_reason_is_screened(boot: Any) -> None:
+    async with hook_receiver(lambda req: (200, {"decision": "block", "reason": INJECTION})) as (url, _seen):
+        script = [_calc(), ScriptedTurn(content="ok")]
+        async with boot(
+            script, env=_env(url), manifests={"e2e-hooked": _agent([_hook("pre_tool_use")])}
+        ) as app:
+            await _chat(app)
+            shown = _text(app.spy.prompts[1])
+    assert "[hook denied] h1" in shown and "[quarantined]" in shown
+    assert INJECTION not in shown

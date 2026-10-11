@@ -206,10 +206,15 @@ class ManifestHooks:
 
 
 async def _send(rule: HookRule, data: dict[str, Any], req: RequestContext, timeout_s: float) -> Any:
-    """Deliver the event by the rule's handler and return the hook's JSON answer."""
-    if rule.type == "http":
-        return await _post(rule, data, req, timeout_s)
-    raise ValueError(f"unknown hook handler type: {rule.type}")
+    """Deliver the event by the rule's handler and return the hook's JSON answer -- all of it, the
+    secret lookup included, inside `timeout_s`, so a slow secrets backend cannot overrun the
+    event's budget either."""
+    import asyncio
+
+    async with asyncio.timeout(timeout_s):
+        if rule.type == "http":
+            return await _post(rule, data, req, timeout_s)
+        raise ValueError(f"unknown hook handler type: {rule.type}")
 
 
 async def _post(rule: HookRule, data: dict[str, Any], req: RequestContext, timeout_s: float) -> Any:
