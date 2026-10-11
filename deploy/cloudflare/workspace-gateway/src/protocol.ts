@@ -24,6 +24,10 @@ export const OPS = [
   // comparing the file's digest when the harness sends one.
   'delete',
   'rename',
+  // The pane's folder delete and rename: the tree counted and checked, then removed (deepest first,
+  // following no link) or moved with one rename that replaces nothing.
+  'delete_folder',
+  'rename_folder',
   'search',
   // A `shell_tools` command, run in the sandbox by the shell tool's own exec path.
   'exec',
@@ -91,6 +95,8 @@ export type HelperRequest =
   | { op: 'edit'; path: string; old: string; new: string; replace_all: boolean }
   | { op: 'delete'; path: string; expected_sha256: string | null }
   | { op: 'rename'; path: string; to_path: string; expected_sha256: string | null }
+  | { op: 'delete_folder'; path: string; expected_count: number | null }
+  | { op: 'rename_folder'; path: string; to_path: string }
   | { op: 'search'; path: string; query: string; regex: boolean; max_hits: number }
   | { op: 'exec'; argv: string[]; cwd: string; stdin?: string; timeout_ms: number }
   | { op: 'clone'; repo: string; branch: string; token: string }
@@ -116,6 +122,10 @@ export type ErrorCode =
   | 'conflict'
   | 'workspace_changed'
   | 'target_exists'
+  | 'not_a_folder'
+  | 'reserved_path'
+  | 'too_many_entries'
+  | 'too_deep'
   | 'clone_failed';
 
 /** What the sandbox's `felix-fs` helper prints, and what the Durable Object returns. */
@@ -130,6 +140,9 @@ export type HelperAnswer =
       // digest, over the read cap).
       sha256?: string | null;
       bytes?: number | null;
+      // `too_many_entries`, `too_deep`, and a folder delete's `workspace_changed`: the entries seen
+      // (one past the cap), or the folder's file count now.
+      count?: number;
     };
 
 /** The HTTP status each answer travels under. The body carries the code; the status is for logs. */
@@ -144,6 +157,10 @@ export const STATUS: Record<ErrorCode, number> = {
   conflict: 409,
   workspace_changed: 409,
   target_exists: 409,
+  not_a_folder: 409,
+  reserved_path: 422,
+  too_many_entries: 409,
+  too_deep: 409,
   clone_failed: 502,
   invalid_path: 422,
   edit_refused: 422,
@@ -241,6 +258,25 @@ export function parseRequest(op: Op, raw: unknown): HelperRequest | string {
       if (toPath === null) return '`to_path` must be a string';
       if (expected === undefined) return '`expected_sha256` must be 64 lowercase hex characters';
       return { op, path, to_path: toPath, expected_sha256: expected };
+    }
+    case 'delete_folder': {
+      const path = str(body, 'path');
+      const expected = body.expected_count ?? null;
+      if (path === null) return '`path` must be a string';
+      if (
+        expected !== null &&
+        !(typeof expected === 'number' && Number.isInteger(expected) && expected >= 0)
+      ) {
+        return '`expected_count` must be a non-negative integer';
+      }
+      return { op, path, expected_count: expected as number | null };
+    }
+    case 'rename_folder': {
+      const path = str(body, 'path');
+      const toPath = str(body, 'to_path');
+      if (path === null) return '`path` must be a string';
+      if (toPath === null) return '`to_path` must be a string';
+      return { op, path, to_path: toPath };
     }
     case 'exec': {
       const argv = body.argv;

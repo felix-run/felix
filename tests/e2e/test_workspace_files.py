@@ -879,3 +879,322 @@ async def test_a_thread_with_a_checkout_deletes_and_renames_in_the_checkout(
         assert deleted.status_code == 200, deleted.text
         assert not (repo / "pkg" / "gone.py").exists()
         assert (scoped / "pkg" / "gone.py").read_text() == "the scoped copy"
+
+
+# --- folders -------------------------------------------------------------------------------------
+
+
+def _tree_under(path: Path) -> list[str]:
+    return sorted(p.relative_to(path).as_posix() for p in path.rglob("*"))
+
+
+async def test_a_folder_delete_removes_the_tree_and_never_a_links_target(
+    boot: Any, root: Path, tmp_path: Path
+) -> None:
+    thread = "pane-rmdir"
+    async with boot([], env=_env(root)) as app:
+        await _run(app, thread)
+        here = _scope_dir(root, thread)
+        (here / "notes" / "deep" / "deeper").mkdir(parents=True)
+        (here / "notes" / "a.md").write_text("a")
+        (here / "notes" / "deep" / "b.md").write_text("b")
+        (here / "notes" / "deep" / "deeper" / "c.md").write_text("c")
+        (here / "notes" / "empty").mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not yours")
+        (here / "kept.md").write_text("kept")
+        os.symlink(outside, here / "notes" / "escape")
+        os.symlink(outside / "secret.txt", here / "notes" / "deep" / "secret-link.txt")
+        os.symlink(here / "kept.md", here / "notes" / "inside-link.md")
+
+        resp = await app.client.post(
+            "/chat/workspace/delete_folder",
+            json={"thread_id": thread, "path": "notes/./deep/..", "expected_count": 3},
+        )
+        assert resp.status_code == 200, resp.text
+        out = resp.json()
+        assert {k: out[k] for k in ("status", "path", "files")} == {
+            "status": "recorded",
+            "path": "notes",
+            "files": 3,
+        }
+        assert not (here / "notes").exists()
+        assert _tree_under(outside) == ["secret.txt"]
+        assert (outside / "secret.txt").read_text() == "not yours"
+        assert (here / "kept.md").read_text() == "kept"
+
+        entry = await _note(app, thread, out["event_id"])
+        assert entry["metadata"].pop("event_id") == out["event_id"]
+        assert entry["metadata"].pop("parent_id")
+        assert entry["metadata"] == {
+            "type": "workspace_edit",
+            "path": "notes",
+            "op": "delete",
+            "bytes": None,
+            "source": "operator",
+            "in_context": True,
+            "kind": "folder",
+            "files": 3,
+        }
+        assert entry["content"] == (
+            "The operator deleted the folder `notes` (3 files) from the workspace. It and everything "
+            "in it no longer exist; anything you read from it earlier in this conversation is out of "
+            "date. Do not recreate anything in it unless you are asked to."
+        )
+        assert await _audit(app, "workspace_delete_folder") == [
+            (
+                {"thread_id": f"{TENANT}:{thread}", "path": "notes", "files": 3, "manifest": "quick"},
+                "quick",
+                "ok",
+            )
+        ]
+        tree = (await app.client.get("/chat/workspace/tree", params={"thread_id": thread})).json()
+        assert [e["path"] for e in tree["entries"]] == ["kept.md"]
+
+
+async def test_a_folder_rename_moves_the_tree_into_new_parents(boot: Any, root: Path) -> None:
+    thread = "pane-mvdir"
+    async with boot([], env=_env(root)) as app:
+        await _run(app, thread)
+        here = _scope_dir(root, thread)
+        (here / "drafts" / "sub").mkdir(parents=True)
+        (here / "drafts" / "a.md").write_text("a")
+        (here / "drafts" / "sub" / "b.md").write_text("b")
+        resp = await app.client.post(
+            "/chat/workspace/rename_folder",
+            json={"thread_id": thread, "path": "drafts", "to_path": "archive/2026/drafts"},
+        )
+        assert resp.status_code == 200, resp.text
+        out = resp.json()
+        assert {k: out[k] for k in ("status", "path", "to_path")} == {
+            "status": "recorded",
+            "path": "drafts",
+            "to_path": "archive/2026/drafts",
+        }
+        assert not (here / "drafts").exists()
+        assert _tree_under(here / "archive") == [
+            "2026",
+            "2026/drafts",
+            "2026/drafts/a.md",
+            "2026/drafts/sub",
+            "2026/drafts/sub/b.md",
+        ]
+
+        entry = await _note(app, thread, out["event_id"])
+        assert entry["metadata"].pop("event_id") == out["event_id"]
+        assert entry["metadata"].pop("parent_id")
+        assert entry["metadata"] == {
+            "type": "workspace_edit",
+            "path": "drafts",
+            "op": "rename",
+            "bytes": None,
+            "source": "operator",
+            "in_context": True,
+            "to_path": "archive/2026/drafts",
+            "kind": "folder",
+        }
+        assert entry["content"] == (
+            "The operator renamed the folder `drafts` to `archive/2026/drafts` in the workspace. "
+            "`drafts` no longer exists: paths under `drafts` are now under `archive/2026/drafts`; "
+            "read them again before relying on or editing them."
+        )
+        assert await _audit(app, "workspace_rename_folder") == [
+            (
+                {
+                    "thread_id": f"{TENANT}:{thread}",
+                    "path": "drafts",
+                    "to_path": "archive/2026/drafts",
+                    "manifest": "quick",
+                },
+                "quick",
+                "ok",
+            )
+        ]
+
+
+async def test_a_folder_change_during_a_run_is_queued_with_its_kind(boot: Any, root: Path) -> None:
+    from felix.workspace_notes import drain, mark_run_active, mark_run_idle
+
+    thread = "pane-dir-live"
+    scoped = f"{TENANT}:{thread}"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        (here / "a").mkdir()
+        (here / "a" / "x.md").write_text("x")
+        (here / "b").mkdir()
+        await mark_run_active(TENANT, scoped)
+        try:
+            moved = await app.client.post(
+                "/chat/workspace/rename_folder", json={"thread_id": thread, "path": "a", "to_path": "c"}
+            )
+            gone = await app.client.post(
+                "/chat/workspace/delete_folder", json={"thread_id": thread, "path": "b"}
+            )
+            assert [(r.status_code, r.json()["status"], r.json()["event_id"]) for r in (moved, gone)] == [
+                (200, "queued", None),
+                (200, "queued", None),
+            ]
+            notes = await drain(TENANT, scoped)
+            assert [(n.path, n.op, n.to_path, n.kind, n.files) for n in notes] == [
+                ("a", "rename", "c", "folder", None),
+                ("b", "delete", None, "folder", 0),
+            ]
+            assert notes[1].event_data() == {
+                "path": "b",
+                "op": "delete",
+                "bytes": None,
+                "kind": "folder",
+                "files": 0,
+            }
+        finally:
+            await mark_run_idle(TENANT, scoped)
+
+
+@pytest.mark.parametrize(
+    ("route", "extra", "status", "detail"),
+    [
+        ("delete_folder", {"path": "."}, 400, "invalid_path"),
+        ("delete_folder", {"path": "docs/.."}, 400, "invalid_path"),
+        ("delete_folder", {"path": "missing"}, 404, "not_found"),
+        ("delete_folder", {"path": "file.txt/under"}, 404, "not_found"),
+        ("delete_folder", {"path": "file.txt"}, 400, "not_a_directory"),
+        ("delete_folder", {"path": "dirlink"}, 400, "invalid_path"),
+        ("delete_folder", {"path": "escape"}, 400, "invalid_path"),
+        ("delete_folder", {"path": "../outside"}, 400, "invalid_path"),
+        ("delete_folder", {"path": "/etc"}, 400, "invalid_path"),
+        ("delete_folder", {"path": ".git"}, 400, "reserved_path"),
+        ("delete_folder", {"path": "repo"}, 400, "reserved_path"),
+        ("delete_folder", {"path": "docs", "expected_count": 1}, 409, None),
+        ("rename_folder", {"path": ".", "to_path": "x"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "."}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "docs/inner"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "docs/sub/deeper"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "docs"}, 409, "target_exists"),
+        ("rename_folder", {"path": "docs", "to_path": "./docs/"}, 409, "target_exists"),
+        ("rename_folder", {"path": "docs", "to_path": "file.txt"}, 409, "target_exists"),
+        ("rename_folder", {"path": "docs", "to_path": "other"}, 409, "target_exists"),
+        ("rename_folder", {"path": "missing", "to_path": "x"}, 404, "not_found"),
+        ("rename_folder", {"path": "file.txt", "to_path": "x"}, 400, "not_a_directory"),
+        ("rename_folder", {"path": "dirlink", "to_path": "x"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "dirlink"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "escape/docs"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "../outside/docs"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": "file.txt/docs"}, 400, "invalid_path"),
+        ("rename_folder", {"path": "docs", "to_path": ".git/docs"}, 400, "reserved_path"),
+        ("rename_folder", {"path": ".git", "to_path": "git"}, 400, "reserved_path"),
+        ("rename_folder", {"path": "repo", "to_path": "repo2"}, 400, "reserved_path"),
+        ("rename_folder", {"path": "docs", "to_path": "a/.felix-scopes"}, 400, "reserved_path"),
+    ],
+)
+async def test_a_folder_change_that_cannot_be_made_changes_nothing(
+    boot: Any,
+    root: Path,
+    tmp_path: Path,
+    route: str,
+    extra: dict[str, Any],
+    status: int,
+    detail: str | None,
+) -> None:
+    thread = "pane-bad-folder"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.txt").write_text("not yours")
+        (here / "docs" / "sub").mkdir(parents=True)
+        (here / "docs" / "a.md").write_text("a")
+        (here / "docs" / "sub" / "b.md").write_text("b")
+        (here / "other").mkdir()
+        (here / "file.txt").write_text("a file")
+        (here / ".git").mkdir()
+        (here / ".git" / "config").write_text("[core]")
+        (here / "repo" / ".git").mkdir(parents=True)
+        (here / "repo" / "main.py").write_text("print()")
+        os.symlink(here / "docs", here / "dirlink")
+        os.symlink(outside, here / "escape")
+        before = _tree_under(tmp_path)
+        resp = await app.client.post(f"/chat/workspace/{route}", json={"thread_id": thread, **extra})
+        expected = {"detail": "workspace_changed", "count": 2} if detail is None else {"detail": detail}
+        assert (resp.status_code, resp.json()) == (status, expected), resp.text
+        assert _tree_under(tmp_path) == before
+        assert (outside / "secret.txt").read_text() == "not yours"
+        assert (await app.client.get(f"/chat/sessions/{thread}")).json()["transcript"] == []
+
+
+async def test_a_folder_over_the_cap_is_refused_whole(
+    boot: Any, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.tools import workspace_local
+
+    monkeypatch.setattr(workspace_local, "_MAX_FOLDER_ENTRIES", 4)
+    thread = "pane-folder-cap"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        (here / "big" / "sub").mkdir(parents=True)
+        for i in range(4):
+            (here / "big" / "sub" / f"{i}.md").write_text(str(i))
+        before = _tree_under(here)
+        for route, extra in (("delete_folder", {}), ("rename_folder", {"to_path": "bigger"})):
+            resp = await app.client.post(
+                f"/chat/workspace/{route}", json={"thread_id": thread, "path": "big", **extra}
+            )
+            assert (resp.status_code, resp.json()) == (409, {"detail": "too_many_entries", "count": 5}), route
+            assert _tree_under(here) == before
+        small = await app.client.post(
+            "/chat/workspace/delete_folder",
+            json={"thread_id": thread, "path": "big/sub", "expected_count": 4},
+        )
+        assert (small.status_code, small.json()["files"]) == (200, 4)
+
+
+@pytest.mark.parametrize(
+    ("route", "body"),
+    [
+        ("delete_folder", {"path": "a", "expected_count": -1}),
+        ("delete_folder", {"path": "a", "expected_count": "two"}),
+        ("delete_folder", {"path": "a", "expected_sha256": "f" * 64}),
+        ("delete_folder", {"path": "a\nb"}),
+        ("delete_folder", {"path": ""}),
+        ("rename_folder", {"path": "a"}),
+        ("rename_folder", {"path": "a", "to_path": "b", "overwrite": True}),
+        ("rename_folder", {"path": "a", "to_path": "b\n"}),
+        ("rename_folder", {"path": "a", "to_path": ""}),
+    ],
+)
+async def test_a_malformed_folder_change_is_a_422(
+    boot: Any, root: Path, route: str, body: dict[str, Any]
+) -> None:
+    thread = "pane-folder-422"
+    async with boot([], env=_env(root)) as app:
+        here = _scope_dir(root, thread)
+        (here / "a").mkdir()
+        (here / "a" / "x.md").write_text("kept")
+        resp = await app.client.post(f"/chat/workspace/{route}", json={"thread_id": thread, **body})
+        assert resp.status_code == 422, resp.text
+        assert (here / "a" / "x.md").read_text() == "kept"
+
+
+async def test_an_observer_may_not_delete_or_rename_a_folder(boot: Any, root: Path) -> None:
+    from felix_api.routes.chat import LEASE_TOKEN_HEADER
+
+    thread = "pane-lease-folder"
+    async with boot([], env=_env(root)) as app:
+        await app.client.post(
+            "/chat/sessions/lease", json={"thread_id": thread, "holder_id": "tab-a", "mode": "exclusive"}
+        )
+        observer = await app.client.post(
+            "/chat/sessions/lease", json={"thread_id": thread, "holder_id": "tab-b", "mode": "shared"}
+        )
+        headers = {LEASE_TOKEN_HEADER: observer.json()["token"]}
+        here = _scope_dir(root, thread)
+        (here / "a").mkdir()
+        (here / "a" / "x.md").write_text("as it was")
+        for route, extra in (("delete_folder", {}), ("rename_folder", {"to_path": "b"})):
+            refused = await app.client.post(
+                f"/chat/workspace/{route}",
+                json={"thread_id": thread, "path": "a", **extra},
+                headers=headers,
+            )
+            assert (refused.status_code, refused.json()["detail"]) == (409, "lease_read_only"), route
+        assert _tree_under(here) == ["a", "a/x.md"]

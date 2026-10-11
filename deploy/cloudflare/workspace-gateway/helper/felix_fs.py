@@ -12,7 +12,9 @@ operations a model can drive are done here instead, with the harness's local bac
 - an edit is written to a random sibling and renamed over the original;
 - a search holds one descriptor per level, stops at a depth, a hit cap and a deadline;
 - the file pane's delete and rename compare the file's digest and act in this one process, and a
-  rename never replaces what is at its destination.
+  rename never replaces what is at its destination;
+- the pane's folder delete counts the tree, refuses a reserved name inside it or one past 2,000
+  entries, and removes it deepest first with no link followed -- a link is removed, never its target.
 
 The functions between the PORTED markers are copied from the harness (`felix/tools/workspace.py`,
 `felix/tools/workspace_local.py`, `felix/tools/workspace_backend.py`, `felix/tools/shell.py` and
@@ -578,6 +580,211 @@ def _rename_checked(
     return rel, to_rel, current, size
 
 
+# The names the file pane never touches (`workspace_backend.PANE_HIDDEN_DIRS`), which a folder
+# operation refuses to act on or across, and the most entries one walks.
+PANE_HIDDEN_DIRS = frozenset({".git", ".felix-scopes"})
+PANE_HIDDEN_PREFIX = ".felix-edit-"
+_MAX_FOLDER_ENTRIES = 2_000
+
+
+def pane_hides(name: str) -> bool:
+    """Whether a path component is one the file pane leaves out (`PANE_HIDDEN_DIRS`)."""
+    return name in PANE_HIDDEN_DIRS or name.startswith(PANE_HIDDEN_PREFIX)
+
+
+class ReservedPathError(ValueError):
+    """A folder operation's tree holds, or its path names, something the pane never touches
+    (`pane_hides`): a repository's `.git`, the scopes directory, an edit's temporary file."""
+
+    def __init__(self, shown: str) -> None:
+        super().__init__(f"reserved path: {shown}")
+
+
+class NotAFolderError(ValueError):
+    """A folder operation's path names something other than a directory."""
+
+
+class FolderTooLarge(Exception):
+    """A folder operation refused before acting: more than `_MAX_FOLDER_ENTRIES` entries
+    (`count` is how many were seen, which stops one past the cap), or deeper than the walk goes."""
+
+    def __init__(self, count: int, *, deep: bool = False) -> None:
+        super().__init__("too_deep" if deep else "too_many_entries")
+        self.count = count
+        self.deep = deep
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        return {"detail": "too_deep" if self.deep else "too_many_entries", "count": self.count}
+
+
+class FolderChanged(Exception):
+    """A folder delete found a different number of files than the caller showed the operator.
+    `count` is the number there now; nothing was removed."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__("workspace_changed")
+        self.count = count
+
+    @property
+    def detail(self) -> dict[str, Any]:
+        return {"detail": "workspace_changed", "count": self.count}
+
+
+def _folder_parts(path: str) -> list[str]:
+    """`path` as a folder operation may name it: never the root, nothing reserved on the way."""
+    parts = workspace_parts(path)
+    if not parts:
+        raise ValueError("the workspace root is not a folder that can be deleted or moved")
+    for i, part in enumerate(parts):
+        if pane_hides(part):
+            raise ReservedPathError("/".join(parts[: i + 1]))
+    return parts
+
+
+def _open_folder(parent: int, leaf: str, rel: str) -> int:
+    """The directory `leaf` in `parent`, opened following nothing. A symlink is refused as every
+    path is, and anything else that is not a directory is `NotAFolderError`. `lstat` first, so
+    the refusal says which; the open is what holds the line."""
+    mode = os.stat(leaf, dir_fd=parent, follow_symlinks=False).st_mode
+    if stat.S_ISLNK(mode):
+        raise SymlinkRefusedError(rel)
+    if not stat.S_ISDIR(mode):
+        raise NotAFolderError(rel)
+    return open_at(parent, leaf, _DIR_FLAGS, rel)
+
+
+def _folder_census(top: int, rel: str) -> int:
+    """The regular files under the directory `top`, walked by descriptor with nothing followed.
+
+    Everything a folder operation refuses about the tree is found here, before anything acts on
+    it: a reserved name anywhere inside (`ReservedPathError`), more than `_MAX_FOLDER_ENTRIES`
+    entries of any kind, or nesting past `_MAX_SEARCH_DEPTH` (`FolderTooLarge`). One descriptor
+    per level, as the tree walk holds; the count stops one past the cap.
+    """
+    files = entries = 0
+    stack = [(top, rel, _dir_batch(top))]
+    try:
+        while stack:
+            fd, here, pending = stack[-1]
+            if not pending:
+                stack.pop()
+                if fd != top:
+                    os.close(fd)
+                continue
+            name, st = pending.pop()
+            child = _child_rel(here, name)
+            if pane_hides(name):
+                raise ReservedPathError(child)
+            entries += 1
+            if entries > _MAX_FOLDER_ENTRIES:
+                raise FolderTooLarge(entries)
+            if not stat.S_ISDIR(st.st_mode):
+                if stat.S_ISREG(st.st_mode):
+                    files += 1
+                continue
+            if len(stack) > _MAX_SEARCH_DEPTH:
+                raise FolderTooLarge(entries, deep=True)
+            sub = open_at(fd, name, _DIR_FLAGS, child)
+            stack.append((sub, child, _dir_batch(sub)))
+    finally:
+        for fd, _, _ in stack:
+            if fd != top:
+                os.close(fd)
+    return files
+
+
+def _remove_tree(top: int, rel: str) -> None:
+    """Empty the directory `top`, deepest first, following nothing.
+
+    Anything that is not a directory is `unlinkat`-ed by name, which removes a symlink itself and
+    never what it points at, wherever that is. A directory is opened with `O_NOFOLLOW`, emptied,
+    closed and then removed by name from its parent (`AT_REMOVEDIR`), so a link swapped in for one
+    is refused rather than walked.
+    """
+    stack = [(top, rel, _dir_batch(top), "")]
+    try:
+        while stack:
+            fd, here, pending, name_in_parent = stack[-1]
+            if not pending:
+                stack.pop()
+                if fd != top:
+                    os.close(fd)
+                    os.rmdir(name_in_parent, dir_fd=stack[-1][0])
+                continue
+            name, st = pending.pop()
+            child = _child_rel(here, name)
+            if stat.S_ISDIR(st.st_mode):
+                sub = open_at(fd, name, _DIR_FLAGS, child)
+                stack.append((sub, child, _dir_batch(sub), name))
+                continue
+            os.unlink(name, dir_fd=fd)
+    finally:
+        for fd, _, _, _ in stack:
+            if fd != top:
+                os.close(fd)
+
+
+def _delete_folder(root: Path, path: str, expected_count: int | None) -> tuple[str, int]:
+    """Count, compare, then remove the tree at `path`: one synchronous call, under the tree's
+    locks. Returns `(path, files)` with the path as the tools report it."""
+    _folder_parts(path)
+    with open_workspace_parent(root, path) as (parent, leaf, rel):
+        if leaf is None:
+            raise ValueError("the workspace root is not a folder that can be deleted or moved")
+        top = _open_folder(parent, leaf, rel)
+        try:
+            files = _folder_census(top, rel)
+            if expected_count is not None and files != expected_count:
+                raise FolderChanged(files)
+            _remove_tree(top, rel)
+        finally:
+            os.close(top)
+        os.rmdir(leaf, dir_fd=parent)
+    return rel, files
+
+
+def _rename_folder(root: Path, path: str, to_path: str) -> tuple[str, str]:
+    """Move the tree at `path` to `to_path` with one `renameat`, replacing nothing.
+
+    The source is refused as a delete refuses it, its tree included; the destination may not be
+    the source (`FileExistsError`, as anything else there is) or below it (ValueError), which is
+    exact by components because no symlink is ever followed. The destination's missing
+    directories are made only after every check has passed. Returns `(path, to_path)`.
+    """
+    parts = _folder_parts(path)
+    to_parts = _folder_parts(to_path)
+    if to_parts == parts:
+        raise FileExistsError(errno.EEXIST, "the destination exists", "/".join(to_parts))
+    if to_parts[: len(parts)] == parts:
+        raise ValueError("a folder cannot be moved into itself")
+    with contextlib.ExitStack() as stack:
+        src_dir, src_leaf, rel = stack.enter_context(open_workspace_parent(root, path))
+        if src_leaf is None:
+            raise ValueError("the workspace root is not a folder that can be deleted or moved")
+        top = _open_folder(src_dir, src_leaf, rel)
+        try:
+            _folder_census(top, rel)
+        finally:
+            os.close(top)
+        try:
+            dst_dir, dst_leaf, to_rel = stack.enter_context(open_workspace_parent(root, to_path, create=True))
+        except NotADirectoryError:
+            raise ValueError("the destination's directory is a file") from None
+        if dst_leaf is None:
+            raise ValueError("the workspace root is not a folder that can be deleted or moved")
+        try:
+            there = os.stat(dst_leaf, dir_fd=dst_dir, follow_symlinks=False).st_mode
+        except FileNotFoundError:
+            there = None
+        if there is not None and stat.S_ISLNK(there):
+            raise SymlinkRefusedError(to_rel)
+        if there is not None:
+            raise FileExistsError(errno.EEXIST, "the destination exists", to_rel)
+        os.rename(src_leaf, dst_leaf, src_dir_fd=src_dir, dst_dir_fd=dst_dir)
+    return rel, to_rel
+
+
 # --- end of PORTED ---------------------------------------------------------------------------
 
 
@@ -941,6 +1148,28 @@ def op_rename(req: dict[str, Any]) -> dict[str, Any]:
     return {"path": rel, "to_path": to_rel, "sha256": sha, "bytes": size}
 
 
+def _expected_count(req: dict[str, Any]) -> int | None:
+    """The file count the caller showed the operator, or None for an unconditional folder delete."""
+    raw = req.get("expected_count")
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+        raise KeyError("expected_count")
+    return raw
+
+
+def op_delete_folder(req: dict[str, Any]) -> dict[str, Any]:
+    """The file pane's folder delete: `LocalBackend.delete_dir`'s count, compare and removal."""
+    rel, files = _delete_folder(ROOT, req["path"], _expected_count(req))
+    return {"path": rel, "files": files}
+
+
+def op_rename_folder(req: dict[str, Any]) -> dict[str, Any]:
+    """The file pane's folder rename: `LocalBackend.rename_dir`'s checks and no-replace move."""
+    rel, to_rel = _rename_folder(ROOT, req["path"], req["to_path"])
+    return {"path": rel, "to_path": to_rel}
+
+
 def op_search(req: dict[str, Any]) -> dict[str, Any]:
     query = str(req["query"])
     if not 1 <= len(query) <= _MAX_QUERY_CHARS:
@@ -1032,6 +1261,8 @@ OPS = {
     "edit": op_edit,
     "delete": op_delete,
     "rename": op_rename,
+    "delete_folder": op_delete_folder,
+    "rename_folder": op_rename_folder,
     "search": op_search,
     "exec": op_exec,
     "git": op_git,
@@ -1057,8 +1288,23 @@ def run(req: dict[str, Any]) -> dict[str, Any]:
             "sha256": exc.sha256,
             "bytes": exc.bytes,
         }
+    except FolderTooLarge as exc:
+        # Refused before anything was removed or moved: how many entries were seen, one past the cap.
+        return {"ok": False, "error": exc.detail["detail"], "message": str(exc), "count": exc.count}
+    except FolderChanged as exc:
+        # A folder delete whose `expected_count` the tree no longer has: its file count now.
+        return {
+            "ok": False,
+            "error": "workspace_changed",
+            "message": "the folder is not the one the caller was shown",
+            "count": exc.count,
+        }
     except NotAFileError as exc:
         return {"ok": False, "error": "not_a_file", "message": str(exc)}
+    except NotAFolderError as exc:
+        return {"ok": False, "error": "not_a_folder", "message": str(exc)}
+    except ReservedPathError as exc:
+        return {"ok": False, "error": "reserved_path", "message": str(exc)}
     except re.error as exc:
         return {"ok": False, "error": "bad_request", "message": f"invalid regex: {exc}"}
     except KeyError as exc:

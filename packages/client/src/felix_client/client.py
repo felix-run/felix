@@ -400,6 +400,56 @@ class FelixClient:
         }
         return await self._workspace_change("rename", body, expected_sha256, manifest, lease_token)
 
+    async def workspace_delete_folder(
+        self,
+        path: str,
+        *,
+        expected_count: int | None = None,
+        thread_id: str | None = None,
+        manifest: str | None = None,
+        lease_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a workspace folder and everything in it, and tell the agent
+        (`POST /chat/workspace/delete_folder`).
+
+        Returns `{"status": "queued" | "recorded", "path", "files", "event_id"}`. `expected_count`
+        is the number of files (not directories) the operator was shown: when the folder holds a
+        different number now, the delete is refused as a 409
+        `{"detail": "workspace_changed", "count": <now>}` and nothing is removed. A folder over
+        2,000 entries is a 409 `{"detail": "too_many_entries", "count"}`; one holding `.git` a 400
+        `reserved_path`. `lease_token` is sent as `X-Felix-Lease-Token`.
+        """
+        body: dict[str, Any] = {
+            "thread_id": self._workspace_thread(thread_id, "workspace_delete_folder"),
+            "path": path,
+        }
+        if expected_count is not None:
+            body["expected_count"] = expected_count
+        return await self._workspace_change("delete_folder", body, None, manifest, lease_token)
+
+    async def workspace_rename_folder(
+        self,
+        path: str,
+        to_path: str,
+        *,
+        thread_id: str | None = None,
+        manifest: str | None = None,
+        lease_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Move a workspace folder to `to_path` and tell the agent
+        (`POST /chat/workspace/rename_folder`).
+
+        Returns `{"status": "queued" | "recorded", "path", "to_path", "event_id"}`. Never replaces
+        anything (409 `target_exists`) and never moves a folder into itself (400 `invalid_path`).
+        `lease_token` as on `workspace_delete_folder`.
+        """
+        body: dict[str, Any] = {
+            "thread_id": self._workspace_thread(thread_id, "workspace_rename_folder"),
+            "path": path,
+            "to_path": to_path,
+        }
+        return await self._workspace_change("rename_folder", body, None, manifest, lease_token)
+
     async def _workspace_change(
         self,
         op: str,
