@@ -146,11 +146,21 @@ _TREE_MAX_DIRS = 400
 # `list`'s own cap per directory (`_MAX_LIST_ENTRIES` in the helper, as locally): a directory that
 # answers this many may have had more.
 _LIST_CAP = 500
-# Per process, per scope and path: orders a conditional write from the file pane against the next
-# one from this process. It cannot order against a write that reaches the sandbox from anywhere
-# else -- a tool call in another replica, or on the worker -- because the gateway has no
-# compare-and-write; see `write_file_checked`.
+# Per process, per scope and normalised path: orders a conditional write (the file pane's save,
+# `multi_edit`) against every other write to that file from this process -- `write_file` and
+# `edit_file` take it too, so a parallel tool batch cannot land between a checked write's compare
+# and its write. It cannot order against a write that reaches the sandbox from anywhere else -- a
+# tool call in another replica, or on the worker -- because the gateway has no compare-and-write;
+# see `write_file_checked`.
 _checked_write_locks: dict[str, asyncio.Lock] = {}
+
+
+def _write_lock(settings: Settings, scope: WorkspaceScope, path: str) -> asyncio.Lock:
+    """The lock for `path` in `scope`, keyed by the normalised path: `a.py` and `./a.py` are one file."""
+    from felix.tools.workspace import workspace_parts
+
+    key = f"{gateway_path(settings, scope)}\0{'/'.join(workspace_parts(path)) or '.'}"
+    return _checked_write_locks.setdefault(key, asyncio.Lock())
 
 
 class HostedBackend:
@@ -252,6 +262,11 @@ class HostedBackend:
         if self._is_local(scope):
             return await self._local().write_file(scope, path, data, append)
         assert scope is not None
+        async with _write_lock(self._settings, scope, path):
+            return await self._write(scope, path, data, append)
+
+    async def _write(self, scope: WorkspaceScope, path: str, data: bytes, append: bool) -> WriteResult:
+        """One gateway write, the caller holding the path's lock."""
         body = {"path": path, "data": base64.b64encode(data).decode("ascii"), "append": append}
         out = await self._call(scope, "write", body)
         self._written(scope)
@@ -264,7 +279,8 @@ class HostedBackend:
             return await self._local().edit_file(scope, path, old, new, replace_all)
         assert scope is not None
         body = {"path": path, "old": old, "new": new, "replace_all": replace_all}
-        out = await self._call(scope, "edit", body)
+        async with _write_lock(self._settings, scope, path):
+            out = await self._call(scope, "edit", body)
         self._written(scope)
         return EditResult(
             path=str(out["path"]), replacements=int(out["replacements"]), bytes=int(out["bytes"])
@@ -337,17 +353,19 @@ class HostedBackend:
         """Read, compare, write -- three gateway calls, not one atomic operation.
 
         The gateway has no conditional write, so this is as strong as a lock in this process makes
-        it: two saves from the file pane through this replica are ordered, but a tool call that
-        writes the same file from another replica or the worker between the read and the write is
-        not seen, and is overwritten. Moving the compare into the gateway's helper closes that.
+        it: every write to the file from this replica -- a pane save, a tool's `write_file`,
+        `edit_file` or `multi_edit` -- is ordered against it, but one from another replica or the
+        worker between the read and the write is not seen, and is overwritten. The write is the
+        helper's `write` (truncate in place), not `edit`'s replace-by-rename, so a sandbox killed
+        mid-write can leave the file short. Moving the compare into the helper's `write`, through
+        its replace-by-rename, closes both (`docs/ROADMAP.md`).
         """
         if self._is_local(scope):
             return await self._local().write_file_checked(scope, path, data, expected_sha256)
         assert scope is not None
         from felix.tools.workspace import _MAX_READ_BYTES
 
-        key = f"{gateway_path(self._settings, scope)}\0{path}"
-        async with _checked_write_locks.setdefault(key, asyncio.Lock()):
+        async with _write_lock(self._settings, scope, path):
             if expected_sha256 is not None:
                 try:
                     out = await self._call(
@@ -361,7 +379,7 @@ class HostedBackend:
                 current = hashlib.sha256(base64.b64decode(out["data"])).hexdigest()
                 if current != expected_sha256:
                     raise WorkspaceChanged(current, size)
-            written = await self.write_file(scope, path, data, False)
+            written = await self._write(scope, path, data, False)
         return CheckedWriteResult(
             path=written.path, bytes=written.bytes, sha256=hashlib.sha256(data).hexdigest()
         )

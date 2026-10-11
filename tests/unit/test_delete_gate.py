@@ -67,9 +67,22 @@ def test_the_server_family_names_the_ungated_tool_and_the_rule_that_gates_the_wr
     (message,) = delete_gate_warnings(parse_manifest(SERVER_GAP))
     assert message == (
         "approval rule `workspace-write` gates write_file, but delete_file is bound with no approval "
-        "rule, so the agent can delete or move files without asking when it must ask to write them; "
+        "rule, so the agent can change, delete or move files without asking when it must ask to "
+        "write them; "
         "add delete_file to rule `workspace-write`"
     )
+
+
+def test_multi_edit_ungated_beside_a_gated_edit_file_is_a_gap() -> None:
+    """`multi_edit` changes a file as surely as `edit_file`: gating one and not the other is a hole."""
+    manifest = _parse(
+        tools=["write_file", "edit_file", "multi_edit"],
+        approvals=[_rule("workspace-write", "write_file", "edit_file")],
+    )
+    assert [(g.writer, g.ungated) for g in delete_gate_gaps(manifest)] == [("write_file", ("multi_edit",))]
+    # Not every writer: gating write_file alone is an author's choice, left alone.
+    alone = _parse(tools=["write_file", "multi_edit"], approvals=[_rule("w", "write_file")])
+    assert delete_gate_gaps(alone) == []
 
 
 def test_the_client_family_names_every_ungated_tool() -> None:

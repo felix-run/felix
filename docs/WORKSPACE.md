@@ -5,8 +5,10 @@ backend.** Built so far: phase 0 (the default volume), phase 1 (truthful failure
 (scopes on the `local` layout) and phase 2b (the `WorkspaceBackend` seam). This file is the design the workspace tools are to be moved onto;
 it is updated in place as each phase lands, like [SELF.md](SELF.md).
 
-The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`, and since
-2026-10-10 `delete_file` and `rename_file` — are how a model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
+The workspace tools — `list_dir`, `read_file`, `write_file`, `edit_file`, `search_files`, since
+2026-10-10 `delete_file` and `rename_file`, and since 2026-10-11 `glob` and `multi_edit` (composed
+from the other backend operations, `tools/workspace_composed.py`, so they need nothing new from the
+gateway) — are how a model changes files. Today they are ordinary file I/O inside the API and worker processes, against one
 directory. This proposal moves that I/O out of the process that holds the deployment's credentials,
 scopes it per tenant and per thread, and keeps the tool surface a manifest sees exactly as it is.
 
@@ -97,7 +99,8 @@ the natural place for a hosted backend to create a sandbox on first use). And th
 data, not formatted text: the tools still build every string the model sees. Failures cross the seam
 as the exceptions the tools already mapped (`ValueError`, `NotAFileError`, `OSError`), plus
 `EditRefused` for an edit the model can correct. The regex screen and the search deadline stay in the
-tool; the backend compiles its own copy of the pattern, since a compiled pattern is not something
+tool -- as does `glob`'s: a pattern matched a segment at a time with `fnmatch` (whose regex is atomic
+per `*`), at most 8 wildcards and 4 `**`, filtered off the event loop on a 5 s deadline; the backend compiles its own copy of the pattern, since a compiled pattern is not something
 every backend can be sent. `shell`, the image tools' `path`, `publish_commits` and the context-file
 loader still use `workspace_root()` and the local primitives: they need a real directory, and moving
 them is phase 3's question.
