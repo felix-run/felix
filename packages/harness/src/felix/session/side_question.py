@@ -177,15 +177,15 @@ async def _rendered(
     strategy ranks history against it, and dropped from what is returned: it reaches the model
     once, outside the fenced transcript.
     """
-    from felix.governance.image_screening import screen_session_strategy
-    from felix.governance.inbound import replay_screener
     from felix.runtime import session_plumbing
+    from felix.session.clearing import model_view_strategy
     from felix.session.tree import set_leaf, stored_leaf
 
     session_store, strategy = session_plumbing(settings, manifest, tenant_id)
     if session_store is None:
         return []
-    strategy = screen_session_strategy(strategy, replay_screener(manifest, settings))
+    # As the thread's next turn would render it.
+    strategy = model_view_strategy(strategy, manifest, settings)
     session = session_store.open(thread_id)
     readonly = _ReadOnlySession(session)
     placeholder = ChatMessage(role="user", content=question)

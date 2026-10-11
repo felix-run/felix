@@ -705,6 +705,16 @@ class MemorySpec(_Strict):
     recall: MemoryRecall = Field(default_factory=MemoryRecall)
 
 
+class ToolResultClearing(_Strict):
+    """Stub old tool results in what the model is sent (`felix.session.clearing`): those behind
+    the newest `keep_turns` to `2 * keep_turns - 1` user messages, over `min_chars` or carrying an
+    image. The session log keeps them."""
+
+    keep_turns: int = Field(default=10, ge=1, le=1000)
+    # Text results this short cost little; left as they are unless they carry an image.
+    min_chars: int = Field(default=1000, ge=0)
+
+
 class SessionSpec(_Strict):
     strategy: str = "full_replay"
     # Token-threshold compaction. Used when strategy is "compacting"
@@ -724,6 +734,8 @@ class SessionSpec(_Strict):
     # After a completed assistant turn, compact if over budget then continue
     # (does not abort the stream).
     compact_after_turn: bool = False
+    # Old tool results stubbed in each render; off unless set.
+    clear_tool_results: ToolResultClearing | None = None
 
 
 class InboundAuth(_Strict):
@@ -1635,6 +1647,7 @@ __all__ = [
     "PromptTemplateSpec",
     "Spec",
     "Starter",
+    "ToolResultClearing",
     "any_limit",
     "assert_valid_manifest_name",
     "child_agent_names",

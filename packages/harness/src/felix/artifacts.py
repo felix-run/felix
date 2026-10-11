@@ -67,6 +67,30 @@ _ID = re.compile(r"\A[0-9a-f]{32}\Z")
 _MANIFEST_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 
+# The spill marker: the last thing in a spilled output, in exactly this shape. Clients
+# (`felix-protocol`'s `parseArtifactMarker`, the terminal's `/artifact`) anchor it to the end and
+# take everything before it as the preview, and clearing (`session/clearing.py`) keeps its id in
+# the stub it leaves. Written and parsed here, so the shape has one owner. Parsed from the tail
+# only and in full: a search over the whole output is quadratic in a run of `[artifact:`, and a
+# looser shape lets a tool's own last line pass for one.
+_SPILL_MARKER = re.compile(
+    r"\[artifact:([0-9a-f]{32}) key=[^\s\]]{1,512} chars=\d{1,15} spilled_at=\d{1,15}\]\s*\Z"
+)
+_SPILL_MARKER_TAIL = 700
+
+
+def spill_marker(artifact_id: str, key: str, chars: int, spilled_at: int) -> str:
+    """The marker a spilled output ends with."""
+    return f"[artifact:{artifact_id} key={key} chars={chars} spilled_at={spilled_at}]"
+
+
+def spilled_artifact_id(content: str) -> str | None:
+    """The id of the spill marker `content` ends with, or None. One quoted mid-text is not a
+    handle, and nothing but the id is returned, so no tool-written byte travels with it."""
+    found = _SPILL_MARKER.search(content[-_SPILL_MARKER_TAIL:])
+    return found.group(1) if found else None
+
+
 def artifact_key(tenant_id: str, manifest_id: str, artifact_id: str) -> str:
     """Where a spilled output lives. The one definition, used to write and to read."""
     return f"artifacts/{tenant_id}/{manifest_id}/{artifact_id}.txt"
@@ -336,11 +360,9 @@ def apply_artifact_spill(
                 note = f"…[truncated {dropped} chars; artifact store write failed]"
                 return replace_tool_output(result, content=f"{head}\n\n{note}")
             head = content[:preview]
-            # The marker must stay the last thing in the output, in exactly this shape:
-            # clients (`felix-protocol`'s `parseArtifactMarker`, the terminal's `/artifact`)
-            # anchor it to the end and take everything before it as the preview. How to
-            # read on is in `read_artifact`'s description, not appended here.
-            marker = f"[artifact:{artifact_id} key={key} chars={len(content)} spilled_at={int(time.time())}]"
+            # The marker stays the last thing in the output (`spill_marker`). How to read on is
+            # in `read_artifact`'s description, not appended here.
+            marker = spill_marker(artifact_id, key, len(content), int(time.time()))
             # The tool's images, if any, stay beside the preview: spilling is about text the
             # model cannot afford to read in full, and an image is not part of that text.
             return replace_tool_output(result, content=f"{head}\n\n…{marker}")
@@ -442,5 +464,7 @@ __all__ = [
     "make_read_artifact_tool",
     "read_artifact",
     "record_artifact",
+    "spill_marker",
+    "spilled_artifact_id",
     "valid_artifact_ref",
 ]
