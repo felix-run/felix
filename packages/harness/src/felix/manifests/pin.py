@@ -161,6 +161,18 @@ def assert_pin_matches(
     """Refuse continue/resume when ``pin_compile`` and the hash drifted."""
     if not pinned:
         return
+    # A record names the manifest it was taken from, and only that manifest can drift from it.
+    # Every thread's first turn records a hash (`ensure_thread_pin`), enforced or not, so
+    # comparing another manifest's hash against it refused a thread's first turn under a
+    # `pin_compile` manifest forever, as "drift" of a manifest the thread had never run. An
+    # unenforced record of another manifest is not a pin; an enforced one is, and says so.
+    pinned_name = pinned.get("manifest_name")
+    if pinned_name and pinned_name != manifest.metadata.name:
+        if not pinned.get("pin_compile"):
+            return
+        raise ManifestDriftError(
+            f"thread pinned to {pinned_name}: {manifest.metadata.name} cannot continue it"
+        )
     if not pinned.get("pin_compile") and not manifest.spec.governance.pin_compile:
         return
     expected = pinned.get("manifest_hash")

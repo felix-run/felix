@@ -136,3 +136,26 @@ async def test_a_shared_child_is_resolved_once_however_many_parents_name_it(
     monkeypatch.setattr(runtime, "resolve_tenant_manifest", counting)
     await sub_agents_hash(None, "t", _agent("root", pattern="router", sub_agents=fan))
     assert sorted(calls) == sorted([*fan, "g0", "g1"]), "each name resolved exactly once"
+
+
+async def test_a_record_of_another_manifest_is_not_a_pin_of_this_one(store: dict[str, Any]) -> None:
+    """Every first turn records its manifest's hash, enforced or not. A thread that started on
+    an unpinned agent and moves to a `pin_compile` one is pinned afresh, not refused as drift
+    of an agent it never ran; a thread pinned for real refuses another agent, by name."""
+    from felix.config import Settings
+    from felix.manifests.pin import manifest_content_hash
+    from felix.session.thread_state import get_thread_meta
+
+    settings = Settings(database_url="memory://pin-switch", object_store="memory")
+    loose = _agent("loose", system_prompt={"inline": "free"})
+    pinned = _agent("pinned", governance={"pin_compile": True})
+
+    await ensure_thread_pin(settings=settings, tenant_id="t", thread_id="th", manifest=loose)
+    await ensure_thread_pin(settings=settings, tenant_id="t", thread_id="th", manifest=pinned)
+    meta = await get_thread_meta(settings=settings, tenant_id="t", thread_id="th")
+    assert meta.get("manifest_name") == "pinned"
+    assert meta.get("manifest_hash") == manifest_content_hash(pinned)
+    assert meta.get("pin_compile") is True
+
+    with pytest.raises(ManifestDriftError, match="thread pinned to pinned: loose cannot continue it"):
+        await ensure_thread_pin(settings=settings, tenant_id="t", thread_id="th", manifest=loose)
