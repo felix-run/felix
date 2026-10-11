@@ -61,6 +61,50 @@ def test_the_entry_metadata_is_structured_and_in_context() -> None:
     assert WorkspaceNote(path="a", op="rename", to_path="b").metadata()["to_path"] == "b"
 
 
+def test_a_folder_note_says_it_is_a_folder_and_how_many_files_went() -> None:
+    one = WorkspaceNote(path="notes", op="delete", kind="folder", files=1).text()
+    assert one.startswith("The operator deleted the folder `notes` (1 file) from the workspace.")
+    many = WorkspaceNote(path="notes", op="delete", kind="folder", files=1204).text()
+    assert "(1,204 files)" in many
+    assert many.endswith("Do not recreate anything in it unless you are asked to.")
+    moved = WorkspaceNote(path="a", op="rename", to_path="b/a", kind="folder").text()
+    assert moved.startswith("The operator renamed the folder `a` to `b/a` in the workspace.")
+    assert "paths under `a` are now under `b/a`; read them again before relying on" in moved
+
+
+def test_a_folder_notes_metadata_and_frame_carry_its_kind_and_a_file_notes_do_not() -> None:
+    gone = WorkspaceNote(path="d", op="delete", kind="folder", files=2)
+    assert gone.metadata() == {
+        "type": "workspace_edit",
+        "path": "d",
+        "op": "delete",
+        "bytes": None,
+        "source": "operator",
+        "in_context": True,
+        "kind": "folder",
+        "files": 2,
+    }
+    assert gone.event_data() == {"path": "d", "op": "delete", "bytes": None, "kind": "folder", "files": 2}
+    moved = WorkspaceNote(path="a", op="rename", to_path="b", kind="folder")
+    assert moved.event_data() == {
+        "path": "a",
+        "op": "rename",
+        "bytes": None,
+        "to_path": "b",
+        "kind": "folder",
+    }
+    assert "kind" not in WorkspaceNote(path="f", op="delete").metadata()
+    assert "kind" not in WorkspaceNote(path="f", op="delete").event_data()
+
+
+def test_a_folder_note_survives_the_queue() -> None:
+    note = WorkspaceNote(path="d", op="delete", kind="folder", files=7)
+    assert WorkspaceNote.from_json(note.to_json()) == note
+    # A note queued by a replica from before folders existed reads back as a file note.
+    old = '{"path": "a", "op": "delete", "bytes": null, "to_path": null}'
+    assert WorkspaceNote.from_json(old) == WorkspaceNote(path="a", op="delete")
+
+
 def test_coalescing_keeps_the_last_note_per_path_in_last_touched_order() -> None:
     notes = [
         WorkspaceNote(path="a", bytes=1),

@@ -251,12 +251,18 @@ def test_the_read_and_the_write_are_both_inside_the_lock() -> None:
             isinstance(node, ast.AsyncWith)
             and any(
                 isinstance(item.context_expr, ast.Call)
-                and getattr(item.context_expr.func, "id", "") == "_write_lock"
+                # `_path_locks` takes each path's `_write_lock`, after waiting out any folder
+                # operation holding a tree over it.
+                and getattr(item.context_expr.func, "id", "") in ("_write_lock", "_path_locks")
                 for item in node.items
             )
             for node in ast.walk(bodies[name])
         )
 
+    assert any(
+        isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_write_lock"
+        for node in ast.walk(bodies["_path_locks"])
+    ), "`_path_locks` takes the per-path lock"
     assert takes_the_lock("edit_file")
     assert takes_the_lock("write_file")
     assert not takes_the_lock("read_file"), "positive control: the scan discriminates"

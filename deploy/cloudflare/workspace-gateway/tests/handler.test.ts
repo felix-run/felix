@@ -261,6 +261,12 @@ describe('workspace gateway', () => {
       ['delete', { path: 'a', expected_sha256: 'F'.repeat(64) }],
       ['rename', { path: 'a' }],
       ['rename', { path: 'a', to_path: 'b', expected_sha256: 'abc' }],
+      ['delete_folder', {}],
+      ['delete_folder', { path: 'a', expected_count: -1 }],
+      ['delete_folder', { path: 'a', expected_count: 1.5 }],
+      ['delete_folder', { path: 'a', expected_count: '3' }],
+      ['rename_folder', { path: 'a' }],
+      ['rename_folder', { to_path: 'b' }],
       ['search', { query: 'x'.repeat(513) }],
       ['search', { query: 'x', max_hits: 51 }],
       ['list', []],
@@ -342,6 +348,34 @@ describe('workspace gateway', () => {
     const taken = await send(post(`/v1/workspaces/acme/shared/rename`, { path: 'a', to_path: 'b.txt' }));
     expect(taken.status).toBe(409);
     expect(await taken.json()).toEqual({ error: 'target_exists', message: 'b.txt' });
+  });
+
+  it('sends a folder delete and a folder rename to the scope’s sandbox', async () => {
+    await send(post(`/v1/workspaces/acme/shared/delete_folder`, { path: 'notes' }));
+    await send(post(`/v1/workspaces/acme/shared/delete_folder`, { path: 'notes', expected_count: 0 }));
+    await send(post(`/v1/workspaces/acme/${THREAD}/rename_folder`, { path: 'a', to_path: 'b/a' }));
+    expect(calls.map((c) => c.request)).toEqual([
+      { op: 'delete_folder', path: 'notes', expected_count: null },
+      { op: 'delete_folder', path: 'notes', expected_count: 0 },
+      { op: 'rename_folder', path: 'a', to_path: 'b/a' },
+    ]);
+  });
+
+  it('returns a folder refusal’s count, and no digest with it', async () => {
+    for (const [error, status] of [
+      ['too_many_entries', 409],
+      ['too_deep', 409],
+      ['workspace_changed', 409],
+    ] as const) {
+      answer = async () => ({ ok: false, error, message: 'm', count: 7 });
+      const res = await send(post(`/v1/workspaces/acme/shared/delete_folder`, { path: 'a' }));
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error, message: 'm', count: 7 });
+    }
+    answer = async () => ({ ok: false, error: 'reserved_path', message: 'reserved path: a/.git', count: 3 });
+    const reserved = await send(post(`/v1/workspaces/acme/shared/delete_folder`, { path: 'a' }));
+    expect(reserved.status).toBe(422);
+    expect(await reserved.json()).toEqual({ error: 'reserved_path', message: 'reserved path: a/.git' });
   });
 
   it('says the sandbox is unavailable when its Durable Object fails', async () => {
