@@ -1016,20 +1016,22 @@ own:
   — `uv` resolves an index the workspace names. And secret confinement covers what Felix
   masks, not a file in the checkout — the workspace holds no `.env` and no deployment secret,
   because an allowlisted `git diff` or a failing test can print one into the transcript.
-- **An allowlisted `git` runs no program the repository names.** `.git/config` and `.git/hooks`
-  are workspace files the agent can write, and without this a planted hook, `core.fsmonitor`,
-  `core.editor` (a commit without `-m`) or `gpg.program` (with `commit.gpgSign`, or a `-S` the
-  model passes) would turn
-  `git commit` or `git status` into running anything. The child's environment overrides them for
-  every git it starts -- named in argv or run by a script (`GIT_CONFIG_COUNT`, git 2.31+; plus
-  `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR` and `GIT_PAGER`): hooks, fsmonitor, editors, signing (and
-  the signing programs, pinned to the system's, since `-S` forces it),
-  `core.sshCommand`, `credential.helper` and `diff.external` are switched off
-  (`tools/shell.py:_GIT_DISARMED`). **Not covered:** a `filter.<name>` clean or smudge driver,
-  which `.gitattributes` names and git runs on `add` and checkout -- the name is the repository's
-  choice, so no fixed key can switch it off. Where that matters, keep `git add` and checkout-type
-  commands off `FELIX_SHELL_ALLOWED_COMMANDS`; commands that run repository code (`make test`) run
-  anything already, and the runner is their boundary.
+- **The model cannot write what decides what git runs.** `write_file`, `edit_file` and
+  `multi_edit` refuse any path inside `.git` and any `.gitattributes` (`reserved path`), as
+  `delete_file` and `rename_file` already refuse `.git`. Hooks, `.git/config` and the attributes
+  that name filter, diff and merge drivers are the repository's own, not the agent's.
+- **And the git it runs is disarmed too.** For a `.git` that arrived some other way -- a clone,
+  or a command that wrote it -- the child's environment overrides the settings that make git run
+  a program (hooks, fsmonitor, editors, pager, signing and the signing programs, `core.sshCommand`,
+  `credential.helper`, `diff.external`; `tools/shell.py:_GIT_DISARMED`) for every git it starts,
+  named in argv or run by a script, through `GIT_CONFIG_COUNT` (git 2.31+) and `GIT_EDITOR`,
+  `GIT_SEQUENCE_EDITOR` and `GIT_PAGER`.
+- **A git allowlist is not confinement.** The arguments after an allowlisted prefix are the
+  model's, and git has options that run a program or read and write paths outside the workspace;
+  drivers named in `.gitattributes` cannot be switched off by a fixed key. The runner (below) is the
+  boundary for every shell command, git included -- as it already is for `make test`, which runs
+  any code the agent writes. List only the git commands an agent needs, and treat each as running
+  code with the runner's access.
 - **Run locally, the child can read the API's own environment.** With `FELIX_SHELL_RUNNER_URL`
   unset — `make dev`, a plain `make up`, any deployment that does not set it — the child inherits
   only the five variables above, but it runs as the API's user in the API's PID namespace, so it

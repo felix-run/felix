@@ -400,3 +400,30 @@ def test_a_pattern_with_too_many_segments_is_refused() -> None:
         workspace_composed._glob_pattern_refusal("/".join(["a"] * 33)) == "pattern has more than 32 segments"
     )
     assert workspace_composed._glob_pattern_refusal("/".join(["a"] * 32)) is None
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize(
+    "path", [".git/config", ".git/hooks/pre-commit", ".gitattributes", "src/.gitattributes"]
+)
+async def test_no_model_write_reaches_what_decides_what_git_runs(
+    tmp_path: Path, gateway: FakeGateway, backend: str, path: str
+) -> None:
+    here = _here(tmp_path, backend, gateway)
+    (here / ".git" / "hooks").mkdir(parents=True)
+    (here / "src").mkdir()
+    for existing in (".git/config", ".gitattributes", "src/.gitattributes"):
+        (here / existing).write_text("x\n")
+    async with _request(_settings(tmp_path, backend)):
+        writes = [
+            await _call("write_file", {"path": path, "content": "planted\n"}),
+            await _call("edit_file", {"path": path, "old_string": "x", "new_string": "planted"}),
+            await _call("multi_edit", {"path": path, "edits": [_edit("x", "planted")]}),
+        ]
+        ordinary = await _call("write_file", {"path": "src/ok.txt", "content": "fine\n"})
+    for out in writes:
+        assert out.startswith(f"{REFUSED} reserved path: {path}"), out
+    assert "planted" not in "".join(
+        p.read_text() for p in here.rglob("*") if p.is_file() and p.name != "ok.txt"
+    )
+    assert json.loads(ordinary)["path"] == "src/ok.txt"

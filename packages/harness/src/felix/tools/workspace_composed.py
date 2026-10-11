@@ -39,6 +39,7 @@ from felix.tools.workspace import (
     _refuse,
     _seam,
     workspace_parts,
+    writable_file,
 )
 from felix.tools.workspace_backend import EditRefused, WorkspaceChanged
 
@@ -234,7 +235,7 @@ async def _multi_edit(args: MultiEditArgs) -> ToolOutput:
     backend, scope = _seam()
     try:
         await backend.prepare(scope)
-        workspace_parts(args.path)
+        writable_file(args.path)
     except ValueError as exc:
         return _path_refused(exc)
     try:
