@@ -199,7 +199,10 @@ async def test_plan_put_is_conditional_and_keeps_what_it_was_not_sent(settings: 
         assert stale.status_code == 409
         detail = stale.json()["detail"]
         assert detail["error"] == "plan_changed"
-        assert detail["current"]["plan"] == {"v": 2}
+        current = dict(detail["current"]["plan"])
+        # Written through this route, so it says a person edited it (`routes/plans.py`).
+        assert current.pop("edited")["by"]
+        assert current == {"v": 2}
 
         # An explicit null still clears the expiry.
         cleared = await client.put("/plans/p-cond", json={"plan": {"v": 3}, "expires_at": None})
