@@ -300,6 +300,12 @@ class Settings(BaseSettings):
     # false}}. `secret` signs every delivery; `tenants` (required) lists who may name it, or
     # "*" for every tenant; `private: true` lets the URL resolve to a private address.
     webhook_endpoints: str = Field(default="", repr=False)
+    # Credentials the model never holds (`felix.security.egress_credentials`): a header the guarded
+    # transport attaches to a request for one exact host and path prefix, which a manifest names
+    # by id in `spec.network.credentials`. JSON: {"id": {"host": "api.github.com", "path_prefix":
+    # "/repos/acme/", "secret": "secret:NAME", "scheme": "Bearer", "header": "Authorization",
+    # "port": null, "tenants": [...]}}. `tenants` is required ("*" for every tenant).
+    egress_credentials: str = Field(default="", repr=False)
     # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
     webhook_max_attempts: int = Field(default=8, ge=1)
     # Each attempt, end to end. Bounded: a sweep stops starting deliveries after half its 120 s claim,
@@ -741,6 +747,7 @@ class Settings(BaseSettings):
         self._validate_model_route_providers()
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
+        self._validate_egress_credentials()
         self._validate_skill_update_webhooks()
         self._validate_push()
 
@@ -844,6 +851,15 @@ class Settings(BaseSettings):
             parse_webhook_endpoints(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_WEBHOOK_ENDPOINTS: {exc}") from exc
+
+    def _validate_egress_credentials(self) -> None:
+        """A malformed `FELIX_EGRESS_CREDENTIALS` fails the boot, not the first fetch it would sign."""
+        from felix.security.egress_credentials import parse_egress_credentials
+
+        try:
+            parse_egress_credentials(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_EGRESS_CREDENTIALS: {exc}") from exc
 
     def _validate_skill_update_webhooks(self) -> None:
         """A `FELIX_SKILL_UPDATE_WEBHOOKS` binding to an endpoint that is not registered, or not

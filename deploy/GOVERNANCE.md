@@ -884,6 +884,60 @@ Browser tools additionally register a Playwright request interceptor, so redirec
 and subresources are re-checked — `page.goto()` follows both, and the URL is
 model-supplied. Every other outbound client sets `follow_redirects=False`.
 
+### Credentials the model never holds: `spec.network.credentials`
+
+A model can drive `http_fetch` at an authenticated API only if something adds the key, and every
+place a model could put one -- an argument, a URL, a header it writes -- is a place it could copy it
+from. So the key never reaches it. The operator registers it, per tenant, against one exact host:
+
+```bash
+FELIX_EGRESS_CREDENTIALS='{"github": {"host": "api.github.com", "path_prefix": "/repos/acme/",
+  "secret": "secret:GITHUB_TOKEN", "scheme": "Bearer", "tenants": ["acme"]}}'
+```
+
+and a manifest names the ids it may send:
+
+```yaml
+spec:
+  network:
+    allow_hosts: [api.github.com]
+    credentials: [github]
+```
+
+- **Attached in transit.** `GuardedAsyncTransport` adds the header (`Authorization` unless
+  `header` says otherwise, prefixed by `scheme`) *after* the host check, to a request whose origin
+  is the credential's -- its host exactly, its port (`port`, else the scheme's default) -- whose
+  path is inside `path_prefix` as httpx sends it, and whose scheme is https (plain http only in
+  development with `allow_insecure`). Each redirect hop arrives as a request of its own and is
+  judged again, so a hop to another host or out of the prefix goes without it.
+- **Bounded.** A manifest with `credentials` must set `allow_hosts`, naming each credential's host
+  exactly, so what the agent reads with the key can only go where its list allows. An id the
+  operator has not registered for the tenant, or a host the list does not name, fails the compile.
+  A wildcard host and the transport's own headers (`Host`, `Content-Length`, `Cookie`, …) are
+  refused at boot. Children do not inherit a parent's credentials.
+- **Never shown.** The value is resolved when the agent compiles, before the masking wrappers take
+  their list, and registered for masking, so a server that echoes the header back reaches the
+  model as `[REDACTED]` on the first request a process makes as on every later one. It is in no
+  prompt, argument, tool result or log line; the log records which credential id was attached to
+  which host. A value that masking would miss or that the wire would refuse in an error quoting it
+  -- under 8 characters, surrounding whitespace (a trailing newline from `echo key | …`), a
+  control character -- fails the compile, as does a secret the backend cannot resolve, both with
+  the credential's id and not its value (`422` on `/chat`).
+- **Stripped where it does not belong.** The transport removes a bound credential's header from
+  any request it does not cover, so a client that copies headers onto a redirect hop cannot carry
+  the key past its host or prefix; a client carrying credentials must follow redirects by hand
+  (`safe_async_client` refuses `follow_redirects=True` with them). A doubly-encoded path (`%25`)
+  gets no key.
+- **Who may use one.** Any manifest in a tenant the credential is registered for may name it: a
+  tenant user who can write manifests can bind it, and only its host, port and prefix bound where
+  it goes. A credential open to `"*"`, or to `default` -- the tenant anonymous callers and
+  `FELIX_AUTH_MODE=none` run as -- is usable by anyone who may call a manifest naming it. Plain
+  http follows `FELIX_ALLOW_INSECURE` in development: the key goes in clear to an `http://` URL on
+  its host there, never in production.
+- **Not yet covered:** MCP HTTP servers still resolve their `Authorization` into the compiled tool
+  (`docs/ROADMAP.md`), and stdio children hold env secrets, where only exact-string masking stands
+  between a key and the model.
+
 ### Completion webhooks
 
 A durable run with `spec.execution.webhooks` has its outcome POSTed by the worker when it reaches

@@ -37,6 +37,7 @@ from felix.security import ssrf
 from felix.security.ssrf import EgressBlocked
 
 if TYPE_CHECKING:
+    from felix.security.egress_credentials import CredentialSet
     from felix.security.host_allowlist import EgressBound
 
 logger = logging.getLogger("felix.security.egress")
@@ -163,7 +164,14 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
     # construction, and `mounts` takes precedence over the transport entirely.
     _ROUTES_AROUND_THE_PIN = ("proxy", "mounts", "uds")
 
-    def __init__(self, *, allow_http: bool = False, egress: EgressBound | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        allow_http: bool = False,
+        egress: EgressBound | None = None,
+        credentials: CredentialSet | None = None,
+        **kwargs: Any,
+    ) -> None:
         for name in self._ROUTES_AROUND_THE_PIN:
             if kwargs.get(name) is not None:
                 raise TypeError(
@@ -178,6 +186,7 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
             )
         self._allow_http = allow_http
         self._egress = egress
+        self._credentials = credentials
         self._pool._network_backend = _PinningBackend(allow_http=allow_http)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -192,6 +201,10 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
             from felix.security.host_allowlist import check_host
 
             check_host(self._egress, request.url.raw_host.decode("ascii", errors="replace"))
+        # Only after the host is allowed: the key goes to a request already permitted to go there,
+        # and each redirect hop arrives here as a request of its own, judged again.
+        if self._credentials is not None:
+            self._credentials.attach(request, allow_http=self._allow_http)
         return await super().handle_async_request(request)
 
 
@@ -200,6 +213,7 @@ def safe_async_client(
     timeout: httpx.Timeout | float,
     allow_http: bool = False,
     egress: EgressBound | None = None,
+    credentials: CredentialSet | None = None,
     **kwargs: Any,
 ) -> httpx.AsyncClient:
     """An `httpx.AsyncClient` that can only reach addresses the guard approved.
@@ -222,8 +236,12 @@ def safe_async_client(
                 f"{name}= would bypass the egress guard; a guarded client cannot proxy or use a unix socket"
             )
     kwargs.setdefault("follow_redirects", False)
+    if credentials is not None and kwargs["follow_redirects"]:
+        # httpx copies headers onto the next hop itself. The transport strips a credential a hop is
+        # not covered by, but a client that carries authority follows its redirects by hand.
+        raise TypeError("credentials= needs follow_redirects=False; follow each hop as its own request")
     return httpx.AsyncClient(
-        transport=GuardedAsyncTransport(allow_http=allow_http, egress=egress),
+        transport=GuardedAsyncTransport(allow_http=allow_http, egress=egress, credentials=credentials),
         timeout=timeout,
         **kwargs,
     )

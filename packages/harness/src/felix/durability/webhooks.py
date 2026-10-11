@@ -28,7 +28,6 @@ import hashlib
 import hmac
 import json
 import logging
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -46,10 +45,10 @@ from felix.durability.fibers import (
     retry_delay_ms,
 )
 from felix.observability.metrics import record_counter
+from felix.settings_registry import parse_registry, parse_tenants, tenant_allowed
 
 logger = logging.getLogger("felix.durability.webhooks")
 
-_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # Held on a row while one worker delivers it; a crashed worker's claim lapses after this.
 WEBHOOK_CLAIM_MS = 120_000
 WEBHOOK_BATCH = 50
@@ -84,29 +83,19 @@ class WebhookEndpoint:
     hooks: bool = False
 
     def allows(self, tenant_id: str) -> bool:
-        return self.tenants is None or tenant_id in self.tenants
+        return tenant_allowed(self.tenants, tenant_id)
 
 
 def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
     """`FELIX_WEBHOOK_ENDPOINTS`, validated. Raises `ValueError` naming what is wrong."""
-    raw = str(getattr(settings, "webhook_endpoints", "") or "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"not valid JSON ({exc.msg})") from None
-    if not isinstance(parsed, dict):
-        raise ValueError("must be a JSON object of endpoint id -> {url, secret}")
+    parsed = parse_registry(
+        str(getattr(settings, "webhook_endpoints", "") or ""), kind="endpoint", shape="{url, secret}"
+    )
     insecure_ok = getattr(settings, "environment", "") == "development" and bool(
         getattr(settings, "allow_insecure", False)
     )
     out: dict[str, WebhookEndpoint] = {}
     for name, spec in parsed.items():
-        if not isinstance(name, str) or not _NAME_RE.match(name):
-            raise ValueError(f"endpoint id {name!r} must match {_NAME_RE.pattern}")
-        if not isinstance(spec, dict):
-            raise ValueError(f"endpoint {name!r} must be an object")
         url = str(spec.get("url") or "")
         parts = urlsplit(url)
         if parts.scheme not in ("https", "http") or not parts.hostname:
@@ -124,13 +113,7 @@ def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
                 base64.b64decode(secret.removeprefix("whsec_"), validate=True)
             except binascii.Error:
                 raise ValueError(f"endpoint {name!r} `whsec_` secret is not valid base64") from None
-        # Required, with "*" for every tenant: the open endpoint has to be a written decision,
-        # because a forgotten key would otherwise make it one.
-        tenants = spec.get("tenants")
-        if tenants != "*" and not (
-            isinstance(tenants, list) and tenants and all(isinstance(t, str) for t in tenants)
-        ):
-            raise ValueError(f'endpoint {name!r} `tenants` must be a list of tenant ids, or "*" for all')
+        tenants = parse_tenants(spec, kind="endpoint", name=name)
         private = spec.get("private", False)
         if not isinstance(private, bool):
             raise ValueError(f"endpoint {name!r} `private` must be true or false")
@@ -141,7 +124,7 @@ def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
             name=name,
             url=url,
             secret=secret,
-            tenants=None if tenants == "*" else frozenset(tenants),
+            tenants=tenants,
             private=private,
             hooks=hooks,
         )

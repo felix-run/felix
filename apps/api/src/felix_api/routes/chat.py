@@ -78,6 +78,12 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
     # is how a message that was safe in one place got copied to one where it was not.
     if isinstance(exc, InboundAuthError | InboundScreeningError):
         return HTTPException(status_code=exc.status_code, detail=client_safe_message(exc))
+    from felix.security.egress_credentials import EgressCredentialError
+
+    if isinstance(exc, EgressCredentialError):
+        # The manifest names a credential the operator has not registered for this tenant, or
+        # one whose value is unusable: the agent cannot be compiled as written.
+        return HTTPException(status_code=422, detail=client_safe_message(exc))
     if isinstance(exc, ManifestDriftError):
         return HTTPException(status_code=409, detail=client_safe_message(exc))
     from felix.durability.fibers import RunInProgress

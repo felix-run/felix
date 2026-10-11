@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from felix.security.ssrf import assert_safe_outbound_url
+from felix.settings_registry import REGISTRY_ID_RE
 
 API_VERSION = "felix/v1"
 MANIFEST_KIND = "Agent"
@@ -922,9 +923,9 @@ class ExecutionSpec(_Strict):
     @field_validator("webhooks")
     @classmethod
     def _webhook_ids(cls, v: list[str]) -> list[str]:
-        bad = [name for name in v if not _WEBHOOK_ID_RE.match(name)]
+        bad = [name for name in v if not REGISTRY_ID_RE.match(name)]
         if bad:
-            raise ValueError(f"webhook ids must match {_WEBHOOK_ID_RE.pattern}: {bad}")
+            raise ValueError(f"webhook ids must match {REGISTRY_ID_RE.pattern}: {bad}")
         return v
 
     @model_validator(mode="after")
@@ -933,9 +934,6 @@ class ExecutionSpec(_Strict):
         if self.webhooks and self.mode != "durable":
             raise ValueError("execution.webhooks needs execution.mode: durable")
         return self
-
-
-_WEBHOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class Policy(_Strict):
@@ -1066,6 +1064,27 @@ class NetworkSpec(_Strict):
     """
 
     allow_hosts: list[str] | None = Field(default=None, max_length=MAX_REFS)
+    #: Operator-registered credentials (`FELIX_EGRESS_CREDENTIALS`) this agent's `http_tools` may
+    #: send, by id: the egress transport adds them in transit, so the model never holds the key.
+    #: Each one's host must be in `allow_hosts`. `http_tools` is the only client that sends them
+    #: today (MCP HTTP servers are a `docs/ROADMAP.md` follow-up).
+    credentials: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+    @field_validator("credentials")
+    @classmethod
+    def _credential_ids(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not REGISTRY_ID_RE.match(name):
+                raise ValueError(f"network.credentials entry {name!r} is not a credential id")
+        return list(dict.fromkeys(v))
+
+    @model_validator(mode="after")
+    def _credentials_need_a_list(self) -> NetworkSpec:
+        if self.credentials and self.allow_hosts is None:
+            # An agent carrying authority has bounded egress, so what it reads with the key can only
+            # go where the list allows.
+            raise ValueError("network.credentials needs network.allow_hosts naming each credential's host")
+        return self
 
     @field_validator("allow_hosts")
     @classmethod
@@ -1423,6 +1442,14 @@ class Spec(_Strict):
                 "personal_skills: write needs skill_authoring.enabled: it is where the agent's "
                 "create_skill and update_skill save"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _credentials_have_a_client(self) -> Spec:
+        """Credentials are attached to `http_tools` requests, and nothing else yet: named without
+        one, they would compile and do nothing."""
+        if self.network.credentials and not self.http_tools:
+            raise ValueError("network.credentials is sent by http_tools, and this manifest binds none")
         return self
 
     def declared_urls(self) -> list[str]:

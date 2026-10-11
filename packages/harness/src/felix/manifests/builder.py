@@ -1885,6 +1885,15 @@ async def build_agent(
             except Exception:
                 logger.warning("image tool binding failed", exc_info=True)
 
+        # Credentials the model never holds (`FELIX_EGRESS_CREDENTIALS`), bound outside the binder's
+        # `try`: an id the operator has not registered for this tenant refuses the compile rather
+        # than dropping the tool it was meant for.
+        from felix.security.egress_credentials import bind_credentials
+
+        credentials = await bind_credentials(
+            m.spec.network.credentials, deps.settings, tenant_id, allow_hosts=m.spec.network.allow_hosts
+        )
+
         # Fetch tools: the model names the URL, the egress guard pins the address.
         if m.spec.http_tools:
             try:
@@ -1892,7 +1901,9 @@ async def build_agent(
 
                 _append_unique_tools(
                     resolved,
-                    tools_from_http_fetch_refs(list(m.spec.http_tools), allow_http=allow_http, egress=egress),
+                    tools_from_http_fetch_refs(
+                        list(m.spec.http_tools), allow_http=allow_http, egress=egress, credentials=credentials
+                    ),
                 )
             except Exception:
                 logger.warning("http fetch tool binding failed", exc_info=True)

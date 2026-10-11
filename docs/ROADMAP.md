@@ -533,7 +533,7 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       tool; the same frames for router/parallel/groupchat (*Headless / contract*). Plan mode: see W2. `todo_write` (any pattern, via `spec.tools`): the run's checklist, read off
       the current branch onto the snapshot as `todos` (follows rewind/fork), announced as
       `todo_updated`.
-- [~] **W2 — permissions, hooks, commands.** *Landed:* per-thread permission modes (`default |
+- [x] **W2 — permissions, hooks, commands.** *Landed:* per-thread permission modes (`default |
       accept_edits | plan | bypass`, `spec.permissions`, `POST /chat/mode`) as one deliberate new
       wrapper slot just outside approvals; plan mode runs only `read_only` tools and ends through
       `exit_plan_mode` and the built-in `plan-approval` rule; `bypass` needs `approvals:bypass`,
@@ -550,9 +550,12 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       (host, `*.` subdomain or IP patterns), enforced by `http_fetch` per hop in the guarded
       transport (the browser is refused under a list: interception cannot confine it), checked against the manifest's own
       URLs at write; children compile under their parents' lists, background children carry them
-      on the durable run. *Next:* *credentials the model never holds*, onto the same transport; the
-      browser behind a local proxy enforcing the bound -- every socket, workers' included -- which
-      lifts the refusal of `browser_tools` under a list.
+      on the durable run. Credentials the model never holds: `FELIX_EGRESS_CREDENTIALS` (operator,
+      per tenant, one exact host + port + path prefix) named by `spec.network.credentials`, the
+      header attached by the transport after the host check, https only, masked if echoed.
+      *Follow-ups:* MCP HTTP servers onto the same map; the browser behind a local proxy enforcing
+      the bound -- every socket, workers' included -- which lifts the refusal of `browser_tools`
+      under a list.
 - [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
       background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
       worktree per child task, and clearing of stale tool results.
@@ -699,19 +702,15 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       the other way), the payload is **untrusted input reaching the model** (screen it as a tool
       result, never as the operator's prompt), and per-endpoint rate limits so a noisy sender
       cannot spend the tenant's budget. Pairs with `spec.execution.webhooks`: event in, result out.
-- [ ] **Credentials the model never holds** (proposed 2026-10-06). Today a secret reaches a tool
-      as an MCP `Authorization` header, an MCP stdio `env`, or a container's auth, all resolved at
-      compile time, and the defence on the way back is exact-string `[REDACTED]` over tool output,
-      the session log and audit (`builder.py`, `session/store.py`). Exact match is the gap: a
-      stdio server or shell child that holds a key can return it base64'd, split or reversed, and
-      that reaches the model. `http_fetch` has no header field at all, so no fetched API can be
-      authenticated without handing the key to something the model drives. Proposal: an
-      operator-owned map from host (or host + path prefix) to `secret:NAME`, applied inside
-      `GuardedAsyncTransport.handle_async_request` (`security/egress.py`) **after** the egress
-      check, so the credential is attached only to a request already allowed to that host, and
-      the model, the tool arguments and every log see only the request it made. Then an
-      `http_fetch` that can call an authenticated API, and MCP HTTP servers moved onto the same
-      map. Stdio children keep env secrets and stay the documented exception.
+- [~] **Credentials the model never holds** (proposed 2026-10-06). *Landed for `http_fetch`:*
+      `FELIX_EGRESS_CREDENTIALS` maps an id to one exact host, port and path prefix and a
+      `secret:NAME`; `spec.network.credentials` names the ids an agent may send (its
+      `allow_hosts` must name each host); `GuardedAsyncTransport` attaches the header after the
+      host check, per redirect hop, https only, and registers the value for masking
+      (`security/egress_credentials.py`). *Next:* MCP HTTP servers onto the same map, so their
+      `Authorization` is no longer resolved into the compiled tool. Stdio children keep env
+      secrets and stay the documented exception; exact-string masking of what they return is the
+      gap that remains there.
 - [ ] **Fail over on an exhausted provider, not only a failing one** (proposed 2026-10-06).
       `spec.model.fallbacks` advances when `_is_provider_error` (`patterns/model_composites.py`)
       says so: `>= 500` or `429`. A quota 429 therefore fails over, but **402** (AI Gateway credits
