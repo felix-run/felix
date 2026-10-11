@@ -358,6 +358,10 @@ class SandboxRef(_Strict):
     fatal: bool = False
 
 
+# Bound beside every shell tool with `background: true` (`felix.tools.shell`).
+SHELL_BACKGROUND_TOOLS = ("shell_output", "shell_kill")
+
+
 class ShellToolRef(_Strict):
     """A subprocess on the host the API runs on, bounded by argv prefixes.
 
@@ -384,6 +388,17 @@ class ShellToolRef(_Strict):
     commands: list[str] = Field(min_length=1, max_length=64)
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
     fatal: bool = False
+    # Lets the model start a command with `run_in_background` and come back to it: the start
+    # answers an id at once, `shell_output` reads what it wrote since the last read and
+    # `shell_kill` ends it. The command still lives at most `timeout_ms` (`felix.tools.shell_background`).
+    background: bool = False
+
+    @field_validator("name")
+    @classmethod
+    def _not_a_background_tool(cls, v: str) -> str:
+        if v in SHELL_BACKGROUND_TOOLS:
+            raise ValueError(f"shell_tools[].name {v!r} is the name of a tool background commands bind")
+        return v
 
     @field_validator("commands")
     @classmethod
@@ -1623,6 +1638,7 @@ __all__ = [
     "API_VERSION",
     "MANIFEST_KIND",
     "MANIFEST_NAME_RE",
+    "SHELL_BACKGROUND_TOOLS",
     "ApprovalRule",
     "ClientToolRef",
     "CommandScreening",

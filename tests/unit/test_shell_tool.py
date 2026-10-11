@@ -32,10 +32,18 @@ from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.shell import MAX_OUTPUT_BYTES, MAX_TOTAL_OUTPUT_BYTES, ShellArgs, tools_from_shell_refs
 from felix.tools.types import Tool, ToolInvocationCtx, is_wrapper_deny, tool_output_content
 
+from tests.support.background_state import isolate_background_state
+
 # Written against files at the workspace root; scope selection is test_workspace_scopes.py.
 pytestmark = pytest.mark.usefixtures("deployment_workspace_scope")
 
 PY = sys.executable
+
+
+@pytest.fixture(autouse=True)
+def _background_state(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Background commands keep their state in a directory of this test's own."""
+    isolate_background_state(monkeypatch, tmp_path_factory)
 
 
 def _settings(ws: Path, allowed: str) -> Settings:
@@ -400,3 +408,87 @@ async def test_a_compile_the_host_does_not_allow_is_refused_not_stripped(tmp_pat
     allowed = Settings(**base, shell_allowed_commands="git status")
     agent = await build_agent(manifest, default_tool_provider(), settings=allowed)
     assert "run" in {t.name for t in agent.tools}
+
+
+# --- background commands: who is offered them ------------------------------------------------
+
+
+def test_only_a_tool_with_background_is_offered_run_in_background(tmp_path: Path) -> None:
+    from felix.tools.shell_background_tools import ShellBackgroundArgs
+
+    settings = _settings(tmp_path, "ls, cat")
+    plain = tools_from_shell_refs([ShellToolRef(name="run", commands=["ls"])], settings=settings)
+    assert [t.name for t in plain] == ["run"]
+    assert "run_in_background" not in plain[0].args_schema.model_fields
+    both = tools_from_shell_refs(
+        [
+            ShellToolRef(name="ls", commands=["ls"], background=True),
+            ShellToolRef(name="cat", commands=["cat"], background=True),
+            ShellToolRef(name="plain", commands=["ls"]),
+        ],
+        settings=settings,
+    )
+    assert [t.name for t in both] == ["ls", "cat", "plain", "shell_output", "shell_kill"], "bound once"
+    assert both[0].args_schema is ShellBackgroundArgs and both[2].args_schema is ShellArgs
+    tools = {t.name: t for t in both}
+    assert tools["shell_output"].read_only and not tools["shell_kill"].read_only
+
+
+async def test_a_tool_without_background_runs_a_smuggled_flag_in_the_foreground(tmp_path: Path) -> None:
+    """The executor, not only the schema: `run_in_background` on a tool not bound for it waits."""
+    tool = _tool(tmp_path, commands=[PY])
+    out = _result(await _run(tool, tmp_path, {"argv": [PY, "-c", "print('fg')"], "run_in_background": True}))
+    assert (out["exit_code"], out["stdout"]) == (0, "fg\n")
+
+
+async def test_a_background_start_off_the_allowlist_starts_nothing(tmp_path: Path) -> None:
+    from felix.tools import shell_background
+
+    marker = tmp_path / "ran"
+    settings = _settings(tmp_path, "ls")
+    (run, *_) = tools_from_shell_refs(
+        [ShellToolRef(name="run", commands=["ls"], background=True)], settings=settings
+    )
+    out = await _run(run, tmp_path, {"argv": ["touch", str(marker)], "run_in_background": True}, allowed="ls")
+    assert read_tool_error_code(out) is ToolErrorCode.PERMISSION_DENIED
+    base = shell_background.background_base(tmp_path.resolve())
+    assert not any(base.iterdir()) and not marker.exists()
+
+
+@pytest.mark.parametrize("name", ["shell_output", "shell_kill"])
+def test_a_shell_tool_cannot_take_a_background_tools_name(name: str) -> None:
+    with pytest.raises(ValueError, match="background commands bind"):
+        ShellToolRef(name=name, commands=["ls"])
+
+
+async def test_a_local_background_start_is_counted_against_its_tenant(tmp_path: Path) -> None:
+    from felix.tools import shell_background
+
+    settings = _settings(tmp_path, PY)
+    (run, *_) = tools_from_shell_refs(
+        [ShellToolRef(name="run", commands=[PY], background=True)], settings=settings
+    )
+    started = _result(
+        await _run(run, tmp_path, {"argv": [PY, "-c", "pass"], "run_in_background": True}, allowed=PY)
+    )
+    spec = json.loads(
+        (shell_background.background_base(tmp_path.resolve()) / started["id"] / "spec.json").read_text()
+    )
+    assert spec["owner"] == "t"
+
+
+async def test_a_local_background_failure_relays_no_exception_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.tools import shell_background
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError("/private/state/path/cursor.json")
+
+    monkeypatch.setattr(shell_background, "read_background", _boom)
+    settings = _settings(tmp_path, PY)
+    (_, output, _) = tools_from_shell_refs(
+        [ShellToolRef(name="run", commands=[PY], background=True)], settings=settings
+    )
+    out = tool_output_content(await _run(output, tmp_path, {"id": "0" * 32}, allowed=PY))
+    assert "/private/state" not in out and out.startswith("[shell] the output failed")

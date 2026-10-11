@@ -42,6 +42,8 @@ _STATUS = {
     "too_many_entries": 409,
     "too_deep": 409,
     "clone_failed": 502,
+    "busy": 409,
+    "unknown_background": 404,
     "unavailable": 503,
     "timeout": 504,
 }

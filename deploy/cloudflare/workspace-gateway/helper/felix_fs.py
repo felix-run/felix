@@ -36,14 +36,19 @@ import asyncio
 import base64
 import contextlib
 import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
 import secrets
+import selectors
+import shutil
 import signal
 import stat
+import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -75,6 +80,20 @@ _MAX_STDIN_CHARS = 256_000
 _DRAIN_AFTER_KILL_S = 5.0
 # The harness's longest integration timeout (`MAX_INTEGRATION_TIMEOUT_S`).
 _MAX_EXEC_TIMEOUT_MS = 3_600_000
+# Background commands (felix/tools/shell_background.py), held equal by the helper test.
+MAX_RUNNING = 4
+MAX_RUNNING_OWNER = 8
+MAX_RUNNING_HOST = 32
+MAX_KEPT = 16
+KEPT_FOR_S = 3600.0
+MAX_WAIT_MS = 20_000
+KILL_WAIT_S = 10.0
+DETACH_WAIT_S = 10.0
+_POLL_S = 0.2
+_MAX_STATE_BYTES = 65_536
+_LOCK_WAIT_S = 10.0
+_BACKGROUND_ID = re.compile(r"[0-9a-f]{32}")
+_STATES = ("exited", "killed", "timed_out", "output_exceeded", "failed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -945,6 +964,463 @@ async def exec_argv(
 # --- end of PORTED from shell.py -------------------------------------------------------------
 
 
+# --- PORTED from the harness's felix/tools/shell_background.py: do not edit without editing it there
+# A background command's supervisor is this script run with `--supervise` (`_supervisor_argv`): it
+# outlives the one call that started it, as the harness's does the API call.
+
+
+class BackgroundLimitReached(Exception):
+    """A start refused because enough commands are running already. The message is the model's."""
+
+
+class UnknownBackgroundId(FileNotFoundError):
+    """No background command by that id here. The message is the model's."""
+
+
+def _supervisor_argv(entry: Path) -> list[str]:
+    """How a supervisor is started: this file, isolated from the caller's paths and environment."""
+    return [sys.executable, "-I", os.path.abspath(__file__), "--supervise", str(entry)]
+
+
+def _private_dir(path: Path) -> Path:
+    """`path` as a directory only this user can enter, made if missing; refused if it is anything
+    else -- a link, another user's, open to others -- since it holds what a command printed."""
+    with contextlib.suppress(FileExistsError):
+        path.mkdir(mode=0o700)
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise PermissionError(f"refusing background state directory {path}")
+    return path
+
+
+def _state_top() -> Path:
+    return _private_dir(Path(tempfile.gettempdir()) / f"felix-shell-bg-{os.getuid()}")
+
+
+def background_base(root: Path) -> Path:
+    """The directory of `root`'s background commands, outside it and private to this user."""
+    return _private_dir(_state_top() / hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:32])
+
+
+@contextlib.contextmanager
+def _flocked(path: Path, wait_s: float) -> Any:
+    """An exclusive `flock` on `path` for the block, waiting at most `wait_s` for it -- a command
+    can take the lock itself -- and raising `TimeoutError` past that."""
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"{path.name} stayed locked") from None
+                time.sleep(_POLL_S / 4)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _read_json(path: Path) -> Any:
+    """The file's JSON, or None: missing, not JSON, or larger than any state file is."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(_MAX_STATE_BYTES + 1)
+        return None if len(raw) > _MAX_STATE_BYTES else json.loads(raw)
+    except OSError, ValueError:
+        return None
+
+
+def _write_json(path: Path, value: Any) -> None:
+    """Written whole or not at all: a reader sees the old file or the new one."""
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+    tmp.write_text(json.dumps(value), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _is_entry_dir(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _entry(base: Path, process_id: str) -> Path:
+    if not _BACKGROUND_ID.fullmatch(process_id) or not _is_entry_dir(base / process_id):
+        raise UnknownBackgroundId(f"no background command {process_id[:64]!r}")
+    return base / process_id
+
+
+def _supervisor_alive(entry: Path) -> bool:
+    """Whether the entry's supervisor still holds its `alive` lock."""
+    try:
+        fd = os.open(entry / "alive", os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        # Shared: two probes do not hold each other off, and either still meets the supervisor's.
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def _spec(entry: Path) -> dict[str, Any]:
+    """What the start recorded, with every field held to its type (a command can write the file)."""
+    spec = _read_json(entry / "spec.json")
+    spec = spec if isinstance(spec, dict) else {}
+    argv = spec.get("argv")
+    started = spec.get("started")
+    if not isinstance(started, int | float):
+        # Not written yet (a start between `mkdir` and its spec), or not a time: as new as the entry.
+        try:
+            started = os.lstat(entry).st_mtime
+        except OSError:
+            started = time.time()
+    return {
+        "argv": argv if isinstance(argv, list) and all(isinstance(a, str) for a in argv) else [],
+        "cwd": spec.get("cwd") if isinstance(spec.get("cwd"), str) else "",
+        "owner": spec.get("owner") if isinstance(spec.get("owner"), str) else "",
+        "started": float(started),
+    }
+
+
+def _status(entry: Path) -> dict[str, Any] | None:
+    """The outcome the supervisor wrote, or None for none (or one not in its shape)."""
+    status = _read_json(entry / "status.json")
+    if not isinstance(status, dict) or status.get("state") not in _STATES:
+        return None
+    ended, code, error = status.get("ended"), status.get("exit_code"), status.get("error")
+    if not isinstance(ended, int | float) or not (code is None or isinstance(code, int)):
+        return None
+    return {
+        "state": status["state"],
+        "exit_code": code,
+        "error": error if isinstance(error, str) else None,
+        "truncated": status.get("truncated") is True,
+        "ended": float(ended),
+    }
+
+
+def _state(entry: Path) -> tuple[str, dict[str, Any] | None]:
+    """`running` while the supervisor lives; then its outcome, or `lost` with none."""
+    if _supervisor_alive(entry):
+        return "running", None
+    status = _status(entry)
+    return (status["state"], status) if status is not None else ("lost", None)
+
+
+def _describe(entry: Path, root: Path) -> dict[str, Any]:
+    spec = _spec(entry)
+    state, status = _state(entry)
+    ended = status["ended"] if status is not None else time.time()
+    return {
+        "id": entry.name,
+        "argv": spec["argv"],
+        "cwd": os.path.relpath(spec["cwd"] or str(root), str(root)),
+        "status": state,
+        "exit_code": status["exit_code"] if status is not None else None,
+        "error": status["error"] if status is not None else None,
+        "truncated": status["truncated"] if status is not None else False,
+        "duration_ms": max(0, int((ended - spec["started"]) * 1000)),
+    }
+
+
+def _entries(base: Path) -> list[Path]:
+    found = [p for p in base.iterdir() if _BACKGROUND_ID.fullmatch(p.name) and _is_entry_dir(p)]
+    return sorted(found, key=lambda p: (_spec(p)["started"], p.name))
+
+
+def _prune(base: Path) -> list[Path]:
+    """Forget finished (or lost) commands past `KEPT_FOR_S`, then the oldest finished past
+    `MAX_KEPT`. A running one is never forgotten. Returns what is kept, oldest first."""
+    now = time.time()
+    kept: list[Path] = []
+    finished: list[Path] = []
+    for entry in _entries(base):
+        state, status = _state(entry)
+        if state == "running":
+            kept.append(entry)
+            continue
+        # A lost one is as old as when it started.
+        ended = status["ended"] if status is not None else _spec(entry)["started"]
+        if now - ended > KEPT_FOR_S:
+            shutil.rmtree(entry, ignore_errors=True)
+            continue
+        kept.append(entry)
+        finished.append(entry)
+    while len(kept) > MAX_KEPT and finished:
+        oldest = finished.pop(0)
+        shutil.rmtree(oldest, ignore_errors=True)
+        kept.remove(oldest)
+    return kept
+
+
+def _running_everywhere(top: Path, base: Path, owner: str) -> tuple[int, int, int]:
+    """Prune every root's commands, and count those running here, for `owner` on any root, and
+    on the whole host. A root left with nothing is removed, so one nobody returns to does not stay
+    behind -- never `base`, which the caller is about to start in."""
+    here = owned = everywhere = 0
+    for other in top.iterdir():
+        if not (_BACKGROUND_ID.fullmatch(other.name) and _is_entry_dir(other)):
+            continue
+        running = [e for e in _prune(other) if _state(e)[0] == "running"]
+        everywhere += len(running)
+        if owner:
+            owned += sum(1 for e in running if _spec(e)["owner"] == owner)
+        if other == base:
+            here = len(running)
+        elif not any(other.iterdir()):
+            with contextlib.suppress(OSError):
+                other.rmdir()
+    return here, owned, everywhere
+
+
+def _limit(count: int, cap: int, where: str) -> None:
+    if count >= cap:
+        raise BackgroundLimitReached(
+            f"{cap} background commands are already running {where}; "
+            "end one with shell_kill or wait for one to finish"
+        )
+
+
+def start_background(
+    argv: list[str],
+    *,
+    cwd: Path,
+    root: Path,
+    stdin: str | None,
+    timeout_s: float,
+    env: dict[str, str],
+    owner: str = "",
+) -> dict[str, Any]:
+    """Start `argv` under a supervisor and return its description, with the id to read it by.
+    Raises `BackgroundLimitReached` when `MAX_RUNNING` run here, `MAX_RUNNING_OWNER` for `owner`
+    (a tenant; empty counts against no owner's share), or `MAX_RUNNING_HOST` on the host. Counted
+    and started under one lock, so concurrent starts cannot all pass the count."""
+    top = _state_top()
+    spec = {"argv": argv, "cwd": str(cwd), "env": env, "owner": owner, "timeout_s": timeout_s}
+    try:
+        with _flocked(top / ".lock", _LOCK_WAIT_S):
+            entry = _start_locked(top, root, spec, stdin)
+    except TimeoutError:
+        raise BackgroundLimitReached(
+            "background commands are being started here; try again shortly"
+        ) from None
+    return _describe(entry, root)
+
+
+def _start_locked(top: Path, root: Path, spec: dict[str, Any], stdin: str | None) -> Path:
+    # Under the lock, so another start's sweep cannot remove this root as an empty one.
+    base = background_base(root)
+    here, owned, everywhere = _running_everywhere(top, base, spec["owner"])
+    _limit(here, MAX_RUNNING, "here")
+    _limit(owned, MAX_RUNNING_OWNER, "for this tenant")
+    _limit(everywhere, MAX_RUNNING_HOST, "on this host")
+    entry = base / secrets.token_hex(16)
+    entry.mkdir(mode=0o700)
+    _write_json(entry / "spec.json", {**spec, "started": time.time()})
+    if stdin is not None:
+        (entry / "stdin").write_bytes(stdin[:_MAX_STDIN_CHARS].encode("utf-8"))
+    # The supervisor locks `alive`, forks and exits, so nothing is left for the caller to reap
+    # and the command is running from the moment this returns.
+    starter = subprocess.Popen(
+        _supervisor_argv(entry),
+        env=spec["env"],
+        cwd="/",
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        starter.wait(timeout=DETACH_WAIT_S)
+    except subprocess.TimeoutExpired:
+        # Answered as it stands (`running` or `lost`), never as a failure the model would retry.
+        starter.kill()
+        starter.wait()
+    return entry
+
+
+def _kill_group_of(proc: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
+def _spawn(entry: Path, spec: dict[str, Any]) -> subprocess.Popen[bytes] | None:
+    """The command, in its own process group; or None, its failure written as the outcome."""
+    stdin_path = entry / "stdin"
+    try:
+        with open(stdin_path if stdin_path.exists() else os.devnull, "rb") as stdin:
+            return subprocess.Popen(
+                spec["argv"],
+                cwd=spec["cwd"],
+                env=spec["env"],
+                stdin=stdin,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+    except OSError as exc:
+        error = f"{type(exc).__name__}: {exc.strerror or exc}"
+        _write_json(
+            entry / "status.json",
+            {"state": "failed", "exit_code": None, "error": error, "truncated": False, "ended": time.time()},
+        )
+        return None
+
+
+def _ending(entry: Path, deadline: float) -> str | None:
+    """Why the command must end now -- asked to, or out of time -- or None for no reason yet."""
+    if (entry / "kill").exists():
+        return "killed"
+    if time.monotonic() > deadline:
+        return "timed_out"
+    return None
+
+
+def _pump(entry: Path, proc: subprocess.Popen[bytes], deadline: float) -> tuple[str, int]:
+    """Drain both streams into files within the byte budget until the command and its group are
+    gone, ending it as `_ending` says, or when it exits (its group still goes, so no grandchild
+    holds a pipe open). Returns the outcome and the bytes the command wrote."""
+    assert proc.stdout is not None and proc.stderr is not None
+    reason: str | None = None
+    written, drain_until = 0, None
+    with (
+        open(entry / "out", "wb") as out,
+        open(entry / "err", "wb") as err,
+        selectors.DefaultSelector() as selector,
+    ):
+        sinks = {proc.stdout.fileno(): out, proc.stderr.fileno(): err}
+        for fd in sinks:
+            selector.register(fd, selectors.EVENT_READ)
+        while selector.get_map() and (drain_until is None or time.monotonic() < drain_until):
+            if drain_until is None:
+                reason = reason or _ending(entry, deadline)
+                if reason is not None or proc.poll() is not None:
+                    _kill_group_of(proc)
+                    drain_until = time.monotonic() + _DRAIN_AFTER_KILL_S
+            for key, _ in selector.select(timeout=_POLL_S):
+                chunk = os.read(key.fd, _READ_CHUNK)
+                if not chunk:
+                    selector.unregister(key.fd)
+                    continue
+                room = MAX_TOTAL_OUTPUT_BYTES - written
+                if room > 0:
+                    sinks[key.fd].write(chunk[:room])
+                    sinks[key.fd].flush()
+                written += len(chunk)
+                if written > MAX_TOTAL_OUTPUT_BYTES and reason is None:
+                    reason = "output_exceeded"
+    return reason or "exited", written
+
+
+def _run_supervised(entry: Path) -> None:
+    spec = _read_json(entry / "spec.json")
+    deadline = time.monotonic() + float(spec["timeout_s"])
+    proc = _spawn(entry, spec)
+    if proc is None:
+        return
+    try:
+        state, written = _pump(entry, proc, deadline)
+    finally:
+        _kill_group_of(proc)
+        proc.wait()
+    status = {
+        "state": state,
+        "exit_code": proc.returncode,
+        "error": None,
+        "truncated": written > MAX_TOTAL_OUTPUT_BYTES,
+        "ended": time.time(),
+    }
+    _write_json(entry / "status.json", status)
+
+
+def supervise(entry: Path) -> int:
+    """The supervisor's entry point: lock `alive`, fork, and let this process exit. The child
+    inherits the lock and holds it until it exits, outcome written; nothing it starts inherits it."""
+    alive = os.open(entry / "alive", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fcntl.flock(alive, fcntl.LOCK_EX)
+    if os.fork():
+        return 0
+    try:
+        _run_supervised(entry)
+    finally:
+        os._exit(0)
+
+
+def _read_new(path: Path, offset: int) -> tuple[str, int, int]:
+    """What `path` holds past `offset`, at most `MAX_OUTPUT_BYTES` of its end: (text, skipped,
+    new offset)."""
+    try:
+        size = os.stat(path).st_size
+    except FileNotFoundError:
+        return "", 0, offset
+    offset = min(offset, size)
+    skipped = max(0, size - offset - MAX_OUTPUT_BYTES)
+    with open(path, "rb") as f:
+        f.seek(offset + skipped)
+        data = f.read(size - offset - skipped)
+    return data.decode("utf-8", errors="replace"), skipped, offset + skipped + len(data)
+
+
+def _cursor(entry: Path) -> dict[str, int]:
+    cursor = _read_json(entry / "cursor.json")
+    if not isinstance(cursor, dict):
+        return {"out": 0, "err": 0}
+    return {k: v if isinstance(v := cursor.get(k), int) and v >= 0 else 0 for k in ("out", "err")}
+
+
+def read_background(root: Path, process_id: str, wait_ms: int) -> dict[str, Any]:
+    """`process_id`'s description and what it wrote since the last read, waiting up to `wait_ms`
+    (at most `MAX_WAIT_MS`) for something new while it runs. Reads of one command take turns, so
+    each byte is handed to one reader; the wait for a turn comes out of the same `wait_ms` (with a
+    second's grace), so no read outlasts the hosted gateway's deadline."""
+    entry = _entry(background_base(root), process_id)
+    deadline = time.monotonic() + min(max(wait_ms, 0), MAX_WAIT_MS) / 1000
+    with _flocked(entry / "read.lock", max(deadline - time.monotonic(), 1.0)):
+        cursor = _cursor(entry)
+        while time.monotonic() < deadline and _supervisor_alive(entry):
+            sizes = [os.stat(entry / n).st_size if (entry / n).exists() else 0 for n in ("out", "err")]
+            if sizes != [cursor["out"], cursor["err"]]:
+                break
+            time.sleep(_POLL_S)
+        described = _describe(entry, root)
+        stdout, out_skipped, cursor["out"] = _read_new(entry / "out", cursor["out"])
+        stderr, err_skipped, cursor["err"] = _read_new(entry / "err", cursor["err"])
+        _write_json(entry / "cursor.json", cursor)
+    return {
+        **described,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_skipped": out_skipped,
+        "stderr_skipped": err_skipped,
+    }
+
+
+def list_background(root: Path) -> dict[str, Any]:
+    """Every background command kept for `root`, oldest first, without output."""
+    base = background_base(root)
+    return {"processes": [_describe(entry, root) for entry in _prune(base)]}
+
+
+def kill_background(root: Path, process_id: str) -> dict[str, Any]:
+    """Ask `process_id`'s supervisor to end it, and wait a moment for it to say it has."""
+    entry = _entry(background_base(root), process_id)
+    if _supervisor_alive(entry):
+        (entry / "kill").touch()
+        deadline = time.monotonic() + KILL_WAIT_S
+        while time.monotonic() < deadline and _supervisor_alive(entry):
+            time.sleep(_POLL_S)
+    return _describe(entry, root)
+
+
+# --- end of PORTED from shell_background.py --------------------------------------------------
+
+
 # --- PORTED from the harness's felix/tools/github_publish.py: do not edit without editing it there
 
 
@@ -1207,6 +1683,48 @@ def op_exec(req: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _background_id(req: dict[str, Any]) -> str:
+    process_id = req["id"]
+    if not isinstance(process_id, str):
+        raise KeyError("id")
+    return process_id
+
+
+def op_exec_start(req: dict[str, Any]) -> dict[str, Any]:
+    """A `shell_tools` command started in the background (`run_in_background`): checked as `exec`
+    is, then left to a supervisor that outlives this call. The id it answers reads it later."""
+    argv = req["argv"]
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise KeyError("argv")
+    timeout_ms = int(req.get("timeout_ms", 300_000))
+    if not 1 <= timeout_ms <= _MAX_EXEC_TIMEOUT_MS:
+        raise ValueError(f"timeout_ms must be 1 to {_MAX_EXEC_TIMEOUT_MS}")
+    stdin = req.get("stdin")
+    cwd = resolve_cwd(ROOT, str(req.get("cwd") or "."))
+    return start_background(
+        argv,
+        cwd=cwd,
+        root=ROOT,
+        stdin=stdin if isinstance(stdin, str) else None,
+        timeout_s=timeout_ms / 1000,
+        env=_child_env(),
+    )
+
+
+def op_exec_output(req: dict[str, Any]) -> dict[str, Any]:
+    """What a background command wrote since the last read, or, with no `id`, every one kept."""
+    if req.get("id") is None:
+        return list_background(ROOT)
+    wait_ms = req.get("wait_ms", 0)
+    if not isinstance(wait_ms, int) or not 0 <= wait_ms <= MAX_WAIT_MS:
+        raise KeyError("wait_ms")
+    return read_background(ROOT, _background_id(req), wait_ms)
+
+
+def op_exec_kill(req: dict[str, Any]) -> dict[str, Any]:
+    return kill_background(ROOT, _background_id(req))
+
+
 def op_git(req: dict[str, Any]) -> dict[str, Any]:
     """A read of the thread's repository for the harness (a listing, `publish_commits`' commits):
     git run by the harness's own `_git_exec`, with its prelude and its environment, in /workspace.
@@ -1265,6 +1783,9 @@ OPS = {
     "rename_folder": op_rename_folder,
     "search": op_search,
     "exec": op_exec,
+    "exec_start": op_exec_start,
+    "exec_output": op_exec_output,
+    "exec_kill": op_exec_kill,
     "git": op_git,
     "lstat": op_lstat,
 }
@@ -1279,6 +1800,10 @@ def run(req: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "result": op(req)}
     except EditRefused as exc:
         return {"ok": False, "error": "edit_refused", "message": str(exc)}
+    except BackgroundLimitReached as exc:
+        return {"ok": False, "error": "busy", "message": str(exc)}
+    except UnknownBackgroundId as exc:
+        return {"ok": False, "error": "unknown_background", "message": str(exc)}
     except WorkspaceChanged as exc:
         # A delete or rename whose `expected_sha256` the file no longer has: what it has now.
         return {
@@ -1343,4 +1868,7 @@ def main(stdin: Any) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--supervise":
+        # A background command's supervisor (`start_background`), not a request.
+        sys.exit(supervise(Path(sys.argv[2])))
     sys.exit(main(sys.stdin.buffer))

@@ -30,8 +30,16 @@ from felix.tools.errors import ToolErrorCode, read_tool_error_code
 from felix.tools.shell import tools_from_shell_refs
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 
+from tests.support.background_state import isolate_background_state
+
 PY = sys.executable
 TOKEN = "t" * 64
+
+
+@pytest.fixture(autouse=True)
+def _background_state(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Background commands keep their state in a directory of this test's own."""
+    isolate_background_state(monkeypatch, tmp_path_factory)
 
 
 def _settings(ws: Path, **kw: Any) -> Settings:
@@ -160,3 +168,30 @@ def test_development_alone_is_not_a_development_box(tmp_path: Path) -> None:
     that forgot the variable, not a laptop, and it gets the refusal."""
     with pytest.raises(RuntimeError, match="FELIX_SHELL_RUNNER_URL"):
         _settings(tmp_path, environment="development", auth_mode="api_key")._validate_shell_isolation()
+
+
+async def test_a_background_start_read_or_end_is_refused_in_the_api_outside_development(
+    tmp_path: Path,
+) -> None:
+    """The same rule for the commands that outlive a call: a background start off a development
+    box execs nothing here, and `shell_output` / `shell_kill` read and end nothing here either."""
+    from felix.tools import shell_background
+
+    marker = tmp_path / "ran"
+    dev = _settings(tmp_path, environment="development")
+    ref = ShellToolRef(name="run", commands=[PY], background=True)
+    run, output, kill = tools_from_shell_refs([ref], settings=dev)
+    prod = _settings(tmp_path, environment="production")
+    ctx = RequestContext(settings=prod, auth=AuthContext(tenant_id="t"), manifest_id="m", thread_id="th")
+    async with async_run_with_context(ctx):
+        argv = [PY, "-c", f"open({str(marker)!r}, 'w').write('x')"]
+        answers = [
+            await run.executor.execute({"argv": argv, "run_in_background": True}, ToolInvocationCtx()),
+            await output.executor.execute({}, ToolInvocationCtx()),
+            await kill.executor.execute({"id": "0" * 32}, ToolInvocationCtx()),
+        ]
+    for out in answers:
+        assert read_tool_error_code(out) is ToolErrorCode.PERMISSION_DENIED, tool_output_content(out)
+    base = shell_background.background_base(tmp_path.resolve())
+    assert not any(base.iterdir()), "a supervisor was started in the API's process"
+    assert not marker.exists()

@@ -124,6 +124,10 @@ services:
     # A fork bomb in the workspace stops at this many processes in this container, instead of
     # exhausting the host's PID space under api/worker. The suite with xdist sits well below it.
     pids_limit: 512
+    # An init as PID 1, which reaps what nobody else will: a background command's supervisor
+    # detaches from the runner and is reparented here when it ends (felix/tools/shell_background.py).
+    # Without one each would stay a zombie, counted against the ceiling above, until a restart.
+    init: true
     # The test suite runs in this container now; the lean default is too small for it.
     mem_limit: ${FELIX_SELF_MEM_LIMIT:-3g}
     cpus: ${FELIX_SELF_CPUS:-2.0}

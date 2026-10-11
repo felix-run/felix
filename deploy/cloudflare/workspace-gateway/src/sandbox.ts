@@ -48,6 +48,29 @@ const CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const CONTAINERS_CA = '/etc/cloudflare/certs/cloudflare-containers-ca.crt';
 const BACKUP_KEY = 'backup';
 const DIRTY_KEY = 'dirty';
+/** Bumped by every call that may have written, so a checkpoint clears `dirty` only if none did since it began. */
+const WRITES_KEY = 'writes';
+
+/**
+ * Calls that run beside the one-at-a-time queue: reads, and a background command's start, read and
+ * end, which must not wait behind a long foreground `exec` (the command it reads may be the server
+ * that `exec` is testing, and a start held there would be reported as failed and then start
+ * anyway). Each touches only what it reads or the command's own background state, under the
+ * helper's locks. `destroy` and `clone` still exclude them: see `#excluding`.
+ */
+const CONCURRENT_OPS: ReadonlySet<string> = new Set([
+  'read',
+  'list',
+  'search',
+  'prepare',
+  'git',
+  'lstat',
+  'exec_start',
+  'exec_output',
+  'exec_kill',
+]);
+/** Calls nothing may run beside: one restarted the Container in the middle would undo them. */
+const EXCLUSIVE_OPS: ReadonlySet<string> = new Set(['destroy', 'clone']);
 
 type GatewayState = DurableObjectState & {
   readonly exports: {
@@ -61,6 +84,10 @@ export class WorkspaceSandbox extends DurableObject<Env> {
   readonly #backups: DirectoryBackup;
   #serial: Promise<unknown> = Promise.resolve();
   #starting: Promise<void> | null = null;
+  /** Settles when the `destroy` or `clone` in progress, if any, has finished. */
+  #exclusive: Promise<unknown> = Promise.resolve();
+  /** The concurrent calls in flight, which a `destroy` or `clone` waits out before it begins. */
+  readonly #inflight = new Set<Promise<unknown>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -81,16 +108,48 @@ export class WorkspaceSandbox extends DurableObject<Env> {
   }
 
   async operate(scope: string, request: HelperRequest): Promise<HelperAnswer> {
-    const answer = await (request.op === 'read' ||
-    request.op === 'list' ||
-    request.op === 'search' ||
-    request.op === 'prepare' ||
-    request.op === 'git' ||
-    request.op === 'lstat'
-      ? this.#run(scope, request)
-      : this.#oneAtATime(() => this.#run(scope, request)));
+    let answer: HelperAnswer;
+    if (CONCURRENT_OPS.has(request.op)) {
+      answer = await this.#concurrently(() => this.#run(scope, request));
+    } else if (EXCLUSIVE_OPS.has(request.op)) {
+      answer = await this.#oneAtATime(() => this.#excluding(() => this.#run(scope, request)));
+    } else {
+      answer = await this.#oneAtATime(() => this.#run(scope, request));
+    }
     if (request.op !== 'destroy') await this.ctx.storage.setAlarm(Date.now() + IDLE_BACKUP_AFTER_MS);
     return answer;
+  }
+
+  /** A concurrent call, held while a `destroy` or `clone` runs and counted while it runs itself. */
+  async #concurrently<T>(work: () => Promise<T>): Promise<T> {
+    await this.#exclusive;
+    const running = work();
+    this.#inflight.add(running);
+    try {
+      return await running;
+    } finally {
+      this.#inflight.delete(running);
+    }
+  }
+
+  /**
+   * `work` with nothing beside it: concurrent calls already in flight finish first, and new ones
+   * wait until it is done. Without this a `shell_output` poll arriving mid-`destroy` restarted the
+   * Container from the backup being deleted, and a background start left a command running past it.
+   */
+  #excluding<T>(work: () => Promise<T>): Promise<T> {
+    const done = (async () => {
+      await Promise.allSettled([...this.#inflight]);
+      return work();
+    })();
+    this.#exclusive = done.catch(() => undefined);
+    return done;
+  }
+
+  /** The scope may have been written: dirty, and one more write a running checkpoint did not see. */
+  #markWritten(): void {
+    this.ctx.storage.kv.put(DIRTY_KEY, true);
+    this.ctx.storage.kv.put(WRITES_KEY, (this.ctx.storage.kv.get<number>(WRITES_KEY) ?? 0) + 1);
   }
 
   /** Checkpoints a scope written since its last backup, before the inactivity timeout stops it. */
@@ -136,9 +195,13 @@ export class WorkspaceSandbox extends DurableObject<Env> {
         request.op === 'rename' ||
         request.op === 'delete_folder' ||
         request.op === 'rename_folder' ||
-        request.op === 'exec')
+        request.op === 'exec' ||
+        // A background command writes whenever it runs; each call about one keeps the scope dirty.
+        request.op === 'exec_start' ||
+        request.op === 'exec_output' ||
+        request.op === 'exec_kill')
     ) {
-      this.ctx.storage.kv.put(DIRTY_KEY, true);
+      this.#markWritten();
     }
     return answer;
   }
@@ -290,7 +353,7 @@ export class WorkspaceSandbox extends DurableObject<Env> {
       await this.#github({ mode: 'deny' });
     }
     const head = await this.#output(['git', '-C', WORKSPACE, 'rev-parse', 'HEAD'], { PATH: path, HOME: '/tmp' });
-    this.ctx.storage.kv.put(DIRTY_KEY, true);
+    this.#markWritten();
     return { ok: true, result: { repo: request.repo, branch: request.branch, head: head.stdout.trim() } };
   }
 
@@ -300,11 +363,16 @@ export class WorkspaceSandbox extends DurableObject<Env> {
       // Nothing written since the last backup (or nothing to back up): the record still holds.
       return { backed_up: false, size: previous?.size ?? 0 };
     }
+    // A background call runs beside a checkpoint, and may write after the backup has read the file
+    // it wrote: the scope stays dirty unless nothing marked it written while this ran.
+    const writes = this.ctx.storage.kv.get<number>(WRITES_KEY) ?? 0;
     const record = await withTimeout(TRANSFER_TIMEOUT_MS, (signal) =>
       this.#backups.backup({ dir: WORKSPACE, signal }),
     );
     this.ctx.storage.kv.put(BACKUP_KEY, record);
-    this.ctx.storage.kv.put(DIRTY_KEY, false);
+    if ((this.ctx.storage.kv.get<number>(WRITES_KEY) ?? 0) === writes) {
+      this.ctx.storage.kv.put(DIRTY_KEY, false);
+    }
     if (previous !== undefined) {
       // After the new record is stored, so a failure here leaves an orphan, never a gap. The
       // retention sweep reconciles the bucket against the records.
@@ -322,6 +390,7 @@ export class WorkspaceSandbox extends DurableObject<Env> {
       if (record !== undefined) await this.#backups.delete(record);
       this.ctx.storage.kv.delete(BACKUP_KEY);
       this.ctx.storage.kv.delete(DIRTY_KEY);
+      this.ctx.storage.kv.delete(WRITES_KEY);
       await this.ctx.storage.deleteAlarm();
     };
     try {
