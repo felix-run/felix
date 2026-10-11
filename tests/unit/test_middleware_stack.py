@@ -110,7 +110,6 @@ async def _chunked(total: int, chunk: int = 64 * 1024):
         yield b"x" * n
 
 
-@pytest.mark.asyncio
 async def test_oversized_chunked_body_is_rejected() -> None:
     """A chunked request carries no Content-Length, so the header check cannot see it.
 
@@ -129,7 +128,6 @@ async def test_oversized_chunked_body_is_rejected() -> None:
     assert response.json()["error"] == "payload_too_large"
 
 
-@pytest.mark.asyncio
 async def test_a_body_of_exactly_the_limit_is_accepted() -> None:
     """The boundary, in both directions. Nothing else distinguishes `> limit` from
     `>= limit`, so an off-by-one here would reject a legal body and no test would say
@@ -143,7 +141,6 @@ async def test_a_body_of_exactly_the_limit_is_accepted() -> None:
     assert response.status_code != 413, "a body of exactly the limit must not be rejected"
 
 
-@pytest.mark.asyncio
 async def test_a_body_one_byte_over_the_limit_is_rejected() -> None:
     async with _client(_app("overlimit")) as client:
         response = await client.post(
@@ -154,7 +151,6 @@ async def test_a_body_one_byte_over_the_limit_is_rejected() -> None:
     assert response.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_a_lying_content_length_does_not_defeat_the_cap() -> None:
     """A header-only cap is trivially bypassable: declare 10 bytes, send megabytes.
 
@@ -170,7 +166,6 @@ async def test_a_lying_content_length_does_not_defeat_the_cap() -> None:
     assert response.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_a_malformed_content_length_still_hits_the_streaming_cap() -> None:
     """The `except ValueError` branch: an unparseable header must fall through to the
     counter rather than skip the limit."""
@@ -183,7 +178,6 @@ async def test_a_malformed_content_length_still_hits_the_streaming_cap() -> None
     assert response.status_code == 413
 
 
-@pytest.mark.asyncio
 async def test_body_within_the_limit_still_reaches_the_route() -> None:
     """The cap must not truncate ordinary requests: a body under the limit has to
     arrive intact, or every chat request breaks."""
@@ -193,7 +187,6 @@ async def test_body_within_the_limit_still_reaches_the_route() -> None:
     assert response.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_request_id_is_echoed_and_generated() -> None:
     async with _client(_app("reqid")) as client:
         supplied = await client.get("/health", headers={REQUEST_ID_HEADER: "abc-123"})
@@ -202,7 +195,6 @@ async def test_request_id_is_echoed_and_generated() -> None:
     assert generated.headers.get(REQUEST_ID_HEADER), "a request id should be generated when absent"
 
 
-@pytest.mark.asyncio
 async def test_request_id_is_present_on_a_rejected_request() -> None:
     """Request-id sat *inside* the body limiter, so a 413 — one of the responses most
     worth correlating — came back with no id at all."""
@@ -216,7 +208,6 @@ async def test_request_id_is_present_on_a_rejected_request() -> None:
     assert response.headers.get(REQUEST_ID_HEADER), "a 413 must still carry a correlation id"
 
 
-@pytest.mark.asyncio
 async def test_a_raising_key_resolver_does_not_take_down_the_request(caplog) -> None:
     """A plugin's rate_limit_key runs on every request, so a bug in one must degrade
     to the client-address key rather than 500 the whole surface.
@@ -255,7 +246,6 @@ async def test_a_raising_key_resolver_does_not_take_down_the_request(caplog) -> 
 _BUNDLE_SIZED = CORE_BODY_LIMIT_BYTES * 4
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -275,7 +265,6 @@ async def test_a_bundle_sized_body_reaches_the_skill_write_routes(method: str, p
     assert response.status_code != 413, f"{method} {path} refused a bundle-sized body"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -305,7 +294,6 @@ async def test_other_routes_keep_the_core_cap(method: str, path: str) -> None:
     assert response.status_code == 413, f"{method} {path} took a body over the core cap"
 
 
-@pytest.mark.asyncio
 async def test_the_bundle_cap_is_still_a_cap() -> None:
     """One byte over the bundle cap is refused on the bundle route, by the streaming counter
     and by the declared length alike."""

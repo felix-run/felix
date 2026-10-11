@@ -50,7 +50,6 @@ def _auth(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-@pytest.mark.asyncio
 async def test_an_upload_round_trips() -> None:
     client, _ = await _client()
     async with client:
@@ -70,7 +69,6 @@ async def test_an_upload_round_trips() -> None:
         assert back.json()["data"] == PNG
 
 
-@pytest.mark.asyncio
 async def test_each_endpoint_gates_on_its_own_scope() -> None:
     """Reading an upload and creating one are separate grants.
 
@@ -89,7 +87,6 @@ async def test_each_endpoint_gates_on_its_own_scope() -> None:
         assert none.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_one_tenant_cannot_read_another_s_upload() -> None:
     """The tenant comes from the caller's credentials and is never in the path.
 
@@ -110,7 +107,6 @@ async def test_one_tenant_cannot_read_another_s_upload() -> None:
         assert theirs.status_code == 404, "a valid id resolved under the wrong tenant"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "file_id",
     [
@@ -133,7 +129,6 @@ async def test_a_reference_that_names_nothing_is_a_404(file_id: str) -> None:
         assert got.status_code == 404, f"{file_id!r} answered {got.status_code}"
 
 
-@pytest.mark.asyncio
 async def test_a_type_the_harness_cannot_show_a_model_is_refused() -> None:
     """An allowlist, because the bytes end up at a vendor API that decides for itself.
 
@@ -151,7 +146,6 @@ async def test_a_type_the_harness_cannot_show_a_model_is_refused() -> None:
         assert "image/png" in got.json()["detail"], "the refusal should name what is allowed"
 
 
-@pytest.mark.asyncio
 async def test_an_oversized_attachment_is_refused_below_the_body_limit() -> None:
     """The ceiling is the decoded size, and it sits under the 1 MiB body limit.
 
@@ -171,7 +165,6 @@ async def test_an_oversized_attachment_is_refused_below_the_body_limit() -> None
         assert str(MAX_ATTACHMENT_BYTES) in got.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_a_body_that_is_not_base64_is_refused_rather_than_stored_truncated() -> None:
     """`validate=True`, so a bad body fails here instead of resolving to wrong bytes."""
     client, _ = await _client()
@@ -198,7 +191,6 @@ def test_a_reference_cannot_escape_its_tenant_prefix() -> None:
     assert attachment_key("acme", "0" * 32).startswith("attachments/acme/")
 
 
-@pytest.mark.asyncio
 async def test_bytes_that_are_not_the_declared_type_are_refused() -> None:
     """The media type is a caller assertion and nothing downstream re-derives it.
 
@@ -217,7 +209,6 @@ async def test_bytes_that_are_not_the_declared_type_are_refused() -> None:
         assert "image/png" in got.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_an_upload_can_be_deleted_and_deleting_twice_is_not_an_error() -> None:
     """The erasure path. Everything here is caller-supplied, so a surface that can only
     accumulate is one an operator cannot answer a deletion request with.
@@ -242,7 +233,6 @@ async def test_an_upload_can_be_deleted_and_deleting_twice_is_not_an_error() -> 
         assert again.status_code == 200, "a second delete should be a no-op, not an error"
 
 
-@pytest.mark.asyncio
 async def test_deleting_needs_the_write_scope() -> None:
     """Removing is a write, so `files:read` must not reach it."""
     client, _ = await _client()
@@ -252,7 +242,6 @@ async def test_deleting_needs_the_write_scope() -> None:
         assert "files:write" in denied.json()["detail"]
 
 
-@pytest.mark.asyncio
 async def test_one_tenant_cannot_delete_another_s_upload() -> None:
     client, _ = await _client()
     async with client:
@@ -268,7 +257,6 @@ async def test_one_tenant_cannot_delete_another_s_upload() -> None:
         assert mine.status_code == 200, "another tenant's delete removed my file"
 
 
-@pytest.mark.asyncio
 async def test_an_unbounded_media_type_is_refused_before_it_is_reflected() -> None:
     """A media type is a token, not a payload. Unbounded, a ~1 MiB one fits inside the
     body limit and comes back in the refusal."""
@@ -282,7 +270,6 @@ async def test_an_unbounded_media_type_is_refused_before_it_is_reflected() -> No
         assert got.status_code == 422, "pydantic bounds the field before the route sees it"
 
 
-@pytest.mark.asyncio
 async def test_a_hostile_tenant_id_cannot_write_outside_its_prefix() -> None:
     """`put_attachment` is an exported API, and its callers may one day not be the doors.
 

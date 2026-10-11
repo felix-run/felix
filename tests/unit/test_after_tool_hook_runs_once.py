@@ -55,7 +55,6 @@ def _runner(executor) -> ToolRunner:
     return ToolRunner(tool_map={"t": tool}, manifest_id="m")
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("_applying_content_raises")
 async def test_the_after_tool_hook_runs_once_when_post_call_handling_fails() -> None:
     seen: list[bool] = []
@@ -74,7 +73,6 @@ async def test_the_after_tool_hook_runs_once_when_post_call_handling_fails() -> 
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("_applying_content_raises")
 async def test_a_successful_call_is_not_reported_to_the_model_as_an_error() -> None:
     """The consequence that reaches the model, and the reason this is not cosmetic."""
@@ -97,7 +95,6 @@ async def test_a_successful_call_is_not_reported_to_the_model_as_an_error() -> N
     assert messages[0].content == "the tool succeeded"
 
 
-@pytest.mark.asyncio
 async def test_a_genuinely_failing_tool_still_reports_an_error_and_hooks_once() -> None:
     """The narrowed `try` must still catch the thing it was written for."""
     seen: list[bool] = []
@@ -122,7 +119,6 @@ async def test_a_genuinely_failing_tool_still_reports_an_error_and_hooks_once() 
     assert "[error/" in messages[0].content
 
 
-@pytest.mark.asyncio
 async def test_a_hook_can_still_replace_content_and_terminate() -> None:
     """A guard that broke the hook's contract would be worse than the bug it fixed."""
 

@@ -27,18 +27,11 @@ from felix.skills.format import serialize_skill_md
 from felix.skills.library_keys import ORG_OWNER
 from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 
+from tests.support.skill_bodies import INVOICE_TRIAGE as BODY
+
 TENANT = "acme"
 NAME = "invoice-triage"
 DESCRIPTION = "Route incoming invoices to the right queue."
-BODY = """# Invoice triage
-
-Use this when an invoice arrives.
-
-## Steps
-
-1. Read the vendor and the amount.
-2. Route amounts over the limit to finance.
-"""
 # What the routes are called. Distinct names so a test can tell which route a call took.
 IMPROVER, ANSWERER, JUDGE = "skill-improver-route", "skill-answer-route", "skill-judge-route"
 

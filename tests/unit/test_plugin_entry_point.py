@@ -92,7 +92,6 @@ def test_the_declared_seams_reach_the_app(monkeypatch: pytest.MonkeyPatch) -> No
     assert [p.name for p in app.state.plugins] == ["fake"]
 
 
-@pytest.mark.asyncio
 async def test_a_self_authenticating_mount_bypasses_auth() -> None:
     """`self_authenticating_mounts` is how a plugin carries its own auth."""
     from felix.auth.context import ANONYMOUS
@@ -191,7 +190,6 @@ def test_one_broken_plugin_does_not_prevent_a_good_one(
     assert [p.name for p in registry.plugins] == ["fake"]
 
 
-@pytest.mark.asyncio
 async def test_plugin_tool_reaches_every_entry_point(monkeypatch: pytest.MonkeyPatch) -> None:
     """The regression that mattered: plugin tools existed only in the API process.
 

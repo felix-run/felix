@@ -22,14 +22,15 @@ from felix.manifests.schema import GithubPublishSpec
 from felix.repos import checkouts
 from felix.tools import github_publish
 
+from tests.support.factories import make_settings
+
 SPEC = GithubPublishSpec(auth="person", branch_prefix="felix/")
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     (tmp_path / "workspace").mkdir()
-    return Settings(
-        database_url="memory://thread-publish",
+    return make_settings(
         data_dir=str(tmp_path / "data"),
         workspace_root=str(tmp_path / "workspace"),
         github_client_id="Iv23.app",

@@ -106,7 +106,6 @@ def _h(key: str | None, token: str = "sk-acme") -> dict[str, str]:
 # --- the route ---------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_retry_with_the_same_key_replays_the_first_response(agent: _Agent) -> None:
     async with _client(_settings("replay")) as client:
         first = await client.post("/chat", json=TURN, headers=_h("k1"))
@@ -117,7 +116,6 @@ async def test_a_retry_with_the_same_key_replays_the_first_response(agent: _Agen
     assert agent.calls == 1, "the retry must not run a second turn"
 
 
-@pytest.mark.asyncio
 async def test_without_a_key_every_request_is_a_turn(agent: _Agent) -> None:
     async with _client(_settings("nokey")) as client:
         for _ in range(2):
@@ -125,7 +123,6 @@ async def test_without_a_key_every_request_is_a_turn(agent: _Agent) -> None:
     assert agent.calls == 2
 
 
-@pytest.mark.asyncio
 async def test_the_same_key_with_a_different_body_is_refused(agent: _Agent) -> None:
     other = {"manifest": "quick", "messages": [{"role": "user", "content": "something else"}]}
     async with _client(_settings("mismatch")) as client:
@@ -135,7 +132,6 @@ async def test_the_same_key_with_a_different_body_is_refused(agent: _Agent) -> N
     assert agent.calls == 1
 
 
-@pytest.mark.asyncio
 async def test_keys_are_scoped_to_the_principal_not_the_tenant(agent: _Agent) -> None:
     """A replay returns before the manifest's inbound auth runs, so a response one
     principal earned must not be handed to another in the same tenant — and two tenants
@@ -150,7 +146,6 @@ async def test_keys_are_scoped_to_the_principal_not_the_tenant(agent: _Agent) ->
     assert len({r.json()["final"]["content"] for r in (alice, bob, globex)}) == 3
 
 
-@pytest.mark.asyncio
 async def test_one_subject_at_two_issuers_is_two_callers(
     agent: _Agent, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -188,7 +183,6 @@ async def test_one_subject_at_two_issuers_is_two_callers(
     assert replies[2].headers["idempotent-replayed"] == "true"
 
 
-@pytest.mark.asyncio
 async def test_a_retry_while_the_first_attempt_runs_is_told_so(agent: _Agent) -> None:
     agent.proceed.clear()
     async with _client(_settings("inflight")) as client:
@@ -203,7 +197,6 @@ async def test_a_retry_while_the_first_attempt_runs_is_told_so(agent: _Agent) ->
     assert agent.calls == 1
 
 
-@pytest.mark.asyncio
 async def test_a_failed_attempt_releases_the_key_so_the_retry_runs(agent: _Agent) -> None:
     """Storing a failure would make the retry the header exists for return the failure."""
     async with _client(_settings("release")) as client:
@@ -213,7 +206,6 @@ async def test_a_failed_attempt_releases_the_key_so_the_retry_runs(agent: _Agent
     assert fixed.status_code == 200 and "idempotent-replayed" not in fixed.headers
 
 
-@pytest.mark.asyncio
 async def test_a_malformed_key_is_refused_before_anything_runs(agent: _Agent) -> None:
     async with _client(_settings("badkey")) as client:
         for key in ("", "x" * 256, "has space", "tab\tkey", "{slot}1"):
@@ -222,7 +214,6 @@ async def test_a_malformed_key_is_refused_before_anything_runs(agent: _Agent) ->
     assert agent.calls == 0
 
 
-@pytest.mark.asyncio
 async def test_two_apps_in_one_process_do_not_share_claims(agent: _Agent) -> None:
     async with _client(_settings("app-a")) as a, _client(_settings("app-b")) as b:
         assert (await a.post("/chat", json=TURN, headers=_h("k1"))).status_code == 200
@@ -231,7 +222,6 @@ async def test_two_apps_in_one_process_do_not_share_claims(agent: _Agent) -> Non
     assert agent.calls == 2
 
 
-@pytest.mark.asyncio
 async def test_a_durable_accept_replays_as_the_same_202(
     agent: _Agent, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -261,7 +251,6 @@ async def test_a_durable_accept_replays_as_the_same_202(
 # --- the store -----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_memory_store_contract_ttl_and_ownership() -> None:
     now = [0.0]
     store = MemoryIdempotencyStore(ttl_seconds=10, now=lambda: now[0])
@@ -283,7 +272,6 @@ async def test_memory_store_contract_ttl_and_ownership() -> None:
     assert (await store.claim("t", "k", "fp")).kind == "new"
 
 
-@pytest.mark.asyncio
 async def test_memory_store_is_bounded_and_declines_oversized_bodies() -> None:
     store = MemoryIdempotencyStore(ttl_seconds=3600)
     for n in range(MAX_TRACKED_KEYS + 100):
@@ -347,7 +335,6 @@ class _Conn:
         self.closed += 1
 
 
-@pytest.mark.asyncio
 async def test_redis_store_claims_atomically_keys_by_scope_and_checks_ownership() -> None:
     fake = _FakeRedis()
     store = RedisIdempotencyStore(60, connection=_Conn(fake))  # type: ignore[arg-type]
@@ -372,7 +359,6 @@ async def test_redis_store_claims_atomically_keys_by_scope_and_checks_ownership(
     assert (await store.claim("acme/alice", "k", "fp")).kind == "new"
 
 
-@pytest.mark.asyncio
 async def test_redis_store_degrades_once_and_recovers_once(caplog: pytest.LogCaptureFixture) -> None:
     """One line per transition, not one per request: the rate limiter's shape."""
     conn = _Conn(None)
@@ -387,7 +373,6 @@ async def test_redis_store_degrades_once_and_recovers_once(caplog: pytest.LogCap
     assert sum("reachable again" in m for m in messages) == 1
 
 
-@pytest.mark.asyncio
 async def test_a_command_failure_against_a_reachable_redis_degrades_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -408,7 +393,6 @@ async def test_a_command_failure_against_a_reachable_redis_degrades_once(
     assert sum("reachable again" in m for m in messages) == 1
 
 
-@pytest.mark.asyncio
 async def test_once_is_the_whole_choreography() -> None:
     store = MemoryIdempotencyStore(ttl_seconds=60)
     calls = 0

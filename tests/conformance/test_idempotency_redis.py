@@ -53,7 +53,6 @@ async def store():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_finish_and_release_act_only_for_the_holder(store: RedisIdempotencyStore) -> None:
     scope, key = "conformance/" + uuid.uuid4().hex, "k"
     first = await store.claim(scope, key, "fp")

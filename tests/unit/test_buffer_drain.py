@@ -23,7 +23,6 @@ def _refused(event_id: str) -> DataError:
     return DataError("INSERT", {}, Exception(f"refused {event_id}"))
 
 
-@pytest.mark.asyncio
 async def test_a_refused_event_is_quarantined_and_its_neighbours_are_written() -> None:
     buffer = DurableBuffer("t")
     for e in _events("a", "poison", "b"):
@@ -39,7 +38,6 @@ async def test_a_refused_event_is_quarantined_and_its_neighbours_are_written() -
     assert written == ["a", "b"] and len(buffer) == 0 and buffer.quarantined == 1
 
 
-@pytest.mark.asyncio
 async def test_an_unavailable_database_requeues_everything_after_one_try() -> None:
     buffer = DurableBuffer("t")
     for e in _events("a", "b", "c"):
@@ -57,7 +55,6 @@ async def test_an_unavailable_database_requeues_everything_after_one_try() -> No
     assert buffer.quarantined == 0
 
 
-@pytest.mark.asyncio
 async def test_an_outage_after_a_quarantine_keeps_the_rest() -> None:
     buffer = DurableBuffer("t")
     for e in _events("poison", "a", "b"):
@@ -79,7 +76,6 @@ async def test_an_outage_after_a_quarantine_keeps_the_rest() -> None:
     assert [e["id"] for e in buffer.snapshot()] == ["a", "b"]
 
 
-@pytest.mark.asyncio
 async def test_a_single_refused_event_is_quarantined_without_a_second_try() -> None:
     buffer = DurableBuffer("t")
     buffer.append({"id": "poison"})

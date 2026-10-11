@@ -6,18 +6,14 @@ import pytest
 from felix.config import Settings
 from felix_api.composition import compose
 
+from tests.support.factories import make_settings
+
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(
-        auth_mode="none",
-        allow_insecure=True,
-        object_store="memory",
-        database_url="memory://test",
-    )
+    return make_settings()
 
 
-@pytest.mark.asyncio
 async def test_mcp_tools_list_and_call(settings: Settings) -> None:
     from felix.mcp.server import handle_rpc
 
@@ -37,7 +33,6 @@ async def test_mcp_tools_list_and_call(settings: Settings) -> None:
     assert "7" in called["result"]["content"][0]["text"]
 
 
-@pytest.mark.asyncio
 async def test_fibers_resume(settings: Settings) -> None:
     from felix.durability.fibers import create_fiber, resume_due_fibers
 
@@ -46,7 +41,6 @@ async def test_fibers_resume(settings: Settings) -> None:
     assert n >= 1
 
 
-@pytest.mark.asyncio
 async def test_memory_turn_versioning(settings: Settings) -> None:
     from felix.memory.store import consolidate_pools, list_active, put_memory
 

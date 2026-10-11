@@ -24,20 +24,18 @@ from felix.durability.fibers import RunInProgress, create_fiber, run_in_flight
 from felix.manifests.loader import load_bundled
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.factories import make_settings
+
 THREAD = "th-529"
 KEYS = json.dumps({"sk-acme": {"tenant_id": "acme", "sub": "alice", "scopes": ["*"]}})
 
 
 def _settings() -> Settings:
-    return Settings(
-        allow_insecure=True,
+    return make_settings(
         auth_mode="api_key",
         auth_api_keys=KEYS,
         host="127.0.0.1",
         rate_limit=100_000,
-        environment="development",
-        object_store="memory",
-        database_url="memory://one-run-per-thread",
         redis_url="",
         anthropic_api_key="",
         openai_api_key="",
@@ -100,7 +98,6 @@ def test_an_expired_run_a_worker_still_holds_is_still_running() -> None:
 # --- the store ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_the_enqueue_refuses_a_second_run_on_the_thread() -> None:
     settings = _settings()
     state = {"expires_at": fibers.now_ms() + 60_000}
@@ -116,7 +113,6 @@ async def test_the_enqueue_refuses_a_second_run_on_the_thread() -> None:
 # --- the routes ----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_second_send_is_refused_with_the_run_to_watch() -> None:
     async with _client(_settings()) as client:
         first = await client.post("/chat", json=_turn())
@@ -134,7 +130,6 @@ async def test_a_second_send_is_refused_with_the_run_to_watch() -> None:
     assert sum(1 for r in fibers._memory_fibers.values() if r.get("thread_id")) == 1
 
 
-@pytest.mark.asyncio
 async def test_a_transient_send_is_refused_too() -> None:
     """It appends to the same log the run is writing, which is the whole problem."""
     async with _client(_settings()) as client:
@@ -145,7 +140,6 @@ async def test_a_transient_send_is_refused_too() -> None:
     assert quick.json()["detail"] == f"run_in_progress:{token}"
 
 
-@pytest.mark.asyncio
 async def test_the_thread_is_free_once_the_run_ends() -> None:
     async with _client(_settings()) as client:
         assert (await client.post("/chat", json=_turn())).status_code == 202
@@ -154,7 +148,6 @@ async def test_the_thread_is_free_once_the_run_ends() -> None:
     assert again.status_code == 202, again.text
 
 
-@pytest.mark.asyncio
 async def test_other_threads_are_not_held() -> None:
     async with _client(_settings()) as client:
         assert (await client.post("/chat", json=_turn())).status_code == 202
@@ -162,7 +155,6 @@ async def test_other_threads_are_not_held() -> None:
     assert elsewhere.status_code == 202, elsewhere.text
 
 
-@pytest.mark.asyncio
 async def test_a_refused_keyed_send_frees_its_key() -> None:
     """The refusal is not the key's answer. Held, the same message resent once the run has
     finished would be `idempotency_in_progress` -- or replayed as a refusal -- forever."""
@@ -180,7 +172,6 @@ async def test_a_refused_keyed_send_frees_its_key() -> None:
     assert accepted.headers.get("idempotent-replayed") is None
 
 
-@pytest.mark.asyncio
 async def test_a_resend_of_the_starting_message_is_answered_from_its_key_not_refused() -> None:
     """The run in flight is this message's own, so its resend replays the 202 it got."""
     async with _client(_settings()) as client:
@@ -192,7 +183,6 @@ async def test_a_resend_of_the_starting_message_is_answered_from_its_key_not_ref
     assert again.json()["resume_token"] == first.json()["resume_token"]
 
 
-@pytest.mark.asyncio
 async def test_the_snapshot_names_the_run_in_flight() -> None:
     """The handle a reloaded client needs: `phase` reads `idle` throughout a durable run."""
     async with _client(_settings()) as client:

@@ -72,13 +72,11 @@ async def _prepared_after_repeated_queries(*, enabled: bool) -> int:
         await engine.dispose()
 
 
-@pytest.mark.asyncio
 async def test_disabling_prepared_statements_actually_stops_them() -> None:
     """The pooler-compatible setting, verified by asking Postgres rather than psycopg."""
     assert await _prepared_after_repeated_queries(enabled=False) == 0
 
 
-@pytest.mark.asyncio
 async def test_the_default_does_prepare_so_the_test_above_means_something() -> None:
     """The control.
 

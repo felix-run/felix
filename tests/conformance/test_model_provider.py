@@ -364,7 +364,6 @@ def test_a_provider_exposes_model_id_and_route(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_chat_takes_messages_and_tools_positionally(arm: _Arm) -> None:
     arm.program_turn(content="hello")
     result = await arm.client.chat(_user(), [])
@@ -373,7 +372,6 @@ async def test_chat_takes_messages_and_tools_positionally(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_options_are_accepted_as_the_third_positional_argument(arm: _Arm) -> None:
     """Six call sites pass `opts` positionally — compaction, branch summaries, session
     strategies, memory extraction, inbound screening and eval — so a keyword-only `opts`
@@ -388,7 +386,6 @@ async def test_options_are_accepted_as_the_third_positional_argument(arm: _Arm) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_chat_reports_usage(arm: _Arm) -> None:
     """`record_usage` is the only feed for `max_input_tokens`, `max_output_tokens` and
     `max_cost_usd`. A provider reporting nothing leaves the run uncapped."""
@@ -400,7 +397,6 @@ async def test_chat_reports_usage(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_stream_turn_ends_with_an_authoritative_result(arm: _Arm) -> None:
     """One request must yield display deltas *and* the turn's real answer. A provider that
     only implements `stream()` forfeits tool calls and usage from a streamed request and
@@ -416,7 +412,6 @@ async def test_stream_turn_ends_with_an_authoritative_result(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_streamed_turn_is_metered_too(arm: _Arm) -> None:
     """The OpenAI wire format needs `stream_options.include_usage` for this; a provider
     that forgets the equivalent makes every streamed run free to the budgets."""
@@ -435,7 +430,6 @@ async def test_a_streamed_turn_is_metered_too(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_stop_reasons_map_to_the_shared_vocabulary(arm: _Arm) -> None:
     """Each wire format names these differently; callers must never see the wire spelling."""
     for stop in ("end_turn", "max_tokens"):
@@ -445,7 +439,6 @@ async def test_stop_reasons_map_to_the_shared_vocabulary(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_tool_calls_come_back_parsed(arm: _Arm) -> None:
     """Arguments arrive as a dict, whatever the wire sent — a JSON string on one path and
     an object on the other — and the stop reason says `tool_use`."""
@@ -461,7 +454,6 @@ async def test_tool_calls_come_back_parsed(arm: _Arm) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_upstream_failure_raises_a_readable_gateway_error(arm: _Arm) -> None:
     """`_is_provider_error` and `_FallbackClient` branch on `.status`, so a provider that
     raises something opaque never fails over. The body stays off `str(exc)` because that
@@ -478,7 +470,6 @@ async def test_an_upstream_failure_raises_a_readable_gateway_error(arm: _Arm) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_client_error_is_not_treated_as_transient(arm: _Arm) -> None:
     from felix.patterns.model_composites import _is_provider_error
 
@@ -491,7 +482,6 @@ async def test_a_client_error_is_not_treated_as_transient(arm: _Arm) -> None:
 # --- the chain a real provider travels ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_registration_to_metered_turn() -> None:
     """The end-to-end nothing covered: register a provider, route to it through
     `FELIX_MODEL_ROUTES`, build it with `build_one_model`, take a turn, and see the spend
@@ -535,7 +525,6 @@ async def test_registration_to_metered_turn() -> None:
         register_builtin_providers()
 
 
-@pytest.mark.asyncio
 async def test_the_scripted_provider_is_not_registered_by_default() -> None:
     """Shipping a fake in the production registry would let a typo in `FELIX_MODEL_ROUTES`
     succeed silently and answer every prompt with canned text."""
@@ -544,7 +533,6 @@ async def test_the_scripted_provider_is_not_registered_by_default() -> None:
     assert get_model_provider("scripted") is None
 
 
-@pytest.mark.asyncio
 async def test_a_fallback_settles_a_turn_no_member_can_stream() -> None:
     """What omitting `stream_turn` actually costs, asserted against production code.
 
@@ -607,7 +595,6 @@ async def test_a_fallback_settles_a_turn_no_member_can_stream() -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_streamed_upstream_failure_also_raises(arm: _Arm) -> None:
     """The non-streaming path was covered and the streaming one was not, though it is the
     path a real turn takes. A streamed 5xx that yields nothing instead of raising means
@@ -623,7 +610,6 @@ async def test_a_streamed_upstream_failure_also_raises(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_the_request_carries_what_the_turn_was_given(arm: _Arm) -> None:
     """The contract covered only the response direction.
 
@@ -665,7 +651,6 @@ async def test_the_request_carries_what_the_turn_was_given(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_isolate_cache_is_honoured_on_every_path(arm: _Arm) -> None:
     """Accepting `ModelChatOptions` is not the same as obeying it.
 
@@ -695,7 +680,6 @@ async def test_isolate_cache_is_honoured_on_every_path(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_normal_request_still_asks_for_caching(arm: _Arm) -> None:
     """The counterpart, so the test above cannot pass by never caching at all."""
     assert arm.transport is not None
@@ -713,7 +697,6 @@ async def test_a_normal_request_still_asks_for_caching(arm: _Arm) -> None:
     assert cached, "a normal request should carry the caching hint this wire format uses"
 
 
-@pytest.mark.asyncio
 async def test_request_shaping_uses_the_wire_model_not_the_route_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -773,7 +756,6 @@ def test_every_shipped_wire_format_has_an_arm() -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_cache_tokens_are_reported_where_the_wire_format_has_them(arm: _Arm) -> None:
     """`cache_read` and `cache_creation` feed `limit_state.tokens_input` and the cost
     maths, so a wire format that parses them into the wrong field under-counts input on
@@ -801,7 +783,6 @@ async def test_cache_tokens_are_reported_where_the_wire_format_has_them(arm: _Ar
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_stream_yields_text_for_a_provider_that_only_streams(arm: _Arm) -> None:
     """`stream()` is the path a provider without `stream_turn` lands on, and it was dead to
     this suite — the Anthropic implementation of it was ~83 statements nothing executed.
@@ -813,7 +794,6 @@ async def test_stream_yields_text_for_a_provider_that_only_streams(arm: _Arm) ->
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_no_credential_means_no_auth_header(arm: _Arm) -> None:
     """A provider configured without a key must send no `Authorization` header rather than
     an empty `Bearer `, which is a malformed credential that proxies and gateways treat
@@ -848,7 +828,6 @@ STRUCTURED_ARMS = ["openai", "anthropic", "anthropic-tool"]
 
 
 @pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
-@pytest.mark.asyncio
 async def test_an_output_schema_is_enforced_on_every_path(arm: _Arm) -> None:
     """A schema that reaches only `chat` is a feature that works until the caller streams.
 
@@ -871,7 +850,6 @@ async def test_an_output_schema_is_enforced_on_every_path(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
-@pytest.mark.asyncio
 async def test_the_text_only_stream_is_constrained_too(arm: _Arm) -> None:
     """`stream()` is the third public path — the one `react.py` takes for a provider with no
     `stream_turn` — and the test above names "every path". It is threaded in the base class, so
@@ -884,7 +862,6 @@ async def test_the_text_only_stream_is_constrained_too(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
-@pytest.mark.asyncio
 async def test_a_turn_without_a_schema_constrains_nothing(arm: _Arm) -> None:
     """The counterpart, so the test above cannot pass by constraining every request.
 
@@ -899,7 +876,6 @@ async def test_a_turn_without_a_schema_constrains_nothing(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", STRUCTURED_ARMS, indirect=True)
-@pytest.mark.asyncio
 async def test_a_structured_answer_is_json_text_on_either_wire(arm: _Arm) -> None:
     """The reason the harness can set one option and stop caring which provider answers.
 
@@ -966,7 +942,6 @@ def _sent_content(arm: _Arm) -> Any:
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_an_inline_image_reaches_the_provider_whole(arm: _Arm) -> None:
     """Both wires had an image encoder and only one of them worked.
 
@@ -994,7 +969,6 @@ async def test_an_inline_image_reaches_the_provider_whole(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_an_image_renders_on_a_user_turn_only(arm: _Arm) -> None:
     """Both APIs accept an image on a user turn and nowhere else, and the two wires disagreed:
     the OpenAI one sent the image on an assistant turn too, which that API rejects, while the
@@ -1013,7 +987,6 @@ async def test_an_image_renders_on_a_user_turn_only(arm: _Arm) -> None:
 
 
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
-@pytest.mark.asyncio
 async def test_a_text_only_turn_stays_a_plain_string(arm: _Arm) -> None:
     """The counterpart, so the tests above cannot pass by attaching something to every request.
 

@@ -46,7 +46,6 @@ async def _put(settings: Any, prompt: str = "one", *, tenant: str = TENANT) -> d
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_version_round_trips(store_settings: Any) -> None:
     created = await _put(store_settings, "hello")
 
@@ -60,7 +59,6 @@ async def test_a_version_round_trips(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_versions_increment_rather_than_overwrite(store_settings: Any) -> None:
     """Every write is a new version, because a pin names one and must keep resolving."""
     first = await _put(store_settings, "one")
@@ -73,7 +71,6 @@ async def test_versions_increment_rather_than_overwrite(store_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_unknown_version_is_none(store_settings: Any) -> None:
     await _put(store_settings)
 
@@ -85,7 +82,6 @@ async def test_an_unknown_version_is_none(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_first_write_becomes_active_and_later_ones_do_not(store_settings: Any) -> None:
     """Publishing a version must not silently promote it.
 
@@ -102,7 +98,6 @@ async def test_the_first_write_becomes_active_and_later_ones_do_not(store_settin
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_activating_a_version_moves_the_pointer(store_settings: Any) -> None:
     await _put(store_settings, "one")
     await _put(store_settings, "two")
@@ -114,7 +109,6 @@ async def test_activating_a_version_moves_the_pointer(store_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_activating_a_version_that_does_not_exist_is_refused(store_settings: Any) -> None:
     """Otherwise the pointer names a version no request can resolve, and every turn 404s."""
     await _put(store_settings, "one")
@@ -124,7 +118,6 @@ async def test_activating_a_version_that_does_not_exist_is_refused(store_setting
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_activating_an_unknown_manifest_is_none(store_settings: Any) -> None:
     """Seeded first, so this proves the lookup is name-scoped rather than the store empty."""
     await _put(store_settings)
@@ -137,7 +130,6 @@ async def test_activating_an_unknown_manifest_is_none(store_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_canary_is_recorded_with_its_weight(store_settings: Any) -> None:
     """The weight is the fraction of traffic diverted, so both halves have to persist."""
     await _put(store_settings, "one")
@@ -155,7 +147,6 @@ async def test_a_canary_is_recorded_with_its_weight(store_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_canary_on_an_unknown_version_is_refused(store_settings: Any) -> None:
     """A canary pointing at nothing would divert traffic to a manifest that cannot resolve."""
     await _put(store_settings, "one")
@@ -165,7 +156,6 @@ async def test_a_canary_on_an_unknown_version_is_refused(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_activating_clears_the_canary(store_settings: Any) -> None:
     """Promoting the canary's own version must not leave it diverting traffic to itself.
 
@@ -187,7 +177,6 @@ async def test_activating_clears_the_canary(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_canary_can_be_cleared_explicitly(store_settings: Any) -> None:
     await _put(store_settings, "one")
     await _put(store_settings, "two")
@@ -200,7 +189,6 @@ async def test_a_canary_can_be_cleared_explicitly(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_canary_on_an_unknown_manifest_is_none(store_settings: Any) -> None:
     assert (
         await manifests.set_canary(store_settings, TENANT, "no-such", canary_version=None, canary_weight=0)
@@ -212,7 +200,6 @@ async def test_a_canary_on_an_unknown_manifest_is_none(store_settings: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_manifests_do_not_cross_the_tenant_boundary(store_settings: Any) -> None:
     """One tenant's agent name must not resolve to another tenant's manifest."""
     await _put(store_settings, "mine", tenant=TENANT)
@@ -229,7 +216,6 @@ async def test_manifests_do_not_cross_the_tenant_boundary(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_every_tenant_with_a_manifest_is_listed(store_settings: Any) -> None:
     """`run_continuous_eval` iterates this; a tenant missing from it is never benchmarked.
 
@@ -249,7 +235,6 @@ async def test_every_tenant_with_a_manifest_is_listed(store_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 @pytest.mark.parametrize("weight", [-1, 101, 150])
 async def test_a_canary_weight_outside_the_allowed_range_is_refused(store_settings: Any, weight: int) -> None:
     """`0001_baseline` carries CHECK (canary_weight BETWEEN 0 AND 100); the twin carried nothing.
@@ -272,7 +257,6 @@ async def test_a_canary_weight_outside_the_allowed_range_is_refused(store_settin
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_returned_manifest_is_a_copy_not_the_stored_one(store_settings: Any) -> None:
     """Editing what a read handed back must not rewrite the store.
 
@@ -308,7 +292,6 @@ async def _served(settings: Any, tenant: str) -> str:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_activation_or_rollback_is_served_on_the_next_resolution(store_settings: Any) -> None:
     tenant = "conformance-activate"
     await _put(store_settings, "v1", tenant=tenant)
@@ -324,7 +307,6 @@ async def test_an_activation_or_rollback_is_served_on_the_next_resolution(store_
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_canary_change_is_served_on_the_next_resolution(store_settings: Any) -> None:
     tenant = "conformance-canary"
     await _put(store_settings, "v1", tenant=tenant)
@@ -336,7 +318,6 @@ async def test_a_canary_change_is_served_on_the_next_resolution(store_settings: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_versions_list_newest_first_and_page_by_version(store_settings: Any) -> None:
     """A listing is metadata only, ordered by version on both backends, and `before` pages."""
     for prompt in ("one", "two", "three"):
@@ -356,7 +337,6 @@ async def test_versions_list_newest_first_and_page_by_version(store_settings: An
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_concurrent_publishes_of_one_name_all_land_in_order(store_settings: Any) -> None:
     """`put_version` reads the highest version and inserts the next. Concurrent publishes of one
     name used to read the same max, and every insert after the first failed on the primary key —

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.hooks import get_agent_hooks
@@ -120,7 +119,6 @@ async def _stream(agent: _ReactAgent, text: str) -> None:
             pass
 
 
-@pytest.mark.asyncio
 async def test_before_model_replaces_what_one_call_sends_and_leaves_history_alone() -> None:
     calls = 0
 
@@ -147,7 +145,6 @@ async def test_before_model_replaces_what_one_call_sends_and_leaves_history_alon
     )
 
 
-@pytest.mark.asyncio
 async def test_before_model_hooks_chain_and_see_the_call_context() -> None:
     seen: list[tuple[list[str], dict[str, Any]]] = []
     second_saw: list[list[str]] = []
@@ -176,7 +173,6 @@ async def test_before_model_hooks_chain_and_see_the_call_context() -> None:
     assert ctx["purpose"] == "turn"
 
 
-@pytest.mark.asyncio
 async def test_before_model_applies_to_a_streamed_call() -> None:
     get_agent_hooks().register_before_model(
         lambda request, ctx: {"messages": [ChatMessage(role="user", content="streamed via hook")]}
@@ -187,7 +183,6 @@ async def test_before_model_applies_to_a_streamed_call() -> None:
     assert model.seen and _contents(model.seen[0]) == ["streamed via hook"]
 
 
-@pytest.mark.asyncio
 async def test_before_model_reaches_both_calls_of_a_stream_only_client() -> None:
     """The `chat()` after `stream()` is the call whose reply is recorded; a redacting hook that
     reached only the display stream would leak through it."""
@@ -201,7 +196,6 @@ async def test_before_model_reaches_both_calls_of_a_stream_only_client() -> None
     assert [_contents(m) for m in model.seen] == [["streamed via hook"]]
 
 
-@pytest.mark.asyncio
 async def test_before_model_skips_a_raising_hook_and_a_bad_replacement() -> None:
     def raises(request, ctx):
         raise RuntimeError("hook bug")
@@ -222,7 +216,6 @@ async def test_before_model_skips_a_raising_hook_and_a_bad_replacement() -> None
     assert out.final.content == "done"
 
 
-@pytest.mark.asyncio
 async def test_after_model_replacement_is_what_the_run_acts_on() -> None:
     """Dropping the tool call from the reply means the tool never runs and the reply is the hook's."""
     stop_reasons: list[str | None] = []
@@ -243,7 +236,6 @@ async def test_after_model_replacement_is_what_the_run_acts_on() -> None:
     assert out.stop_reason == "end_turn", "a final answer with no tool calls still reported tool_use"
 
 
-@pytest.mark.asyncio
 async def test_after_model_ignores_a_bad_replacement_and_a_raising_hook() -> None:
     def not_assistant(response, ctx):
         return {"message": ChatMessage(role="user", content="impersonating the user")}
@@ -266,7 +258,6 @@ async def test_after_model_ignores_a_bad_replacement_and_a_raising_hook() -> Non
     assert out.final.content == "!!", "the later hooks did not each see the previous hook's message"
 
 
-@pytest.mark.asyncio
 async def test_both_hooks_run_on_the_follow_up_turn() -> None:
     from felix.steer import enqueue, release_run_queue
 

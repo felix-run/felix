@@ -47,7 +47,6 @@ def _by_id(dataset: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_dataset_round_trips_with_its_items(store_settings: Any) -> None:
     await eval_store.put_dataset(
         store_settings, TENANT, "d", description="questions", items=[_item("a", "one"), _item("b", "two")]
@@ -62,7 +61,6 @@ async def test_a_dataset_round_trips_with_its_items(store_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_writing_the_same_item_id_again_updates_it_in_place(store_settings: Any) -> None:
     """The divergence this file was written for.
 
@@ -80,7 +78,6 @@ async def test_writing_the_same_item_id_again_updates_it_in_place(store_settings
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_rewriting_an_item_does_not_reset_when_it_first_appeared(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -101,7 +98,6 @@ async def test_rewriting_an_item_does_not_reset_when_it_first_appeared(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_item_the_second_write_omits_survives_it(store_settings: Any) -> None:
     """`put_dataset` adds and updates; it never removes.
 
@@ -118,7 +114,6 @@ async def test_an_item_the_second_write_omits_survives_it(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_both_rubric_spellings_are_stored_the_same(store_settings: Any) -> None:
     """`put_dataset` reads `rubric` or `rubric_json`, and both arms must agree on which wins.
 
@@ -147,7 +142,6 @@ async def test_both_rubric_spellings_are_stored_the_same(store_settings: Any) ->
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_falsy_item_id_gets_its_own_generated_one(store_settings: Any) -> None:
     """`item.get("item_id") or uuid4().hex` — so `""` is absent, not a shared id.
 
@@ -168,7 +162,6 @@ async def test_a_falsy_item_id_gets_its_own_generated_one(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_item_with_no_id_is_given_one(store_settings: Any) -> None:
     await eval_store.put_dataset(store_settings, TENANT, "d", items=[{"user_input": "anonymous"}])
 
@@ -179,7 +172,6 @@ async def test_an_item_with_no_id_is_given_one(store_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_re_putting_a_dataset_updates_its_description(store_settings: Any) -> None:
     first = await eval_store.put_dataset(
         store_settings, TENANT, "d", description="before", items=[_item("a", "x")]
@@ -196,13 +188,11 @@ async def test_re_putting_a_dataset_updates_its_description(store_settings: Any)
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_unknown_dataset_is_none_not_empty(store_settings: Any) -> None:
     assert await eval_store.get_dataset(store_settings, TENANT, "never-written") is None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_datasets_do_not_leak_between_tenants(store_settings: Any) -> None:
     await eval_store.put_dataset(store_settings, TENANT, "shared-name", items=[_item("a", "mine")])
     await eval_store.put_dataset(store_settings, "other", "shared-name", items=[_item("a", "theirs")])
@@ -219,7 +209,6 @@ async def test_datasets_do_not_leak_between_tenants(store_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_run_completes_and_keeps_its_scores(store_settings: Any) -> None:
     run = await eval_store.create_run(
         store_settings, tenant_id=TENANT, dataset_name="d", candidate_manifest="quick", manifest_version=3
@@ -244,14 +233,12 @@ async def test_a_run_completes_and_keeps_its_scores(store_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_completing_an_unknown_run_is_none_not_a_new_row(store_settings: Any) -> None:
     assert await eval_store.complete_run(store_settings, TENANT, "no-such-run") is None
     assert await eval_store.list_runs(store_settings, TENANT) == []
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_runs_list_newest_first(store_settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     clock = iter([1_000, 2_000, 3_000])
     monkeypatch.setattr(eval_store, "now_ms", lambda: next(clock))
@@ -267,7 +254,6 @@ async def test_runs_list_newest_first(store_settings: Any, monkeypatch: pytest.M
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_runs_do_not_leak_between_tenants(store_settings: Any) -> None:
     mine = await eval_store.create_run(
         store_settings, tenant_id=TENANT, dataset_name="d", candidate_manifest="quick"

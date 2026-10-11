@@ -285,7 +285,6 @@ def _fresh(url: str, *, age_ms: int = 0) -> None:
     _remote_jwks[url] = (key_set, int(time.time() * 1000) - age_ms)
 
 
-@pytest.mark.asyncio
 async def test_a_remote_issuer_never_fetched_is_not_ready(clean_jwks_cache: None) -> None:
     """Every token from that issuer 401s; database and Redis green is not "ready"."""
     report = await check_readiness(_settings(auth_mode="jwt", jwt_verifiers=_REMOTE), max_age_s=0)
@@ -295,7 +294,6 @@ async def test_a_remote_issuer_never_fetched_is_not_ready(clean_jwks_cache: None
     assert report.ready is False
 
 
-@pytest.mark.asyncio
 async def test_a_stale_key_set_is_not_ready_and_says_how_old(clean_jwks_cache: None) -> None:
     _fresh(_REMOTE_URL, age_ms=JWKS_TTL_MS + 1000)
     report = await check_readiness(_settings(auth_mode="jwt", jwt_verifiers=_REMOTE), max_age_s=0)
@@ -304,7 +302,6 @@ async def test_a_stale_key_set_is_not_ready_and_says_how_old(clean_jwks_cache: N
     assert report.ready is False
 
 
-@pytest.mark.asyncio
 async def test_a_fresh_key_set_is_ready(clean_jwks_cache: None) -> None:
     _fresh(_REMOTE_URL)
     report = await check_readiness(_settings(auth_mode="jwt", jwt_verifiers=_REMOTE), max_age_s=0)
@@ -313,7 +310,6 @@ async def test_a_fresh_key_set_is_ready(clean_jwks_cache: None) -> None:
     assert report.ready is True
 
 
-@pytest.mark.asyncio
 async def test_one_unusable_issuer_among_usable_ones_degrades_rather_than_downs(
     clean_jwks_cache: None, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -330,7 +326,6 @@ async def test_one_unusable_issuer_among_usable_ones_degrades_rather_than_downs(
     assert any(_REMOTE_LABEL in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_two_verifiers_on_one_issuer_both_stale_is_not_ready(clean_jwks_cache: None) -> None:
     """One issuer serving two apps is two verifiers on one key set; keyed by issuer they
     counted as one, and "one of two unusable" read as degraded while nothing verified."""
@@ -339,7 +334,6 @@ async def test_two_verifiers_on_one_issuer_both_stale_is_not_ready(clean_jwks_ca
     assert report.ready is False
 
 
-@pytest.mark.asyncio
 async def test_a_shared_issuer_without_an_audience_is_unusable_not_fresh(clean_jwks_cache: None) -> None:
     """`verify_jwt` refuses it one line in; "fresh" would be the green-everything-401 shape."""
     spec = "access:team.cloudflareaccess.com"
@@ -349,7 +343,6 @@ async def test_a_shared_issuer_without_an_audience_is_unusable_not_fresh(clean_j
     assert jwks is not None and jwks.ok is False and "audience" in jwks.detail
 
 
-@pytest.mark.asyncio
 async def test_a_local_key_that_does_not_import_is_unusable(clean_jwks_cache: None) -> None:
     report = await check_readiness(
         _settings(auth_mode="jwt", jwt_verifiers=f"self:{_ISS}", jwks_public="not a key"), max_age_s=0
@@ -362,7 +355,6 @@ async def test_a_local_key_that_does_not_import_is_unusable(clean_jwks_cache: No
     assert _probe(good, "jwks").ok is True  # type: ignore[union-attr]
 
 
-@pytest.mark.asyncio
 async def test_no_probe_outside_jwt_mode(clean_jwks_cache: None) -> None:
     """The refresh loop runs only under `auth_mode=jwt`, so a leftover verifier elsewhere
     would fail forever. The row is absent rather than a vacuous ok."""
@@ -371,7 +363,6 @@ async def test_no_probe_outside_jwt_mode(clean_jwks_cache: None) -> None:
     assert report.ready is True
 
 
-@pytest.mark.asyncio
 async def test_the_public_route_reports_it_without_the_issuer(clean_jwks_cache: None) -> None:
     """The detail names the issuer; `/ready` is anonymous and drops details."""
     from felix_api.app import create_app
@@ -389,7 +380,6 @@ async def test_the_public_route_reports_it_without_the_issuer(clean_jwks_cache: 
 # --- refresh backoff ---------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_failed_refresh_retries_soon_instead_of_next_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

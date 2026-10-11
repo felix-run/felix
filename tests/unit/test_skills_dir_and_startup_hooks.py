@@ -32,7 +32,6 @@ def _clear_caches() -> Any:
     _bundled_cache.clear()
 
 
-@pytest.mark.asyncio
 async def test_a_configured_dir_adds_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.skills.loader import load_manifest_skills
 
@@ -48,7 +47,6 @@ async def test_a_configured_dir_adds_skills(tmp_path: Path, monkeypatch: pytest.
     assert "refund" in skill.description.lower()
 
 
-@pytest.mark.asyncio
 async def test_the_configured_dir_wins_over_a_same_named_bundled_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -72,7 +70,6 @@ async def test_the_configured_dir_wins_over_a_same_named_bundled_skill(
     assert catalog.get("shared").description == "From the configured directory."
 
 
-@pytest.mark.asyncio
 async def test_an_unset_or_missing_dir_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.skills.loader import _configured_skills_dir
 

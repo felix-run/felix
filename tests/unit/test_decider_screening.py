@@ -47,7 +47,6 @@ def _model(result: ScreenResult) -> Any:
 SETTINGS: Any = None
 
 
-@pytest.mark.asyncio
 async def test_the_battery_is_one_call_and_the_worst_answer_is_the_score() -> None:
     decider = _Decider(0.93, hot="exfiltrate")
     result = await screen_for_injection(SETTINGS, "x" * (SCREEN_CHARS + 50), "", decider)
@@ -76,7 +75,6 @@ async def test_the_battery_is_one_call_and_the_worst_answer_is_the_score() -> No
         "both-clean",
     ],
 )
-@pytest.mark.asyncio
 async def test_the_stricter_screener_wins(
     model: ScreenResult, decider: _Decider, expect: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -92,7 +90,6 @@ async def test_the_stricter_screener_wins(
         assert result.score == pytest.approx(0.3), "the higher of the two scores"
 
 
-@pytest.mark.asyncio
 async def test_the_model_screener_counts_against_the_run() -> None:
     from felix.config import Settings
     from felix.context import AuthContext, RequestContext, async_run_with_context
@@ -135,7 +132,6 @@ def _manifest(on_flag: str = "block", decider_id: str = "jev") -> Any:
     )
 
 
-@pytest.mark.asyncio
 async def test_a_decider_that_cannot_be_built_refuses_under_block_and_quarantines_otherwise() -> None:
     """The route went away after the manifest was stored. Not a reason to admit the turn."""
     from felix.config import Settings
@@ -169,7 +165,6 @@ class _WindowDecider(_Decider):
         return DecisionResult(answers={k: NoulAnswer(p) for k in questions})
 
 
-@pytest.mark.asyncio
 async def test_tool_output_is_screened_past_its_first_window() -> None:
     from felix.governance.inbound import screen_tool_output
 
@@ -181,7 +176,6 @@ async def test_tool_output_is_screened_past_its_first_window() -> None:
     assert len(decider.calls) >= 2, "walked past the first window"
 
 
-@pytest.mark.asyncio
 async def test_tool_output_too_long_to_screen_is_unavailable_not_admitted() -> None:
     from felix.governance.inbound import MAX_SCREEN_CHUNKS, screen_tool_output
 
@@ -191,7 +185,6 @@ async def test_tool_output_too_long_to_screen_is_unavailable_not_admitted() -> N
     assert decider.calls == [], "refused before paying for windows"
 
 
-@pytest.mark.asyncio
 async def test_the_tool_output_wrapper_screens_every_window() -> None:
     """Through `apply_content_screening`, the wrapper the compile installs."""
     from felix.manifests.builder import apply_content_screening

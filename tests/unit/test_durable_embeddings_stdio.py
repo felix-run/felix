@@ -88,7 +88,6 @@ def test_select_tools_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [t.name for t in selected] == ["web_search"]
 
 
-@pytest.mark.asyncio
 async def test_durable_chat_enqueue_and_poll() -> None:
     settings = _settings()
     started = await start_durable_chat(
@@ -108,7 +107,6 @@ async def test_durable_chat_enqueue_and_poll() -> None:
     assert row["resume_token"] == token
 
 
-@pytest.mark.asyncio
 async def test_durable_ttl_expires() -> None:
     settings = _settings()
     fiber = await create_fiber(
@@ -123,7 +121,6 @@ async def test_durable_ttl_expires() -> None:
     assert got["status"] == "expired"
 
 
-@pytest.mark.asyncio
 async def test_mcp_stdio_tool_binding(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_stdio(ref: McpServerRef, method: str, params: dict | None = None, **_k):
         if method == "tools/list":

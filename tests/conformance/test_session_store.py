@@ -37,7 +37,6 @@ async def _append_all(session: Any, events: list[AppendableEvent]) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_events_come_back_in_the_order_they_went_in(store: Any) -> None:
     session = store.open("t-order")
     await _append_all(session, [_msg("one"), _msg("two"), _msg("three")])
@@ -46,7 +45,6 @@ async def test_events_come_back_in_the_order_they_went_in(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_seq_is_dense_and_monotonic_from_zero(store: Any) -> None:
     session = store.open("t-seq")
     await _append_all(session, [_msg(str(i)) for i in range(5)])
@@ -55,7 +53,6 @@ async def test_seq_is_dense_and_monotonic_from_zero(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_batch_append_continues_the_same_sequence(store: Any) -> None:
     session = store.open("t-batch")
     await session.append(_msg("first"))
@@ -66,7 +63,6 @@ async def test_batch_append_continues_the_same_sequence(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_empty_batch_is_a_no_op(store: Any) -> None:
     session = store.open("t-empty-batch")
     await session.append(_msg("only"))
@@ -76,7 +72,6 @@ async def test_an_empty_batch_is_a_no_op(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_threads_are_isolated_from_each_other(store: Any) -> None:
     a, b = store.open("t-a"), store.open("t-b")
     await a.append(_msg("belongs to a"))
@@ -88,7 +83,6 @@ async def test_threads_are_isolated_from_each_other(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_reopening_a_thread_sees_what_was_written(store: Any) -> None:
     await store.open("t-reopen").append(_msg("persisted"))
     events = await store.open("t-reopen").get_events()
@@ -99,7 +93,6 @@ async def test_reopening_a_thread_sees_what_was_written(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_every_field_survives_the_round_trip(store: Any) -> None:
     session = store.open("t-fields")
     await session.append(
@@ -124,7 +117,6 @@ async def test_every_field_survives_the_round_trip(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_optional_fields_stay_absent(store: Any) -> None:
     session = store.open("t-sparse")
     await session.append(AppendableEvent(kind="message", role="assistant", content="plain"))
@@ -136,7 +128,6 @@ async def test_optional_fields_stay_absent(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_supplied_timestamp_is_kept(store: Any) -> None:
     session = store.open("t-ts")
     await session.append(AppendableEvent(kind="message", role="user", content="x", ts=1234.5))
@@ -145,7 +136,6 @@ async def test_a_supplied_timestamp_is_kept(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_missing_timestamp_is_filled_in(store: Any) -> None:
     session = store.open("t-ts-auto")
     await session.append(_msg("x"))
@@ -154,7 +144,6 @@ async def test_a_missing_timestamp_is_filled_in(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_empty_content_is_preserved_not_nulled(store: Any) -> None:
     session = store.open("t-blank")
     await session.append(AppendableEvent(kind="message", role="assistant", content=""))
@@ -166,7 +155,6 @@ async def test_empty_content_is_preserved_not_nulled(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_from_seq_is_inclusive(store: Any) -> None:
     session = store.open("t-from")
     await _append_all(session, [_msg(str(i)) for i in range(5)])
@@ -175,7 +163,6 @@ async def test_from_seq_is_inclusive(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_to_seq_is_exclusive(store: Any) -> None:
     session = store.open("t-to")
     await _append_all(session, [_msg(str(i)) for i in range(5)])
@@ -184,7 +171,6 @@ async def test_to_seq_is_exclusive(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_from_and_to_bound_a_window(store: Any) -> None:
     session = store.open("t-window")
     await _append_all(session, [_msg(str(i)) for i in range(6)])
@@ -193,7 +179,6 @@ async def test_from_and_to_bound_a_window(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_kinds_filters_to_the_named_kinds(store: Any) -> None:
     session = store.open("t-kinds")
     await _append_all(
@@ -210,7 +195,6 @@ async def test_kinds_filters_to_the_named_kinds(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_limit_takes_the_earliest_events(store: Any) -> None:
     session = store.open("t-limit")
     await _append_all(session, [_msg(str(i)) for i in range(5)])
@@ -219,7 +203,6 @@ async def test_limit_takes_the_earliest_events(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_limit_applies_after_from_seq(store: Any) -> None:
     """Order matters: filter the window first, then take from it."""
     session = store.open("t-limit-from")
@@ -229,7 +212,6 @@ async def test_limit_applies_after_from_seq(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_querying_an_unknown_thread_is_empty_not_an_error(store: Any) -> None:
     events = await store.open("t-never-written").get_events()
     assert events == []
@@ -239,7 +221,6 @@ async def test_querying_an_unknown_thread_is_empty_not_an_error(store: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_head_counts_what_is_stored(store: Any) -> None:
     session = store.open("t-head")
     head = await session.head()
@@ -250,7 +231,6 @@ async def test_head_counts_what_is_stored(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_reset_empties_the_thread(store: Any) -> None:
     session = store.open("t-reset")
     await _append_all(session, [_msg("a"), _msg("b")])
@@ -262,7 +242,6 @@ async def test_reset_empties_the_thread(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_appending_after_reset_starts_over(store: Any) -> None:
     session = store.open("t-reset-append")
     await _append_all(session, [_msg("a"), _msg("b")])
@@ -273,7 +252,6 @@ async def test_appending_after_reset_starts_over(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_reset_does_not_touch_other_threads(store: Any) -> None:
     keep, drop = store.open("t-keep"), store.open("t-drop")
     await keep.append(_msg("kept"))
@@ -284,7 +262,6 @@ async def test_reset_does_not_touch_other_threads(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_wake_reports_a_clean_session_as_clean(store: Any) -> None:
     session = store.open("t-wake-clean")
     await _append_all(session, [_msg("hi"), _msg("done", role="assistant")])
@@ -293,7 +270,6 @@ async def test_wake_reports_a_clean_session_as_clean(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_wake_sees_a_tool_call_with_no_result(store: Any) -> None:
     """Crash recovery depends on this being identical across backends."""
     session = store.open("t-wake-pending")
@@ -325,7 +301,6 @@ def configured_secret(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_secrets_in_content_are_masked_on_the_way_in(store: Any, configured_secret: str) -> None:
     """Masking is a storage guarantee, so it has to hold on every backend."""
     session = store.open("t-redact")
@@ -336,7 +311,6 @@ async def test_secrets_in_content_are_masked_on_the_way_in(store: Any, configure
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_secrets_in_tool_arguments_are_masked(store: Any, configured_secret: str) -> None:
     session = store.open("t-redact-args")
     await session.append(
@@ -352,7 +326,6 @@ async def test_secrets_in_tool_arguments_are_masked(store: Any, configured_secre
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_secrets_in_metadata_are_masked(store: Any, configured_secret: str) -> None:
     session = store.open("t-redact-meta")
     await session.append(
@@ -366,7 +339,6 @@ async def test_secrets_in_metadata_are_masked(store: Any, configured_secret: str
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_concurrent_appends_do_not_collide(store: Any) -> None:
     """Several surfaces append to one thread by design — an SSE stream, /chat/steer,
     /chat/tool_result. Postgres serializes with an advisory lock because computing
@@ -387,7 +359,6 @@ async def test_concurrent_appends_do_not_collide(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_concurrent_batches_keep_their_events_contiguous(store: Any) -> None:
     """A batch is one unit: its events must not be interleaved with another batch's."""
     import asyncio
@@ -408,7 +379,6 @@ async def test_concurrent_batches_keep_their_events_contiguous(store: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_append_returns_the_sequence_numbers_it_allocated(store: Any) -> None:
     """The writer computes these under the lock; handing them back saves a `max(seq)`
     read to learn a number that was just decided.
@@ -434,7 +404,6 @@ async def test_append_returns_the_sequence_numbers_it_allocated(store: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_empty_append_allocates_nothing(store: Any) -> None:
     session = store.open("seq-empty")
     assert await session.append_batch([]) == []
@@ -442,7 +411,6 @@ async def test_an_empty_append_allocates_nothing(store: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_skeletons_are_the_events_shape_and_nothing_else(store: Any) -> None:
     """`get_event_skeletons` is `event_skeleton` of every event, on every backend.
 

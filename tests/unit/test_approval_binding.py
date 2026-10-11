@@ -41,7 +41,6 @@ async def _grant(s: Settings, *, principal: str, sig: str = "abc") -> dict:
 # --- bind_principal -------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_grant_is_reusable_across_principals_when_unbound() -> None:
     """Documented behaviour when bind_principal is false — unchanged."""
     s = make_settings()
@@ -52,7 +51,6 @@ async def test_grant_is_reusable_across_principals_when_unbound() -> None:
     assert found is not None
 
 
-@pytest.mark.asyncio
 async def test_bind_principal_blocks_a_different_principal() -> None:
     """The privilege escalation: B replaying A's approved call."""
     s = make_settings()
@@ -68,7 +66,6 @@ async def test_bind_principal_blocks_a_different_principal() -> None:
     assert found is None
 
 
-@pytest.mark.asyncio
 async def test_bind_principal_allows_the_original_principal() -> None:
     s = make_settings()
     await _grant(s, principal="alice")
@@ -86,7 +83,6 @@ async def test_bind_principal_allows_the_original_principal() -> None:
 # --- one_shot -------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_one_shot_grant_is_spent_after_use() -> None:
     s = make_settings()
     row = await _grant(s, principal="alice")
@@ -103,7 +99,6 @@ async def test_one_shot_grant_is_spent_after_use() -> None:
     assert second is None, "a one_shot grant must not authorize a replay"
 
 
-@pytest.mark.asyncio
 async def test_consume_is_single_winner() -> None:
     """Two concurrent identical calls must not both spend one grant."""
     s = make_settings()
@@ -113,7 +108,6 @@ async def test_consume_is_single_winner() -> None:
     assert (first, second) == (True, False)
 
 
-@pytest.mark.asyncio
 async def test_consumed_grant_still_visible_without_the_flag() -> None:
     """Consumption only gates one_shot rules; ordinary grants are unaffected."""
     s = make_settings()
@@ -128,7 +122,6 @@ async def test_consumed_grant_still_visible_without_the_flag() -> None:
 # --- command screening `require_approval` ---------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_command_require_approval_creates_a_real_approval() -> None:
     """It used to return a deny string that named an approval nobody ever created.
 

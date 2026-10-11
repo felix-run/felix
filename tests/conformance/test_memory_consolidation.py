@@ -51,7 +51,6 @@ async def _status(settings: Any, mem_id: str) -> str:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_batch_is_agent_rows_of_this_pool_counted_before_the_limit(
     memory_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -75,7 +74,6 @@ async def test_the_batch_is_agent_rows_of_this_pool_counted_before_the_limit(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_merge_supersedes_at_the_duplicates_own_turn_and_stamps_the_retirer(
     memory_settings: Any,
 ) -> None:
@@ -102,7 +100,6 @@ async def test_a_merge_supersedes_at_the_duplicates_own_turn_and_stamps_the_reti
 
 
 @parametrized
-@pytest.mark.asyncio
 @pytest.mark.parametrize("operator_as", ["keep", "duplicate"])
 async def test_an_operator_row_is_refused_in_either_role(memory_settings: Any, operator_as: str) -> None:
     curated = await _put(memory_settings, "Deploys need two approvers.", metadata=OPERATOR)
@@ -117,7 +114,6 @@ async def test_an_operator_row_is_refused_in_either_role(memory_settings: Any, o
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_bad_group_is_refused_whole_and_a_good_one_beside_it_applies(memory_settings: Any) -> None:
     keep = await _put(memory_settings, "The office is in Lisbon.", seq=1)
     dup = await _put(memory_settings, "The company office is in Lisbon.", seq=2)
@@ -141,7 +137,6 @@ async def test_a_bad_group_is_refused_whole_and_a_good_one_beside_it_applies(mem
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_store_keeps_the_oldest_member_whatever_order_it_is_given(memory_settings: Any) -> None:
     """Oldest by turn, an unknown turn counting as newest; then by clock, then by id."""
     unknown = await memory_store.put_memory(
@@ -160,7 +155,6 @@ async def test_the_store_keeps_the_oldest_member_whatever_order_it_is_given(memo
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_pools_are_listed_across_tenants(memory_settings: Any) -> None:
     from felix.db.session import rls_bypass
 

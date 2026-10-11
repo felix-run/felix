@@ -131,7 +131,6 @@ def test_the_example_backends_build(example_register: Any) -> None:
     assert getattr(strategy, "max_turns", None) == 6
 
 
-@pytest.mark.asyncio
 async def test_the_example_before_tool_hook_blocks_through_the_runner(example_register: Any) -> None:
     """Called the way `ToolRunner` calls it. It took `**kwargs` and answered `deny`, so every
     positional call raised a swallowed `TypeError` and nothing it was meant to block was blocked."""
@@ -168,7 +167,6 @@ def test_the_greet_tool_shows_the_model_a_name_parameter(example_register: Any) 
     assert "name" in schema.get("properties", {}), schema
 
 
-@pytest.mark.asyncio
 async def test_a_stock_install_has_the_tool_its_hook_blocks_and_the_runner_blocks_it(
     example_register: Any,
 ) -> None:

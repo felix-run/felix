@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-import pytest
 from felix.governance.reply import (
     JUDGE_DENIED_PREFIX,
     PII_BLOCKED_REPLY,
@@ -190,7 +189,6 @@ def test_which_frames_carry_reply_text() -> None:
 # --- invoke ----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_invoke_redacts_pii_from_every_assistant_message() -> None:
     out = await _wrap(_Inner(PII, "done: " + PII), _pii()).invoke(InvokeInput(messages=[]))
     assert EMAIL not in out.final.content
@@ -199,19 +197,16 @@ async def test_invoke_redacts_pii_from_every_assistant_message() -> None:
     assert out.messages[2].role == "tool", "non-assistant messages are untouched"
 
 
-@pytest.mark.asyncio
 async def test_invoke_blocks_the_reply_when_block_on_match_is_set() -> None:
     out = await _wrap(_Inner(PII), _pii(block_on_match=True)).invoke(InvokeInput(messages=[]))
     assert out.final.content == PII_BLOCKED_REPLY
 
 
-@pytest.mark.asyncio
 async def test_invoke_judge_denies_a_reply_below_threshold() -> None:
     out = await _wrap(_Inner("short"), _judge()).invoke(InvokeInput(messages=[]))
     assert out.final.content.startswith(f"{JUDGE_DENIED_PREFIX} long")
 
 
-@pytest.mark.asyncio
 async def test_invoke_passes_a_clean_reply_through_unchanged() -> None:
     inner = _Inner("nothing to see here")
     out = await _wrap(inner, _pii()).invoke(InvokeInput(messages=[]))
@@ -221,14 +216,12 @@ async def test_invoke_passes_a_clean_reply_through_unchanged() -> None:
 # --- stream: the branch that was inert ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_stream_releases_the_reply_redacted_and_patches_every_terminal_frame() -> None:
     items = await _collect(_wrap(_Inner(PII), _pii()))
     _no_email_anywhere(items)
     assert _streamed_text(items), "the redacted reply is still delivered"
 
 
-@pytest.mark.asyncio
 async def test_stream_screens_every_assistant_turn_not_only_the_final() -> None:
     """A preamble before a tool call is a reply the model already made. It went out raw
     when only `final.content` was screened."""
@@ -237,7 +230,6 @@ async def test_stream_screens_every_assistant_turn_not_only_the_final() -> None:
     assert "all clean now" in _streamed_text(items)
 
 
-@pytest.mark.asyncio
 async def test_stream_holds_reply_text_in_every_envelope_but_not_structure() -> None:
     """The reply rides `text_delta` and the `session_progress` envelope; both wait. The
     phase frame, thinking and the tool event arrive as they happen, before any reply."""
@@ -250,7 +242,6 @@ async def test_stream_holds_reply_text_in_every_envelope_but_not_structure() -> 
     assert THINKING in "".join(i.text for i in _events(items, "thinking_delta"))
 
 
-@pytest.mark.asyncio
 async def test_stream_judge_denial_replaces_the_reply_and_never_leaks_it() -> None:
     items = await _collect(_wrap(_Inner("short"), _judge()))
     assert "short" not in _streamed_text(items)
@@ -258,7 +249,6 @@ async def test_stream_judge_denial_replaces_the_reply_and_never_leaks_it() -> No
     assert _done(items)["final"]["content"].startswith(f"{JUDGE_DENIED_PREFIX} long")
 
 
-@pytest.mark.asyncio
 async def test_a_judge_denial_withholds_earlier_turns_too() -> None:
     """The judge scored the final reply; a preamble before the tool calls was never
     judged, so the denial is the whole reply and the preamble does not ship."""
@@ -287,7 +277,6 @@ def test_final_response_alone_no_longer_wraps_tools() -> None:
     assert apply_guardrails([tool], _pii(), "m")[0] is not tool, "the default targets include output"
 
 
-@pytest.mark.asyncio
 async def test_v1_streams_only_reply_text_as_assistant_content() -> None:
     """The OpenAI wire has no reasoning channel: `thinking_delta` has a `.text`, and the
     route used to emit every event's text as `delta.content` — reasoning rendered as the
@@ -332,7 +321,6 @@ async def test_v1_streams_only_reply_text_as_assistant_content() -> None:
     assert THINKING not in resp.text
 
 
-@pytest.mark.asyncio
 async def test_stream_passes_a_clean_reply_through_as_the_original_frames() -> None:
     reply = "nothing to see here"
     items = await _collect(_wrap(_Inner(reply), _pii()))
@@ -342,7 +330,6 @@ async def test_stream_passes_a_clean_reply_through_as_the_original_frames() -> N
     assert _done(items)["final"]["content"] == reply
 
 
-@pytest.mark.asyncio
 async def test_a_reply_with_no_text_produces_no_phantom_frame() -> None:
     class _ToolOnly(_Inner):
         def _output(self) -> InvokeOutput:
@@ -362,7 +349,6 @@ async def test_a_reply_with_no_text_produces_no_phantom_frame() -> None:
     assert [i.event for i in items if isinstance(i, Event)] == ["on_chain_end", "done"]
 
 
-@pytest.mark.asyncio
 async def test_a_stream_without_terminal_frames_still_releases_held_text() -> None:
     class _Bare(_Inner):
         async def stream_events(self, input: InvokeInput) -> AsyncIterator[Any]:
@@ -375,7 +361,6 @@ async def test_a_stream_without_terminal_frames_still_releases_held_text() -> No
     assert _streamed_text(items)
 
 
-@pytest.mark.asyncio
 async def test_the_controls_emit_audit_events() -> None:
     from felix.audit import store as audit_store
     from felix.config import Settings
@@ -402,7 +387,6 @@ async def test_the_controls_emit_audit_events() -> None:
 # --- through the compiler ------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_governed_manifest_streams_its_reply_redacted_end_to_end() -> None:
     """Through `build_tenant_agent` and the real react loop, with the manifest that
     `governed.yaml` models: `providers: [pii], targets: [input, output]` and no judges.

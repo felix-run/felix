@@ -11,7 +11,6 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, TokenUsage
 from felix.patterns.react import _ReactAgent, _tool_end_data
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -49,7 +48,6 @@ class _CallsSnapOnce:
         )
 
 
-@pytest.mark.asyncio
 async def test_a_stored_image_reaches_the_stream_as_a_reference() -> None:
     async def handler(args: dict[str, Any]) -> Any:
         # As a tool that stored its own bytes through `store_image_bytes` returns them.

@@ -36,7 +36,6 @@ def _restore_patterns() -> Any:
     _patterns.update(saved)
 
 
-@pytest.mark.asyncio
 async def test_extensions_reach_the_pattern_build_context(_restore_patterns: Any) -> None:
     seen: dict[str, Any] = {}
 

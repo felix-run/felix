@@ -48,7 +48,6 @@ def ws(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.mark.asyncio
 async def test_it_replaces_the_match_and_leaves_every_other_byte(ws: Path) -> None:
     (ws / "CHANGELOG.md").write_text("## [Unreleased]\n\n### Added\n\n- old entry\n", encoding="utf-8")
 
@@ -67,7 +66,6 @@ async def test_it_replaces_the_match_and_leaves_every_other_byte(ws: Path) -> No
     )
 
 
-@pytest.mark.asyncio
 async def test_a_string_that_is_not_there_changes_nothing(ws: Path) -> None:
     (ws / "a.txt").write_text("alpha\n", encoding="utf-8")
 
@@ -77,7 +75,6 @@ async def test_a_string_that_is_not_there_changes_nothing(ws: Path) -> None:
     assert (ws / "a.txt").read_text(encoding="utf-8") == "alpha\n"
 
 
-@pytest.mark.asyncio
 async def test_an_ambiguous_match_is_refused_until_replace_all_says_otherwise(ws: Path) -> None:
     (ws / "a.txt").write_text("x\nx\n", encoding="utf-8")
 
@@ -90,7 +87,6 @@ async def test_an_ambiguous_match_is_refused_until_replace_all_says_otherwise(ws
     assert (ws / "a.txt").read_text(encoding="utf-8") == "y\ny\n"
 
 
-@pytest.mark.asyncio
 async def test_it_cannot_edit_outside_the_workspace(ws: Path) -> None:
     outside = ws.parent / "outside.txt"
     outside.write_text("secret\n", encoding="utf-8")
@@ -101,7 +97,6 @@ async def test_it_cannot_edit_outside_the_workspace(ws: Path) -> None:
     assert outside.read_text(encoding="utf-8") == "secret\n"
 
 
-@pytest.mark.asyncio
 async def test_an_edit_that_changes_nothing_is_refused(ws: Path) -> None:
     (ws / "a.txt").write_text("same\n", encoding="utf-8")
 
@@ -111,7 +106,6 @@ async def test_an_edit_that_changes_nothing_is_refused(ws: Path) -> None:
     assert (ws / "a.txt").read_text(encoding="utf-8") == "same\n"
 
 
-@pytest.mark.asyncio
 async def test_a_missing_match_is_reported_before_the_no_op(ws: Path) -> None:
     """Order matters for what the model does next: told the strings are identical, it goes
     looking for a string that was never in the file."""
@@ -122,7 +116,6 @@ async def test_a_missing_match_is_reported_before_the_no_op(ws: Path) -> None:
     assert "not found" in out
 
 
-@pytest.mark.asyncio
 async def test_a_binary_file_is_refused_rather_than_mangled(ws: Path) -> None:
     (ws / "blob.bin").write_bytes(b"\xff\xfe\x00\x01")
 
@@ -132,7 +125,6 @@ async def test_a_binary_file_is_refused_rather_than_mangled(ws: Path) -> None:
     assert (ws / "blob.bin").read_bytes() == b"\xff\xfe\x00\x01"
 
 
-@pytest.mark.asyncio
 async def test_a_missing_file_is_not_created(ws: Path) -> None:
     out = await _edit(ws, path="nope.txt", old_string="a", new_string="b")
 
@@ -140,7 +132,6 @@ async def test_a_missing_file_is_not_created(ws: Path) -> None:
     assert not (ws / "nope.txt").exists()
 
 
-@pytest.mark.asyncio
 async def test_it_edits_a_file_too_large_for_write_file_to_send(ws: Path) -> None:
     """The reason the tool exists: the file is bigger than a whole-file write may carry."""
     big = ws / "CHANGELOG.md"
@@ -161,7 +152,6 @@ async def test_it_edits_a_file_too_large_for_write_file_to_send(ws: Path) -> Non
     )
 
 
-@pytest.mark.asyncio
 async def test_a_new_string_larger_than_the_write_cap_is_refused(ws: Path) -> None:
     (ws / "a.txt").write_text("seed\n", encoding="utf-8")
 
@@ -171,7 +161,6 @@ async def test_a_new_string_larger_than_the_write_cap_is_refused(ws: Path) -> No
     assert (ws / "a.txt").read_text(encoding="utf-8") == "seed\n"
 
 
-@pytest.mark.asyncio
 async def test_it_keeps_the_line_endings_it_did_not_edit(ws: Path) -> None:
     """`read_text` would translate every `\r\n` to `\n` and the write-back would keep the
     translation — one edited line silently rewriting every line in the file, which is the
@@ -185,7 +174,6 @@ async def test_it_keeps_the_line_endings_it_did_not_edit(ws: Path) -> None:
     assert crlf.read_bytes() == b"line one\r\nline 2\r\nline three\r\n"
 
 
-@pytest.mark.asyncio
 async def test_an_old_string_spanning_a_crlf_matches(ws: Path) -> None:
     """`read_file` hands the model bytes, so the model quotes `\r\n` back. If the edit read
     through universal newlines, what it was shown would not match what it searches."""
@@ -198,7 +186,6 @@ async def test_an_old_string_spanning_a_crlf_matches(ws: Path) -> None:
     assert crlf.read_bytes() == b"gamma\r\n"
 
 
-@pytest.mark.asyncio
 async def test_a_file_over_the_ceiling_is_refused_before_it_is_read(ws: Path) -> None:
     big = ws / "huge.txt"
     big.write_bytes(b"x")
@@ -210,7 +197,6 @@ async def test_a_file_over_the_ceiling_is_refused_before_it_is_read(ws: Path) ->
     assert big.stat().st_size == _MAX_EDIT_FILE_BYTES + 1
 
 
-@pytest.mark.asyncio
 async def test_replace_all_cannot_inflate_a_file_past_the_ceiling(ws: Path) -> None:
     """Both caps bound an input; replace_all multiplies them. 1 MB of `x` and a five-byte
     replacement is 5 MB out of inputs that are each individually allowed."""
@@ -223,7 +209,6 @@ async def test_replace_all_cannot_inflate_a_file_past_the_ceiling(ws: Path) -> N
     assert grower.stat().st_size == 1_000_000, "refused before str.replace built it"
 
 
-@pytest.mark.asyncio
 async def test_an_empty_new_string_deletes_the_match(ws: Path) -> None:
     """`new_string` documents this, and it is the one case where an edit shrinks a file to
     nothing — `old_string` still has to be reproduced exactly for that to happen."""
@@ -235,7 +220,6 @@ async def test_an_empty_new_string_deletes_the_match(ws: Path) -> None:
     assert (ws / "a.txt").read_text(encoding="utf-8") == "keep\nkeep\n"
 
 
-@pytest.mark.asyncio
 async def test_an_edited_file_keeps_its_mode(ws: Path) -> None:
     """The write goes through a temp file and a rename, so the mode has to be carried across:
     `scripts/test.sh` coming back without its executable bit would break the gates."""
@@ -278,7 +262,6 @@ def test_the_read_and_the_write_are_both_inside_the_lock() -> None:
     assert not takes_the_lock("read_file"), "positive control: the scan discriminates"
 
 
-@pytest.mark.asyncio
 async def test_a_write_that_fails_leaves_the_original_where_it_was(
     ws: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

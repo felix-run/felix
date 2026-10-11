@@ -37,7 +37,6 @@ def server(monkeypatch: pytest.MonkeyPatch):
     return start
 
 
-@pytest.mark.asyncio
 async def test_tool_result_posts_the_call_id_and_thread(server) -> None:
     seen = server({"ok": True})
     client = FelixClient(base_url="http://felix")
@@ -57,7 +56,6 @@ async def test_tool_result_posts_the_call_id_and_thread(server) -> None:
     }
 
 
-@pytest.mark.asyncio
 async def test_tool_result_reports_a_failure_rather_than_staying_silent(server) -> None:
     # A failed client tool still has to answer: the run cannot tell a tool that
     # errored from one that was never run, and waits either way.
@@ -71,7 +69,6 @@ async def test_tool_result_reports_a_failure_rather_than_staying_silent(server) 
     assert body["content"] == "ENOENT"
 
 
-@pytest.mark.asyncio
 async def test_tool_result_refuses_without_a_thread(server) -> None:
     server({"ok": True})
     client = FelixClient(base_url="http://felix")
@@ -79,7 +76,6 @@ async def test_tool_result_refuses_without_a_thread(server) -> None:
         await client.tool_result("call-7", "x")
 
 
-@pytest.mark.asyncio
 async def test_decide_approval_sends_the_wire_spelling_not_the_bool(server) -> None:
     seen = server({"status": "approved"})
     client = FelixClient(base_url="http://felix")
@@ -91,7 +87,6 @@ async def test_decide_approval_sends_the_wire_spelling_not_the_bool(server) -> N
     assert json.loads(request.content) == {"decision": "approved", "note": ""}
 
 
-@pytest.mark.asyncio
 async def test_decide_approval_denies_with_a_note(server) -> None:
     seen = server({"status": "denied"})
     client = FelixClient(base_url="http://felix")
@@ -103,7 +98,6 @@ async def test_decide_approval_denies_with_a_note(server) -> None:
     assert body["note"] == "writes outside the workspace"
 
 
-@pytest.mark.asyncio
 async def test_decide_approval_carries_edited_args_only_when_given(server) -> None:
     # Approving a *modified* call is the third option, and the reason the decision
     # has a body at all. Omitted rather than null when absent, so an untouched
@@ -118,7 +112,6 @@ async def test_decide_approval_carries_edited_args_only_when_given(server) -> No
     assert "edited_args" not in json.loads(seen[1].content)
 
 
-@pytest.mark.asyncio
 async def test_list_approvals_defaults_to_pending(server) -> None:
     seen = server({"items": [], "requests": []})
     client = FelixClient(base_url="http://felix")
@@ -131,7 +124,6 @@ async def test_list_approvals_defaults_to_pending(server) -> None:
     assert request.url.params["limit"] == "50"
 
 
-@pytest.mark.asyncio
 async def test_list_approvals_can_ask_for_every_status(server) -> None:
     # `status=None` means "do not filter"; sending the literal string "None" would
     # match nothing and read as an empty queue.
@@ -144,7 +136,6 @@ async def test_list_approvals_can_ask_for_every_status(server) -> None:
     assert seen[0].url.params["limit"] == "10"
 
 
-@pytest.mark.asyncio
 async def test_resolve_ui_sends_the_thread_the_prompt_is_scoped_to(server) -> None:
     seen = server({"ok": True})
     client = FelixClient(base_url="http://felix")

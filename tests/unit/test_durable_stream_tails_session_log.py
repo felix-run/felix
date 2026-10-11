@@ -75,7 +75,6 @@ def _turn() -> list[AppendableEvent]:
     ]
 
 
-@pytest.mark.asyncio
 async def test_a_durable_run_streams_its_tool_calls_not_only_its_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -112,7 +111,6 @@ async def test_a_durable_run_streams_its_tool_calls_not_only_its_answer(
     )
 
 
-@pytest.mark.asyncio
 async def test_a_session_event_carries_what_a_tool_card_is_built_from(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,7 +168,6 @@ async def test_a_session_event_carries_what_a_tool_card_is_built_from(
     assert "toolCalls" not in assistant and "toolCallId" not in tool
 
 
-@pytest.mark.asyncio
 async def test_a_session_event_carries_the_reasoning_a_person_can_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -222,7 +219,6 @@ async def test_a_session_event_carries_the_reasoning_a_person_can_read(
     assert "metadata" not in plain
 
 
-@pytest.mark.asyncio
 async def test_progress_the_worker_made_before_the_stream_polled_is_not_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -258,7 +254,6 @@ async def test_progress_the_worker_made_before_the_stream_polled_is_not_skipped(
     assert "old answer" not in contents, f"the stream replayed history it should have skipped: {contents}"
 
 
-@pytest.mark.asyncio
 async def test_the_cursor_is_the_log_sequence_not_a_frame_counter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -299,7 +294,6 @@ async def test_the_cursor_is_the_log_sequence_not_a_frame_counter(
     assert ids[-1] == seqs[-1] + 1, "the last id is not the next sequence the client should ask for"
 
 
-@pytest.mark.asyncio
 async def test_the_cursor_a_durable_stream_hands_back_resumes_without_replaying(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -337,7 +331,6 @@ async def test_the_cursor_a_durable_stream_hands_back_resumes_without_replaying(
     assert contents == ["later"], f"the reattach replayed or skipped across the handoff: {contents}"
 
 
-@pytest.mark.asyncio
 async def test_a_run_with_no_thread_tails_the_thread_the_fiber_mints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -362,7 +355,6 @@ async def test_a_run_with_no_thread_tails_the_thread_the_fiber_mints(
     assert "42" in contents, f"an anonymous durable run reported no progress: {contents}"
 
 
-@pytest.mark.asyncio
 async def test_a_turn_appended_just_before_completion_still_precedes_the_final_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,7 +379,6 @@ async def test_a_turn_appended_just_before_completion_still_precedes_the_final_f
     assert body.rstrip().endswith("[DONE]")
 
 
-@pytest.mark.asyncio
 async def test_a_failed_run_still_delivers_the_transcript_it_got_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,7 +405,6 @@ async def test_a_failed_run_still_delivers_the_transcript_it_got_through(
     )
 
 
-@pytest.mark.asyncio
 async def test_an_expired_run_delivers_its_events_before_saying_so(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,7 +432,6 @@ async def test_an_expired_run_delivers_its_events_before_saying_so(
     assert body.index("session_event") < body.index("run_expired"), names
 
 
-@pytest.mark.asyncio
 async def test_a_failing_log_read_degrades_to_status_only_and_keeps_its_place(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -493,7 +482,6 @@ async def test_a_failing_log_read_degrades_to_status_only_and_keeps_its_place(
     assert "final" in sse_event_names(body), "a failing tail took the answer down with it"
 
 
-@pytest.mark.asyncio
 async def test_many_events_in_one_poll_arrive_in_order_with_contiguous_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -520,7 +508,6 @@ async def test_many_events_in_one_poll_arrive_in_order_with_contiguous_ids(
     assert ids == list(range(ids[0], ids[0] + 5)), f"ids are not contiguous across one drain: {ids}"
 
 
-@pytest.mark.asyncio
 async def test_the_accepted_shape_matches_what_the_real_start_returns() -> None:
     """The fixture above describes a run; this is what stops it describing a fiction.
 
@@ -561,7 +548,6 @@ async def test_the_accepted_shape_matches_what_the_real_start_returns() -> None:
 # --- what the run is blocked on ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_durable_run_announces_what_it_is_blocked_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """The gap the session-log tail cannot close.
 
@@ -605,7 +591,6 @@ async def test_a_durable_run_announces_what_it_is_blocked_on(monkeypatch: pytest
     assert gate["thread_id"] == thread
 
 
-@pytest.mark.asyncio
 async def test_a_pending_approval_is_announced_once_however_many_polls_see_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -630,7 +615,6 @@ async def test_a_pending_approval_is_announced_once_however_many_polls_see_it(
     assert len(gates) == 1, f"the prompt was re-announced on every poll: {len(gates)} frames"
 
 
-@pytest.mark.asyncio
 async def test_another_threads_approval_is_not_announced(monkeypatch: pytest.MonkeyPatch) -> None:
     """Thread-scoped, and it has to be: `GET /approvals` is tenant-wide.
 
@@ -650,7 +634,6 @@ async def test_another_threads_approval_is_not_announced(monkeypatch: pytest.Mon
     assert gates == [], f"another thread's approval reached this run's stream: {gates}"
 
 
-@pytest.mark.asyncio
 async def test_an_approval_decided_before_the_stream_opened_is_not_announced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -673,7 +656,6 @@ async def test_an_approval_decided_before_the_stream_opened_is_not_announced(
     assert gates == [], f"a decided approval was announced as if it were still waiting: {gates}"
 
 
-@pytest.mark.asyncio
 async def test_a_chat_scoped_caller_is_not_told_what_the_run_is_blocked_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -745,7 +727,6 @@ async def test_a_chat_scoped_caller_is_not_told_what_the_run_is_blocked_on(
     )
 
 
-@pytest.mark.asyncio
 async def test_an_unexpected_failure_closes_the_stream_with_an_error_not_a_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -777,7 +758,6 @@ async def test_an_unexpected_failure_closes_the_stream_with_an_error_not_a_trunc
     assert "Traceback" not in body
 
 
-@pytest.mark.asyncio
 async def test_a_failing_approvals_read_does_not_take_the_run_stream_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -815,7 +795,6 @@ async def test_a_failing_approvals_read_does_not_take_the_run_stream_down(
 # --- what the run is waiting on its client for ------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_durable_run_asks_its_client_to_run_a_client_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     """The client-tool half of the gap the approvals relay closed.
 
@@ -852,7 +831,6 @@ async def test_a_durable_run_asks_its_client_to_run_a_client_tool(monkeypatch: p
     assert asked == [request], f"expected one tool_request, got {asked} in {sse_event_names(body)}"
 
 
-@pytest.mark.asyncio
 async def test_another_threads_client_tool_is_not_announced(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.tools import client_requests
 
@@ -891,7 +869,6 @@ def _spy_watch(monkeypatch: pytest.MonkeyPatch, *, delivering: bool) -> list[flo
     return slept
 
 
-@pytest.mark.asyncio
 async def test_a_notified_durable_stream_relaxes_past_the_short_ceiling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -912,7 +889,6 @@ async def test_a_notified_durable_stream_relaxes_past_the_short_ceiling(
     assert 10.0 < max(slept) <= NOTIFIED_POLL_CEILING_SECONDS, f"waits: {slept}"
 
 
-@pytest.mark.asyncio
 async def test_a_durable_stream_never_waits_past_the_runs_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

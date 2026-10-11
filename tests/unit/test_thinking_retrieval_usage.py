@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from felix.context import AuthContext, LimitState, RequestContext
 from felix.manifests.schema import ModelSpec, ToolsRetrievalSpec
 from felix.patterns.model import (
@@ -37,7 +36,6 @@ def test_openai_thinking_and_cache() -> None:
     assert "thinking" not in body
 
 
-@pytest.mark.asyncio
 async def test_openai_cache_key_uses_thread_id() -> None:
     from felix.config import Settings
     from felix.context import AuthContext, RequestContext, async_run_with_context

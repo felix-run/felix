@@ -74,7 +74,6 @@ def test_spill_is_kept_thirty_days_by_default() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_every_spill_is_recorded_with_its_size() -> None:
     store, settings = _Store(), Settings()
 
@@ -86,7 +85,6 @@ async def test_every_spill_is_recorded_with_its_size() -> None:
     assert artifacts._ledger_rows[(tenant, manifest, artifact_id)]["size_bytes"] == 2000
 
 
-@pytest.mark.asyncio
 async def test_a_failed_write_leaves_a_row_not_orphaned_bytes() -> None:
     # The recoverable direction: the row names objects that may not exist, and deleting an
     # absent key is a no-op. The model still gets a truncated result rather than an error.
@@ -103,7 +101,6 @@ async def test_a_failed_write_leaves_a_row_not_orphaned_bytes() -> None:
     assert await expired_artifacts(settings, older_than_ms=2**62) == []
 
 
-@pytest.mark.asyncio
 async def test_delete_takes_both_objects_and_the_row() -> None:
     store, settings = _Store(), Settings()
     await _spilling(store, settings).executor.execute({}, CTX)
@@ -118,7 +115,6 @@ async def test_delete_takes_both_objects_and_the_row() -> None:
     assert await expired_artifacts(settings, older_than_ms=2**62) == []
 
 
-@pytest.mark.asyncio
 async def test_delete_refuses_a_reference_that_is_not_an_artifact() -> None:
     store, settings = _Store(), Settings()
     store.objects["artifacts/acme/cowork/../../other/secret.txt"] = b"x"
@@ -149,7 +145,6 @@ async def _seed(settings: Settings, store, n: int, *, at_ms: int, monkeypatch) -
     return ids
 
 
-@pytest.mark.asyncio
 async def test_the_sweep_drains_past_one_batch(monkeypatch) -> None:
     from felix.jobs import retention
 
@@ -163,7 +158,6 @@ async def test_the_sweep_drains_past_one_batch(monkeypatch) -> None:
     assert await expired_artifacts(settings, older_than_ms=2**62) == []
 
 
-@pytest.mark.asyncio
 async def test_a_row_that_names_no_valid_key_is_dropped_not_retried(monkeypatch) -> None:
     # Such a row can name no object, and kept it would head every batch forever.
     from felix.jobs import retention
@@ -179,7 +173,6 @@ async def test_a_row_that_names_no_valid_key_is_dropped_not_retried(monkeypatch)
     assert await expired_artifacts(settings, older_than_ms=2**62) == []
 
 
-@pytest.mark.asyncio
 async def test_a_store_that_refuses_deletes_stops_the_sweep_after_one_batch(monkeypatch) -> None:
     # Every failed delete keeps its row, so the next read would return the same batch. The
     # sweep must notice it made no progress rather than spend its bound re-reading it.

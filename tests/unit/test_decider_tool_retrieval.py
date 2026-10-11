@@ -79,14 +79,12 @@ async def _select(decider: Any, messages: list[ChatMessage] | None = None, **kw:
     return [t.name for t in chosen]
 
 
-@pytest.mark.asyncio
 async def test_the_shortlist_is_the_most_probable_tools_in_order(counted: list[tuple[str, dict]]) -> None:
     decider = _Decider({"t7": 0.6, "t2": 0.25, "t5": 0.1, NO_TOOL: 0.05})
     assert await _select(decider) == ["t7", "t2", "t5"]
     assert counted == [("felix_tool_selection", {"method": "decider"})]
 
 
-@pytest.mark.asyncio
 async def test_a_tool_already_used_is_kept_and_takes_a_slot() -> None:
     messages = [
         *_ask(),
@@ -97,7 +95,6 @@ async def test_a_tool_already_used_is_kept_and_takes_a_slot() -> None:
     assert await _select(decider, messages) == ["t9", "t7", "t2"]
 
 
-@pytest.mark.asyncio
 async def test_using_tools_mid_turn_does_not_re_ask_the_decider() -> None:
     """Each tool a step uses moves into `kept`; a cache keyed on what is left re-asked (and
     re-billed) the decider at every step of one turn."""
@@ -110,7 +107,6 @@ async def test_using_tools_mid_turn_does_not_re_ask_the_decider() -> None:
     assert len(decider.calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_a_turn_with_no_text_is_not_ranked_as_the_turn_before() -> None:
     decider = _Decider({"t7": 0.9, NO_TOOL: 0.1})
     messages = [*_ask("please do t7"), ChatMessage(role="assistant", content="done"), *_ask("")]
@@ -119,7 +115,6 @@ async def test_a_turn_with_no_text_is_not_ranked_as_the_turn_before() -> None:
     assert decider.calls == []
 
 
-@pytest.mark.asyncio
 async def test_a_spread_out_answer_falls_back_to_the_existing_ranking(
     counted: list[tuple[str, dict]],
 ) -> None:
@@ -132,21 +127,18 @@ async def test_a_spread_out_answer_falls_back_to_the_existing_ranking(
     assert counted == [("felix_tool_selection", {"method": "unsure"})]
 
 
-@pytest.mark.asyncio
 async def test_no_tool_counts_toward_coverage() -> None:
     """A request that needs no tool must not read as an unsure one."""
     decider = _Decider({NO_TOOL: 0.9, "t1": 0.05, "t2": 0.05})
     assert (await _select(decider))[:2] == ["t1", "t2"]
 
 
-@pytest.mark.asyncio
 async def test_a_decider_error_falls_back_to_the_existing_ranking(counted: list[tuple[str, dict]]) -> None:
     fallback = [t.name for t in select_tools(TOOLS, _ask(), SPEC)]
     assert await _select(_Decider({}, fail=True)) == fallback
     assert counted == [("felix_tool_selection", {"method": "error"})]
 
 
-@pytest.mark.asyncio
 async def test_the_decider_is_asked_once_per_request_not_once_per_selection() -> None:
     decider = _Decider({"t7": 0.9, NO_TOOL: 0.1})
     cache: dict[tuple[Any, ...], Any] = {}
@@ -157,7 +149,6 @@ async def test_the_decider_is_asked_once_per_request_not_once_per_selection() ->
     assert len(decider.calls) == 2, "a new request is a new question"
 
 
-@pytest.mark.asyncio
 async def test_a_catalogue_past_one_questions_limit_is_split_into_one_request() -> None:
     tools = [_tool(f"t{i}") for i in range(300)]
     decider = _Decider({"t299": 0.8, "t3": 0.8, NO_TOOL: 0.2})
@@ -169,7 +160,6 @@ async def test_a_catalogue_past_one_questions_limit_is_split_into_one_request() 
     assert set(chosen[:2]) == {"t3", "t299"}
 
 
-@pytest.mark.asyncio
 async def test_a_pick_without_a_distribution_still_fills_the_shortlist() -> None:
     """The `llm` backend names its pick and nothing else; the rest come from the fallback order."""
     answers = {"tool_0": ChoiceAnswer("t4", {}, confidence=None)}
@@ -185,7 +175,6 @@ def test_mass_on_a_kept_tool_counts_as_covered() -> None:
     assert shortlist(answers, ["t1", "t2", "t3"], 1, 0.5) is None
 
 
-@pytest.mark.asyncio
 async def test_disabled_or_small_catalogues_never_reach_the_decider() -> None:
     decider = _Decider({"t1": 1.0})
     off = ToolsRetrievalSpec(enabled=True, top_k=3, model="", decider=False)
@@ -235,7 +224,6 @@ def test_the_builder_binds_nothing_without_an_id_and_refuses_an_unknown_one() ->
         bind_decider(DeciderSpec(id="jev"), keyless)
 
 
-@pytest.mark.asyncio
 async def test_a_decider_without_probabilities_says_the_gate_does_not_apply(
     caplog: pytest.LogCaptureFixture, counted: list[tuple[str, dict]]
 ) -> None:

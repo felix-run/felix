@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, TokenUsage
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, InvokeInput, ToolCall
@@ -69,7 +68,6 @@ def _truncated_with_tool_call() -> ModelChatResult:
     )
 
 
-@pytest.mark.asyncio
 async def test_truncated_tool_call_is_not_executed() -> None:
     executed: list[str] = []
     model = _ScriptedModel(_truncated_with_tool_call())
@@ -85,7 +83,6 @@ async def test_truncated_tool_call_is_not_executed() -> None:
     assert model.calls == 1, "the turn ends; it does not loop on the truncated batch"
 
 
-@pytest.mark.asyncio
 async def test_untruncated_tool_call_still_runs() -> None:
     """The guard keys on stop_reason, so a normal tool-using turn is unaffected."""
     executed: list[str] = []
@@ -99,7 +96,6 @@ async def test_untruncated_tool_call_still_runs() -> None:
     assert any("[error/truncated]" not in (m.content or "") for m in out.messages)
 
 
-@pytest.mark.asyncio
 async def test_truncated_without_tool_calls_is_unchanged() -> None:
     """Prose truncated at max_tokens keeps its existing behaviour: end, no tool result."""
     model = _ScriptedModel(

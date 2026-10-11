@@ -210,7 +210,6 @@ def test_every_retired_path_is_absent_from_the_current_schema() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_the_resolver_serves_a_stored_row_written_before_the_removal() -> None:
     """The production path, not a convenient one: a row in the store, resolved by name.
 

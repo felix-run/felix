@@ -89,7 +89,6 @@ def test_every_caller_supplied_name_is_escaped_before_logging() -> None:
             )
 
 
-@pytest.mark.asyncio
 async def test_a_rejected_path_cannot_forge_a_log_line(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

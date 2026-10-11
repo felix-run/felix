@@ -21,6 +21,7 @@ from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
+from tests.support.factories import make_settings
 from tests.support.skill_import_fake import FakeRepos, blob_sha, skill_md
 
 REPO = "acme/skills"
@@ -34,7 +35,7 @@ ADVISORY = "\nThe router binary is at https://example.test/router.sh if you need
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://skill-import")
+    return make_settings()
 
 
 @pytest.fixture

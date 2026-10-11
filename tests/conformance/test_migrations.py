@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.support.backends import downgrade_to_base, drop_everything, migrate_to_head, postgres_url
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("empty_database")]
+pytestmark = pytest.mark.usefixtures("empty_database")
 
 
 def _url_or_skip() -> str:

@@ -103,7 +103,6 @@ async def _without_iterative_scan(settings: Any, sql: str, params: dict[str, Any
     return len(rows)
 
 
-@pytest.mark.asyncio
 async def test_memory_recall_vector_channel_is_full(store_settings: Any) -> None:
     from felix.memory.recall import _VECTOR_SQL, _channels_in_postgres
 
@@ -126,7 +125,6 @@ async def test_memory_recall_vector_channel_is_full(store_settings: Any) -> None
     assert len(ranked.get("vector", [])) == 16, ranked
 
 
-@pytest.mark.asyncio
 async def test_document_search_vector_channel_is_full(store_settings: Any) -> None:
     from felix.documents.store import _VECTOR_SQL, CHANNEL_DEPTH, _channels_in_postgres
 
@@ -157,7 +155,6 @@ async def _document_vector_channel(settings: Any, tenant: str) -> list[str]:
     return ranked.get("vector", [])
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("table", "channel"),
     [("memory_vectors", _memory_vector_channel), ("document_chunks", _document_vector_channel)],
@@ -184,7 +181,6 @@ async def test_a_server_that_refuses_the_setting_still_searches(
     assert vector._warned_unsupported, "the stand-in was not refused as unsupported, so this proves nothing"
 
 
-@pytest.mark.asyncio
 async def test_a_failed_lexical_channel_leaves_the_vector_channel(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -201,7 +197,6 @@ async def test_a_failed_lexical_channel_leaves_the_vector_channel(
     assert ranked.get("vector"), ranked
 
 
-@pytest.mark.asyncio
 async def test_only_a_refusal_is_blamed_on_the_pgvector_version(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

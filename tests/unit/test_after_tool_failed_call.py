@@ -36,7 +36,6 @@ async def _run(*, fatal: bool = False):
 
 
 @pytest.mark.parametrize(("fatal", "prefix"), [(False, "[error/"), (True, "[fatal/")])
-@pytest.mark.asyncio
 async def test_a_redacting_hook_redacts_a_failed_calls_message(fatal: bool, prefix: str) -> None:
     seen: list[tuple[object, bool]] = []
     get_agent_hooks().register_after_tool(lambda call, result, is_error, ctx: seen.append((result, is_error)))
@@ -53,7 +52,6 @@ async def test_a_redacting_hook_redacts_a_failed_calls_message(fatal: bool, pref
 @pytest.mark.parametrize(
     ("fatal", "expected"), [(False, "[error/internal] unavailable"), (True, "[fatal/internal] unavailable")]
 )
-@pytest.mark.asyncio
 async def test_a_rewrite_without_the_failure_prefix_gets_the_original_one_back(
     fatal: bool, expected: str
 ) -> None:
@@ -67,7 +65,6 @@ async def test_a_rewrite_without_the_failure_prefix_gets_the_original_one_back(
     assert is_failure_content(messages[0].content)
 
 
-@pytest.mark.asyncio
 async def test_an_unprintable_rewrite_keeps_the_error() -> None:
     class _Unprintable:
         def __str__(self) -> str:
@@ -95,7 +92,6 @@ async def _run_returned_error():
     return await runner.run_batch([ToolCall(id="1", name="t", args={})], thread_id="th", tenant_id="t")
 
 
-@pytest.mark.asyncio
 async def test_a_returned_error_is_handed_to_the_hook_as_text_and_redacted() -> None:
     seen: list[tuple[object, bool]] = []
     get_agent_hooks().register_after_tool(lambda call, result, is_error, ctx: seen.append((result, is_error)))
@@ -107,7 +103,6 @@ async def test_a_returned_error_is_handed_to_the_hook_as_text_and_redacted() -> 
     assert messages[0].content == "[tool error/provider_error] connect failed: password=***"
 
 
-@pytest.mark.asyncio
 async def test_a_returned_errors_plain_rewrite_keeps_its_failure_spelling() -> None:
     get_agent_hooks().register_after_tool(lambda call, result, is_error, ctx: {"content": "unavailable"})
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix import workspace_notes
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
@@ -75,14 +74,12 @@ def test_coalescing_keeps_the_last_note_per_path_in_last_touched_order() -> None
 # --- the queue -----------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_nothing_is_queued_for_a_thread_with_no_run() -> None:
     thread = "default:wsn-idle"
     assert await workspace_notes.enqueue_if_running(TENANT, thread, WorkspaceNote(path="x")) is False
     assert await workspace_notes.drain(TENANT, thread) == []
 
 
-@pytest.mark.asyncio
 async def test_a_running_thread_queues_and_a_drain_empties_it_coalesced() -> None:
     thread = "default:wsn-queue"
     await workspace_notes.mark_run_active(TENANT, thread)
@@ -98,7 +95,6 @@ async def test_a_running_thread_queues_and_a_drain_empties_it_coalesced() -> Non
     assert await workspace_notes.run_active(TENANT, thread) is False
 
 
-@pytest.mark.asyncio
 async def test_two_runs_on_one_thread_do_not_unmark_each_other() -> None:
     thread = "default:wsn-two"
     await workspace_notes.mark_run_active(TENANT, thread)
@@ -198,7 +194,6 @@ def _note_count(messages: list[ChatMessage]) -> int:
     return sum(1 for m in messages if m.role == "user" and "notes/plan.md" in str(m.content))
 
 
-@pytest.mark.asyncio
 async def test_a_note_sent_mid_batch_reaches_the_next_model_call_without_cancelling_the_batch() -> None:
     thread = "default:wsn-loop"
     store = InMemorySessionStore(tenant_id=TENANT)
@@ -240,7 +235,6 @@ async def test_a_note_sent_mid_batch_reaches_the_next_model_call_without_cancell
     assert len([e for e in await store.open(thread).get_events() if e.kind == "custom"]) == 1
 
 
-@pytest.mark.asyncio
 async def test_a_note_queued_after_the_last_model_call_is_logged_when_the_run_ends() -> None:
     """The run drains before each model call; one sent during the final call has no next
     call to reach, so the run writes it on its way out for the next run's history."""

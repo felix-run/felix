@@ -173,7 +173,6 @@ class _FlakyRedis:
         return None
 
 
-@pytest.mark.asyncio
 async def test_a_redis_blip_mid_wait_does_not_lose_a_signal_sent_through_redis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

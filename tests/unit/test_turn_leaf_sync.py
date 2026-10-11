@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult, TokenUsage
 from felix.patterns.react import _ReactAgent
 from felix.patterns.types import ChatMessage, InvokeInput
@@ -62,7 +61,6 @@ class _Model:
         )
 
 
-@pytest.mark.asyncio
 async def test_a_turn_syncs_the_leaf_once_before_its_first_append() -> None:
     thread = "default:leaf-sync"
     # This process's index holds a leaf another replica has since moved past.
@@ -99,7 +97,6 @@ async def test_a_turn_syncs_the_leaf_once_before_its_first_append() -> None:
     assert (first.metadata or {}).get("parent_id") == "stored"
 
 
-@pytest.mark.asyncio
 async def test_a_session_without_a_durable_leaf_keeps_the_index() -> None:
     """`memory://` and plugin checkpointers: the in-process index is the store, so it stands."""
     from felix.session.store import InMemorySessionStore
@@ -113,7 +110,6 @@ async def test_a_session_without_a_durable_leaf_keeps_the_index() -> None:
         tree.set_leaf(thread, None)
 
 
-@pytest.mark.asyncio
 async def test_a_read_of_the_stored_leaf_leaves_the_index_alone() -> None:
     """Export, a fork's source, the snapshot: they read the leaf and must not move it.
 

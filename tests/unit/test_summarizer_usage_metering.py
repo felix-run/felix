@@ -108,7 +108,6 @@ def _expected_cost(tokens: TokenUsage) -> float:
     return usage_with_cost(tokens, model_id=WIRE_MODEL)["cost"]["total"]
 
 
-@pytest.mark.asyncio
 async def test_compaction_bills_the_calling_tenant_and_manifest() -> None:
     store = InMemorySessionStore(tenant_id="acme")
     session = await _long_session(store, "acme:compact")
@@ -125,7 +124,6 @@ async def test_compaction_bills_the_calling_tenant_and_manifest() -> None:
     assert row["tokens_input"] == 50_000
 
 
-@pytest.mark.asyncio
 async def test_compaction_spend_counts_against_the_run_budget_at_the_wire_rate() -> None:
     """`limits.max_cost_usd` and the token caps read `ctx.limit_state`; a summarizer call
     that skipped it was invisible to every budget. The amount is the wire model's rate:
@@ -141,7 +139,6 @@ async def test_compaction_spend_counts_against_the_run_budget_at_the_wire_rate()
     assert ctx.limit_state.cost_usd > 0
 
 
-@pytest.mark.asyncio
 async def test_compaction_outside_a_request_records_under_no_manifest() -> None:
     """A maintenance path has no request context. The row is still written — a dropped
     meter is worse than an unattributed one — under the anonymous tenant and an empty
@@ -156,7 +153,6 @@ async def test_compaction_outside_a_request_records_under_no_manifest() -> None:
     assert rows[0]["meta_json"]["kind"] == "compaction"
 
 
-@pytest.mark.asyncio
 async def test_an_unmetered_summary_is_counted_as_unmetered_not_as_free() -> None:
     """The turn's own path raises `felix_model_unmetered` when a provider reports no
     usage; a summarizer that silently skipped the meter would look like a free call."""
@@ -218,7 +214,6 @@ def _react_agent(store: InMemorySessionStore, model: Any, limits: Any = None) ->
     return agent
 
 
-@pytest.mark.asyncio
 async def test_summarizer_spend_trips_the_run_budget_before_the_turn() -> None:
     """End to end through the loop: the history is rendered (and summarized) first, and
     the budget is checked at the top of the turn — so a summary that alone exceeds
@@ -242,7 +237,6 @@ async def test_summarizer_spend_trips_the_run_budget_before_the_turn() -> None:
     assert "max_cost_usd" in ctx.limit_state.abort_reason
 
 
-@pytest.mark.asyncio
 async def test_the_turn_reports_its_cost_at_the_wire_rate() -> None:
     """The priced block the loop attaches to the turn's event used to be priced by the
     logical route name, so every custom route reported $0 while being budgeted right."""
@@ -264,7 +258,6 @@ async def test_the_turn_reports_its_cost_at_the_wire_rate() -> None:
     assert turn.metadata["usage"]["cost"]["total"] > 0
 
 
-@pytest.mark.asyncio
 async def test_the_summarizing_strategy_is_metered_too() -> None:
     """`summarizing:N` recorded nothing at all: a model call with no usage row anywhere."""
     store = InMemorySessionStore(tenant_id="acme")
@@ -282,7 +275,6 @@ async def test_the_summarizing_strategy_is_metered_too() -> None:
     assert ctx.limit_state.tokens_input == 50_000
 
 
-@pytest.mark.asyncio
 async def test_the_summarizing_strategy_outside_a_request_records_under_no_manifest() -> None:
     store = InMemorySessionStore(tenant_id="acme")
     session = await _long_session(store, "acme:summ-noctx", turns=8)

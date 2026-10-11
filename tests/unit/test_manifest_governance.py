@@ -56,7 +56,6 @@ def test_secret_ref_parse_and_normalize() -> None:
     assert not looks_like_plaintext_secret("secret:MCP_TOKEN")
 
 
-@pytest.mark.asyncio
 async def test_resolve_secret_value_registers_for_masking(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MCP_TOKEN", "super-secret-token-value")
     provider = EnvSecrets()
@@ -66,7 +65,6 @@ async def test_resolve_secret_value_registers_for_masking(monkeypatch: pytest.Mo
     assert redact_text("leak super-secret-token-value here").endswith("[REDACTED] here")
 
 
-@pytest.mark.asyncio
 async def test_mcp_auth_object_form_normalized() -> None:
     m = Manifest.model_validate(
         _base_manifest(
@@ -100,7 +98,6 @@ def test_assert_no_plaintext_rejects_bearer() -> None:
         assert_no_plaintext_secrets(m)
 
 
-@pytest.mark.asyncio
 async def test_resolve_mcp_ref_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REMOTE_TOKEN", "resolved-remote-token-xyz")
     ref = Manifest.model_validate(
@@ -224,7 +221,6 @@ def test_inbound_auth_missing_scope() -> None:
     assert ei.value.status_code == 403
 
 
-@pytest.mark.asyncio
 async def test_session_and_audit_redact_secrets(tmp_path) -> None:
     register_resolved_secret("supersecretvalue123")
     settings = Settings(
@@ -255,7 +251,6 @@ async def test_session_and_audit_redact_secrets(tmp_path) -> None:
     assert "supersecretvalue123" not in str(audit_store._pending[-1]["payload_json"])
 
 
-@pytest.mark.asyncio
 async def test_agent_loop_emits_audit(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(
         database_url="memory://gov-audit",
@@ -300,7 +295,6 @@ async def test_agent_loop_emits_audit(tmp_path, monkeypatch: pytest.MonkeyPatch)
     assert "final_response" in types
 
 
-@pytest.mark.asyncio
 async def test_mcp_server_uses_compiled_tools(tmp_path) -> None:
     settings = Settings(
         database_url="memory://gov-mcp",

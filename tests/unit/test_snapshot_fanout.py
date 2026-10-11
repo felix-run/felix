@@ -31,7 +31,6 @@ import pytest
 CONCURRENT = 6
 
 
-@pytest.mark.asyncio
 async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix import steer as steer_mod
     from felix.durability import runs as runs_mod
@@ -68,7 +67,6 @@ async def test_the_snapshot_reads_run_concurrently(monkeypatch: pytest.MonkeyPat
     assert snapshot["id"] == "t:thread"
 
 
-@pytest.mark.asyncio
 async def test_the_snapshot_still_carries_what_each_read_provides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,7 +123,6 @@ async def test_the_snapshot_still_carries_what_each_read_provides(
 # --- /v1/models ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_one_unresolvable_manifest_does_not_empty_the_catalogue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,7 +156,6 @@ async def test_one_unresolvable_manifest_does_not_empty_the_catalogue(
     assert listed == names, f"expected every manifest listed in order, got {listed}"
 
 
-@pytest.mark.asyncio
 async def test_the_models_listing_keeps_manifest_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """`gather` preserves positional order, but the pairing back onto names is the part
     that could silently drift — `zip(..., strict=True)` makes a length mismatch loud."""
@@ -206,7 +202,6 @@ def _resolves_to_nothing(monkeypatch: pytest.MonkeyPatch, oc: Any) -> None:
     monkeypatch.setattr(oc, "_auth", lambda _r: type("A", (), {"tenant_id": "t"})())
 
 
-@pytest.mark.asyncio
 async def test_the_models_listing_includes_the_tenants_published_manifests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,7 +229,6 @@ async def test_the_models_listing_includes_the_tenants_published_manifests(
     assert seen_tenants == ["t"], "the store must be read for the caller's tenant only"
 
 
-@pytest.mark.asyncio
 async def test_bundled_only_does_not_list_stored_manifests(monkeypatch: pytest.MonkeyPatch) -> None:
     """Under `bundled_only` the resolver never reads the store, so neither does the listing:
     the catalogue names what a request can actually reach."""
@@ -253,7 +247,6 @@ async def test_bundled_only_does_not_list_stored_manifests(monkeypatch: pytest.M
     assert [row["id"] for row in result["data"]] == ["quick"]
 
 
-@pytest.mark.asyncio
 async def test_an_unreadable_store_leaves_the_bundled_catalogue(monkeypatch: pytest.MonkeyPatch) -> None:
     """The store being down is not a reason for `/v1/models` to fail: it degrades to the
     bundled list, the same rule `return_exceptions=True` keeps for one bad manifest."""

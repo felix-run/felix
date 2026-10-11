@@ -97,7 +97,6 @@ def test_invalidation_still_reaches_a_bounded_cache() -> None:
         assert len(cache) == 0, f"{name} survived clear_resolver_cache"
 
 
-@pytest.mark.asyncio
 async def test_the_object_cache_still_serves_a_hit_without_touching_the_store() -> None:
     """`_read_object` used `in`/`[]`, which reads without maintaining recency. Routing
     it through `get` keeps the eviction order honest — this pins that the routing did

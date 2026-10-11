@@ -66,7 +66,6 @@ async def _ingest(settings: Any, **kw: Any) -> tuple[str, int]:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_document_round_trips(document_settings: Any) -> None:
     doc_id, chunks = await _ingest(document_settings)
     assert chunks > 1, "the fixture must split on both arms, or retrieval is untested"
@@ -78,7 +77,6 @@ async def test_a_document_round_trips(document_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_lexical_retrieval_finds_the_right_chunk(document_settings: Any) -> None:
     """Postgres ranks with `ts_rank` over a generated tsvector; the twin counts token
     overlap. They must agree on which chunk answers this."""
@@ -94,7 +92,6 @@ async def test_lexical_retrieval_finds_the_right_chunk(document_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_vector_channel_runs_on_both_arms(document_settings: Any) -> None:
     """One arm computes cosine in Python, the other with pgvector's `<=>`. Both must
     actually attribute the channel, or hybrid retrieval is hybrid on one backend only."""
@@ -111,7 +108,6 @@ async def test_the_vector_channel_runs_on_both_arms(document_settings: Any) -> N
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_document_stores_without_an_embedder(document_settings: Any) -> None:
     """The embedding column is nullable on purpose. `memory_vectors` shipped `NOT NULL` with
     no default and every insert failed silently for months; this arm is what would catch the
@@ -124,7 +120,6 @@ async def test_a_document_stores_without_an_embedder(document_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_reingest_replaces_rather_than_duplicates(document_settings: Any) -> None:
     first, _ = await _ingest(document_settings)
     second, _ = await _ingest(document_settings, text="Only one short line about manifests now.")
@@ -142,7 +137,6 @@ async def test_reingest_replaces_rather_than_duplicates(document_settings: Any) 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_tenants_are_isolated(document_settings: Any) -> None:
     await _ingest(document_settings)
     assert (
@@ -155,7 +149,6 @@ async def test_tenants_are_isolated(document_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_delete_removes_every_chunk(document_settings: Any) -> None:
     doc_id, chunks = await _ingest(document_settings)
     assert await doc_store.delete_document(document_settings, TENANT, doc_id) == chunks
@@ -164,20 +157,17 @@ async def test_delete_removes_every_chunk(document_settings: Any) -> None:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_deleting_a_missing_document_reports_zero(document_settings: Any) -> None:
     assert await doc_store.delete_document(document_settings, TENANT, "nope") == 0
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_empty_query_returns_nothing(document_settings: Any) -> None:
     await _ingest(document_settings)
     assert await doc_store.search_documents(document_settings, tenant_id=TENANT, query="  ") == []
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_limit_is_honoured_on_both_arms(document_settings: Any) -> None:
     await _ingest(document_settings, text=PROSE * 4)
     hits = await doc_store.search_documents(
@@ -187,7 +177,6 @@ async def test_the_limit_is_honoured_on_both_arms(document_settings: Any) -> Non
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_metadata_round_trips_on_both_arms(document_settings: Any) -> None:
     """A live divergence the contract could not see: the twin returned metadata and the
     Postgres arm always returned `{}`, because its `select` never fetched the column."""
@@ -197,7 +186,6 @@ async def test_metadata_round_trips_on_both_arms(document_settings: Any) -> None
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_metadata_is_stored_once_not_per_chunk(document_settings: Any) -> None:
     """Copied onto every row it was a 1,700x storage amplifier. Chunk 0 carries it."""
     _, chunks = await _ingest(document_settings, metadata={"k": "v"})
@@ -211,7 +199,6 @@ async def test_metadata_is_stored_once_not_per_chunk(document_settings: Any) -> 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_several_documents_list_newest_first_with_a_tiebreaker(document_settings: Any) -> None:
     """Every other test here ingests one title, so ordering, `limit` and `count` across
     documents were untested on both arms — and the arms disagreed, the twin sorting
@@ -232,7 +219,6 @@ async def test_several_documents_list_newest_first_with_a_tiebreaker(document_se
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_stored_chunk_count_matches_what_ingest_reported(document_settings: Any) -> None:
     """`put_document`'s return value was never cross-checked against storage.
 
@@ -244,7 +230,6 @@ async def test_the_stored_chunk_count_matches_what_ingest_reported(document_sett
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_embedder_of_the_wrong_dimension_loses_vectors_not_the_document(
     document_settings: Any,
 ) -> None:
@@ -275,7 +260,6 @@ async def test_an_embedder_of_the_wrong_dimension_loses_vectors_not_the_document
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_second_tenants_corpus_is_invisible_both_ways(document_settings: Any) -> None:
     """The one-sided form — an empty tenant sees nothing — is also true of a broken store."""
     await _ingest(document_settings, title="Mine")

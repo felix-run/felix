@@ -89,7 +89,6 @@ def _user(text: str) -> InvokeInput:
 # --- the wrapper ------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_the_compiled_agent_screens_the_turn_on_invoke_and_stream() -> None:
     settings = _settings()
     echo = _Echo()
@@ -102,7 +101,6 @@ async def test_the_compiled_agent_screens_the_turn_on_invoke_and_stream() -> Non
     assert all(t.startswith("[quarantined]") and INJECTION not in t for t in echo.seen), echo.seen
 
 
-@pytest.mark.asyncio
 async def test_a_blocking_manifest_refuses_before_the_agent_runs() -> None:
     settings = _settings()
     echo = _Echo()
@@ -115,7 +113,6 @@ async def test_a_blocking_manifest_refuses_before_the_agent_runs() -> None:
     assert echo.seen == []
 
 
-@pytest.mark.asyncio
 async def test_a_route_that_screened_first_is_not_screened_twice() -> None:
     """The HTTP routes screen before the agent exists (to answer 422 before a stream
     opens) and say so; the wrapper then passes the turn through unchanged."""
@@ -127,7 +124,6 @@ async def test_a_route_that_screened_first_is_not_screened_twice() -> None:
     assert echo.seen == [INJECTION]
 
 
-@pytest.mark.asyncio
 async def test_build_agent_applies_the_wrapper_outermost() -> None:
     """Pins the compile slot: a wrapper nobody applies is the shape this fixes."""
     from felix.runtime import build_tenant_agent
@@ -163,7 +159,6 @@ async def test_build_agent_applies_the_wrapper_outermost() -> None:
 # --- the paths that were unscreened ------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_cron_prompt_is_screened_and_a_refusal_is_an_error_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -202,7 +197,6 @@ async def test_a_cron_prompt_is_screened_and_a_refusal_is_an_error_run(
     assert "content_screening_denied" in str(refused)
 
 
-@pytest.mark.asyncio
 async def test_eval_items_are_screened_before_the_candidate_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.eval.runner as runner_mod
     from felix.eval import store as eval_store
@@ -231,7 +225,6 @@ async def test_eval_items_are_screened_before_the_candidate_runs(monkeypatch: py
     assert run.get("scores"), run
 
 
-@pytest.mark.asyncio
 async def test_a_screener_outage_puts_a_durable_fiber_to_sleep_not_to_death(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -297,7 +290,6 @@ async def _mcp_call(
     )
 
 
-@pytest.mark.asyncio
 async def test_mcp_tool_arguments_are_screened_anywhere_in_the_tree(monkeypatch: pytest.MonkeyPatch) -> None:
     clean = await _mcp_call(monkeypatch, _manifest("quarantine"), {"text": "what is 2+2", "n": {"x": ["ok"]}})
     assert "what is 2+2" in clean["result"]["content"][0]["text"]
@@ -307,7 +299,6 @@ async def test_mcp_tool_arguments_are_screened_anywhere_in_the_tree(monkeypatch:
         assert refused["error"]["message"].endswith("content_screening_denied"), "no score, no content"
 
 
-@pytest.mark.asyncio
 async def test_mcp_arguments_pass_when_nothing_screens_input(monkeypatch: pytest.MonkeyPatch) -> None:
     off = parse_manifest(
         {
@@ -321,7 +312,6 @@ async def test_mcp_arguments_pass_when_nothing_screens_input(monkeypatch: pytest
     assert INJECTION in out["result"]["content"][0]["text"]
 
 
-@pytest.mark.asyncio
 async def test_an_unbounded_argument_tree_is_refused() -> None:
     args = {"items": [f"row {i}" for i in range(MAX_ARGUMENT_STRINGS + 1)]}
     with pytest.raises(InboundScreeningError):
@@ -330,7 +320,6 @@ async def test_an_unbounded_argument_tree_is_refused() -> None:
     assert await screen_tool_arguments(_manifest("quarantine"), ok, _settings()) == ok
 
 
-@pytest.mark.asyncio
 async def test_the_model_screener_sees_every_argument_not_a_truncated_join(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -354,7 +343,6 @@ async def test_the_model_screener_sees_every_argument_not_a_truncated_join(
     assert all(len(chunk) <= inbound.SCREEN_CHARS for chunk in seen)
 
 
-@pytest.mark.asyncio
 async def test_an_unavailable_model_screener_refuses_under_block_and_stands_aside_under_quarantine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -371,7 +359,6 @@ async def test_an_unavailable_model_screener_refuses_under_block_and_stands_asid
     ) == {"text": "fine"}
 
 
-@pytest.mark.asyncio
 async def test_input_pii_applies_to_mcp_arguments() -> None:
     redacted = await screen_tool_arguments(
         _manifest(pii=True), {"note": f"mail {EMAIL} now", "n": [EMAIL]}, _settings()
@@ -383,7 +370,6 @@ async def test_input_pii_applies_to_mcp_arguments() -> None:
     assert exc.value.detail == "pii_blocked"
 
 
-@pytest.mark.asyncio
 async def test_screening_decisions_are_counted_and_audited() -> None:
     from felix.audit import store as audit_store
     from felix.observability.metrics import REGISTRY
@@ -404,7 +390,6 @@ async def test_screening_decisions_are_counted_and_audited() -> None:
 # --- the edges review asked for -----------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_a_denied_turn_under_block_fails_the_fiber_rather_than_sleeping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,7 +427,6 @@ async def test_a_denied_turn_under_block_fails_the_fiber_rather_than_sleeping(
     assert "content_screening_denied" in str(stepped["state_json"]["stash"]["last"]["error"])
 
 
-@pytest.mark.asyncio
 async def test_a_screener_outage_is_retried_a_bounded_number_of_times(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -491,7 +475,6 @@ async def test_a_screener_outage_is_retried_a_bounded_number_of_times(
     assert slept["state_json"]["screener_retries"] == 1
 
 
-@pytest.mark.asyncio
 async def test_the_pre_screened_mark_is_consumed_by_the_first_agent_only() -> None:
     """A sub-agent compiled in the same request context is a different agent under its own
     manifest; the route's mark covers the turn it screened, not everything downstream."""
@@ -506,7 +489,6 @@ async def test_the_pre_screened_mark_is_consumed_by_the_first_agent_only() -> No
     assert inner.seen and inner.seen[0].startswith("[quarantined]"), "the mark was consumed"
 
 
-@pytest.mark.asyncio
 async def test_an_oversize_argument_set_is_refused_with_its_own_action() -> None:
     import felix.governance.inbound as inbound
     from felix.observability.metrics import REGISTRY
@@ -520,7 +502,6 @@ async def test_an_oversize_argument_set_is_refused_with_its_own_action() -> None
     assert (REGISTRY.get_sample_value("felix_inbound_screening_total", labels) or 0.0) == before + 1
 
 
-@pytest.mark.asyncio
 async def test_pii_in_an_argument_key_refuses_rather_than_renaming_the_parameter() -> None:
     with pytest.raises(InboundScreeningError) as exc:
         await screen_tool_arguments(_manifest(pii=True), {EMAIL: "value"}, _settings())
@@ -530,7 +511,6 @@ async def test_pii_in_an_argument_key_refuses_rather_than_renaming_the_parameter
     assert EMAIL not in redacted["note"]
 
 
-@pytest.mark.asyncio
 async def test_the_model_screener_sees_the_whole_turn_not_its_first_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -561,7 +541,6 @@ async def test_the_model_screener_sees_the_whole_turn_not_its_first_window(
     assert any("PAYLOAD" in chunk for chunk in seen)
 
 
-@pytest.mark.asyncio
 async def test_an_oversize_turn_is_not_screened_one_window_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """The cap that keeps argument screening from amplifying applies to turns too: a
     body-limit-sized turn would otherwise be hundreds of screener calls in one request."""
@@ -586,7 +565,6 @@ async def test_an_oversize_turn_is_not_screened_one_window_at_a_time(monkeypatch
     assert calls == 0, "no screener call was spent on it"
 
 
-@pytest.mark.asyncio
 async def test_the_outage_retry_budget_is_per_step_and_the_sleep_drops_the_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

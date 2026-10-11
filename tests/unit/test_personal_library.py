@@ -19,13 +19,15 @@ from felix.skills.library_keys import ORG_OWNER, library_label
 from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
+from tests.support.factories import make_settings
+
 ALICE = "https://id.example|alice"
 BODY = "\n# Notes\n\nUse this when taking notes.\n\n## Steps\n\n1. Write it down.\n2. File it.\n"
 
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://personal-library")
+    return make_settings()
 
 
 @pytest.fixture

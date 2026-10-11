@@ -19,6 +19,8 @@ from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
+from tests.support.sse import sse_payloads
+
 REQUEST_ID = "e2e-ask-1"
 ASK = ToolCall(
     id="call-ask",
@@ -38,14 +40,6 @@ def _script() -> list[ScriptedTurn]:
     return [
         ScriptedTurn(content="", tool_calls=[ASK], stop_reason="tool_use"),
         ScriptedTurn(content="Deploying to staging."),
-    ]
-
-
-def _frames(body: str) -> list[dict[str, Any]]:
-    return [
-        json.loads(line[len("data: ") :])
-        for line in body.splitlines()
-        if line.startswith("data: ") and line != "data: [DONE]"
     ]
 
 
@@ -78,7 +72,7 @@ async def test_the_question_goes_out_on_the_stream_and_the_answer_comes_back(
             },
         )
         assert resp.status_code == 200, resp.text
-        frames = _frames(resp.text)
+        frames = sse_payloads(resp.text)
 
         asked = [f["data"] for f in frames if f.get("event") == "ui_request"]
         assert asked and asked[0]["kind"] == "select", frames

@@ -23,7 +23,6 @@ def _tool(timeout: float | None = None):
     return tool
 
 
-@pytest.mark.asyncio
 async def test_a_waiting_client_tool_is_pending_until_it_is_answered() -> None:
     thread = "default:pending-answered"
     task = asyncio.create_task(
@@ -45,7 +44,6 @@ async def test_a_waiting_client_tool_is_pending_until_it_is_answered() -> None:
     assert await client_requests.pending(thread) == [], "an answered request was still pending"
 
 
-@pytest.mark.asyncio
 async def test_a_request_that_timed_out_is_no_longer_pending() -> None:
     """The run has already been told `[error/timeout]`; asking the client now helps nobody."""
     thread = "default:pending-timeout"
@@ -56,7 +54,6 @@ async def test_a_request_that_timed_out_is_no_longer_pending() -> None:
     assert await client_requests.pending(thread) == []
 
 
-@pytest.mark.asyncio
 async def test_a_cancelled_wait_does_not_leave_its_request_behind() -> None:
     """A run torn down mid-wait must not leave a prompt for the next stream to announce."""
     thread = "default:pending-cancel"
@@ -71,7 +68,6 @@ async def test_a_cancelled_wait_does_not_leave_its_request_behind() -> None:
     assert await client_requests.pending(thread) == []
 
 
-@pytest.mark.asyncio
 async def test_pending_is_scoped_to_the_thread_including_threads_with_colons() -> None:
     """`{tenant}:fiber:{id}` carries an extra colon; the key must not let it alias another."""
     await client_requests.record("acme:fiber:F1", {"id": "call_9", "name": "n"}, timeout=60)
@@ -83,7 +79,6 @@ async def test_pending_is_scoped_to_the_thread_including_threads_with_colons() -
         await client_requests.clear("acme:fiber:F1", "call_9")
 
 
-@pytest.mark.asyncio
 async def test_a_lapsed_request_is_not_pending() -> None:
     thread = "default:pending-lapsed"
     await client_requests.record(thread, {"id": "call_l", "name": "n"}, timeout=-1)

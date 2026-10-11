@@ -60,7 +60,6 @@ class _Step:
         return row
 
 
-@pytest.mark.asyncio
 async def test_a_step_stops_when_another_worker_takes_its_fiber(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings()
     row = await _claimed(settings)
@@ -80,7 +79,6 @@ async def test_a_step_stops_when_another_worker_takes_its_fiber(monkeypatch: pyt
     assert (stored["lease_owner"], stored["attempts"], stored["status"]) == ("worker-b", 0, "running")
 
 
-@pytest.mark.asyncio
 async def test_a_renewal_that_fails_once_is_retried_rather_than_abandoned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,7 +111,6 @@ async def test_a_renewal_that_fails_once_is_retried_rather_than_abandoned(
     assert calls >= 2, "the heartbeat stopped renewing after the failure"
 
 
-@pytest.mark.asyncio
 async def test_a_lease_that_cannot_be_renewed_stops_the_step_before_it_lapses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

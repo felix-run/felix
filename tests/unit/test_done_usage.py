@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.schema import ModelSpec
@@ -100,7 +99,6 @@ async def _done(model: Any, name: str) -> Event:
     return done
 
 
-@pytest.mark.asyncio
 async def test_done_carries_the_final_calls_usage_including_cache() -> None:
     """The final call's block, not the tool call's and not a sum.
 
@@ -115,7 +113,6 @@ async def test_done_carries_the_final_calls_usage_including_cache() -> None:
     assert usage["totalTokens"] == 3 + 7 + 1025 + 400
 
 
-@pytest.mark.asyncio
 async def test_done_omits_usage_when_the_provider_reported_none() -> None:
     """Absent, not zeros: a provider that reports nothing has not reported an empty context."""
     model = _ToolThenAnswer(TokenUsage())

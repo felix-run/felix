@@ -14,6 +14,8 @@ from felix.manifests.schema import Manifest
 from felix.memory import store as memory_store
 from felix.memory.tools import MEMORY_TOOL_NAMES, make_memory_tools
 
+from tests.support.factories import make_settings
+
 TENANT = "t-tools"
 MANIFEST = "m"
 
@@ -24,7 +26,7 @@ def _clean() -> None:
 
 
 def _settings() -> Settings:
-    return Settings(database_url="memory://tools", object_store="memory", allow_insecure=True)
+    return make_settings()
 
 
 def _tools() -> dict[str, object]:
@@ -41,7 +43,6 @@ async def _run(name: str, **args: object) -> str:
     return await tool.executor.execute(args)  # type: ignore[attr-defined]
 
 
-@pytest.mark.asyncio
 async def test_remember_then_recall_round_trip() -> None:
     out = await _run("remember", content="The deploy runbook lives in the ops repo.")
     assert out.startswith("remembered:")
@@ -50,12 +51,10 @@ async def test_remember_then_recall_round_trip() -> None:
     assert "ops repo" in recalled
 
 
-@pytest.mark.asyncio
 async def test_recall_reports_no_hits_rather_than_erroring() -> None:
     assert "no relevant memories" in await _run("recall", query="something never stored")
 
 
-@pytest.mark.asyncio
 async def test_a_remembered_topic_value_does_not_retire_the_earlier_one() -> None:
     """`remember` is the tool a prompt injection can call directly, with a topic_key it chose.
     If a tool write retired what held the key, one injected call would delete the fact it
@@ -67,7 +66,6 @@ async def test_a_remembered_topic_value_does_not_retire_the_earlier_one() -> Non
     assert "CET" in listed and "UTC" in listed
 
 
-@pytest.mark.asyncio
 async def test_forget_removes_from_recall() -> None:
     stored = await _run("remember", content="A regrettable detail about the runbook.")
     mem_id = stored.split(":", 1)[1]
@@ -76,12 +74,10 @@ async def test_forget_removes_from_recall() -> None:
     assert "no relevant memories" in await _run("recall", query="regrettable runbook")
 
 
-@pytest.mark.asyncio
 async def test_forget_is_honest_about_a_miss() -> None:
     assert "no such memory" in await _run("forget", id="not-a-real-id")
 
 
-@pytest.mark.asyncio
 async def test_an_unknown_kind_falls_back_rather_than_failing() -> None:
     """The model supplies `kind`; a bad value must not fail the turn."""
     await _run("remember", content="Something.", kind="nonsense")
@@ -89,7 +85,6 @@ async def test_an_unknown_kind_falls_back_rather_than_failing() -> None:
     assert rows[0]["kind"] == "fact"
 
 
-@pytest.mark.asyncio
 async def test_remember_records_the_thread_it_came_from() -> None:
     await _run("remember", content="Learned right here.")
     rows = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
@@ -138,7 +133,6 @@ _GOVERNANCE_SOURCES = {
 }
 
 
-@pytest.mark.asyncio
 async def test_bound_tools_pass_through_the_governance_stack() -> None:
     """Every memory tool is wrapped, asserted by behaviour rather than by structure.
 
@@ -210,7 +204,6 @@ def test_bundled_manifests_that_enable_capture_use_the_cheap_tier() -> None:
     assert enabled, "no bundled manifest enables memory capture — the feature ships inert"
 
 
-@pytest.mark.asyncio
 async def test_remember_stamps_provenance_from_the_request_context() -> None:
     """Tool writes must carry provenance too, or `as_of` sees half the store as genesis.
 
@@ -245,7 +238,6 @@ async def test_remember_stamps_provenance_from_the_request_context() -> None:
     assert rows[0]["origin_seq"] == 2
 
 
-@pytest.mark.asyncio
 async def test_remember_without_a_request_context_still_stores() -> None:
     """No context is not an error — it is a memory with no provenance."""
     await _run("remember", content="Stored outside any request.")
@@ -253,7 +245,6 @@ async def test_remember_without_a_request_context_still_stores() -> None:
     assert rows[0]["origin_seq"] is None
 
 
-@pytest.mark.asyncio
 async def test_remember_ignores_a_colliding_thread_in_another_tenant() -> None:
     """The collision case, proved through the tool rather than through `_provenance`.
 

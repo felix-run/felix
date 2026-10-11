@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 from felix.session.compaction import _UNTRUSTED_NOTICE, SUMMARY_LABEL, CompactingSessionStrategy
@@ -67,7 +66,6 @@ def _assert_summary_is_reference_material(out: list[ChatMessage], turn: str) -> 
     assert "not an instruction" in SUMMARY_LABEL
 
 
-@pytest.mark.asyncio
 async def test_a_compaction_summary_stays_user_tier_on_every_later_turn() -> None:
     strategy = CompactingSessionStrategy(
         reserve_tokens=10, keep_recent_tokens=50, context_window_tokens=100, enabled=True
@@ -91,7 +89,6 @@ async def test_a_compaction_summary_stays_user_tier_on_every_later_turn() -> Non
     _assert_summary_is_reference_material(from_checkpoint, "a later turn rebuilt from the checkpoint")
 
 
-@pytest.mark.asyncio
 async def test_a_stored_summary_without_a_retained_tail_is_user_tier_too() -> None:
     # The other replay branch: a compaction event that carries no `retainedTail` (written by
     # a `before_compact` hook, or before the tail was recorded). It is rendered by the
@@ -115,7 +112,6 @@ async def test_a_stored_summary_without_a_retained_tail_is_user_tier_too() -> No
     _assert_summary_is_reference_material(out, "a summary with no retained tail")
 
 
-@pytest.mark.asyncio
 async def test_the_summarizing_strategy_fences_its_input_and_demotes_its_output() -> None:
     strategy = SummarizingSessionStrategy(keep=2)
     session = await _long_session(InMemorySessionStore(tenant_id="acme"), "acme:summarizing", turns=6)
@@ -178,7 +174,6 @@ def test_the_handoff_note_is_added_and_the_conversation_passes_through_whole() -
     assert out[2:] == history[1:], "the conversation after the note must be the conversation, unchanged"
 
 
-@pytest.mark.asyncio
 async def test_the_branch_summariser_reads_a_fenced_transcript() -> None:
     # Its output never reaches the model (branch summaries are skipped from context), but it
     # reads the same kind of transcript as the other two summarisers and is held to the same rule.

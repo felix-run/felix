@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from felix.config import Settings
 from felix.hooks import get_agent_hooks, reset_agent_hooks, run_before_turn, run_filter_history
 from felix.patterns.types import ChatMessage
@@ -37,7 +36,6 @@ Do the thing.
     assert "Do the thing" in skill.body
 
 
-@pytest.mark.asyncio
 async def test_load_bundled_calculator_help() -> None:
     root = Path(__file__).resolve().parents[2] / "skills"
     catalog = await load_manifest_skills(
@@ -51,7 +49,6 @@ async def test_load_bundled_calculator_help() -> None:
     assert "<available_skills>" in xml
 
 
-@pytest.mark.asyncio
 async def test_skill_tools_activate() -> None:
     catalog = await load_manifest_skills(
         [{"name": "calculator-help"}],
@@ -74,7 +71,6 @@ async def test_skill_tools_activate() -> None:
     assert "Calculator Help" in payload["instructions"] or "calculator" in payload["instructions"].lower()
 
 
-@pytest.mark.asyncio
 async def test_compacting_strategy_without_model() -> None:
     store = InMemorySessionStore(tenant_id="default")
     session = store.open("t:compact")
@@ -118,7 +114,6 @@ def test_estimate_tokens() -> None:
     assert estimate_tokens("a" * 40) == 10
 
 
-@pytest.mark.asyncio
 async def test_session_tree_fork_rewind() -> None:
     store = InMemorySessionStore(tenant_id="default")
     src = store.open("t:src")
@@ -146,14 +141,12 @@ async def test_session_tree_fork_rewind() -> None:
     assert get_leaf("t:src") == first_id
 
 
-@pytest.mark.asyncio
 async def test_steer_enqueue() -> None:
     out = await enqueue("default", "default:run1", kind="steer", text="stop")
     assert out["queued"] == "steer"
     assert await should_cancel_remaining_tools("default", "default:run1")
 
 
-@pytest.mark.asyncio
 async def test_plugin_hooks() -> None:
     reset_agent_hooks()
     hooks = get_agent_hooks()
@@ -182,7 +175,6 @@ async def test_plugin_hooks() -> None:
     reset_agent_hooks()
 
 
-@pytest.mark.asyncio
 async def test_build_agent_with_skills() -> None:
     from felix.manifests.builder import BuildDeps, build_agent
     from felix.tools.builtins import default_tool_provider
@@ -210,7 +202,6 @@ def test_felix_client_import() -> None:
     assert c._model == "claude-haiku-4"
 
 
-@pytest.mark.asyncio
 async def test_context_files_from_store() -> None:
     from felix.context_files import load_instruction_files
     from felix.storage import MemoryObjectStore
@@ -224,7 +215,6 @@ async def test_context_files_from_store() -> None:
     assert parts and "Use tabs" in parts[0]
 
 
-@pytest.mark.asyncio
 async def test_model_change_event_kind() -> None:
     store = InMemorySessionStore(tenant_id="default")
     session = store.open("t:model")

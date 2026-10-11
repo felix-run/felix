@@ -111,7 +111,6 @@ async def _row(settings: Any, thread: str) -> Any:
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_cold_replica_continues_the_conversation(store_settings: Any) -> None:
     from felix.session.thread_state import update_thread_meta
 
@@ -130,7 +129,6 @@ async def test_a_cold_replica_continues_the_conversation(store_settings: Any) ->
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_warm_replica_takes_the_turn_after_another_replica_rewound(store_settings: Any) -> None:
     from felix.session import tree
     from felix.session.store import get_session_store
@@ -161,7 +159,6 @@ async def test_a_warm_replica_takes_the_turn_after_another_replica_rewound(store
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_legacy_row_yields_to_the_newest_event_and_is_rewritten(
     store_settings: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -208,7 +205,6 @@ async def test_a_legacy_row_yields_to_the_newest_event_and_is_rewritten(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_resolving_a_legacy_row_without_appending_still_rewrites_it(store_settings: Any) -> None:
     """A fork or an export resolves the leaf and appends nothing to the thread.
 
@@ -238,7 +234,6 @@ async def test_resolving_a_legacy_row_without_appending_still_rewrites_it(store_
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_legacy_row_behind_its_own_branch_yields_to_the_newest_event(store_settings: Any) -> None:
     """The legacy row's turn *after* its rewind is on the rewind's branch, and still not in the row.
 
@@ -263,7 +258,6 @@ async def test_a_legacy_row_behind_its_own_branch_yields_to_the_newest_event(sto
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_rewind_survives_a_cold_replica(store_settings: Any) -> None:
     """After a rewind the newest event is on the abandoned branch; the rewind still wins."""
     from felix.session import tree
@@ -288,7 +282,6 @@ async def test_a_rewind_survives_a_cold_replica(store_settings: Any) -> None:
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_rewind_of_a_legacy_row_is_honoured(store_settings: Any) -> None:
     """The first leaf write a legacy row gets can be a rewind, before any turn has marked it."""
     from felix.session import tree
@@ -315,7 +308,6 @@ async def test_a_rewind_of_a_legacy_row_is_honoured(store_settings: Any) -> None
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_fork_from_a_cold_replica_copies_the_stored_branch(store_settings: Any) -> None:
     from felix.session import tree
     from felix.session.store import get_session_store
@@ -341,7 +333,6 @@ async def test_a_fork_from_a_cold_replica_copies_the_stored_branch(store_setting
 
 
 @both_arms
-@pytest.mark.asyncio
 async def test_an_unknown_thread_has_no_leaf_and_is_not_created(store_settings: Any) -> None:
     from felix.session.store import get_session_store
     from felix.session.tree import sync_leaf
@@ -355,7 +346,6 @@ async def test_an_unknown_thread_has_no_leaf_and_is_not_created(store_settings: 
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_the_leaf_is_resolved_once_per_turn(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -469,7 +459,6 @@ async def _turn_with_interleave(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_read_route_inside_a_turns_append_does_not_move_its_leaf(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -491,7 +480,6 @@ async def test_a_read_route_inside_a_turns_append_does_not_move_its_leaf(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_sync_inside_a_turns_append_waits_for_it(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -513,7 +501,6 @@ async def test_a_sync_inside_a_turns_append_waits_for_it(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_rewind_landing_during_a_legacy_fallback_wins(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -544,7 +531,6 @@ async def test_a_rewind_landing_during_a_legacy_fallback_wins(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_the_snapshot_shows_a_legacy_threads_real_leaf(store_settings: Any) -> None:
     from felix.session import tree
     from felix.session.snapshot import gather_thread_snapshot
@@ -571,7 +557,6 @@ async def _seed(settings: Any, thread: str) -> None:
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_route_append_on_a_cold_replica_parents_on_the_stored_leaf(store_settings: Any) -> None:
     """`/chat/sessions/label`, `/name`, `/custom`, `/thinking` append outside any turn."""
     from felix.session.store import get_session_store
@@ -626,7 +611,6 @@ def _rewind(settings: Any, thread: str, target: str, *, summarize: bool = False)
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_rewind_inside_a_turns_append_is_not_overwritten_by_it(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -656,7 +640,6 @@ async def test_a_rewind_inside_a_turns_append_is_not_overwritten_by_it(
 
 
 @both_arms
-@pytest.mark.asyncio
 async def test_a_turn_starting_inside_a_rewind_waits_for_it(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -694,7 +677,6 @@ async def test_a_turn_starting_inside_a_rewind_waits_for_it(
 
 
 @both_arms
-@pytest.mark.asyncio
 async def test_a_summarising_rewind_completes_and_its_summary_is_on_the_new_branch(
     store_settings: Any,
 ) -> None:
@@ -717,7 +699,6 @@ async def test_a_summarising_rewind_completes_and_its_summary_is_on_the_new_bran
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_fork_into_a_live_thread_inside_its_turns_append_is_refused(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -795,7 +776,6 @@ async def _assert_one_fork_landed(settings: Any, results: list[Any], dest: str) 
 
 
 @both_arms
-@pytest.mark.asyncio
 async def test_two_forks_to_one_new_id_on_one_replica_leave_one_fork(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -804,7 +784,6 @@ async def test_two_forks_to_one_new_id_on_one_replica_leave_one_fork(
 
 
 @both_arms
-@pytest.mark.asyncio
 async def test_two_forks_to_one_new_id_on_two_replicas_leave_one_fork(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -859,7 +838,6 @@ async def _turn_with_other_replica(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_rewind_on_another_replica_mid_turn_holds(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -895,7 +873,6 @@ async def test_a_rewind_on_another_replica_mid_turn_holds(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_two_turns_on_two_replicas_without_a_rewind_stay_last_writer_wins(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -925,7 +902,6 @@ async def test_two_turns_on_two_replicas_without_a_rewind_stay_last_writer_wins(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_turn_on_a_rewound_thread_stores_its_leaf(store_settings: Any) -> None:
     """The epoch a rewind left is the one the next turn resolves, and its appends store against it."""
     from felix.session.thread_state import LEAF_EPOCH_KEY, get_thread_meta
@@ -950,7 +926,6 @@ async def test_a_turn_on_a_rewound_thread_stores_its_leaf(store_settings: Any) -
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_failed_leaf_write_mid_turn_does_not_block_the_turns_later_ones(
     store_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -994,7 +969,6 @@ async def test_a_failed_leaf_write_mid_turn_does_not_block_the_turns_later_ones(
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_tracked_row_from_before_the_epoch_reads_as_epoch_zero(store_settings: Any) -> None:
     """A row #468 wrote has `leaf_v` and no `leaf_epoch`: appends store, and a rewind starts it at 1."""
     from felix.db.models import ThreadState
@@ -1022,7 +996,6 @@ async def test_a_tracked_row_from_before_the_epoch_reads_as_epoch_zero(store_set
 
 
 @postgres_only
-@pytest.mark.asyncio
 async def test_a_fork_starts_its_new_thread_at_epoch_one(store_settings: Any) -> None:
     from felix.session.branch import fork_and_persist
     from felix.session.store import get_session_store

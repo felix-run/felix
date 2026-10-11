@@ -12,7 +12,6 @@ from credentials, so no spelling of the rest reaches another tenant's data.
 
 from __future__ import annotations
 
-import pytest
 from felix.artifacts import apply_artifact_spill, artifact_key, read_artifact, valid_artifact_ref
 from felix.config import Settings
 from felix.manifests.schema import ArtifactsSpec
@@ -36,7 +35,6 @@ class _Store:
         self.objects[key] = data
 
 
-@pytest.mark.asyncio
 async def test_a_spilled_output_reads_back_whole() -> None:
     # The round trip that never existed: write via the spill, read via the reader,
     # rather than asserting the reader against a key spelled out by hand.
@@ -65,7 +63,6 @@ async def test_a_spilled_output_reads_back_whole() -> None:
     assert content == big
 
 
-@pytest.mark.asyncio
 async def test_another_tenant_cannot_reach_it() -> None:
     store = _Store()
     store.objects[artifact_key("acme", "cowork", ID)] = b"secret"
@@ -76,7 +73,6 @@ async def test_another_tenant_cannot_reach_it() -> None:
     assert await read_artifact(store, tenant_id="other", manifest_id="cowork", artifact_id=ID) is None
 
 
-@pytest.mark.asyncio
 async def test_a_traversing_reference_never_becomes_a_key() -> None:
     store = _Store()
     store.objects["artifacts/acme/cowork/secret.txt"] = b"secret"
@@ -102,19 +98,16 @@ async def test_a_traversing_reference_never_becomes_a_key() -> None:
     assert store.asked == [], "a rejected reference must not reach the store at all"
 
 
-@pytest.mark.asyncio
 async def test_a_missing_artifact_is_absent_rather_than_an_error() -> None:
     assert await read_artifact(_Store(), tenant_id="acme", manifest_id="m", artifact_id=ID) is None
 
 
-@pytest.mark.asyncio
 async def test_no_object_store_configured_is_not_a_crash() -> None:
     # `apply_artifact_spill` is a no-op without a store, so a deployment can have
     # markers in old transcripts and no store now.
     assert await read_artifact(None, tenant_id="acme", manifest_id="m", artifact_id=ID) is None
 
 
-@pytest.mark.asyncio
 async def test_undecodable_bytes_come_back_rather_than_raising() -> None:
     # Spilled output is whatever a tool returned. A stored object that is not valid
     # UTF-8 should degrade, not 500 the read.

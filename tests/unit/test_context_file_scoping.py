@@ -36,7 +36,6 @@ STORE = {
 }
 
 
-@pytest.mark.asyncio
 async def test_instruction_files_cannot_name_another_tenants_key() -> None:
     store = _Store(dict(STORE))
 
@@ -48,7 +47,6 @@ async def test_instruction_files_cannot_name_another_tenants_key() -> None:
     assert VICTIM_KEY not in store.seen
 
 
-@pytest.mark.asyncio
 async def test_system_md_cannot_name_another_tenants_key() -> None:
     store = _Store(dict(STORE))
 
@@ -56,7 +54,6 @@ async def test_system_md_cannot_name_another_tenants_key() -> None:
     assert VICTIM_KEY not in store.seen
 
 
-@pytest.mark.asyncio
 async def test_a_tenants_own_file_still_loads() -> None:
     """The scoping must not break the feature it is protecting."""
     store = _Store(dict(STORE))
@@ -67,7 +64,6 @@ async def test_a_tenants_own_file_still_loads() -> None:
     assert "OWN CONTENT" in parts[0]
 
 
-@pytest.mark.asyncio
 async def test_an_absolute_key_cannot_escape_the_workspace_root(tmp_path: Path) -> None:
     outside = tmp_path / "outside.md"
     outside.write_text("OUTSIDE CONTENT", encoding="utf-8")
@@ -79,7 +75,6 @@ async def test_an_absolute_key_cannot_escape_the_workspace_root(tmp_path: Path) 
     assert parts == []
 
 
-@pytest.mark.asyncio
 async def test_a_traversal_key_cannot_escape_the_workspace_root(tmp_path: Path) -> None:
     (tmp_path / "outside.md").write_text("OUTSIDE CONTENT", encoding="utf-8")
     root = tmp_path / "ws"
@@ -90,7 +85,6 @@ async def test_a_traversal_key_cannot_escape_the_workspace_root(tmp_path: Path) 
     assert parts == []
 
 
-@pytest.mark.asyncio
 async def test_a_contained_local_file_still_loads(tmp_path: Path) -> None:
     """Local files live under `<root>/workspace/<tenant>/`, mirroring the object store."""
     root = tmp_path / "ws"
@@ -103,7 +97,6 @@ async def test_a_contained_local_file_still_loads(tmp_path: Path) -> None:
     assert "INSIDE CONTENT" in parts[0]
 
 
-@pytest.mark.asyncio
 async def test_the_local_fallback_is_tenant_scoped_too(tmp_path: Path) -> None:
     """The first cut scoped only the object-store lookup.
 
@@ -122,7 +115,6 @@ async def test_the_local_fallback_is_tenant_scoped_too(tmp_path: Path) -> None:
     assert parts == []
 
 
-@pytest.mark.asyncio
 async def test_a_manifest_cannot_read_dotenv_from_the_workspace_root(tmp_path: Path) -> None:
     """`.env.example` suggests `FELIX_WORKSPACE_ROOT=.`, and secret masking only
     covers tool output — nothing redacts the system prompt."""
@@ -135,7 +127,6 @@ async def test_a_manifest_cannot_read_dotenv_from_the_workspace_root(tmp_path: P
     assert parts == []
 
 
-@pytest.mark.asyncio
 async def test_an_empty_tenant_cannot_collapse_the_prefix() -> None:
     """`workspace//victim/x` resolves to the victim's object once empty segments
     are dropped, which the fs store does."""
@@ -148,7 +139,6 @@ async def test_an_empty_tenant_cannot_collapse_the_prefix() -> None:
     assert parts == []
 
 
-@pytest.mark.asyncio
 async def test_a_shared_agents_file_cannot_shadow_a_tenants_own() -> None:
     """The loop was tenant-then-shared *per name*, so a shared `AGENTS.override.md`
     beat a tenant's own `AGENTS.md` and its file was never consulted."""
@@ -166,7 +156,6 @@ async def test_a_shared_agents_file_cannot_shadow_a_tenants_own() -> None:
     assert "SHARED SHADOW" in await load_agents_md_layer(object_store=store, tenant_id="other")
 
 
-@pytest.mark.asyncio
 async def test_the_shared_agents_layer_is_not_read_from_disk(tmp_path: Path) -> None:
     """The workspace root is one shared directory with no tenant component, and any
     manifest binding `write_file` can write into it. A bare `AGENTS.override.md`
@@ -180,7 +169,6 @@ async def test_the_shared_agents_layer_is_not_read_from_disk(tmp_path: Path) -> 
     assert await load_agents_md_layer(workspace_root=root, tenant_id="victim") == ""
 
 
-@pytest.mark.asyncio
 async def test_a_non_utf8_context_file_does_not_break_the_build() -> None:
     """The decode sat outside the guard, so one bad object raised out through
     `build_agent` and broke every chat request for that tenant."""
@@ -192,7 +180,6 @@ async def test_a_non_utf8_context_file_does_not_break_the_build() -> None:
     assert await load_instruction_files(file_keys=["x.md"], object_store=_Binary(), tenant_id="t") == []
 
 
-@pytest.mark.asyncio
 async def test_a_manifest_cannot_read_another_tenants_file_through_build_agent() -> None:
     """End to end, since the loaders are only safe if the builder actually calls them.
 
@@ -248,7 +235,6 @@ async def test_a_manifest_cannot_read_another_tenants_file_through_build_agent()
         "",  # empty
     ],
 )
-@pytest.mark.asyncio
 async def test_no_key_shape_escapes_the_tenant_prefix(key: str) -> None:
     """The guarantee must hold in the rewriter, not in whichever store is configured.
 

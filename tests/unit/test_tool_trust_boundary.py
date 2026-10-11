@@ -45,7 +45,6 @@ async def _text(tool: object) -> str:
     return out if isinstance(out, str) else out.content
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "transport",
     [
@@ -69,19 +68,16 @@ async def test_non_local_transports_are_screened(transport: str) -> None:
     assert "screening blocked" in await _text(_screen(transport))
 
 
-@pytest.mark.asyncio
 async def test_local_transport_is_not_screened() -> None:
     """In-process builtins stay unwrapped — screening them is pure overhead."""
     assert POISON in await _text(_screen("local"))
 
 
-@pytest.mark.asyncio
 async def test_local_transport_with_untrusted_source_is_screened() -> None:
     """A source prefix still marks an externally-bound tool."""
     assert "screening blocked" in await _text(_screen("local", source="mcp:docs"))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["http", "client", "felix-plugin-custom"])
 async def test_default_on_flag_quarantines_rather_than_blocks(transport: str) -> None:
     """`quarantine` is the schema default, so it is the path most tools take."""
@@ -89,7 +85,6 @@ async def test_default_on_flag_quarantines_rather_than_blocks(transport: str) ->
     assert POISON not in text
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["local", "http", "felix-plugin-custom"])
 async def test_benign_output_passes_through_untouched(transport: str) -> None:
     """Guards the other direction: 'screening blocks everything' would be green."""
@@ -97,7 +92,6 @@ async def test_benign_output_passes_through_untouched(transport: str) -> None:
     assert benign in await _text(_screen(transport, output=benign))
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source",
     ["mcp:docs", "peer:helper", "a2a:x", "queue:jobs", "browser:b", "client:c", "sandbox:s", "container:c"],

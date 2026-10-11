@@ -58,7 +58,6 @@ async def _pages(settings: Any, tenant: str, limit: int) -> list[list[str]]:
 
 
 @parametrized
-@pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [1, 2, 5, 6])
 async def test_pages_list_every_thread_once_newest_first(store_settings: Any, limit: int) -> None:
     tenant = f"page{uuid.uuid4().hex[:12]}"
@@ -73,7 +72,6 @@ async def test_pages_list_every_thread_once_newest_first(store_settings: Any, li
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_page_carries_the_rows_own_timestamps(store_settings: Any) -> None:
     """The cursor orders on the second; the row still reports the metadata's millisecond stamp."""
     from felix.session.thread_state import list_thread_metadata
@@ -91,7 +89,6 @@ async def test_a_page_carries_the_rows_own_timestamps(store_settings: Any) -> No
 
 
 @parametrized
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "cursor",
     ["not-a-cursor", f"{2**63}:x", f"{-(2**63) - 1}:x", "1:a\x00b"],
@@ -108,7 +105,6 @@ async def test_a_malformed_cursor_is_refused_as_one(store_settings: Any, cursor:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_widest_cursor_postgres_holds_still_pages(store_settings: Any) -> None:
     """The bound is the column's, not narrower: `2**63 - 1` is a `bigint`, and every row precedes it."""
     from felix.session.thread_state import list_thread_metadata
@@ -134,7 +130,6 @@ class _SecondPerRead:
 
 
 @pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 @pytest.mark.parametrize("writer", ["claim", "meta", "first_message", "leaf"])
 async def test_the_column_is_the_metadatas_own_second(
     store_settings: Any, writer: str, monkeypatch: pytest.MonkeyPatch

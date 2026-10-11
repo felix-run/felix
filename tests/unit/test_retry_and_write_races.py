@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-import pytest
 from felix.tools.workspace import resolve_under_root
 from felix.tools.workspace_local import _write_lock
 from felix_ai.wire.transport import _is_exhausted_quota
@@ -65,7 +64,6 @@ def test_response_without_a_body_is_treated_as_retryable() -> None:
     assert not _is_exhausted_quota(_NoText())
 
 
-@pytest.mark.asyncio
 async def test_spent_quota_is_not_retried() -> None:
     c = _Client([_Resp(429, "insufficient_quota"), _Resp(200)])
     resp = await _post_with_retry(c, "u", label="openai", json={}, headers={}, max_retries=2)
@@ -73,7 +71,6 @@ async def test_spent_quota_is_not_retried() -> None:
     assert resp.status_code == 429
 
 
-@pytest.mark.asyncio
 async def test_transient_rate_limit_still_retries() -> None:
     c = _Client([_Resp(429, "overloaded_error"), _Resp(200)])
     resp = await _post_with_retry(c, "u", label="anthropic", json={}, headers={}, max_retries=2)
@@ -100,7 +97,6 @@ def test_distinct_files_do_not_share_a_lock(tmp_path: Path) -> None:
     assert _write_lock(a) is not _write_lock(b)
 
 
-@pytest.mark.asyncio
 async def test_lock_serializes_overlapping_writers(tmp_path: Path) -> None:
     """Without the lock the two bodies interleave and the file ends up mixed."""
     target = resolve_under_root(tmp_path, "log.txt")

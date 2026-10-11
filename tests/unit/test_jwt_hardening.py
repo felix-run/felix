@@ -101,7 +101,6 @@ def test_local_key_is_not_used_for_remote_issuers() -> None:
     assert _load_key_set(_PUB, f"{_ISS}/.well-known/jwks.json", "self") is not None
 
 
-@pytest.mark.asyncio
 async def test_jwks_cache_expires(monkeypatch: pytest.MonkeyPatch) -> None:
     import felix.auth.jwt as jm
 
@@ -111,7 +110,6 @@ async def test_jwks_cache_expires(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cached_jwks("u") is None, "a stale key set must be refetched, not reused"
 
 
-@pytest.mark.asyncio
 async def test_jwks_fetch_failure_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.auth.jwt import refresh_jwks
 

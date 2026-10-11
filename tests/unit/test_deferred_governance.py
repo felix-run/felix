@@ -34,7 +34,6 @@ def test_redact_pii_regex_email_and_ssn() -> None:
     assert "REDACTED" in result.text
 
 
-@pytest.mark.asyncio
 async def test_apply_guardrails_redacts_tool_output() -> None:
     class _Exec:
         @property
@@ -59,7 +58,6 @@ def test_wants_llm_judge_flags() -> None:
     assert not _wants_llm_judge({"contains": "x"}, deterministic_judge=False)
 
 
-@pytest.mark.asyncio
 async def test_llm_judge_score_parses_json() -> None:
     from felix_ai.types import ChatMessage, ModelChatResult, TokenUsage
 
@@ -105,7 +103,6 @@ def test_settings_database_rls_default_off() -> None:
     assert Settings().database_rls is False
 
 
-@pytest.mark.asyncio
 async def test_inbound_injection_block() -> None:
     m = parse_manifest(
         {
@@ -123,7 +120,6 @@ async def test_inbound_injection_block() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_inbound_pii_redact_on_input() -> None:
     m = parse_manifest(
         {
@@ -144,7 +140,6 @@ async def test_inbound_pii_redact_on_input() -> None:
     assert "REDACTED" in out[0].content
 
 
-@pytest.mark.asyncio
 async def test_chat_inbound_screening_http() -> None:
     from felix_api.app import create_app
 

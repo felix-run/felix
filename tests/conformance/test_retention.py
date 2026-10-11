@@ -159,7 +159,6 @@ async def _seed_memory(settings: Any, *, superseded: bool) -> str:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_sweep_removes_only_rows_older_than_each_ttl(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -241,7 +240,6 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_sweep_larger_than_one_batch_removes_everything_it_should(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -262,7 +260,6 @@ async def test_a_sweep_larger_than_one_batch_removes_everything_it_should(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_zero_days_keeps_the_table(retention_settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """``0`` is keep-forever on every setting, and is the session default."""
     settings = _retention(retention_settings, audit=0, usage=0, fiber=0, session=0)
@@ -289,7 +286,6 @@ async def test_zero_days_keeps_the_table(retention_settings: Any, monkeypatch: p
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_is_dropped_whole_or_not_at_all(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -312,7 +308,6 @@ async def test_a_thread_is_dropped_whole_or_not_at_all(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_thread_written_to_after_the_cutoff_is_not_idle(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -337,7 +332,6 @@ async def test_a_thread_written_to_after_the_cutoff_is_not_idle(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_manifest_retention_days_shortens_the_audit_ttl_for_its_own_rows(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -396,7 +390,6 @@ async def test_manifest_retention_days_shortens_the_audit_ttl_for_its_own_rows(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_manifest_retention_days_applies_to_whatever_governs_the_rows(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -434,7 +427,6 @@ async def test_manifest_retention_days_applies_to_whatever_governs_the_rows(
 
 
 @pytest.mark.parametrize("retention_settings", ["postgres"], indirect=True)
-@pytest.mark.asyncio
 async def test_one_table_failing_does_not_stop_the_others(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -464,7 +456,6 @@ async def test_one_table_failing_does_not_stop_the_others(
 
 
 @pytest.mark.parametrize("retention_settings", ["memory"], indirect=True)
-@pytest.mark.asyncio
 async def test_manifests_are_resolved_under_the_rls_bypass(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -519,7 +510,6 @@ async def _seed_approval(settings: Any, *, sig: str, ttl: int | None, decision: 
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_retention_never_revokes_a_grant_that_can_still_authorise(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -563,7 +553,6 @@ async def test_retention_never_revokes_a_grant_that_can_still_authorise(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_settled_approval_inside_the_ttl_is_kept(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -588,7 +577,6 @@ async def test_a_settled_approval_inside_the_ttl_is_kept(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_the_approval_sweep_is_off_by_default(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -626,7 +614,6 @@ def _no_bypass(fn: Any) -> Any:
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_expired_upload_is_collected_bytes_and_row_together(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -673,7 +660,6 @@ async def test_an_expired_upload_is_collected_bytes_and_row_together(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_an_expired_spill_is_collected_objects_and_row_together(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -741,7 +727,6 @@ async def test_an_expired_spill_is_collected_objects_and_row_together(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_zero_artifact_days_keeps_every_spill(
     retention_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

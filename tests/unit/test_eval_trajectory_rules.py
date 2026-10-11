@@ -152,7 +152,6 @@ def test_no_trajectory_means_no_tools_ran() -> None:
     assert _score_answer("x", {"tools_not_called": ["a"]}) == (True, 1.0, "nonempty")
 
 
-@pytest.mark.asyncio
 async def test_error_count_is_the_subset_of_failures_that_never_reached_the_scorer() -> None:
     settings = make_settings()
     await eval_store.put_dataset(
@@ -177,7 +176,6 @@ async def test_error_count_is_the_subset_of_failures_that_never_reached_the_scor
     assert rows["passed"]["tool_calls"] == 0 and rows["passed"]["tool_errors"] == 0
 
 
-@pytest.mark.asyncio
 async def test_a_run_whose_manifest_cannot_resolve_counts_every_item_as_an_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

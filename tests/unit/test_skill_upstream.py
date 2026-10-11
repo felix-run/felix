@@ -20,6 +20,7 @@ from felix.skills.library_store import get_skill_library_store
 from felix.skills.upstream_store import get_upstream_store
 from felix.storage import MemoryObjectStore
 
+from tests.support.factories import make_settings
 from tests.support.skill_import_fake import FakeRepos, blob_sha, skill_md
 
 REPO = "acme/skills"
@@ -33,7 +34,7 @@ QUEUES = b"# Queues\n\nfinance, ops\n"
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(database_url="memory://skill-upstream")
+    return make_settings()
 
 
 @pytest.fixture

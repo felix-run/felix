@@ -54,7 +54,6 @@ async def _connect(settings: Any, tenant: str = "acme", expires_in: int = 28_800
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_signing_in_again_replaces_the_row_and_keeps_its_first_connection(store_settings: Any) -> None:
     settings = _with_app(store_settings)
     first = await _connect(settings, login="octo")
@@ -66,7 +65,6 @@ async def test_signing_in_again_replaces_the_row_and_keeps_its_first_connection(
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_one_github_user_in_two_tenants_is_two_rows(store_settings: Any) -> None:
     settings = _with_app(store_settings)
     await _connect(settings, "acme")
@@ -77,7 +75,6 @@ async def test_one_github_user_in_two_tenants_is_two_rows(store_settings: Any) -
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_racing_callers_spend_the_refresh_token_once_and_store_the_rotated_one(
     store_settings: Any, fake: FakeGitHub
 ) -> None:
@@ -95,7 +92,6 @@ async def test_racing_callers_spend_the_refresh_token_once_and_store_the_rotated
 
 
 @parametrized
-@pytest.mark.asyncio
 async def test_a_refused_refresh_is_stored_as_revoked(store_settings: Any, fake: FakeGitHub) -> None:
     settings = _with_app(store_settings)
     await _connect(settings, expires_in=60)

@@ -11,16 +11,16 @@ tenant's identically-named thread alone.
 
 from __future__ import annotations
 
-import pytest
+from felix.config import Settings
 from felix.session.search import _memory_index, drop_thread_index, search_sessions
 from felix.session.store import InMemorySessionStore
 from felix.session.types import AppendableEvent
 
+from tests.support.factories import make_settings
 
-def _settings():
-    from felix.config import Settings
 
-    return Settings(database_url="memory://search-index", object_store="memory")
+def _settings() -> Settings:
+    return make_settings()
 
 
 async def _append(tenant: str, thread: str, text: str) -> None:
@@ -28,7 +28,6 @@ async def _append(tenant: str, thread: str, text: str) -> None:
     await store.open(thread).append(AppendableEvent(kind="message", role="user", content=text))
 
 
-@pytest.mark.asyncio
 async def test_an_append_is_immediately_searchable() -> None:
     """The writer exists at all — the property that was absent for the index's whole life."""
     await _append("acme", "t1", "the zucchini marker")
@@ -37,7 +36,6 @@ async def test_an_append_is_immediately_searchable() -> None:
     assert [h["content"] for h in hits] == ["the zucchini marker"], hits
 
 
-@pytest.mark.asyncio
 async def test_one_tenants_delete_leaves_another_tenants_thread_alone() -> None:
     """Thread ids are namespaced per tenant, but the index is one flat process-global list.
 
@@ -55,7 +53,6 @@ async def test_one_tenants_delete_leaves_another_tenants_thread_alone() -> None:
     assert [h["content"] for h in survivors] == ["globex's zucchini"], survivors
 
 
-@pytest.mark.asyncio
 async def test_a_reset_thread_leaves_nothing_behind_in_the_index() -> None:
     """`reset()` is what `DELETE /chat/history/{id}` and the retention sweep both reach."""
     store = InMemorySessionStore(tenant_id="acme")
@@ -69,7 +66,6 @@ async def test_a_reset_thread_leaves_nothing_behind_in_the_index() -> None:
     assert _memory_index == [], _memory_index
 
 
-@pytest.mark.asyncio
 async def test_search_does_not_cross_the_tenant_boundary() -> None:
     """The query side of the same rule, so neither half can hold it alone."""
     await _append("acme", "t1", "acme's zucchini")
@@ -77,7 +73,6 @@ async def test_search_does_not_cross_the_tenant_boundary() -> None:
     assert await search_sessions(_settings(), "globex", "zucchini") == []
 
 
-@pytest.mark.asyncio
 async def test_the_retention_sweep_takes_the_index_with_the_thread() -> None:
     """Retention is a deletion guarantee, so a purged thread must stop being searchable.
 
