@@ -169,7 +169,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --dev --extra warehouse --extra sandbox --extra otel --extra image
       - name: Bundle manifests
-        run: uv run felix bundle-manifests
+        run: uv run felix bundle-manifests --strict
       # `make test-cov` is the same target `make check` runs, and it wraps
       # ./scripts/test.sh, which owns the in-memory test environment — so the command,
       # the environment and the coverage floor cannot drift between CI and a local run.

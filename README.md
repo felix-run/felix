@@ -75,7 +75,7 @@ spec:
 Validate it, then serve it from this checkout with Postgres and Valkey in Docker:
 
 ```bash
-uv run felix validate-manifest ~/felix-agents/triage.yaml
+uv run felix validate-manifest ~/felix-agents/triage.yaml   # --strict: warnings fail too (CI)
 make db migrate                                # Postgres + Valkey on localhost, schema applied
 FELIX_MANIFESTS_DIR=~/felix-agents make dev    # the API on :8080, serving manifests/ and yours
 # in a second terminal:
