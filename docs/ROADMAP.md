@@ -1065,8 +1065,9 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       `exit_plan_mode` and the built-in `plan-approval` rule; `bypass` needs `approvals:bypass`,
       checked at set and per run. Declarative `spec.hooks` (session_start, user_prompt_submit,
       pre/post tool, stop, subagent_stop) over signed HTTP to registered endpoints, `on_error`
-      per hook. *Next:* sandbox-command hook handlers (needs the shell isolation routing pulled
-      out of the shell tool); `/name args` resolved against `spec.prompts`; output styles;
+      per hook. Command handlers were built and dropped before merge: the only places Felix can
+      exec are inside the agent's writable workspace, so the agent could rewrite or hijack its own
+      hook; a local hook is a `private` sidecar endpoint instead (`deploy/GOVERNANCE.md`). *Next:* `/name args` resolved against `spec.prompts`; output styles;
       `spec.network.allow_hosts`, landed with *credentials the model never holds*.
 - [ ] **W3 — coding toolset.** `glob`, `multi_edit`/`apply_patch`, persistent shell sessions and
       background processes in the shell runner, file checkpoints restored by `/chat/rewind`, a git
