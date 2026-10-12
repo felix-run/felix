@@ -928,6 +928,28 @@ async def test_a_job_runs_now_as_itself_and_leaves_its_schedule(boot: Any) -> No
     assert missing.status_code == 404
 
 
+async def test_a_job_put_without_a_schedule_runs_only_when_asked(boot: Any) -> None:
+    """The route defaults `schedule` to empty and `enabled` to true. Empty used to mean "every
+    60 seconds", so a job made to be tried by hand fired every minute, on one thread, until the
+    model bill said so."""
+    from felix.jobs.scheduler import run_due_jobs_all_tenants
+
+    async with boot([_answer("ran now")]) as app:
+        put = await app.client.put(
+            "/jobs/hello", json={"manifest_id": "quick", "payload": {"prompt": "hi"}}, headers=bearer(ADMIN)
+        )
+        assert put.status_code == 200, put.text
+        assert put.json()["enabled"] is True
+
+        swept = [await run_due_jobs_all_tenants(app.settings) for _ in range(2)]
+        run = await app.client.post("/jobs/hello/run", headers=bearer(ADMIN))
+        history = (await app.client.get("/jobs/hello/runs", headers=bearer(ADMIN))).json()["items"]
+
+    assert swept == [0, 0], "a job with no schedule never fires on its own"
+    assert run.json()["result"]["answer"] == "ran now"
+    assert [r["run_id"] for r in history] == [run.json()["run_id"]]
+
+
 # --- manifest versions ---------------------------------------------------------------------
 
 

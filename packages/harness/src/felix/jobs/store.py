@@ -158,7 +158,9 @@ async def put_job(
         # that is already overdue (`test_republishing_a_job_keeps_its_run_state`).
         if existing_schedule is None or existing_schedule == schedule or existing_next is None:
             return existing_next
-        return min(existing_next, parsed.next_after(ts))
+        following = parsed.next_after(ts)
+        # Made manual only: it holds no due time, so nothing reads one as overdue.
+        return None if following is None else min(existing_next, following)
 
     if _use_memory(settings):
         existing = _memory_jobs.get((tenant_id, name))

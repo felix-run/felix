@@ -53,11 +53,16 @@ SAT_1030 = _ms(2026, 10, 10, 10, 30)
         ("@weekly", _ms(2026, 10, 11, 0, 0)),
         ("every:5m", SAT_1030 + 5 * 60_000),
         ("300", SAT_1030 + 300_000),
-        ("", SAT_1030 + 60_000),
     ],
 )
 def test_the_next_firing_is_the_one_cron_would_pick(schedule: str, expected: int) -> None:
     assert next_run_at_ms(schedule, SAT_1030) == expected
+
+
+@pytest.mark.parametrize("schedule", ["", "   "])
+def test_an_empty_schedule_never_fires_on_its_own(schedule: str) -> None:
+    """Empty meant "every 60 seconds": a job made to be run by hand ran 1,440 times a day."""
+    assert next_run_at_ms(schedule, SAT_1030) is None
 
 
 def test_a_cron_firing_is_strictly_after_the_moment_it_is_asked_from() -> None:
@@ -146,3 +151,27 @@ async def test_changing_a_schedule_moves_its_due_time(
     jobs_store._memory_jobs[("default", "j")]["next_run_at"] = 42
     await jobs_store.put_job(settings, "default", "j", schedule="*/5 * * * *", enabled=False)
     assert (await jobs_store.get_job(settings, "default", "j"))["next_run_at"] == 42
+
+
+async def test_a_manual_only_job_is_never_swept(settings: Settings) -> None:
+    """Created the way `PUT /jobs/{name}` creates one with no schedule: enabled, no due time.
+    And a row stored back when empty meant "every minute", with a due time long past."""
+    await jobs_store.put_job(settings, "default", "fresh", manifest_id="quick")
+    await jobs_store.put_job(settings, "default", "stored", manifest_id="quick")
+    jobs_store._memory_jobs[("default", "stored")]["next_run_at"] = 1_000
+
+    assert await run_due_jobs(settings) == 0
+    assert await run_due_jobs(settings) == 0
+    assert await jobs_store.list_runs(settings, "default", "fresh") == []
+    assert await jobs_store.list_runs(settings, "default", "stored") == []
+
+
+async def test_making_a_job_manual_only_clears_its_due_time(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: SAT_1030)
+    await jobs_store.put_job(settings, "default", "j", schedule="@daily")
+    jobs_store._memory_jobs[("default", "j")]["next_run_at"] = _ms(2026, 10, 11, 0, 0)
+
+    await jobs_store.put_job(settings, "default", "j", schedule="")
+    assert (await jobs_store.get_job(settings, "default", "j"))["next_run_at"] is None

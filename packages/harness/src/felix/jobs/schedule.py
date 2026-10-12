@@ -8,7 +8,10 @@ stored is refused where it is read (`scheduler.run_due_jobs`), never guessed at.
 
 Accepted:
 
-* empty -- every 60 seconds (the default an unscheduled job has always had)
+* empty -- manual only: the job never fires on its own, only through ``POST /jobs/{name}/run``.
+  It used to mean "every 60 seconds", so a job created to be run by hand -- the route's
+  `schedule` defaults to empty -- fired 1,440 times a day on its one thread, its context
+  growing with every run, until someone noticed the bill.
 * integer seconds -- ``300``
 * an interval -- ``every:30s``, ``every:5m``, ``@every 2h``
 * a macro -- ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, ``@yearly``
@@ -23,8 +26,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-
-DEFAULT_INTERVAL_MS = 60_000
 
 _INTERVAL = re.compile(r"^@?every[:\s]+(\d+)\s*([smh])$")
 _UNIT_MS = {"s": 1_000, "m": 60_000, "h": 3_600_000}
@@ -141,25 +142,28 @@ def _parse_cron(text: str) -> _Cron:
 
 @dataclass(frozen=True, slots=True)
 class Schedule:
-    """A parsed schedule. Build one with `parse_schedule`."""
+    """A parsed schedule. Build one with `parse_schedule`; with neither field set it is manual only."""
 
     interval_ms: int | None = None
     cron: _Cron | None = None
 
-    def next_after(self, from_ms: int) -> int:
+    def next_after(self, from_ms: int) -> int | None:
+        """The next firing after `from_ms`, or None for a manual-only schedule, which never fires."""
         if self.cron is not None:
             nxt = self.cron.next_after(from_ms)
             if nxt is None:  # unreachable for a cron that passed `_parse_cron`
                 raise ScheduleError("schedule: this cron expression never fires")
             return nxt
-        return from_ms + (self.interval_ms or DEFAULT_INTERVAL_MS)
+        if self.interval_ms is None:
+            return None
+        return from_ms + self.interval_ms
 
 
 def parse_schedule(schedule: str) -> Schedule:
     """Parse `schedule`, raising `ScheduleError` for anything outside the grammar above."""
     s = (schedule or "").strip().lower()
     if not s:
-        return Schedule(interval_ms=DEFAULT_INTERVAL_MS)
+        return Schedule()
     if s.isdigit():
         return Schedule(interval_ms=max(int(s), 1) * 1000)
     m = _INTERVAL.match(s)
