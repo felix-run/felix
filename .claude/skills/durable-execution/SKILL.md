@@ -118,8 +118,9 @@ Plugin `cron_tasks` become `plugin_<name>` every minute via `_register_plugin_cr
 the worker's startup hook calls. Each built-in task is wrapped in `_instrumented`; plugin runners are not. Jobs:
 `jobs/scheduler.py:run_due_jobs_all_tenants` binds each tenant with `rls_tenant`,
 `jobs/store.py:claim_run` compare-and-sets `next_run_at`, `fire_job` runs as `cron` with no scopes.
-`next_run_at_ms` reads seconds, `every:30s` / `@every 5m` and `*/N * * * *` only — any other cron
-string fires every 60 s.
+`next_run_at_ms` reads the grammar in `jobs/schedule.py` — seconds, `every:30s` / `@every 5m`, the
+`@daily`-style macros and five-field cron in UTC — and a schedule outside it is refused, never
+guessed. An empty schedule is manual only: the sweep skips it and only `POST /jobs/{name}/run` fires it.
 
 ## memory:// and tests
 

@@ -16,7 +16,7 @@ from felix.tools.types import define_tool, is_wrapper_deny, tool_output_content
 
 def test_next_run_at_ms_parsers() -> None:
     base = 1_000_000
-    assert next_run_at_ms("", base) == base + 60_000
+    assert next_run_at_ms("", base) is None
     assert next_run_at_ms("30", base) == base + 30_000
     assert next_run_at_ms("every:5m", base) == base + 5 * 60_000
     assert next_run_at_ms("@every 2s", base) == base + 2_000

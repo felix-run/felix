@@ -363,10 +363,10 @@ async def test_two_ticks_claiming_one_due_run_fire_it_once(store_settings: Any) 
 
 @parametrized
 async def test_a_job_with_no_due_time_is_claimed_once_too(store_settings: Any) -> None:
-    """A job with no schedule has a NULL `next_run_at`, which the scheduler treats as due, and
-    it must still be claimable -- on both arms. The second claim loses because the first moved
-    the due time, not because of how NULL compares."""
-    await _put(store_settings, schedule="")
+    """A scheduled job that has never run has a NULL `next_run_at`, which the scheduler treats as
+    due, and it must still be claimable -- on both arms. The second claim loses because the first
+    moved the due time, not because of how NULL compares."""
+    await _put(store_settings, schedule="*/5 * * * *")
     (row,) = [j for j in await jobs.list_jobs(store_settings, TENANT) if j["name"] == JOB]
     assert row["next_run_at"] is None, "this test is about the NULL case"
     first = await jobs.claim_run(

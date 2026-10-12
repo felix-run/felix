@@ -21,10 +21,11 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def next_run_at_ms(schedule: str, from_ms: int | None = None) -> int:
+def next_run_at_ms(schedule: str, from_ms: int | None = None) -> int | None:
     """When `schedule` next fires after `from_ms` (default: now). The grammar is `felix.jobs.schedule`.
 
-    Raises `ScheduleError` for a schedule outside it -- never a guessed interval.
+    None for an empty schedule, which is manual only. Raises `ScheduleError` for a schedule
+    outside the grammar -- never a guessed interval.
     """
     base = from_ms if from_ms is not None else now_ms()
     return parse_schedule(schedule).next_after(base)
@@ -173,6 +174,9 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
                     last_status="error",
                     last_error=str(exc),
                 )
+            continue
+        if following is None:
+            # Manual only: it runs through `POST /jobs/{name}/run` and never from here.
             continue
         # Claim the job *before* invoking it. touch_run used to run only after the
         # invocation finished, so the every-minute cron re-fired the same job on every
