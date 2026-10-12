@@ -101,7 +101,20 @@ async def test_a_pinned_child_chats_with_kids_and_reaches_nothing_else(
     ]
     async with boot(script, env=_env()) as app:
         assert (await app.client.get("/auth/methods")).json()["google_redirect"] is True
-        token = await _token(app.client, fake_google)
+        assert (
+            await _sign_in(
+                app.client, fake_google, name="Jade", picture="https://lh3.googleusercontent.com/a/x"
+            )
+            == "felix_login=ok"
+        )
+        collected = (await app.client.post("/auth/google/exchange")).json()
+        # Who signed in, for the account chip: handed over once with the token, never inside it.
+        assert (collected["email"], collected["name"], collected["picture"]) == (
+            "kid@example.com",
+            "Jade",
+            "https://lh3.googleusercontent.com/a/x",
+        )
+        token = collected["access_token"]
         auth = {"Authorization": f"Bearer {token}"}
 
         kids = await app.client.post("/chat", json=_chat("kids"), headers=auth)

@@ -95,6 +95,9 @@ def _signed_in(settings: Settings, target: str, minted: LoginToken, account: goo
         expires_in=minted.expires_in,
         tenant=minted.tenant,
         scopes=list(minted.scopes),
+        email=minted.email,
+        name=minted.display_name,
+        picture=minted.avatar_url,
     )
     handoff = {"tok": token.model_dump(), "e": int(time.time()) + HANDOFF_TTL_S}
     response = back(target, "felix_login=ok")

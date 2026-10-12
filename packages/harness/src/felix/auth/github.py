@@ -106,6 +106,12 @@ class LoginToken:
     # GitHub's own grant, kept only so the route can store it (`github_connections`) when it
     # can be refreshed. Never serialized: `LoginTokenOut` names its fields.
     github: GitHubGrant | None = None
+    # Who signed in, as the identity provider describes them, for the client to show: Google's
+    # verified email, name and picture. Passed to the browser once and never stored or minted
+    # into the token (`felix.auth.google.profile_from`).
+    email: str = ""
+    display_name: str = ""
+    avatar_url: str = ""
 
 
 class LoginErrorCode(StrEnum):

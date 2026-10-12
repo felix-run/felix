@@ -196,7 +196,7 @@ async def test_a_replayed_code_is_refused() -> None:
     assert refused.value.code == "invalid_id_token"
 
 
-def test_authorize_url_asks_for_openid_email_with_pkce_and_a_nonce() -> None:
+def test_authorize_url_asks_for_openid_email_profile_with_pkce_and_a_nonce() -> None:
     from urllib.parse import parse_qs, urlsplit
 
     url = google.authorize_url(
@@ -204,7 +204,7 @@ def test_authorize_url_asks_for_openid_email_with_pkce_and_a_nonce() -> None:
     )
     query = {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
     assert url.startswith(google.GOOGLE_AUTHORIZE_URL)
-    assert query["scope"] == "openid email"
+    assert query["scope"] == "openid email profile"
     assert (query["nonce"], query["state"], query["code_challenge_method"]) == ("n", "s", "S256")
     assert query["client_id"] == CLIENT_ID
 
@@ -282,3 +282,60 @@ def test_sign_in_paths_are_public_only_while_configured() -> None:
     off = _settings()
     object.__setattr__(off, "google_client_secret", "")
     assert google.public_login_paths(off) == frozenset()
+
+
+# --- the profile a client shows -------------------------------------------------------------
+
+PIC = "https://lh3.googleusercontent.com/a/ACg8ocK=s96-c"
+
+
+@pytest.mark.parametrize(
+    ("claims", "expected"),
+    [
+        ({"name": "Jade Bauman", "picture": PIC}, ("Jade Bauman", PIC)),
+        ({}, ("", "")),
+        ({"name": 7, "picture": None}, ("", "")),
+        ({"name": "Jade‮\x00\nBauman"}, ("JadeBauman", "")),
+        ({"name": "x" * 500}, ("x" * 120, "")),
+        ({"picture": "http://lh3.googleusercontent.com/a/x"}, ("", "")),
+        ({"picture": "https://evil.example.com/a.googleusercontent.com"}, ("", "")),
+        ({"picture": "https://lh3.googleusercontent.com@evil.example.com/a"}, ("", "")),
+        ({"picture": "https://user@lh3.googleusercontent.com/a"}, ("", "")),
+        ({"picture": "javascript:alert(1)//.googleusercontent.com"}, ("", "")),
+        ({"picture": "https://lh3.googleusercontent.com/" + "a" * 3000}, ("", "")),
+    ],
+    ids=[
+        "both",
+        "absent",
+        "wrong-types",
+        "control-chars",
+        "long-name",
+        "http",
+        "other-host",
+        "userinfo-host",
+        "userinfo",
+        "scheme",
+        "long-url",
+    ],
+)
+def test_the_profile_is_held_to_what_a_client_may_show(
+    claims: dict[str, Any], expected: tuple[str, str]
+) -> None:
+    assert google.profile_from(claims) == expected
+
+
+def test_sign_in_asks_google_for_the_profile() -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    url = google.authorize_url(
+        _settings(), redirect_uri=REDIRECT_URI, state="s", nonce="n", code_challenge="c"
+    )
+    assert parse_qs(urlsplit(url).query)["scope"] == ["openid email profile"]
+
+
+async def test_the_profile_reaches_the_client_and_never_the_token() -> None:
+    settings = _settings()
+    minted, _ = await _sign_in(settings, FakeGoogle(), name="Jade Bauman", picture=PIC)
+    assert (minted.email, minted.display_name, minted.avatar_url) == ("kid@example.com", "Jade Bauman", PIC)
+    payload = _verified(settings, minted.access_token).payload
+    assert "name" not in payload and "picture" not in payload
