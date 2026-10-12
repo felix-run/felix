@@ -84,6 +84,24 @@ def enforce_inbound_auth(manifest: Manifest, auth: Any) -> None:
     _enforce_manifest_pin(manifest, auth)
 
 
+def manifest_pin(auth: Any) -> frozenset[str] | None:
+    """The manifests a credential is pinned to, or None when it carries no pin.
+
+    One reading of the claim for every caller: enforcement here, and a listing that shows a
+    pinned credential only what it may invoke (`/v1/models`). A claim of the wrong shape raises
+    rather than reading as "no pin".
+    """
+    from felix.auth.context import MANIFESTS_CLAIM
+
+    claims = getattr(auth, "raw_claims", None) or {}
+    if MANIFESTS_CLAIM not in claims:
+        return None
+    pinned = claims[MANIFESTS_CLAIM]
+    if not isinstance(pinned, list) or not all(isinstance(name, str) for name in pinned):
+        raise InboundAuthError("credential carries a malformed manifest pin", status_code=403)
+    return frozenset(pinned)
+
+
 def _enforce_manifest_pin(manifest: Manifest, auth: Any) -> None:
     """A credential carrying `felix_manifests` may invoke those manifests and no other.
 
@@ -99,18 +117,11 @@ def _enforce_manifest_pin(manifest: Manifest, auth: Any) -> None:
     `felix_manifests` field, or an external IdP's token — and it only ever narrows what that
     credential reaches.
     """
-    from felix.auth.context import MANIFESTS_CLAIM
-
-    claims = getattr(auth, "raw_claims", None) or {}
-    if MANIFESTS_CLAIM not in claims:
-        return
-    pinned = claims[MANIFESTS_CLAIM]
-    if not isinstance(pinned, list) or not all(isinstance(name, str) for name in pinned):
-        raise InboundAuthError("credential carries a malformed manifest pin", status_code=403)
-    if manifest.metadata.name not in pinned:
+    pinned = manifest_pin(auth)
+    if pinned is not None and manifest.metadata.name not in pinned:
         raise InboundAuthError(
             f"this credential may not invoke manifest {manifest.metadata.name!r}", status_code=403
         )
 
 
-__all__ = ["InboundAuthError", "enforce_inbound_auth"]
+__all__ = ["InboundAuthError", "enforce_inbound_auth", "manifest_pin"]
