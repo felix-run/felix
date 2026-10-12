@@ -1748,6 +1748,11 @@
             "title": "Access Token",
             "type": "string"
           },
+          "email": {
+            "default": "",
+            "title": "Email",
+            "type": "string"
+          },
           "expires_in": {
             "title": "Expires In",
             "type": "integer"
@@ -1755,6 +1760,16 @@
           "github_login": {
             "default": "",
             "title": "Github Login",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "picture": {
+            "default": "",
+            "title": "Picture",
             "type": "string"
           },
           "scopes": {

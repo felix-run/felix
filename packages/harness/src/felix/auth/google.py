@@ -16,6 +16,7 @@ those agents (`felix.auth.context.MANIFESTS_CLAIM`, enforced in `felix.manifests
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -46,7 +47,14 @@ GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
 # Google documents both spellings and issues either.
 GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 GOOGLE_ALGORITHMS = ["RS256"]
-GOOGLE_SCOPE = "openid email"
+# `profile` adds the name and picture the client shows in its account chip. Neither is stored.
+GOOGLE_SCOPE = "openid email profile"
+# Where Google serves account pictures. A `picture` anywhere else is dropped, not shown: the
+# client puts it in an <img src>, and a URL the token did not come from Google for is not ours
+# to point a browser at.
+_PICTURE_HOST_SUFFIX = ".googleusercontent.com"
+_MAX_NAME = 120
+_MAX_PICTURE_URL = 2048
 SUBJECT_PREFIX = "google:"
 
 GOOGLE_LOGIN_PREFIX = "/auth/google"
@@ -344,6 +352,29 @@ def mint_google_token(settings: Settings, *, sub: str, account: GoogleAccount) -
     )
 
 
+def profile_from(claims: Mapping[str, Any]) -> tuple[str, str]:
+    """The verified ID token's `name` and `picture`, held to what a client may safely show.
+
+    Both are optional — an account can hide them, and a token minted without the `profile`
+    scope carries neither — so each falls back to "". A name keeps printable characters only and
+    is cut to a display length; a picture must be an https URL on Google's own image host.
+    """
+    from urllib.parse import urlsplit
+
+    raw_name = claims.get("name")
+    name = ""
+    if isinstance(raw_name, str):
+        name = "".join(ch for ch in raw_name if ch.isprintable()).strip()[:_MAX_NAME]
+    raw_picture = claims.get("picture")
+    picture = ""
+    if isinstance(raw_picture, str) and len(raw_picture) <= _MAX_PICTURE_URL:
+        parts = urlsplit(raw_picture)
+        host = (parts.hostname or "").lower()
+        if parts.scheme == "https" and host.endswith(_PICTURE_HOST_SUFFIX) and not parts.username:
+            picture = raw_picture
+    return name, picture
+
+
 async def exchange_code(
     settings: Settings,
     code: str,
@@ -370,6 +401,8 @@ async def exchange_code(
     claims = await verify_id_token(settings, id_token, nonce=nonce, http=client)
     account = admit(settings, claims)
     minted = mint_google_token(settings, sub=str(claims["sub"]), account=account)
+    name, picture = profile_from(claims)
+    minted = dataclasses.replace(minted, email=account.email, display_name=name, avatar_url=picture)
     logger.info(
         "google login minted a token for %s (google:%s) tenant=%s scopes=%s manifests=%s",
         loggable(account.email, limit=320),

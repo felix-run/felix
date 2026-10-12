@@ -32,6 +32,11 @@ class LoginTokenOut(BaseModel):
     scopes: list[str]
     # The GitHub user who logged in; empty from `/actions`, because a workflow is not a person.
     github_login: str = ""
+    # Who signed in with Google, for the client to show: the verified email, and the name and
+    # picture Google reports (empty when the account hides them). Sent once, never stored.
+    email: str = ""
+    name: str = ""
+    picture: str = ""
 
 
 class LoginErrorOut(BaseModel):
