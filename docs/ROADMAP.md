@@ -517,7 +517,7 @@ world (channels, triggers, self-scheduled work, per-user state, connectors, an i
 Each wave is shaped by the extensibility rule: what another harness bakes in lands here as a
 registry entry, a plugin or a skill, not as a fixed workflow.
 
-- [~] **W0 — silent defaults found by the audit.** The job schedule parser read `*/N * * * *` only,
+- [x] **W0 — silent defaults found by the audit.** The job schedule parser read `*/N * * * *` only,
       and fired anything else — the docs' own `0 3 * * *` included — every 60 s. It is now real
       five-field cron plus macros, refused at write, and a stored unreadable schedule stops firing
       and records why. `limits.precount` (read by nothing) is retired through `compat.RETIRED`.
@@ -587,8 +587,19 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       *Follow-ups:* the hosted supervisor's survival past the helper's exit, and tini as the
       Container's PID 1, are pinned only against the fake gateway, not a deployed Container; a
       background command ends when its hosted sandbox idles out; caps are per root and per host,
-      not per tenant. *Next:* file checkpoints restored by `/chat/rewind`, and a git worktree per child
-      task.
+      not per tenant. File checkpoints (`tools/workspace_checkpoints.py`, ledger in `tools/checkpoint_ledger.py`, on
+      by default, `FELIX_FILE_CHECKPOINTS`): every write, edit, multi-edit, delete and rename the
+      model's file tools make in a thread's own workspace records the file before and after,
+      anchored to the assistant event whose call made it; `/chat/rewind` with `restore_files` puts
+      back each file changed on the abandoned branch, refuses one that moved on since (`conflicts`),
+      says what it could not keep (`skipped`) and when it ran out (`truncated`), and is audited
+      (`workspace_restore`). Every rewind then forgets the branch it left, so a second rewind to the
+      same point never reaches past the first. Content kept once per tenant by digest under a byte
+      ceiling; ledger `file_checkpoints` (migration `0039`, RLS, memory twin, conformance and RLS
+      arms) swept a file's whole history at once, counted from its last change. Shared scopes (`tenant`, `deployment`) are not recorded.
+      *Follow-ups:* a shell command's writes are not recorded; rewinding onto another branch undoes
+      the abandoned one but does not replay the target's; deleting a thread does not purge its
+      checkpoints before retention; a truncated restore forgets the captures past its cut. *Next:* a git worktree per child task.
 - [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
       pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
       `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per

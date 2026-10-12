@@ -633,3 +633,49 @@ async def test_upload_dry_run_and_tenant_filter(tmp_path: Path, gateway: FakeGat
     only = await upload_local_scopes(settings, tenant="globex")
     assert [r.scope for r in only] == ["globex/shared"]
     assert {scope for scope, _ in gateway.calls} == {"globex/shared"}
+
+
+# --- file checkpoints in the sandbox -------------------------------------------------------
+
+
+async def _checkpoint_session(settings: Settings) -> list[Any]:
+    """The file tools change files under one anchor, then a restore undoes it; what each step
+    answered and the files the scope is left with."""
+    from felix.session import tree
+    from felix.tools.workspace_checkpoints import restore_files
+
+    out: list[Any] = []
+    async with _request(settings):
+        await _call("write_file", {"path": "kept.txt", "content": "kept"})
+        await _call("write_file", {"path": "gone.txt", "content": "gone"})
+        tree.set_leaf(THREAD, "anchor-1")
+        try:
+            out.append(
+                await _call("edit_file", {"path": "kept.txt", "old_string": "kept", "new_string": "edited"})
+            )
+            out.append(await _call("write_file", {"path": "dir/new.txt", "content": "new"}))
+            out.append(await _call("delete_file", {"path": "gone.txt"}))
+            out.append(await _call("rename_file", {"path": "kept.txt", "to_path": "moved.txt"}))
+        finally:
+            tree.set_leaf(THREAD, None)
+        out.append(await restore_files(settings, TENANT, THREAD, {"anchor-1"}))
+        for path in ("kept.txt", "gone.txt", "dir/new.txt", "moved.txt"):
+            out.append(await _call("read_file", {"path": path}))
+    return out
+
+
+async def test_file_checkpoints_restore_identically_on_both_backends(
+    tmp_path: Path, gateway: FakeGateway
+) -> None:
+    hosted = await _checkpoint_session(_settings(tmp_path / "hosted", "hosted"))
+    local = await _checkpoint_session(_settings(tmp_path / "local", "local"))
+    assert hosted == local
+    restored = hosted[4]
+    assert restored == {
+        "restored": ["gone.txt", "kept.txt"],
+        "removed": ["dir/new.txt", "moved.txt"],
+        "conflicts": [],
+        "skipped": [],
+        "truncated": False,
+    }
+    assert json.loads(hosted[5])["content"] == "kept" and json.loads(hosted[6])["content"] == "gone"

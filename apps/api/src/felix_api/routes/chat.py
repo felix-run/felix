@@ -492,7 +492,10 @@ class RewindRequest(BaseModel):
     event_id: str = Field(min_length=1)
     summarize: bool | None = None
     instructions: str | None = None
-    manifest: str | None = None
+    manifest: str | None = Field(default=None, max_length=256)
+    # Put back the files the model's file tools changed on the abandoned branch; the response's
+    # `files` says what was restored, removed, left alone as changed since, or skipped.
+    restore_files: bool = False
 
 
 class SessionNameRequest(BaseModel):
@@ -2251,11 +2254,14 @@ async def chat_rewind(
     # no business inside that hold.
     summarize = body.summarize
     model = None
+    # The manifest the audit row names: one that resolved, never a label the caller made up.
+    manifest_id = ""
     if body.manifest:
         try:
             resolved = await resolve_tenant_manifest(
                 settings, auth.tenant_id, body.manifest, thread_id=thread
             )
+            manifest_id = resolved.manifest.metadata.name
             if summarize is None:
                 summarize = bool(
                     getattr(getattr(resolved.manifest.spec, "session", None), "branch_summary", True)
@@ -2269,18 +2275,59 @@ async def chat_rewind(
         summarize = True
     from felix.session.branch import rewind_and_persist
 
-    result = await rewind_and_persist(
-        session,
-        body.event_id,
-        settings=settings,
-        tenant_id=auth.tenant_id,
-        summarize=summarize,
-        model=model,
-        instructions=body.instructions,
-    )
+    # Under a request context of its own, as the pane's writes are: a restore writes files, and the
+    # hosted backend backs up a scope it wrote as the request ends.
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
+    async with async_run_with_context(ctx):
+        result = await rewind_and_persist(
+            session,
+            body.event_id,
+            settings=settings,
+            tenant_id=auth.tenant_id,
+            summarize=summarize,
+            model=model,
+            instructions=body.instructions,
+            restore_files=body.restore_files,
+        )
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error", "rewind_failed"))
+    files = result.get("files")
+    if body.restore_files and isinstance(files, dict):
+        _audit_restore(request, auth, thread, body, files, manifest_id)
     return result
+
+
+# The most paths of each kind a `workspace_restore` audit row names; the counts are always whole.
+_RESTORE_AUDIT_PATHS = 50
+
+
+def _audit_restore(
+    request: Request,
+    auth: AuthContext,
+    thread: str,
+    body: RewindRequest,
+    files: dict[str, Any],
+    manifest_id: str,
+) -> None:
+    """One `workspace_restore` row for a rewind that put files back, as the pane's writes and
+    deletes leave theirs: who undid what, in which thread."""
+    from felix.audit import store as audit_store
+
+    payload: dict[str, Any] = {"thread_id": thread, "event_id": body.event_id}
+    for kind in ("restored", "removed", "conflicts", "skipped"):
+        paths = [str(p) for p in files.get(kind) or []]
+        payload[kind] = paths[:_RESTORE_AUDIT_PATHS]
+        payload[f"{kind}_count"] = len(paths)
+    payload["truncated"] = bool(files.get("truncated"))
+    audit_store.record_event(
+        request.app.state.settings,
+        auth.tenant_id,
+        "workspace_restore",
+        principal_subj=auth.principal_sub or "",
+        manifest_id=manifest_id,
+        status="error" if "error" in files else "ok",
+        payload=payload,
+    )
 
 
 # The most events one `GET /chat/history` response may carry.

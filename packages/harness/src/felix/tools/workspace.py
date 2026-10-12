@@ -428,7 +428,11 @@ def _seam() -> tuple[WorkspaceBackend, WorkspaceScope | None]:
     from felix.tools.workspace_backend import current_workspace_scope, get_workspace_backend
 
     settings, scope = current_workspace_scope()
-    return get_workspace_backend(settings), scope
+    # The model's file tools, and nothing else, reach the backend through here: each change they
+    # make in a thread's run is checkpointed for `/chat/rewind` (`workspace_checkpoints.py`).
+    from felix.tools.workspace_checkpoints import checkpointing
+
+    return checkpointing(get_workspace_backend(settings), settings, scope), scope
 
 
 def _thread_checkout(ctx: Any) -> Path | None:

@@ -756,6 +756,38 @@ class ArtifactRow(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class FileCheckpointRow(Base):
+    """A file as it was before, and after, one change the model's file tools made in a thread.
+
+    `/chat/rewind` with `restore_files` reads the captures anchored on the branch it abandons and
+    puts each file back (`tools/workspace_checkpoints.py`). The content, when kept, is in the object
+    store under `checkpoints/{tenant}/{before_sha}`, shared by every capture of the tenant that names
+    that digest; these rows are what name it, for the restore, the per-tenant ceiling and the
+    retention sweep (`tools/checkpoint_ledger.py`).
+    """
+
+    __tablename__ = "file_checkpoints"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Time-ordered: a thread's captures sort in the order they were taken.
+    capture_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # The thread's leaf when the change was made: the assistant event whose tool call made it.
+    anchor_event_id: Mapped[str] = mapped_column(Text, nullable=False)
+    scope: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    # absent | stored | unkept (the store refused it, or the tenant's ceiling) | too_large | unreadable
+    before_state: Mapped[str] = mapped_column(Text, nullable=False)
+    before_sha: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # absent | present | too_large | unreadable | unknown (the change's outcome was not recorded)
+    after_state: Mapped[str] = mapped_column(Text, nullable=False)
+    after_sha: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The kept content's size when `stored` (every such capture, so the ceiling counts a digest once
+    # whichever capture still names it); 0 otherwise.
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class PushSubscriptionRow(Base):
     """A browser that asked to be told when a run is waiting on a person.
 

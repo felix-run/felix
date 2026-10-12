@@ -530,6 +530,15 @@ class Settings(BaseSettings):
     # forever. Past it, `read_artifact`, `GET /artifacts` and the terminal's `/artifact`
     # report the id as missing.
     artifact_retention_days: int = Field(default=30, ge=0)
+    # Each change the model's file tools make in a thread is recorded, before and after, so
+    # `/chat/rewind` with `restore_files` can undo it (`tools/workspace_checkpoints.py`).
+    file_checkpoints: bool = True
+    # How long those records (and the file contents they keep) are kept; 0 keeps them.
+    file_checkpoint_retention_days: int = Field(default=7, ge=0)
+    # The most bytes of file content one tenant's checkpoints keep in the object store (content is
+    # shared by digest, so a file changed repeatedly is not counted again). Past it a change is
+    # still recorded but not kept, and a restore reports it skipped. 0 sets no ceiling.
+    file_checkpoint_max_bytes_per_tenant: int = Field(default=256 * 1024 * 1024, ge=0)
 
     # --- Document corpus ---
     # Per-tenant document ceiling. Without one, a single `documents:write` credential grows
