@@ -339,3 +339,26 @@ async def test_the_profile_reaches_the_client_and_never_the_token() -> None:
     assert (minted.email, minted.display_name, minted.avatar_url) == ("kid@example.com", "Jade Bauman", PIC)
     payload = _verified(settings, minted.access_token).payload
     assert "name" not in payload and "picture" not in payload
+
+
+async def test_the_client_secret_and_cookie_key_can_come_from_the_secrets_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production reads credentials from Secret Manager. Left out of the hydrate map, these two
+    had to sit in the VM's .env as plaintext, and neither reached the redaction sinks."""
+    from felix import secrets
+
+    cookie = base64.b64encode(os.urandom(32)).decode()
+    stored = {"GOOGLE_CLIENT_SECRET": "GOCSPX-from-the-backend", "GOOGLE_COOKIE_KEY": cookie}
+
+    class Backend:
+        async def get(self, name: str) -> str | None:
+            return stored.get(name)
+
+    monkeypatch.setattr(secrets, "build_secrets", lambda settings: Backend())
+    settings = _settings(google_client_secret="", google_cookie_key="")
+    assert not google.redirect_enabled(settings)
+    await secrets.hydrate_secrets(settings)
+    assert (settings.google_client_secret, settings.google_cookie_key) == ("GOCSPX-from-the-backend", cookie)
+    assert google.redirect_enabled(settings)
+    assert "GOCSPX-from-the-backend" in secrets.collected_secret_values(settings)
