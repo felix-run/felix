@@ -10,6 +10,16 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-10-12
+
+### Changed
+
+- An empty job `schedule` is now manual only: the job runs only through `POST /jobs/{name}/run` and is never swept. It used to mean every 60 seconds, so a job created without a schedule fired every minute; stored jobs with an empty schedule stop firing on upgrade — give them a schedule to keep them running. (#629)
+
+### Fixed
+
+- Compose delivers the `FELIX_GOOGLE_*` settings to the api, so Google sign-in can be turned on in a Compose deployment. (#631)
+
 ## [0.14.0] — 2026-10-12
 
 ### Added
@@ -4820,3 +4830,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.13.0]: https://github.com/felix-run/felix/releases/tag/v0.13.0
 [0.13.1]: https://github.com/felix-run/felix/releases/tag/v0.13.1
 [0.14.0]: https://github.com/felix-run/felix/releases/tag/v0.14.0
+[0.14.1]: https://github.com/felix-run/felix/releases/tag/v0.14.1
