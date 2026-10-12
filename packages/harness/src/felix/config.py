@@ -306,6 +306,13 @@ class Settings(BaseSettings):
     # "/repos/acme/", "secret": "secret:NAME", "scheme": "Bearer", "header": "Authorization",
     # "port": null, "tenants": [...]}}. `tenants` is required ("*" for every tenant).
     egress_credentials: str = Field(default="", repr=False)
+    # Inbound triggers (`felix.triggers`): `POST /triggers/{id}` takes a signed event and starts a
+    # durable run of `manifest` for `tenant`. JSON: {"id": {"tenant": "acme", "manifest": "triage",
+    # "scheme": "standard" | "github", "secret": "secret:NAME" (or a list, to rotate; a literal only
+    # with `environment=development` and `auth_mode=none`), "prompt":
+    # "...{event}...", "events": [...], "scopes": [...], "rate_limit": 60}}. The manifest must
+    # list the `trigger_event` tool, which is how the model reads the sender's payload.
+    triggers: str = Field(default="", repr=False)
     # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
     webhook_max_attempts: int = Field(default=8, ge=1)
     # Each attempt, end to end. Bounded: a sweep stops starting deliveries after half its 120 s claim,
@@ -757,6 +764,7 @@ class Settings(BaseSettings):
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
         self._validate_egress_credentials()
+        self._validate_triggers()
         self._validate_skill_update_webhooks()
         self._validate_push()
 
@@ -869,6 +877,15 @@ class Settings(BaseSettings):
             parse_egress_credentials(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_EGRESS_CREDENTIALS: {exc}") from exc
+
+    def _validate_triggers(self) -> None:
+        """A malformed `FELIX_TRIGGERS` fails the boot, not the first event it would receive."""
+        from felix.triggers import parse_triggers
+
+        try:
+            parse_triggers(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_TRIGGERS: {exc}") from exc
 
     def _validate_skill_update_webhooks(self) -> None:
         """A `FELIX_SKILL_UPDATE_WEBHOOKS` binding to an endpoint that is not registered, or not

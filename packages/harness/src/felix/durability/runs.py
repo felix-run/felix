@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
@@ -71,8 +71,12 @@ async def start_durable_chat(
     ceilings: Sequence[EffectiveLimits] = (),
     max_children: int | None = None,
     egress_ceilings: Sequence[Sequence[str]] = (),
+    trigger_event: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Enqueue an invoke fiber; the worker's fiber scheduler runs it.
+
+    `trigger_event` is the event an inbound trigger started this run for (`felix.triggers`): kept in
+    the run's state, and read by the run's `trigger_event` tool.
 
     `parent_thread_id`, `ceilings` and `max_children` are a background child's
     (`tools/delegation.py`): the thread whose `task_result` may read this run; the `EffectiveLimits`
@@ -107,6 +111,8 @@ async def start_durable_chat(
         state["ceilings"] = [asdict(c) for c in ceilings]
     if egress_ceilings:
         state["egress_ceilings"] = [list(lst) for lst in egress_ceilings]
+    if trigger_event is not None:
+        state["trigger"] = dict(trigger_event)
 
     # Who asked for this run. Without it a resumed fiber runs with an empty scope set, so
     # `spec.policies` denies every policied tool and `auth.inbound.required_scopes` refuses the

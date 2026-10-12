@@ -128,6 +128,13 @@ async def authenticate_request(
     if mode == "none":
         return ANONYMOUS
 
+    from felix.triggers import TRIGGER_PATH_PREFIX, triggers_configured
+
+    if path.startswith(TRIGGER_PATH_PREFIX) and triggers_configured(settings):
+        # Signed by the event's sender, not by a bearer; the route verifies the signature before
+        # it reads the body, and starts a run as the trigger's own principal (`felix.triggers`).
+        return ANONYMOUS
+
     from felix.auth.github import public_login_paths
 
     if _is_public_path(path, docs_public=settings.docs_public, login_paths=public_login_paths(settings)):

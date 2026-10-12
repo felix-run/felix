@@ -861,6 +861,15 @@ Storage and execution:
   `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
   (10, at most 60), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
+- `POST /triggers/{id}` starts a durable run from a signed event: a pushed commit, a failed
+  payment, an alert. The operator registers each trigger in `FELIX_TRIGGERS` (a JSON map of id →
+  `{tenant, manifest, scheme, secret, prompt, events?, scopes?, rate_limit?}`); `scheme` is
+  `standard` (Standard Webhooks) or `github` (`X-Hub-Signature-256`). The signature is verified
+  before the body is read, a replay gets the first delivery's answer, and each trigger has its own
+  per-minute limit counted only for deliveries that start a run. Secrets are `secret:NAME` outside a
+  development install. The run's instruction is the operator's `prompt`; the sender's payload reaches the
+  model only through the `trigger_event` tool the manifest lists, as untrusted output, after a
+  marker scan at intake. See `deploy/GOVERNANCE.md`.
 - Web Push wakes a subscribed browser -- an installed phone app, a backgrounded tab -- when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

@@ -695,6 +695,11 @@ async def _run_fiber_step(
                     req_ctx.extras[RUN_NOT_AFTER_EXTRA] = state["expires_at"]
                 if state.get("parent_thread_id"):
                     req_ctx.extras[BACKGROUND_CHILD_EXTRA] = True
+                if isinstance(state.get("trigger"), dict):
+                    from felix.triggers import TRIGGER_EVENT_EXTRA
+
+                    # The event this run was started for, which its `trigger_event` tool reads.
+                    req_ctx.extras[TRIGGER_EVENT_EXTRA] = state["trigger"]
                 if isinstance(raw_messages, list) and raw_messages:
                     messages = [
                         m if isinstance(m, ChatMessage) else ChatMessage.model_validate(m)

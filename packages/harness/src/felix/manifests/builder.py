@@ -552,6 +552,9 @@ _UNTRUSTED_SOURCE_PREFIXES = (
     # is not redundant: memory tools are `transport: local`, and without it they were screened
     # only where a manifest named them — `cowork` did, `governed` did not.
     "memory",
+    # An inbound trigger's payload (`trigger_event`): written by whoever sent the event. Redundant
+    # beside `untrusted_output`, which the tool also stamps, for the same reason `documents` is.
+    "trigger",
 )
 
 

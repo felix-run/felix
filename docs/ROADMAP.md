@@ -619,8 +619,8 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       and its prelude moved out of `github_publish` into `repos/`; a hosted
       equivalent (clone the parent's branch into the child's sandbox); merging a child's branch is
       the parent's own git. W3 is complete with this; *Next:* W4.
-- [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
-      pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
+- [~] **W4 — assistant layer.** *Landed:* inbound triggers (`POST /triggers/{id}`, the *Start a
+      run from an inbound event* item below). *Next:* a `felix_channels` plugin package (Slack and Telegram, then email) behind
       `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per
       user, plus an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
@@ -749,19 +749,16 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       SQL, and the in-memory twin allocates differently. Conformance against real Postgres is
       mandatory, not optional.
 
-- [ ] **Start a run from an inbound event** (proposed 2026-10-06). Runs start from a person
-      (`/chat`), a schedule (`/jobs`) or a peer (A2A), but never from something that happened
-      elsewhere: a pushed commit, a failed payment, an alert. No route accepts one (`app.py` mounts
-      no `/hooks` or `/triggers`), and nothing verifies `x-hub-signature-256` or a Standard Webhooks
-      signature on the way in, only on the way out (`durability/webhooks.py`). Seam: a
-      `routes/triggers.py` that owns per-endpoint signing secrets (`secret:NAME`, rotated like
-      completion-webhook secrets), verifies before parsing, maps the payload to a prompt through a
-      template the operator wrote, and hands it to `fire_job` (`jobs/scheduler.py`) or
-      `start_durable_chat` (`durability/runs.py`), which already take a `trigger=` label and a
-      principal. Hard parts, in order: replay (the `webhook-id` dedupe the outbound side has, read
-      the other way), the payload is **untrusted input reaching the model** (screen it as a tool
-      result, never as the operator's prompt), and per-endpoint rate limits so a noisy sender
-      cannot spend the tenant's budget. Pairs with `spec.execution.webhooks`: event in, result out.
+- [x] **Start a run from an inbound event** (proposed 2026-10-06; landed with W4). `POST
+      /triggers/{id}` (`felix/triggers.py`, `routes/triggers.py`): operator-registered in
+      `FELIX_TRIGGERS`, Standard Webhooks and GitHub signatures verified before the body is read
+      (an open scheme registry for more), replays caught by a signed key in the idempotency store,
+      a per-trigger limit counted after verification, a durable run as `trigger:<id>` through the
+      manifest's inbound auth and pin. The payload never enters the instruction: the model reads it
+      through the `trigger_event` tool as untrusted output, after a marker scan at intake.
+      *Follow-ups:* a Postgres-backed replay store (without Redis the claim is per process, and a
+      GitHub replay is refused only for the claim's TTL, since GitHub signs no timestamp);
+      Stripe and Slack schemes; a trigger whose result goes back to the sender's own API.
 - [~] **Credentials the model never holds** (proposed 2026-10-06). *Landed for `http_fetch`:*
       `FELIX_EGRESS_CREDENTIALS` maps an id to one exact host, port and path prefix and a
       `secret:NAME`; `spec.network.credentials` names the ids an agent may send (its

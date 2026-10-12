@@ -3,7 +3,7 @@ name: durable-execution
 description: How Felix runs work that outlives a request — durable chat runs as fibers (spec.execution.mode durable, 202 + resume_token), the claim/lease/retry loop in the worker, resume and reattach streams and their cursor, signed completion webhooks, cross-process waiters for approvals and client tools, steer/abort, Idempotency-Key on POST /chat and /chat/stream, Web Push for a run waiting on a person, scheduled jobs, and the Taskiq worker and its cron table. Use when editing felix/durability/, felix/jobs/, felix/push/, felix/waiters.py, felix/idempotency.py, felix/steer.py or apps/worker, when a durable run never starts, stalls, repeats a tool call or never reports, when a webhook or push is not delivered, or when adding a periodic task.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*)
 metadata:
-  covers: felix/durability/, felix/jobs/, felix/push/, felix/idempotency.py, felix/waiters.py, felix/steer.py, felix_worker/
+  covers: felix/durability/, felix/jobs/, felix/triggers.py, felix/push/, felix/idempotency.py, felix/waiters.py, felix/steer.py, felix_worker/
 ---
 
 # Durable execution

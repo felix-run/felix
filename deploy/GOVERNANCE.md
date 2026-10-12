@@ -979,6 +979,74 @@ manifest author's:
   starting deliveries, and endpoints within one, after half the 120 s claim, so a slow receiver
   delays the rest rather than doubling them; the timeout's bound keeps one attempt inside that.
 
+### Inbound triggers: `POST /triggers/{id}`
+
+A signed event from elsewhere starts a durable run (`felix/triggers.py`,
+`apps/api/src/felix_api/routes/triggers.py`). The operator registers each trigger in
+`FELIX_TRIGGERS`; nothing a tenant controls creates one.
+
+- **Authentication is the sender's signature, not a bearer.** The path is exempt from bearer auth
+  only while `FELIX_TRIGGERS` is set, and only under `/triggers/`. The route reads the body (it must,
+  to check an HMAC over it; the 1 MiB body limit bounds the read), verifies it, and parses nothing in
+  it before that. Schemes: Standard Webhooks (`webhook-id.timestamp.body`, HMAC-SHA256, a 5-minute
+  window either way; the same code Felix signs its own completion webhooks with,
+  `security/standard_webhooks.py`) or GitHub (`X-Hub-Signature-256` over the body). Comparisons are
+  constant-time. An unknown trigger id and a bad signature get the same `401 invalid_signature`, so
+  ids cannot be probed; the reason goes to the operator's log.
+- **Keys.** `secret` must be `secret:NAME` (resolved through the secrets backend and registered for
+  masking) except on a development install -- `FELIX_ENVIRONMENT=development` *and*
+  `FELIX_AUTH_MODE=none`, since the environment alone defaults to development; a literal fails the
+  boot anywhere else. A key shorter
+  than 16 bytes -- as written, after `whsec_` decoding, or as resolved -- is refused: an empty key
+  (an unset variable behind `secret:NAME`, an empty file, a bare `whsec_`) is a signature anyone
+  can compute, and is answered `503 trigger_unavailable` before any signature is checked. `secret`
+  may list several, so a secret is rotated by adding the new one and later dropping the old.
+  `whsec_` values are base64-decoded for every scheme, whitespace dropped (a value read back from
+  a secrets manager often ends in a newline). A trigger whose secret does not resolve answers `503`
+  where an unknown id answers `401`, so a broken trigger's id is visible to a caller: kept so the
+  operator sees the failure on the sender's delivery log.
+- **Replays start nothing -- for `FELIX_IDEMPOTENCY_TTL_SECONDS`.** A delivery is claimed in a store
+  of the triggers' own (chat's `Idempotency-Key` traffic cannot evict it), and a repeat gets the
+  first answer back. The key is something the signature covers: the signed `webhook-id`, or for
+  GitHub the body's digest, since GitHub signs neither `X-GitHub-Delivery` nor `X-GitHub-Event`.
+  Standard Webhooks replays are also bounded by the timestamp window; GitHub signs no timestamp, so
+  a captured GitHub delivery replayed after the claim expires (default 24 hours) starts a new run.
+  Without Redis the claim is per process, so behind several replicas a replay is caught only by the
+  replica that saw it, and the in-process store keeps at most 50,000 claims, oldest dropped first
+  (a Redis eviction policy that drops keys does the same): a busy hook can age a claim out before
+  the TTL. Ignored deliveries are claimed too.
+- **The payload is untrusted and never the instruction.** The run's user turn is the operator's
+  `prompt`. `{trigger}` is the trigger's id; `{event}` is filled only with an event type the
+  trigger lists in `events` (text the operator wrote), else `unknown`; `{delivery}` only with a
+  short `[A-Za-z0-9_-]` token, else a pointer to the tool. The body reaches the model only as the
+  output of the `trigger_event` tool, which the manifest must list (a trigger whose manifest does
+  not is refused with `503`). That output is stamped untrusted, so a manifest with content screening
+  on screens it as it screens MCP or browser output. The free marker scan runs at intake whatever
+  the manifest says, and a match withholds the whole payload (counted as
+  `felix_content_screening{tool="trigger_event",action="quarantine"}`).
+- **`events` is a filter, not a guarantee, for GitHub.** The event header is unsigned: a sender
+  holding a signed body could label it with another event type the first time it is delivered.
+  The payload, not the label, is what the model reads. GitHub's `ping` starts no run unless `events`
+  names it.
+- **The run is the trigger's, not a person's.** It runs as `trigger:<id>` with the trigger's
+  `scopes` (none by default), on a fresh thread. The manifest is resolved, admitted (inbound auth)
+  and pinned inside the trigger tenant's context, so row-level security answers for that tenant:
+  a manifest that requires scopes refuses a trigger not granted them, and one that limits
+  `auth.inbound.schemes` must name `trigger`. Inbound auth is applied again when the worker resumes
+  the run. Its tools are governed exactly as a `/chat` run's.
+- **Bounded.** A body is at most 256 KiB (inside the core body limit, which a plugin may raise).
+  Each trigger starts at most `rate_limit` runs a minute (default 60) per process without Redis, so
+  `rate_limit` x replicas there, and with Redis per fixed window, so up to twice that across a
+  window's edge; only a new delivery that would start a run is counted -- not an unsigned request, a
+  replay or an ignored event -- so one captured delivery cannot spend a sender's budget. The
+  middleware's per-address limit still applies in front.
+- **Retention.** The payload is kept in the run's durable state until the fiber is swept
+  (`FELIX_FIBER_RETENTION_DAYS`), and, once the model has read it, in the thread's session log as
+  a tool result, kept as long as the thread's sessions are (`FELIX_SESSION_RETENTION_DAYS`). Anyone
+  who may read the tenant's sessions may read it there.
+- **Results go out the usual way:** the manifest's `spec.execution.webhooks` announces the run's
+  end, so an event in can become a result out.
+
 ## Shell tools
 
 `spec.shell_tools` execs an argv in the `FELIX_WORKSPACE_ROOT` checkout, in a separate
