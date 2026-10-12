@@ -205,3 +205,19 @@ async def test_a_pinned_child_cannot_reach_another_manifests_model_outside_a_tur
         )
         assert rewind.status_code == 403, rewind.text
     assert len(app.spy.calls) == 2, "only the kids turn and its judge reached a model"
+
+
+async def test_a_pinned_child_is_listed_only_its_manifests(boot: Any, fake_google: FakeGoogle) -> None:
+    """`/v1/models` is where a client picks its agents, and its default: a pinned account shown
+    every manifest lands on one it is refused (chat-ui opened on `cowork`)."""
+    async with boot([], env=_env()) as app:
+        kid = {"Authorization": f"Bearer {await _token(app.client, fake_google)}"}
+        kid_models = await app.client.get("/v1/models", headers=kid)
+        parent_token = await _token(app.client, fake_google, email="parent@example.com", sub="2000")
+        parent_models = await app.client.get(
+            "/v1/models", headers={"Authorization": f"Bearer {parent_token}"}
+        )
+    assert kid_models.status_code == 200, kid_models.text
+    assert [m["id"] for m in kid_models.json()["data"]] == ["kids"]
+    parent_ids = {m["id"] for m in parent_models.json()["data"]}
+    assert {"kids", "quick", "cowork"} <= parent_ids, "an unpinned account still sees every manifest"

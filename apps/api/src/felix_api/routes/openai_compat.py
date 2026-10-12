@@ -17,7 +17,7 @@ from felix.context import AuthContext, RequestContext, async_run_with_context, t
 from felix.governance.reply import REPLY_TEXT_EVENTS
 from felix.governance.screening import InboundScreeningError
 from felix.logging_setup import loggable
-from felix.manifests.inbound_auth import InboundAuthError
+from felix.manifests.inbound_auth import InboundAuthError, manifest_pin
 from felix.manifests.loader import list_bundled
 from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
@@ -272,6 +272,14 @@ async def list_models(request: Request) -> dict[str, Any]:
     # listed twice.
     seen = set(bundled)
     names = bundled + [n for n in await _stored_manifest_names(settings, auth.tenant_id) if n not in seen]
+    # A credential pinned to some manifests is shown only those: it would be refused every other
+    # one, and a client picks its default agent from this list. A malformed pin lists nothing.
+    try:
+        pinned = manifest_pin(auth)
+    except InboundAuthError:
+        pinned = frozenset()
+    if pinned is not None:
+        names = [n for n in names if n in pinned]
     # Warm, the resolver cache hides this. Cold -- the first request after a deploy,
     # which is exactly when a client is probing -- it was one round trip per manifest,
     # in series.
