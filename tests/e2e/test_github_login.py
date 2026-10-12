@@ -372,6 +372,7 @@ async def test_auth_methods_answers_an_anonymous_caller_in_every_mode(
     assert methods.json() == {
         "github_device": login_on,
         "github_redirect": False,
+        "google_redirect": False,
         "bearer_required": bearer_required,
         "github_signup": "off",
     }

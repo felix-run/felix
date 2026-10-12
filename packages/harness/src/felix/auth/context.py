@@ -14,6 +14,13 @@ from typing import Any
 # read it without importing Starlette.
 BUILTIN_AUTH_MODES = frozenset({"none", "api_key", "jwt"})
 
+# A credential's claim naming the only manifests it may invoke (a list of names). Absent means
+# no pin. Namespaced: an IdP that already issues a `manifests` claim meaning something else would
+# otherwise have every one of its callers refused. Minted by Google sign-in for an account with
+# `manifests` (`felix.auth.google`), and enforced wherever a manifest's inbound auth is
+# (`felix.manifests.inbound_auth`).
+MANIFESTS_CLAIM = "felix_manifests"
+
 
 # The tenant id is the ownership boundary, and it arrives from outside: an api-key
 # `tenant_id` field or a JWT claim, and on Cognito `custom:*` claims are frequently

@@ -30,6 +30,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from felix.auth import google
 from felix.auth.github import (
     AUTH_METHODS_PATH,
     GitHubLoginError,
@@ -47,6 +48,18 @@ from felix.auth.github import (
 from felix.config import Settings
 from pydantic import BaseModel, Field
 
+from felix_api.routes._login_redirect import (
+    FLOW_TTL_S,
+    HANDOFF_TTL_S,
+    LoginErrorOut,
+    LoginTokenOut,
+    back,
+    clear_cookie,
+    pkce_pair,
+    return_target,
+    set_cookie,
+)
+
 logger = logging.getLogger("felix_api.auth_github")
 
 router = APIRouter(tags=["Auth"])
@@ -58,10 +71,6 @@ connection_router = APIRouter(tags=["Auth"])
 # them is readable or forgeable by the browser) and HttpOnly (so nothing in the page can read them).
 FLOW_COOKIE = "felix_github_flow"
 HANDOFF_COOKIE = "felix_github_handoff"
-# From `/authorize` to the callback: how long a person may spend on GitHub's screen.
-FLOW_TTL_S = 600
-# From the callback to the page collecting its token: one page load.
-HANDOFF_TTL_S = 60
 
 DEVICE_START_WINDOW_S = 3600
 # One IPv6 subscriber is routinely handed a /64; keyed per address they would be 2**64 clients.
@@ -95,35 +104,16 @@ class ActionsTokenRequest(BaseModel):
     tenant: str | None = Field(default=None, min_length=1, max_length=128)
 
 
-class LoginTokenOut(BaseModel):
-    access_token: str
-    token_type: Literal["Bearer"] = "Bearer"
-    expires_in: int
-    tenant: str
-    scopes: list[str]
-    # The GitHub user who logged in; empty from `/actions`, because a workflow is not a person.
-    github_login: str = ""
-
-
 class AuthMethodsOut(BaseModel):
     """How a caller can get a credential here, and whether it needs one."""
 
     github_device: bool
     github_redirect: bool
+    # Google sign-in by redirect (`GET /auth/google/authorize`), for allowlisted accounts only.
+    google_redirect: bool = False
     bearer_required: bool
     # Who may sign in without a mapped org: nobody (`off`), or the invited (`invite`).
     github_signup: Literal["off", "invite"] = "off"
-
-
-class LoginErrorOut(BaseModel):
-    """Every refusal. `interval` accompanies 428; `tenants` accompanies 409; `github_login`
-    accompanies a refusal made after GitHub said who signed in."""
-
-    error: LoginErrorCode
-    message: str
-    interval: int | None = None
-    tenants: list[str] | None = None
-    github_login: str | None = None
 
 
 _ERRORS: dict[int | str, dict[str, Any]] = {
@@ -257,6 +247,8 @@ async def auth_methods(request: Request) -> AuthMethodsOut:
 
     - `github_device`: `POST /auth/github/device` and `/token` are served (login configured).
     - `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).
+    - `google_redirect`: Google sign-in by redirect is served (`GET /auth/google/authorize`);
+      only the accounts on FELIX_GOOGLE_ACCOUNTS get a token.
     - `github_signup`: whether an account in no mapped org may sign in to a personal tenant —
       `off`, or `invite` for the accounts on FELIX_GITHUB_SIGNUP_LOGINS. `off` whenever GitHub
       login itself is.
@@ -270,6 +262,7 @@ async def auth_methods(request: Request) -> AuthMethodsOut:
     return AuthMethodsOut(
         github_device=is_enabled(settings),
         github_redirect=redirect_enabled(settings),
+        google_redirect=google.redirect_enabled(settings),
         bearer_required=settings.auth_mode != "none",
         github_signup=settings.github_signup if is_enabled(settings) else "off",
     )
@@ -330,11 +323,7 @@ async def _after_login(settings: Settings, minted: LoginToken, *, method: str) -
 
 # --- browser sign-in by redirect ------------------------------------------------------------
 #
-# `/authorize` → github.com → `/callback` → the app, which collects its token at `/exchange`.
-# The harness serves no pages, so every outcome of the callback is a redirect back to the app
-# with a fragment (`#felix_login=ok` or `#felix_login_error=<code>`); a fragment never reaches a
-# server or a log. The token itself never appears in a URL: the callback leaves it in a sealed
-# HttpOnly cookie that lives for one page load, and `/exchange` hands it to the page and clears it.
+# `/authorize` → github.com → `/callback` → the app; the shape is `_login_redirect`'s.
 
 
 def _redirect_settings(request: Request) -> Settings:
@@ -345,35 +334,7 @@ def _redirect_settings(request: Request) -> Settings:
 
 
 def _return_target(settings: Settings, return_to: str) -> tuple[str, str]:
-    """`return_to` checked against FELIX_GITHUB_REDIRECT_ORIGINS, as (origin, the URL itself).
-    Raises 400 for anything else: this is the only redirect target a caller can name."""
-    from urllib.parse import urlsplit
-
-    parts = urlsplit(return_to)
-    origin = f"{parts.scheme}://{parts.netloc}"
-    if not parts.scheme or not parts.netloc or origin not in redirect_origins(settings):
-        raise HTTPException(status_code=400, detail="return_to_not_allowed")
-    if not parts.path.startswith("/") or parts.path.startswith("//"):
-        raise HTTPException(status_code=400, detail="return_to_not_allowed")
-    # The fragment is ours to write on the way back.
-    return origin, return_to.split("#", 1)[0]
-
-
-def _cookie(response: Any, name: str, value: str, *, max_age: int, secure: bool, same_site: str) -> None:
-    response.set_cookie(
-        name, value, max_age=max_age, path="/", secure=secure, httponly=True, samesite=same_site
-    )
-
-
-def _clear(response: Any, name: str, *, secure: bool) -> None:
-    """Expire a sign-in cookie, with the same attributes it was set with."""
-    response.delete_cookie(name, path="/", secure=secure, httponly=True, samesite="lax")
-
-
-def _back(return_to: str, fragment: str) -> Any:
-    from fastapi.responses import RedirectResponse
-
-    return RedirectResponse(f"{return_to}#{fragment}", status_code=302)
+    return return_target(redirect_origins(settings), return_to)
 
 
 @router.get("/authorize", include_in_schema=True, status_code=302)
@@ -383,8 +344,6 @@ async def start_github_redirect(request: Request, return_to: str, tenant: str | 
     `state` and the PKCE verifier live in a sealed HttpOnly cookie, so only the browser that
     started this sign-in can finish it: a callback carrying someone else's `state` is refused.
     """
-    import base64
-    import hashlib
     import secrets as pysecrets
 
     from fastapi.responses import RedirectResponse
@@ -393,8 +352,7 @@ async def start_github_redirect(request: Request, return_to: str, tenant: str | 
     settings = _redirect_settings(request)
     origin, target = _return_target(settings, return_to)
     state = pysecrets.token_urlsafe(32)
-    verifier = pysecrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    verifier, challenge = pkce_pair()
     redirect_uri = f"{origin}{settings.github_callback_path}"
     flow = {
         "s": state,
@@ -409,7 +367,7 @@ async def start_github_redirect(request: Request, return_to: str, tenant: str | 
         status_code=302,
     )
     # Lax: the callback is a top-level navigation back from github.com, which Lax lets through.
-    _cookie(
+    set_cookie(
         response,
         FLOW_COOKIE,
         seal_json(settings, "github-sign-in-flow", flow),
@@ -449,14 +407,14 @@ async def finish_github_redirect(
     target = str(flow["r"])
     if not state or not hmac.compare_digest(state, str(flow["s"])):
         logger.warning("github sign-in callback with a state this browser did not start")
-        response = _back(target, "felix_login_error=state_mismatch")
-        _clear(response, FLOW_COOKIE, secure=target.startswith("https://"))
+        response = back(target, "felix_login_error=state_mismatch")
+        clear_cookie(response, FLOW_COOKIE, secure=target.startswith("https://"))
         return response
     if error or not code:
         # `access_denied` when the person cancelled on GitHub's screen.
         reason = "access_denied" if error == "access_denied" else "github_config_error"
-        response = _back(target, f"felix_login_error={reason}")
-        _clear(response, FLOW_COOKIE, secure=target.startswith("https://"))
+        response = back(target, f"felix_login_error={reason}")
+        clear_cookie(response, FLOW_COOKIE, secure=target.startswith("https://"))
         return response
     try:
         minted = await exchange_web_code(
@@ -472,15 +430,15 @@ async def finish_github_redirect(
             fragment += "&tenants=" + quote(",".join(exc.tenants))
         if exc.github_login:
             fragment += "&login=" + quote(exc.github_login)
-        response = _back(target, fragment)
-        _clear(response, FLOW_COOKIE, secure=target.startswith("https://"))
+        response = back(target, fragment)
+        clear_cookie(response, FLOW_COOKIE, secure=target.startswith("https://"))
         return response
     await _after_login(settings, minted, method="redirect")
     handoff = {"tok": _token_out(minted).model_dump(), "e": int(time.time()) + HANDOFF_TTL_S}
-    response = _back(target, "felix_login=ok")
-    _clear(response, FLOW_COOKIE, secure=target.startswith("https://"))
+    response = back(target, "felix_login=ok")
+    clear_cookie(response, FLOW_COOKIE, secure=target.startswith("https://"))
     # Strict: only the app's own same-site request (`/exchange`) carries it.
-    _cookie(
+    set_cookie(
         response,
         HANDOFF_COOKIE,
         seal_json(settings, "github-sign-in-handoff", handoff),
@@ -512,7 +470,9 @@ async def collect_github_redirect(request: Request) -> Any:
         response = JSONResponse(LoginTokenOut.model_validate(handoff["tok"]).model_dump())
     # The request does not say whether it came over https; Secure on a clearing cookie only
     # narrows where the browser accepts it, so set it whenever this deployment is https-only.
-    _clear(response, HANDOFF_COOKIE, secure=all(o.startswith("https://") for o in redirect_origins(settings)))
+    clear_cookie(
+        response, HANDOFF_COOKIE, secure=all(o.startswith("https://") for o in redirect_origins(settings))
+    )
     return response
 
 

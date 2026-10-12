@@ -88,6 +88,17 @@ nothing. Everything in **Now** follows from that.
 
 First, because everything else governs it.
 
+- [~] **Google sign-in and a pinned kids agent** — browser redirect sign-in with Google
+      (`felix/auth/google.py`, `/auth/google/{authorize,callback,exchange}`) for the accounts
+      on `FELIX_GOOGLE_ACCOUNTS` only, keyed by verified email with an optional `sub` pin. An
+      entry's `manifests` list is minted as a `manifests` claim that `enforce_inbound_auth`
+      holds on every invoke surface, and the bundled `kids` manifest is the agent such an
+      account is pinned to (no tools, no memory facts, PII blocked, every reply judged). Left:
+      the chat-ui button (felix-web), and a live sign-in with a Family Link account — Google may
+      require a parent to allow third-party sign-in for an under-13 account. The reply judge
+      falls back to the keyword heuristic when its model call fails, so a judge outage weakens
+      `kids` rather than closing it; a fail-closed option for judges is the follow-up.
+
 - [~] **Document retrieval** — the corpus landed: `felix/documents/` (chunking, hybrid store,
       in-memory twin), migration `0010`, conformance against both backends, and `/documents`
       management routes so an operator can ingest, search, inspect and remove. Split from the

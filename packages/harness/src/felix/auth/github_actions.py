@@ -18,18 +18,16 @@ token for the same workflow, which is no more than whoever holds the ID token co
 
 from __future__ import annotations
 
-import asyncio
 import fnmatch
 import logging
 import re
-import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from joserfc import jwk, jwt
+from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwt import JWTClaimsRegistry
 
@@ -46,6 +44,7 @@ from felix.auth.github import (
     scope_list,
     unavailable,
 )
+from felix.auth.oidc_keys import JwksCache
 
 if TYPE_CHECKING:
     from felix.config import Settings
@@ -56,10 +55,6 @@ ACTIONS_ISSUER = "https://token.actions.githubusercontent.com"
 ACTIONS_JWKS_URL = f"{ACTIONS_ISSUER}/.well-known/jwks"
 # GitHub signs Actions ID tokens with RS256 only; accepting more is accepting nothing useful.
 ACTIONS_ALGORITHMS = ["RS256"]
-KEYS_TTL_S = 15 * 60
-# Fetches of GitHub's key set are at least this far apart, however they are triggered: anyone
-# can present a token naming a key we do not hold, or arrive while the first fetch is failing.
-KEYS_REFETCH_MIN_S = 60
 ACTIONS_SUBJECT_PREFIX = "github-actions:"
 
 # GitHub's repository-name grammar, minus the names it reserves (`.`, `..`).
@@ -181,47 +176,12 @@ def validate_actions_config(settings: Settings, grants: Mapping[str, OrgGrant]) 
 # --- the issuer's keys ------------------------------------------------------------------
 
 
-@dataclass
-class _KeyCache:
+def new_key_cache() -> JwksCache:
     """GitHub's published signing keys. Global on purpose: they are GitHub's, not a tenant's."""
-
-    keys: Any = None
-    fetched_at: float | None = None
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-    def age(self) -> float:
-        return float("inf") if self.fetched_at is None else time.monotonic() - self.fetched_at
-
-    async def get(self, http: httpx.AsyncClient, *, refresh: bool = False) -> Any:
-        """The key set, fetched when missing, stale or `refresh`ed — and never twice a minute.
-
-        Single-flight: requests arriving while a fetch is out wait for it rather than each
-        starting their own.
-        """
-        async with self.lock:
-            wanted = refresh or self.keys is None or self.age() > KEYS_TTL_S
-            if wanted and self.age() >= KEYS_REFETCH_MIN_S:
-                self.fetched_at = time.monotonic()
-                self.keys = await _fetch_keys(http)
-            if self.keys is None:
-                raise unavailable("Actions JWKS not fetched yet; the last attempt failed")
-            return self.keys
+    return JwksCache(ACTIONS_JWKS_URL, "Actions", unavailable)
 
 
-_keys = _KeyCache()
-
-
-async def _fetch_keys(http: httpx.AsyncClient) -> Any:
-    try:
-        resp = await http.get(ACTIONS_JWKS_URL, headers={"accept": "application/json"})
-    except httpx.HTTPError as exc:
-        raise unavailable(f"Actions JWKS unreachable: {exc}") from exc
-    if resp.status_code != 200:
-        raise unavailable(f"Actions JWKS answered {resp.status_code}")
-    try:
-        return jwk.KeySet.import_key_set(resp.json())
-    except Exception as exc:
-        raise unavailable("Actions JWKS did not parse") from exc
+_keys = new_key_cache()
 
 
 # --- verifying an ID token --------------------------------------------------------------

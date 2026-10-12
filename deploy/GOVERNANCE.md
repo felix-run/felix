@@ -285,6 +285,18 @@ name, and not when a router hands it a request: the bundled `router` (anonymous)
 is everything else it declares — its tools, policies, approvals, screening and limits are
 compiled into it and apply whichever way it was reached.
 
+**A credential can be pinned to manifests.** A token or api-key entry carrying a `felix_manifests`
+claim (a list of names) may invoke those manifests and no other: refused with 403 on chat, `/v1`,
+A2A, MCP, side questions, `/chat/compact`, a rewind's summary, and each child `delegation`
+compiles. The pin is stored with a durable run and enforced again when it resumes. A claim
+that is not a list of strings is refused rather than ignored. Google sign-in mints one for an
+account with `manifests` on `FELIX_GOOGLE_ACCOUNTS` (the bundled `kids` agent is what it is for).
+Boot refuses a pinned account that carries anything but `<area>:read` scopes, since a write scope
+reaches around the pin (rewrite the manifest, schedule a job, run an eval). It also refuses one
+that shares a tenant with an unpinned account, since threads are shared within a tenant. Like
+`auth.inbound`, the pin is checked on the manifest a request names, so a pinned manifest's
+`spec.sub_agents` are the operator's choice and are not checked again.
+
 **`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
 router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
 resume. The compile builds from the children the pin check resolved for that request, so the tree

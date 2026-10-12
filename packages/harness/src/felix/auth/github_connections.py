@@ -76,11 +76,12 @@ class GitHubConnectionRevoked(PermissionError):
 
 def token_key(settings: Settings) -> bytes:
     """FELIX_GITHUB_TOKEN_KEY as 32 raw bytes. Raises ValueError, naming what is wrong."""
-    return _decode_key(settings.github_token_key.strip())
+    return decode_key(settings.github_token_key.strip())
 
 
 @lru_cache(maxsize=4)
-def _decode_key(raw: str) -> bytes:
+def decode_key(raw: str) -> bytes:
+    """A base64 AES-256 key as 32 raw bytes. Raises ValueError, naming what is wrong."""
     if not raw:
         raise ValueError("is empty")
     padded = raw + "=" * (-len(raw) % 4)
@@ -93,17 +94,20 @@ def _decode_key(raw: str) -> bytes:
     return key
 
 
-def seal(settings: Settings, purpose: str, data: bytes) -> str:
+def seal(settings: Settings, purpose: str, data: bytes, *, key: bytes | None = None) -> str:
     """AES-GCM seal `data` for one purpose. `purpose` is bound as associated data, so a value
-    sealed as a sign-in cookie cannot be opened as a stored token, or as another row's."""
+    sealed as a sign-in cookie cannot be opened as a stored token, or as another row's.
+
+    `key` defaults to FELIX_GITHUB_TOKEN_KEY; another login passes its own (`felix.auth.google`).
+    """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     nonce = os.urandom(12)
-    sealed = AESGCM(token_key(settings)).encrypt(nonce, data, purpose.encode("utf-8"))
+    sealed = AESGCM(key or token_key(settings)).encrypt(nonce, data, purpose.encode("utf-8"))
     return f"{SEAL_VERSION}.{base64.urlsafe_b64encode(nonce + sealed).decode('ascii').rstrip('=')}"
 
 
-def unseal(settings: Settings, purpose: str, value: str) -> bytes:
+def unseal(settings: Settings, purpose: str, value: str, *, key: bytes | None = None) -> bytes:
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -117,18 +121,18 @@ def unseal(settings: Settings, purpose: str, value: str) -> bytes:
     if len(raw) < 12 + 16:
         raise SealError("not a sealed value")
     try:
-        return AESGCM(token_key(settings)).decrypt(raw[:12], raw[12:], purpose.encode("utf-8"))
+        return AESGCM(key or token_key(settings)).decrypt(raw[:12], raw[12:], purpose.encode("utf-8"))
     except InvalidTag as exc:
         raise SealError("does not open under this key and purpose") from exc
 
 
-def seal_json(settings: Settings, purpose: str, data: dict[str, Any]) -> str:
-    return seal(settings, purpose, json.dumps(data, separators=(",", ":")).encode("utf-8"))
+def seal_json(settings: Settings, purpose: str, data: dict[str, Any], *, key: bytes | None = None) -> str:
+    return seal(settings, purpose, json.dumps(data, separators=(",", ":")).encode("utf-8"), key=key)
 
 
-def unseal_json(settings: Settings, purpose: str, value: str) -> dict[str, Any]:
+def unseal_json(settings: Settings, purpose: str, value: str, *, key: bytes | None = None) -> dict[str, Any]:
     try:
-        data = json.loads(unseal(settings, purpose, value))
+        data = json.loads(unseal(settings, purpose, value, key=key))
     except ValueError as exc:
         raise SealError("does not hold an object") from exc
     if not isinstance(data, dict):

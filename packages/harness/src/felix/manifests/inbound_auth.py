@@ -81,5 +81,36 @@ def enforce_inbound_auth(manifest: Manifest, auth: Any) -> None:
                 status_code=403,
             )
 
+    _enforce_manifest_pin(manifest, auth)
+
+
+def _enforce_manifest_pin(manifest: Manifest, auth: Any) -> None:
+    """A credential carrying `felix_manifests` may invoke those manifests and no other.
+
+    Checked here because every surface that invokes a manifest calls this function — chat, /v1,
+    A2A, MCP, side questions, compaction and a rewind's summary, a durable run's resume (the pin
+    is stored with the run), and each child `delegation` compiles — so a pinned credential
+    reaches nothing a pin does not name by itself. A pinned manifest's `spec.sub_agents` are not
+    checked: the operator chose them when they wrote the manifest, as they chose its tools.
+    `delegation` children are, since the model picks among them. A claim of the wrong shape is
+    refused, never ignored: ignoring it would turn a malformed pin into no pin at all.
+
+    The claim is honoured from any credential that carries it — an api-key entry with a
+    `felix_manifests` field, or an external IdP's token — and it only ever narrows what that
+    credential reaches.
+    """
+    from felix.auth.context import MANIFESTS_CLAIM
+
+    claims = getattr(auth, "raw_claims", None) or {}
+    if MANIFESTS_CLAIM not in claims:
+        return
+    pinned = claims[MANIFESTS_CLAIM]
+    if not isinstance(pinned, list) or not all(isinstance(name, str) for name in pinned):
+        raise InboundAuthError("credential carries a malformed manifest pin", status_code=403)
+    if manifest.metadata.name not in pinned:
+        raise InboundAuthError(
+            f"this credential may not invoke manifest {manifest.metadata.name!r}", status_code=403
+        )
+
 
 __all__ = ["InboundAuthError", "enforce_inbound_auth"]

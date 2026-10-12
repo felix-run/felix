@@ -135,9 +135,11 @@ async def authenticate_request(
         # it reads the body, and starts a run as the trigger's own principal (`felix.triggers`).
         return ANONYMOUS
 
+    from felix.auth import google
     from felix.auth.github import public_login_paths
 
-    if _is_public_path(path, docs_public=settings.docs_public, login_paths=public_login_paths(settings)):
+    login_paths = public_login_paths(settings) | google.public_login_paths(settings)
+    if _is_public_path(path, docs_public=settings.docs_public, login_paths=login_paths):
         return ANONYMOUS
 
     # A plugin-registered mode wins over the built-ins, so an optional package can
