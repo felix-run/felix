@@ -24,6 +24,7 @@ from felix.security.rate_limit import (
     build_rate_limiter_backend,
 )
 from felix.tools.provider import ToolProvider
+from felix.triggers import TRIGGER_PATH_PREFIX
 from starlette.responses import Response
 
 from felix_api.composition import compose, installed_plugins
@@ -56,6 +57,7 @@ from felix_api.routes import (
     skill_library,
     skill_quality,
     skills,
+    triggers,
     usage,
     well_known,
 )
@@ -229,6 +231,11 @@ def create_app(
     app.state.github_device_limiter = build_rate_limiter_backend(cfg)
     # Skill browses and imports count per tenant per hour, on a store of their own for the same reason.
     app.state.skill_import_limiter = build_rate_limiter_backend(cfg)
+    # Runs started per trigger per minute (`routes/triggers.py`), on a store of its own as well.
+    app.state.trigger_limiter = build_rate_limiter_backend(cfg)
+    # Trigger deliveries are claimed in a store of their own, so chat's Idempotency-Key traffic
+    # cannot evict a claim and let a replayed event start a second run.
+    app.state.trigger_claims = build_idempotency_store(cfg)
     # Per app, not per process: two apps in one process (tests) must not share claims.
     app.state.idempotency_store = build_idempotency_store(cfg)
 
@@ -322,6 +329,7 @@ def create_app(
     app.include_router(push.router, prefix="/push")
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
+    app.include_router(triggers.router, prefix=TRIGGER_PATH_PREFIX.rstrip("/"))
     app.include_router(manifests.router, prefix="/manifests")
     if not cfg.bundled_only:
         # Absent rather than refused: under `manifest_source=bundled` the write verbs are

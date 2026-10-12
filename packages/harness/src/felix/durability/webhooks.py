@@ -22,10 +22,6 @@ library. The id is stable across retries, which is what a receiver dedupes on.
 
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -45,6 +41,7 @@ from felix.durability.fibers import (
     retry_delay_ms,
 )
 from felix.observability.metrics import record_counter
+from felix.security.standard_webhooks import sign, signing_key  # `sign`: re-exported
 from felix.settings_registry import parse_registry, parse_tenants, tenant_allowed
 
 logger = logging.getLogger("felix.durability.webhooks")
@@ -108,11 +105,10 @@ def parse_webhook_endpoints(settings: Any) -> dict[str, WebhookEndpoint]:
         secret = spec.get("secret")
         if not isinstance(secret, str) or not secret.strip():
             raise ValueError(f"endpoint {name!r} needs a signing `secret` (a literal or secret:NAME)")
-        if secret.startswith("whsec_"):
-            try:
-                base64.b64decode(secret.removeprefix("whsec_"), validate=True)
-            except binascii.Error:
-                raise ValueError(f"endpoint {name!r} `whsec_` secret is not valid base64") from None
+        try:
+            signing_key(secret)
+        except ValueError:
+            raise ValueError(f"endpoint {name!r} `whsec_` secret is not valid base64") from None
         tenants = parse_tenants(spec, kind="endpoint", name=name)
         private = spec.get("private", False)
         if not isinstance(private, bool):
@@ -181,17 +177,6 @@ def endpoints_for_run(settings: Settings, tenant_id: str, names: list[str]) -> l
         if endpoint is None or not endpoint.allows(tenant_id):
             raise WebhookEndpointError(f"unknown webhook endpoint: {name}")
     return chosen
-
-
-def sign(secret: str, message_id: str, timestamp: int, body: bytes) -> str:
-    """The Standard Webhooks `webhook-signature` value for one delivery.
-
-    A `whsec_`-prefixed secret is the spec's base64 key; any other string is used as its bytes,
-    so an operator can paste either what a receiver library generated or a plain shared secret.
-    """
-    key = base64.b64decode(secret.removeprefix("whsec_")) if secret.startswith("whsec_") else secret.encode()
-    mac = hmac.new(key, f"{message_id}.{timestamp}.".encode() + body, hashlib.sha256).digest()
-    return "v1," + base64.b64encode(mac).decode()
 
 
 def _payload(row: dict[str, Any]) -> dict[str, Any]:

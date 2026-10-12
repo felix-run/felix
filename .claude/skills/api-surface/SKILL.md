@@ -39,6 +39,7 @@ pinning — that is a security bug, not a shortcut.
 | `openai_compat.py` | `/v1/chat/completions`, `/v1/models` (`model` = manifest name) |
 | `a2a.py` | `/a2a` JSON-RPC; `well_known.py` serves `/.well-known/agent-card.json` |
 | `mcp.py` | `/mcp` server surface |
+| `triggers.py` | `POST /triggers/{id}`: a signed inbound event starts a durable run (`felix/triggers.py`); no bearer, the sender's signature instead |
 | `audit.py`, `approvals.py`, `plans.py`, `jobs.py`, `manifests.py`, `eval.py`, `usage.py` | management APIs |
 | `artifacts.py`, `files.py`, `documents.py`, `memory.py`, `skills.py`, `skill_library.py` | tenant data APIs, mounted at `/artifacts`, `/files`, `/documents`, `/memory`, `/skills`, `/skill-library`; each gates on its own `<name>:read` / `<name>:write` scope (`auth/mgmt.py`) |
 | `skill_import.py`, `skill_quality.py` | more of `/skill-library`: import/browse/upstream (`/-/browse`, `/{name}/-/upstream`) and feedback/evals (`/-/feedback`, `/{name}/evals`) |

@@ -5811,6 +5811,31 @@
         "title": "ToolResultRequest",
         "type": "object"
       },
+      "TriggerAnswer": {
+        "description": "`accepted` with the run's id, or `ignored` for an event type the trigger does not run for.",
+        "properties": {
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "TriggerAnswer",
+        "type": "object"
+      },
       "UiResponseRequest": {
         "additionalProperties": false,
         "properties": {
@@ -18911,6 +18936,66 @@
         "summary": "Get Skill",
         "tags": [
           "Skills"
+        ]
+      }
+    },
+    "/triggers/{trigger_id}": {
+      "post": {
+        "operationId": "receive_trigger_triggers__trigger_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trigger_id",
+            "required": true,
+            "schema": {
+              "title": "Trigger Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriggerAnswer"
+                }
+              }
+            },
+            "description": "The event type is not one this trigger runs for (`ignored`)."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TriggerAnswer"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "No such trigger, or the signature did not verify (`invalid_signature`)."
+          },
+          "409": {
+            "description": "`delivery_in_progress`, or `delivery_id_reused` for another body."
+          },
+          "413": {
+            "description": "The body is larger than a trigger accepts (`payload_too_large`)."
+          },
+          "422": {
+            "description": "The body is not UTF-8 JSON (`invalid_payload`)."
+          },
+          "429": {
+            "description": "The trigger's per-minute limit is spent (`rate_limited`)."
+          },
+          "503": {
+            "description": "The trigger is misconfigured or its run could not start (`trigger_unavailable`)."
+          }
+        },
+        "summary": "Receive Trigger",
+        "tags": [
+          "Triggers"
         ]
       }
     },
