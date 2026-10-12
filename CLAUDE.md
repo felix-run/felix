@@ -167,10 +167,11 @@ spends real money — it needs a model key and refuses to run without one.
   governance, auth, memory, eval, durability, storage, plugins.
   <!-- toolkit:enum cli-commands -->
 - `apps/cli` (`felix`) — `migrate | eval | mint-jwt | login | chat | ingest-docs | skills | workspace | sessions | bundle-manifests | validate-manifest | doctor | version`.
-- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus four
+- `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus five
   underscore-prefixed modules that carry no route: `_skill_library_models.py` holds the
   `/skill-library` request and response models, `_skill_library_http.py` the helpers its two route
-  modules share (error mapping, redaction, tenant context), `_sse.py` knows the SSE *envelope* (frame
+  modules share (error mapping, redaction, tenant context), `_login_redirect.py` what GitHub's and
+  Google's redirect sign-ins share (return target, sealed cookies, PKCE), `_sse.py` knows the SSE *envelope* (frame
   spelling, `[DONE]`, heartbeats — never spell a frame by hand elsewhere) and `_streaming.py`
   knows the *source* (session-log tailing, cursors, poll backoff, and **both** stream loops —
   `resume_stream_gen` for a reattach and `durable_run_gen` for a durable run, which are the

@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import Depends, FastAPI
 from felix import __version__ as harness_version
 from felix.auth.github import GITHUB_LOGIN_PREFIX
+from felix.auth.google import GOOGLE_LOGIN_PREFIX
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
 from felix.idempotency import build_idempotency_store
@@ -41,6 +42,7 @@ from felix_api.routes import (
     artifacts,
     audit,
     auth_github,
+    auth_google,
     chat,
     documents,
     files,
@@ -362,6 +364,7 @@ def create_app(
     app.include_router(well_known.router)
     app.include_router(auth_github.router, prefix=GITHUB_LOGIN_PREFIX)
     app.include_router(auth_github.methods_router, prefix="/auth")
+    app.include_router(auth_google.router, prefix=GOOGLE_LOGIN_PREFIX)
     app.include_router(auth_github.connection_router, prefix="/github")
     app.include_router(repos.github_router, prefix="/github")
     app.include_router(repos.checkout_router, prefix="/chat/sessions")

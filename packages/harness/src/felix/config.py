@@ -141,6 +141,26 @@ class Settings(BaseSettings):
     github_signup: Literal["off", "invite"] = "off"
     github_signup_logins: str = ""
     github_signup_scopes: str = ""
+    # Google sign-in (`felix.auth.google`): browser redirect only, for the accounts listed in
+    # FELIX_GOOGLE_ACCOUNTS and nobody else. On while the client id, client secret, cookie key
+    # and at least one redirect origin are all set. Needs the same `self:felix-self` verifier
+    # GitHub login does; checked at boot.
+    google_client_id: str = ""
+    google_client_secret: str = Field(default="", repr=False)
+    # 32 bytes, base64 (`openssl rand -base64 32`). Seals the sign-in's two cookies.
+    google_cookie_key: str = Field(default="", repr=False)
+    # Comma-separated origins a sign-in may return to; the callback Google redirects to is
+    # `<origin><FELIX_GOOGLE_CALLBACK_PATH>`, registered on the OAuth client.
+    google_redirect_origins: str = ""
+    # The callback's path *as the browser sees it*: behind chat-ui's proxy that carries `/api`.
+    google_callback_path: str = "/api/auth/google/callback"
+    # Who may sign in, keyed by Google-verified email: {"<email>": {"tenant": "<id>",
+    # "scopes": [...], "manifests": [...], "sub": "<Google account id>"}}. `manifests` pins the
+    # token to those agents only; `sub` pins the entry to one Google account, so the address
+    # being recycled or transferred lets nobody else in. An email in no entry is refused.
+    google_accounts: str = ""
+    google_login_ttl_seconds: int = Field(default=28_800, ge=60, le=86_400)  # 8h; max 1d (no revocation)
+    google_timeout_seconds: float = Field(default=10.0, gt=0, le=120.0)
 
     # --- Per-person repos: a thread's checkout (`felix.repos.checkouts`) ---
     # Where threads' checkouts live: one directory per (tenant, thread). Deliberately not under
@@ -1149,8 +1169,10 @@ class Settings(BaseSettings):
         self._validate_configured_tenant_ids()
         self._validate_jwt_tenant_posture()
         from felix.auth.github import validate_login_config
+        from felix.auth.google import validate_google_config
 
         validate_login_config(self)
+        validate_google_config(self)
         if self.scale_out:
             if "sqlite" in self.database_url:
                 raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")
@@ -1274,6 +1296,13 @@ def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
     except ValueError:
         grants = {}  # shape errors are reported by `validate_login_config`, not here
     found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
+    from felix.auth.google import parse_accounts
+
+    try:
+        accounts = parse_accounts(settings.google_accounts)
+    except ValueError:
+        accounts = {}  # shape errors are reported by `validate_google_config`, not here
+    found.extend((f"FELIX_GOOGLE_ACCOUNTS ({a.email})", a.tenant) for a in accounts.values())
     from felix.durability.webhooks import parse_tenant_endpoint_bindings
 
     try:

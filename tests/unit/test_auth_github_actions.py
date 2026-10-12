@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from felix.auth import github_actions
+from felix.auth import github_actions, oidc_keys
 from felix.auth.github import (
     GITHUB_ACTIONS_LOGIN_PATH,
     GITHUB_LOGIN_PATHS,
@@ -78,7 +78,7 @@ def _settings(**kw: Any) -> Settings:
 
 @pytest.fixture(autouse=True)
 def _fresh_key_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(github_actions, "_keys", github_actions._KeyCache())
+    monkeypatch.setattr(github_actions, "_keys", github_actions.new_key_cache())
 
 
 async def _exchange(
@@ -323,7 +323,7 @@ async def test_a_rotated_key_is_picked_up_without_a_restart() -> None:
     # present a token naming a key we do not hold.
     assert (await _refused(settings, actions_id_token(rotated), fake)).code == "invalid_id_token"
     assert fake.actions_jwks_fetches == 1
-    github_actions._keys.fetched_at -= github_actions.KEYS_REFETCH_MIN_S + 1
+    github_actions._keys.fetched_at -= oidc_keys.KEYS_REFETCH_MIN_S + 1
     assert (await _exchange(settings, actions_id_token(rotated), fake)).token.tenant == "acme"
     assert fake.actions_jwks_fetches == 2
 
@@ -333,7 +333,7 @@ async def test_a_withdrawn_key_stops_verifying_once_the_cache_expires() -> None:
     settings = _settings()
     await _exchange(settings, actions_id_token(), fake)
     fake.actions_keys = [jwk.RSAKey.generate_key(2048, parameters={"kid": "actions-2"})]
-    github_actions._keys.fetched_at -= github_actions.KEYS_TTL_S + 1
+    github_actions._keys.fetched_at -= oidc_keys.KEYS_TTL_S + 1
     assert (await _refused(settings, actions_id_token(), fake)).code == "invalid_id_token"
     assert fake.actions_jwks_fetches == 2
 

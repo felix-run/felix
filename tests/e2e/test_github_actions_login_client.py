@@ -53,7 +53,7 @@ def _env(**overrides: str) -> dict[str, str]:
 def fake_github(monkeypatch: pytest.MonkeyPatch) -> FakeGitHub:
     fake = FakeGitHub()
     monkeypatch.setattr(github, "github_http_client", lambda settings: fake.client())
-    monkeypatch.setattr(github_actions, "_keys", github_actions._KeyCache())
+    monkeypatch.setattr(github_actions, "_keys", github_actions.new_key_cache())
     return fake
 
 

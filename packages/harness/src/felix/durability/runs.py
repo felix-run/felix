@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
+from felix.auth.context import MANIFESTS_CLAIM
 from felix.config import Settings
 from felix.context import try_get_context
 from felix.durability.fibers import active_fiber_for_thread, create_fiber, get_fiber, now_ms
@@ -147,6 +148,11 @@ async def start_durable_chat(
             # request would have. Without it the resume silently ran on the org's skills alone.
             "skill_owner": caller.auth.skill_owner,
         }
+        if MANIFESTS_CLAIM in caller.auth.raw_claims:
+            # A credential pinned to some manifests stays pinned when its run resumes in the
+            # worker: every child the run delegates to is checked against it there. Kept as
+            # written, so a malformed pin is refused on resume exactly as it was at the door.
+            state["auth"][MANIFESTS_CLAIM] = caller.auth.raw_claims[MANIFESTS_CLAIM]
         # The token's own expiry, as a single integer — not the claims. Without it this would
         # be the first path in Felix where authority survives `exp`: there is no revocation
         # anywhere in `felix/auth/`, so `exp` is the sole and complete bound on a compromised

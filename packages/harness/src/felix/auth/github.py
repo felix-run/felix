@@ -767,7 +767,7 @@ def validate_login_config(settings: Settings) -> None:
         if actions and actions_grants:
             from felix.auth.github_actions import mint_probe
 
-            _verify_probe(settings, tenant, lambda found=actions_grants: mint_probe(settings, found))
+            verify_login_probe(settings, tenant, lambda found=actions_grants: mint_probe(settings, found))
     _probe_signup(settings)
 
 
@@ -778,7 +778,6 @@ def _validate_redirect_config(settings: Settings) -> None:
     backend after this runs (`redirect_enabled` asks per request). A malformed value is a
     different matter — it would fail on the first sign-in, so it fails at boot instead.
     """
-    from urllib.parse import urlsplit
 
     if settings.github_token_key.strip():
         from felix.auth.github_connections import token_key
@@ -787,19 +786,25 @@ def _validate_redirect_config(settings: Settings) -> None:
             token_key(settings)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_GITHUB_TOKEN_KEY: {exc}") from exc
-    for origin in redirect_origins(settings):
-        parts = urlsplit(origin)
-        if parts.scheme not in {"https", "http"} or not parts.netloc or parts.path or parts.query:
-            raise RuntimeError(
-                f"FELIX_GITHUB_REDIRECT_ORIGINS: {origin!r} is not an origin (scheme://host[:port])"
-            )
-        if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
-            raise RuntimeError(
-                f"FELIX_GITHUB_REDIRECT_ORIGINS: {origin!r} is plain http; only localhost may be, "
-                "since the sign-in cookies and the token cross that connection"
-            )
+    check_redirect_origins(redirect_origins(settings), "FELIX_GITHUB_REDIRECT_ORIGINS")
     if not settings.github_callback_path.startswith("/"):
         raise RuntimeError("FELIX_GITHUB_CALLBACK_PATH must start with '/'")
+
+
+def check_redirect_origins(origins: tuple[str, ...], setting: str) -> None:
+    """Each entry is a bare origin, and https unless it is localhost. Shared by every redirect
+    sign-in (`felix.auth.google` too): the cookies and the token cross that connection."""
+    from urllib.parse import urlsplit
+
+    for origin in origins:
+        parts = urlsplit(origin)
+        if parts.scheme not in {"https", "http"} or not parts.netloc or parts.path or parts.query:
+            raise RuntimeError(f"{setting}: {origin!r} is not an origin (scheme://host[:port])")
+        if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise RuntimeError(
+                f"{setting}: {origin!r} is plain http; only localhost may be, "
+                "since the sign-in cookies and the token cross that connection"
+            )
 
 
 def _probe_tenant(settings: Settings, grant: OrgGrant) -> None:
@@ -817,7 +822,7 @@ def _probe_tenant(settings: Settings, grant: OrgGrant) -> None:
             f"GitHub login is on, so FELIX_JWT_VERIFIERS needs self:{SELF_ISSUER} "
             "to accept the tokens GitHub login mints."
         )
-    _verify_probe(settings, grant.tenant, lambda: mint_login_token(settings, _PROBE_USER, grant))
+    verify_login_probe(settings, grant.tenant, lambda: mint_login_token(settings, _PROBE_USER, grant))
 
 
 _PROBE_USER = GitHubUser(id=0, login="felix-boot-probe")
@@ -832,17 +837,21 @@ def _probe_signup(settings: Settings) -> None:
     if not signup_enabled(settings):
         return
     grant = personal_grant(settings, _SIGNUP_PROBE_USER)
-    _verify_probe(settings, grant.tenant, lambda: mint_login_token(settings, _SIGNUP_PROBE_USER, grant))
+    verify_login_probe(settings, grant.tenant, lambda: mint_login_token(settings, _SIGNUP_PROBE_USER, grant))
 
 
-def _verify_probe(settings: Settings, tenant: str, mint: Callable[[], LoginToken]) -> None:
-    """Mint one token the way a login would and run it through the middleware's verifiers."""
+def verify_login_probe(
+    settings: Settings, tenant: str, mint: Callable[[], LoginToken], *, label: str = "GitHub login"
+) -> None:
+    """Mint one token the way a login would and run it through the middleware's verifiers.
+
+    Shared by every login that mints a self-issued token; `label` names the login in the error."""
     from felix.auth.jwt import SELF_ISSUER, parse_verifiers, verify_jwt
 
     try:
         probe = mint()
     except Exception as exc:
-        raise RuntimeError(f"GitHub login cannot mint with FELIX_JWKS_PRIVATE: {exc}") from exc
+        raise RuntimeError(f"{label} cannot mint with FELIX_JWKS_PRIVATE: {exc}") from exc
     verifiers = parse_verifiers(settings.jwt_verifiers)
     result = verify_jwt(probe.access_token, verifiers, jwks_public=settings.jwks_public, settings=settings)
     if not result.ok:
@@ -852,11 +861,11 @@ def _verify_probe(settings: Settings, tenant: str, mint: Callable[[], LoginToken
             else "check that FELIX_JWKS_PUBLIC pairs with FELIX_JWKS_PRIVATE"
         )
         raise RuntimeError(
-            f"A GitHub login token for tenant {tenant!r} would be refused ({result.reason}): {hint}."
+            f"A {label} token for tenant {tenant!r} would be refused ({result.reason}): {hint}."
         )
     if result.principal.tenant_id != tenant:
         raise RuntimeError(
-            f"A GitHub login token for tenant {tenant!r} verifies as tenant {result.principal.tenant_id!r}: "
+            f"A {label} token for tenant {tenant!r} verifies as tenant {result.principal.tenant_id!r}: "
             f"a verifier ahead of self:{SELF_ISSUER} in FELIX_JWT_VERIFIERS pins the tenant. "
-            "GitHub login needs tenant=claim."
+            f"{label} needs tenant=claim."
         )

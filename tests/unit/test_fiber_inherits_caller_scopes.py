@@ -309,3 +309,76 @@ def test_the_resume_token_ttl_is_bounded() -> None:
         ExecutionSpec(mode="durable", resume_token_ttl_seconds=315_360_000)
 
     assert ABSOLUTE_LIMITS["resume_token_ttl_seconds"] <= 86_400
+
+
+# --------------------------------------------------------------------------
+# A manifest pin (`felix.auth.context.MANIFESTS_CLAIM`) survives the resume. Without it a pinned
+# credential's durable run would resume unpinned, and every child it delegated to from the
+# worker would pass the inbound check that refused it at the door.
+# --------------------------------------------------------------------------
+
+
+async def test_the_run_records_the_callers_manifest_pin() -> None:
+    pinned = AuthContext(
+        principal_sub="google:1",
+        tenant_id="t",
+        scopes=frozenset(),
+        anonymous=False,
+        scheme="self",
+        raw_claims={"felix_manifests": ["kids"], "email": "kid@example.com"},
+    )
+    state = await _enqueue(_settings(), auth=pinned)
+
+    assert state["auth"]["felix_manifests"] == ["kids"]
+    assert "email" not in str(state["auth"]), "only the pin is carried, not the claims"
+
+
+async def test_an_unpinned_caller_records_no_pin() -> None:
+    state = await _enqueue(_settings(), auth=_caller("tools:calc"))
+
+    assert "felix_manifests" not in state["auth"]
+
+
+async def test_a_resumed_fiber_is_held_to_the_recorded_pin(captured_auth) -> None:
+    from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
+    from felix.manifests.loader import load_bundled
+
+    await _seed_and_resume(
+        _settings(),
+        _invoke_state(
+            auth={
+                "principal_sub": "google:1",
+                "scopes": [],
+                "anonymous": False,
+                "scheme": "self",
+                "felix_manifests": ["kids"],
+            }
+        ),
+    )
+
+    assert captured_auth, "the step never reached prepare_tenant_invoke"
+    resumed = captured_auth[0]
+    assert resumed.raw_claims == {"felix_manifests": ["kids"]}
+    with pytest.raises(InboundAuthError):
+        enforce_inbound_auth(load_bundled("quick"), resumed)
+
+
+async def test_a_resumed_fiber_keeps_a_malformed_pin_so_it_is_refused(captured_auth) -> None:
+    from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
+    from felix.manifests.loader import load_bundled
+
+    await _seed_and_resume(
+        _settings(),
+        _invoke_state(
+            auth={
+                "principal_sub": "google:1",
+                "scopes": [],
+                "anonymous": False,
+                "scheme": "self",
+                "felix_manifests": "kids",
+            }
+        ),
+    )
+
+    with pytest.raises(InboundAuthError, match="malformed"):
+        enforce_inbound_auth(load_bundled("kids"), captured_auth[0])

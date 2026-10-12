@@ -67,6 +67,22 @@ logger = logging.getLogger("felix_api.routes.chat")
 router = APIRouter(tags=["Threads"])
 
 
+def _require_inbound_auth(manifest: Any, auth: Any) -> None:
+    """The manifest's inbound auth, for a route that runs its model outside a turn.
+
+    Compaction and a rewind's branch summary each call the named manifest's model on the
+    thread's text, so a caller who may not invoke that manifest — anonymous where it is not
+    allowed, missing its scopes, or holding a credential pinned to other manifests — may not
+    reach its model this way either. A turn gets the same check from `prepare_tenant_invoke`.
+    """
+    from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
+
+    try:
+        enforce_inbound_auth(manifest, auth)
+    except InboundAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=client_safe_message(exc)) from exc
+
+
 def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
     from felix.governance.inbound import InboundScreeningError
     from felix.manifests.inbound_auth import InboundAuthError
@@ -2261,6 +2277,7 @@ async def chat_rewind(
             resolved = await resolve_tenant_manifest(
                 settings, auth.tenant_id, body.manifest, thread_id=thread
             )
+            _require_inbound_auth(resolved.manifest, auth)
             manifest_id = resolved.manifest.metadata.name
             if summarize is None:
                 summarize = bool(
@@ -3065,6 +3082,7 @@ async def chat_compact(
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
     except (LookupError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
+    _require_inbound_auth(resolved.manifest, auth)
 
     from felix.patterns.model import build_model
     from felix.session.compaction import CompactingSessionStrategy

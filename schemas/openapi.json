@@ -131,6 +131,11 @@
             ],
             "title": "Github Signup",
             "type": "string"
+          },
+          "google_redirect": {
+            "default": false,
+            "title": "Google Redirect",
+            "type": "boolean"
           }
         },
         "required": [
@@ -8418,9 +8423,148 @@
         ]
       }
     },
+    "/auth/google/authorize": {
+      "get": {
+        "description": "Send a browser to Google to sign in, returning to `return_to` (an allowed origin).\n\n`state`, the `nonce` and the PKCE verifier live in a sealed HttpOnly cookie, so only the\nbrowser that started this sign-in can finish it.",
+        "operationId": "start_google_redirect_auth_google_authorize_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "return_to",
+            "required": true,
+            "schema": {
+              "title": "Return To",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Start Google Redirect Auth Google Authorize Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Google Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/google/callback": {
+      "get": {
+        "description": "Google's return. Checks `state` against this browser's flow cookie, exchanges the code,\nverifies the ID token, checks the allowlist, mints, and redirects back to the app with the\ntoken waiting in a one-load cookie.",
+        "operationId": "finish_google_redirect_auth_google_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Error",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Finish Google Redirect Auth Google Callback Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Google Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/google/exchange": {
+      "post": {
+        "description": "The app collects the token its sign-in left waiting, once. The cookie is cleared whether\nor not it opened, so a second call \u2014 a reload, a replay \u2014 finds nothing.",
+        "operationId": "collect_google_redirect_auth_google_exchange_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginTokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginErrorOut"
+                }
+              }
+            },
+            "description": "Bad Request"
+          }
+        },
+        "summary": "Collect Google Redirect",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/auth/methods": {
       "get": {
-        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).\n- `github_signup`: whether an account in no mapped org may sign in to a personal tenant \u2014\n  `off`, or `invite` for the accounts on FELIX_GITHUB_SIGNUP_LOGINS. `off` whenever GitHub\n  login itself is.\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
+        "description": "Which ways in this deployment offers, for a client that holds no credential yet.\n\nPublic in every auth mode (`felix.auth.middleware`), because it is how an anonymous caller\nlearns how to get a credential. It reads settings only \u2014 no database, no call to GitHub \u2014\nand sits under the global rate limit like any other request; asking it never starts a\ndevice flow or spends from `/device`'s hourly budget.\n\n- `github_device`: `POST /auth/github/device` and `/token` are served (login configured).\n- `github_redirect`: browser sign-in by redirect is served (`GET /auth/github/authorize`).\n- `google_redirect`: Google sign-in by redirect is served (`GET /auth/google/authorize`);\n  only the accounts on FELIX_GOOGLE_ACCOUNTS get a token.\n- `github_signup`: whether an account in no mapped org may sign in to a personal tenant \u2014\n  `off`, or `invite` for the accounts on FELIX_GITHUB_SIGNUP_LOGINS. `off` whenever GitHub\n  login itself is.\n- `bearer_required`: this deployment verifies bearer credentials (`auth_mode` is not\n  `none`). A proxy in front of the harness that would accept a browser's own\n  `Authorization: Bearer` in place of its shared key must accept it only while this is\n  true: under `none` the harness verifies nothing, so any bearer at all would walk past the\n  proxy's only lock.",
         "operationId": "auth_methods_auth_methods_get",
         "responses": {
           "200": {

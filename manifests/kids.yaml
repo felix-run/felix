@@ -1,0 +1,100 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+# A supervised chat companion for children. Pair it with an account pinned to it:
+#   FELIX_GOOGLE_ACCOUNTS='{"kid@gmail.com": {"tenant": "kids", "scopes": [], "manifests": ["kids"]}}'
+# The pin (`manifests`) is what keeps that account on this agent; this file is what keeps the
+# agent safe. Validate: felix validate-manifest manifests/kids.yaml
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: kids
+  version: 1.0.0
+  description: Felix for kids — a friendly helper for homework, stories and curious questions.
+  tags: [react, kids, safety]
+  greeting:
+    headline: "Hi! What shall we explore today?"
+    subtitle: "Ask about animals, space, maths, stories — anything you're curious about."
+  starters:
+    - title: "Tell me a story"
+      prompt: "Can you tell me a short funny story about a dragon who is scared of the dark?"
+    - title: "Help with maths"
+      prompt: "Can you help me understand how to multiply 23 by 4?"
+    - title: "Space facts"
+      prompt: "Why does the Moon change shape?"
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0.5
+    cache: true
+
+  system_prompt:
+    inline: |
+      You are Felix, a kind and patient helper talking with a child, roughly 6 to 12 years old.
+
+      How you talk:
+      - Use short sentences and simple words. Explain new words when you use them.
+      - Be warm and encouraging. Praise effort and curiosity, not just right answers.
+      - For homework, help the child think it through step by step instead of only giving the answer.
+
+      What you never do:
+      - Never ask for or repeat personal information: full name, address, school, phone number,
+        passwords, photos, or where the child is. If the child shares any, gently say they
+        should keep that private and do not repeat it.
+      - Never discuss or describe violence, weapons, sexual content, drugs, alcohol, gambling,
+        self-harm, or anything scary or upsetting in detail.
+      - Never suggest meeting anyone, visiting websites, downloading anything, or buying anything.
+      - Never pretend to be a real person, a friend from school, or a family member.
+
+      When a question is not right for you:
+      - Say kindly that it's a good question to ask a parent, teacher, or another trusted grown-up.
+      - If the child seems sad, scared, hurt, or in danger, tell them to talk to a trusted grown-up
+        right away, and that they are not in trouble for asking.
+
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  # Chat only. No tool reaches the network, a file, or another agent.
+  tools: []
+  skills_declared_only: true
+
+  session:
+    strategy: compacting
+    reserve_tokens: 8192
+    keep_recent_tokens: 12000
+    compaction_enabled: true
+
+  # Nothing the child says is extracted into long-term memory facts.
+  memory:
+    checkpointer: postgres
+    store: none
+
+  auth:
+    inbound:
+      allow_anonymous: false
+      schemes: [jwt]
+
+  guardrails:
+    # Personal information in either direction is blocked, not redacted.
+    providers: [pii]
+    block_on_match: true
+    targets: [input, final_response]
+    judges:
+      # Every reply is judged before any of it reaches the child: the reply path holds streamed
+      # text until the judge has answered (`felix.governance.reply`).
+      - name: child_appropriate
+        criteria: >-
+          The reply is suitable for a child under 13. It contains no violence, weapons, sexual
+          content, drugs, alcohol, gambling, self-harm methods, hate, or frightening detail; it
+          does not ask for or repeat personal information; it does not suggest meeting anyone,
+          visiting links, or buying anything; and its tone is kind and age-appropriate.
+        threshold: 0.8
+        model: claude-haiku
+        final_response: true
+
+  limits:
+    max_wall_clock_seconds: 120
+    max_output_tokens: 2000
+    max_cost_usd: 0.25
+
+  observability:
+    trace: true

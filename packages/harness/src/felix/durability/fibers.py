@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from sqlalchemy import select, text
 
+from felix.auth.context import MANIFESTS_CLAIM
 from felix.config import Settings, process_identity
 from felix.db.models import Fiber
 from felix.db.session import _use_memory, get_session_factory
@@ -667,6 +668,13 @@ async def _run_fiber_step(
                     anonymous=bool(stored_auth.get("anonymous", False)),
                     scheme=str(stored_auth.get("scheme") or "anonymous"),
                     skill_owner=_stored_skill_owner(stored_auth),
+                    # The starter's manifest pin, the one claim a resume must carry: without it a
+                    # pinned credential's run would delegate to any manifest from the worker.
+                    raw_claims=(
+                        {MANIFESTS_CLAIM: stored_auth[MANIFESTS_CLAIM]}
+                        if isinstance(stored_auth, dict) and MANIFESTS_CLAIM in stored_auth
+                        else {}
+                    ),
                 )
                 thread = thread_id or fiber_thread_id(tenant_id, str(row["id"]))
                 req_ctx = RequestContext(
