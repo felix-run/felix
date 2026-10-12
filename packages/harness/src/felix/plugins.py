@@ -8,9 +8,9 @@ hooks, audit/usage sinks, and rate-limit keys via the registry (or the
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -41,6 +41,32 @@ class PluginCronTask:
     run: CronRunner
 
 
+#: The statuses a durable run ends in (`durability.fibers.FIBER_TERMINAL_STATUSES`).
+RunEnd = Literal["completed", "failed", "expired", "dead"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunFinished:
+    """A durable run that reached a terminal status, as a `register_run_finished` hook sees it.
+
+    `origin` is what the plugin that started the run attached to it
+    (`start_durable_chat(origin={"plugin": <name>, ...})`): its way back to the conversation that
+    asked. `answer` and `error` are empty when there is none. Keyword-only, so a field added here
+    breaks no plugin.
+    """
+
+    tenant_id: str
+    thread_id: str
+    run_id: str
+    status: RunEnd
+    answer: str
+    error: str
+    origin: Mapping[str, str]
+
+
+RunFinishedHook = Callable[["Settings", RunFinished], Awaitable[None]]
+
+
 class FelixPlugin(Protocol):
     name: str
 
@@ -69,6 +95,7 @@ class PluginRegistry:
     _audit_sink: Any | None = None
     _usage_sink_factory: Callable[[Settings], Any] | None = None
     _startup_hooks: list[Callable[..., Awaitable[Any]]] = field(default_factory=list)
+    _run_finished_hooks: list[tuple[str, RunFinishedHook]] = field(default_factory=list)
     _loaded: bool = False
 
     def register_plugin(self, plugin: Any) -> None:
@@ -142,6 +169,23 @@ class PluginRegistry:
     @property
     def startup_hooks(self) -> list[Callable[..., Awaitable[Any]]]:
         return list(self._startup_hooks)
+
+    def register_run_finished(self, hook: RunFinishedHook, *, origin: str) -> None:
+        """`hook(settings, finished)` runs in the worker once a durable run that `origin` started --
+        one whose `start_durable_chat(origin=...)` named `{"plugin": origin}` -- reaches a terminal
+        status, after that status is saved. Only those: a hook never sees another plugin's runs, or
+        a run nobody tagged, so it never holds an answer it was not owed.
+
+        At most once today, so a worker that dies between the save and the hook does not call it;
+        write a hook to be idempotent on `run_id`, since a retried delivery may come later. A hook
+        that raises or outlives `fibers.RUN_FINISHED_HOOK_TIMEOUT_S` is logged and the next runs."""
+        if not origin:
+            raise ValueError("register_run_finished needs the origin its runs are tagged with")
+        self._run_finished_hooks.append((origin, hook))
+
+    def run_finished_hooks(self, origin: str) -> list[RunFinishedHook]:
+        """The hooks registered for runs `origin` started."""
+        return [hook for owner, hook in self._run_finished_hooks if owner == origin]
 
     def register_before_turn(self, hook: BeforeTurnHook) -> None:
         from felix.hooks import get_agent_hooks

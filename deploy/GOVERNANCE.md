@@ -1059,6 +1059,63 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
 - **Results go out the usual way:** the manifest's `spec.execution.webhooks` announces the run's
   end, so an event in can become a result out.
 
+### Chat channels: Slack (`felix-channels` plugin)
+
+An optional plugin (`packages/channels`, `uv sync --extra channels`, never imported by core) lets
+people talk to an agent from Slack. The operator binds each Slack app to one tenant and manifest
+in `FELIX_CHANNELS`; without the plugin installed the setting is inert.
+
+- **Authentication is Slack's signature.** `POST /channels/slack/{id}/events` takes no bearer
+  (the plugin's self-authenticating mount, `/channels/...` and nothing beside it). Each request is
+  verified against the app's signing secret (`v0=` HMAC-SHA256 over `v0:{timestamp}:{body}`, a
+  5-minute window either way, constant-time) before the body is parsed; an unknown id answers as a
+  bad signature does. A signing secret that does not resolve, or resolves under 16 bytes, answers
+  `503` and verifies nothing. Secrets are `secret:NAME` except on a development install
+  (`FELIX_ENVIRONMENT=development` and `FELIX_AUTH_MODE=none`).
+- **Who is talking.** A message runs as `slack:<team>:<user>` with the channel's `scopes` (none by
+  default), through the manifest's inbound auth (a manifest limiting `auth.inbound.schemes` must
+  name `slack`). Every sender carries the same scheme and scopes, so a manifest that refuses one
+  refuses all: that is the channel's misconfiguration, logged as `channel_misconfigured`,
+  acknowledged to Slack (not retried) and said in the conversation at most once a minute. Anyone in
+  the bound workspace may talk to the agent unless `channels` or `users` narrow it. Nobody else
+  may: a request from another workspace is ignored, and so is a person from another organisation
+  in a Slack Connect channel (their `user_team`/`source_team` is not the bound workspace, or a
+  shared channel does not say) -- a sibling workspace of the same Enterprise Grid org included.
+  There is no per-user account linking: everyone in the workspace has the same scopes.
+- **What it answers.** An `app_mention`, and a message in the app's DM. Edits, deletions and any
+  bot's messages -- the app's own replies among them -- are ignored, so it never answers itself.
+  The message text is the user turn, screened by the manifest's inbound screening as `/chat` input
+  is, when the worker runs it.
+- **Retries and limits.** Slack retries a request it was slow to get an answer to; each event is
+  claimed once by its signed `event_id`, in a store of the plugin's own, so a retry starts nothing
+  -- across replicas only with Redis (`FELIX_REDIS_URL`); without it the claim is per process. Each
+  sender may make at most `user_rate_limit` attempts a minute (default 10, or `rate_limit` when
+  that is lower), and the channel as a
+  whole `rate_limit` (default 60), so one person cannot spend everyone's budget; a sender refused
+  at their own limit spends nothing of the channel's (per process without Redis). One run per Slack conversation at a time: a message while one runs
+  is answered "still working", at most once a minute per conversation.
+- **Threads.** A Slack thread is one Felix thread (`{tenant}:channel:{id}:{conversation}:{thread}`,
+  every part validated), so the agent sees the thread's earlier turns; a DM's main line is one
+  running conversation.
+- **The answer goes back from the worker**, through the core `register_run_finished` plugin hook,
+  when the run ends: the final answer, or a fixed note for a failed or expired run -- never the
+  run's error text. The answer is escaped as Slack asks (`&`, `<`, `>`), so it cannot ping
+  `<!channel>` or dress a link as something else, cut at 39,000 characters (never mid-entity), and
+  posted as plain text (`parse: none`, `link_names: false`, so no `@here` becomes a ping) with
+  unfurling off, so Slack fetches no URL the model wrote. Slack is called through the egress guard,
+  each post bounded to 8 seconds within the hook's 10. At most once: a worker that dies between
+  saving the run's end and posting does not post, and a Slack outage loses that reply.
+- **The hook sees its own runs only.** Core hands a `register_run_finished` hook only the runs its
+  plugin tagged in `start_durable_chat(origin=...)`; no plugin sees another's runs or an untagged
+  run's answer.
+- **Masking.** The API resolves every channel's secrets at startup and registers them for masking,
+  development literals included. The worker -- where channel runs execute -- runs no plugin startup
+  hooks: there the bot token is registered from the first reply it posts, and the signing secret
+  never. Name both in `FELIX_SECRET_NAMES` (`SLACK_SIGNING_SECRET,SLACK_BOT_TOKEN`) and every
+  process resolves and masks them at boot.
+- **Not yet:** approvals and `ask_user` as Slack buttons (a run waiting on an approval waits for
+  the web client or the API); streaming partial answers; durable, retried delivery.
+
 ## Shell tools
 
 `spec.shell_tools` execs an argv in the `FELIX_WORKSPACE_ROOT` checkout, in a separate

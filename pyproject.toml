@@ -38,6 +38,9 @@ warehouse-clickhouse = ["felix-harness[warehouse-clickhouse]"]
 warehouse-doris = ["felix-harness[warehouse-doris]"]
 sandbox = ["felix-harness[sandbox]"]
 pii = ["felix-harness[pii]"]
+# The chat-platform plugin (`packages/channels`): Slack today. A plugin, not a harness extra --
+# core never imports it -- so it is its own distribution, installed by naming it.
+channels = ["felix-channels"]
 full = [
     "felix-harness[aws,gcp,otel,mcp]",
 ]
@@ -70,6 +73,7 @@ felix-harness = { workspace = true }
 felix-cli = { workspace = true }
 felix-api = { workspace = true }
 felix-worker = { workspace = true }
+felix-channels = { workspace = true }
 
 [tool.ruff]
 line-length = 110
@@ -106,6 +110,7 @@ source = [
     "apps/cli/src/felix_cli",
     "apps/api/src/felix_api",
     "apps/worker/src/felix_worker",
+    "packages/channels/src/felix_channels",
 ]
 branch = false
 

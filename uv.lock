@@ -7,6 +7,7 @@ members = [
     "felix",
     "felix-ai",
     "felix-api",
+    "felix-channels",
     "felix-cli",
     "felix-client",
     "felix-harness",
@@ -975,6 +976,9 @@ aws = [
 browser = [
     { name = "felix-harness", extra = ["browser"] },
 ]
+channels = [
+    { name = "felix-channels" },
+]
 embeddings = [
     { name = "felix-harness", extra = ["embeddings"] },
 ]
@@ -1034,6 +1038,7 @@ dev = [
 requires-dist = [
     { name = "felix-ai", editable = "packages/ai" },
     { name = "felix-api", editable = "apps/api" },
+    { name = "felix-channels", marker = "extra == 'channels'", editable = "packages/channels" },
     { name = "felix-cli", editable = "apps/cli" },
     { name = "felix-client", editable = "packages/client" },
     { name = "felix-harness", editable = "packages/harness" },
@@ -1055,7 +1060,7 @@ requires-dist = [
     { name = "felix-harness", extras = ["warehouse-doris"], marker = "extra == 'warehouse-doris'", editable = "packages/harness" },
     { name = "felix-worker", editable = "apps/worker" },
 ]
-provides-extras = ["aws", "gcp", "otel", "mcp", "a2a", "oidc", "granian", "browser", "image", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "sandbox", "pii", "full"]
+provides-extras = ["aws", "gcp", "otel", "mcp", "a2a", "oidc", "granian", "browser", "image", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "sandbox", "pii", "channels", "full"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1097,6 +1102,17 @@ requires-dist = [
     { name = "felix-harness", editable = "packages/harness" },
     { name = "granian", specifier = ">=2.8.2" },
 ]
+
+[[package]]
+name = "felix-channels"
+version = "0.13.1"
+source = { editable = "packages/channels" }
+dependencies = [
+    { name = "felix-harness" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "felix-harness", editable = "packages/harness" }]
 
 [[package]]
 name = "felix-cli"
