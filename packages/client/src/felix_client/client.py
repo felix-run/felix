@@ -497,15 +497,22 @@ class FelixClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def rewind(self, event_id: str, *, thread_id: str | None = None) -> dict[str, Any]:
+    async def rewind(
+        self, event_id: str, *, thread_id: str | None = None, restore_files: bool = False
+    ) -> dict[str, Any]:
+        """Move the thread back to `event_id`. With `restore_files`, the files the agent's file
+        tools changed after it are put back too; the answer's `files` says how that went."""
         tid = thread_id if thread_id is not None else self._thread_id
         if not tid:
             raise ValueError("thread_id required for rewind")
+        body: dict[str, Any] = {"thread_id": tid, "event_id": event_id}
+        if restore_files:
+            body["restore_files"] = True
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
                 f"{self.base_url.rstrip('/')}/chat/rewind",
                 headers=self._headers(),
-                json={"thread_id": tid, "event_id": event_id},
+                json=body,
             )
             resp.raise_for_status()
             return resp.json()

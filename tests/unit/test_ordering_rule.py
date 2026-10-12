@@ -32,6 +32,8 @@ EXEMPT = {
     "documents/store.py:search_documents": "`kv[0]` is the chunk id, unique among the fused hits",
     "documents/store.py:_channels_in_memory": "`kv[0]` is the chunk id; the lexical sort ends on `r['id']`",
     "documents/store.py:list_documents": "one row per `doc_id` (grouped), and both arms end on it",
+    "tools/checkpoint_ledger.py:_path_rows": "ends on `capture_id` (newest first), the primary key's last component, unique within one thread",
+    "tools/checkpoint_ledger.py:expired_paths": "one row per `(tenant_id, thread_id, path)` (grouped), and both arms end on `path`",
     "repos/checkouts.py:list_files": "sorts a set of paths: every key is the whole path, unique",
     "session/strategies.py:render": "a stable sort over seq-ordered events: ties keep seq order",
     "session/thread_state.py:threads_missing_preview": "sorts the thread ids themselves (the dict's keys), unique; the SQL arm ends on `thread_id`",

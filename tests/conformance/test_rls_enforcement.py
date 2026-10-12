@@ -369,3 +369,36 @@ async def test_the_skill_job_sweeps_cross_tenants_and_the_reads_do_not(rls_setti
     assert await feedback.get(OTHER, mine["id"]) is None, "a bound tenant read another tenant's feedback"
     assert not await evals.heartbeat(OTHER, mine["id"], token=mine["claim_token"], now=1_002)
     assert await evals.heartbeat(TENANT, mine["id"], token=mine["claim_token"], now=1_002)
+
+
+async def test_the_file_checkpoint_sweep_crosses_tenants_and_a_restore_read_does_not(
+    rls_settings: Any, tmp_path: Any
+) -> None:
+    """`expired_paths` reads across tenants under its `rls_bypass()`, and `captures` -- what a
+    restore reads -- sees only the tenant it is bound to. As the schema owner both pass with or
+    without the policy, so only this arm can tell a sweep that lost its bypass, which would collect
+    nothing and report success."""
+    from felix.tools import checkpoint_ledger as ledger
+    from felix.tools import workspace_checkpoints as cp
+    from felix.tools.workspace_backend import WorkspaceScope, get_workspace_backend
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    settings = rls_settings.model_copy(update={"workspace_root": str(workspace), "object_store": "memory"})
+    for tenant in (TENANT, OTHER):
+        thread = f"{tenant}:t1"
+        rec = cp.CheckpointingBackend(
+            get_workspace_backend(settings),
+            settings=settings,
+            tenant_id=tenant,
+            thread_id=thread,
+            anchor="a1",
+        )
+        await rec.write_file(WorkspaceScope(tenant, thread, "thread"), "f", b"v", False)
+
+    expired = await ledger.expired_paths(settings, older_than_ms=ledger.now_ms() + 1)
+    assert sorted(expired) == sorted([(TENANT, f"{TENANT}:t1", "f"), (OTHER, f"{OTHER}:t1", "f")])
+    assert [r["tenant_id"] for r in await ledger.captures(settings, TENANT, f"{TENANT}:t1", {"a1"})] == [
+        TENANT
+    ]
+    assert await ledger.captures(settings, TENANT, f"{OTHER}:t1", {"a1"}) == [], "bound to one tenant"

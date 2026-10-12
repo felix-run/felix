@@ -2877,6 +2877,7 @@
           "manifest": {
             "anyOf": [
               {
+                "maxLength": 256,
                 "type": "string"
               },
               {
@@ -2884,6 +2885,11 @@
               }
             ],
             "title": "Manifest"
+          },
+          "restore_files": {
+            "default": false,
+            "title": "Restore Files",
+            "type": "boolean"
           },
           "summarize": {
             "anyOf": [

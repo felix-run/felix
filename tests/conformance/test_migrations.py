@@ -231,8 +231,8 @@ async def _as_migrator(url: str) -> str:
 
     Plus every table a migration *after* `0033` alters, because reaching `0033` from head
     downgrades through each of them first: `fibers` (`0034_fiber_thread`), `usage_events`
-    (`0035_usage_thread`), `session_events` (`0036_session_events_one_index`) and `thread_state`
-    (`0037_thread_state_listing_index`)."""
+    (`0035_usage_thread`), `session_events` (`0036_session_events_one_index`), `thread_state`
+    (`0037_thread_state_listing_index`) and `file_checkpoints` (`0039_file_checkpoints`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -251,6 +251,7 @@ async def _as_migrator(url: str) -> str:
                 "usage_events",
                 "session_events",
                 "thread_state",
+                "file_checkpoints",  # 0039, created after 0038 and dropped before reaching it
                 "alembic_version",
             )
         ),
@@ -383,9 +384,11 @@ async def test_a_promoted_version_blocks_the_downgrade_past_0038() -> None:
         assert await _scalar(migrator, "SELECT count(*) FROM skill_version") == 0, (
             "the migrator role sees rows without the bypass, so this test cannot catch a guard missing it"
         )
+        # Where the refused downgrade must leave it: head, whatever later revisions it passes first.
+        head = await _scalar(url, "SELECT version_num FROM alembic_version")
         with pytest.raises(RuntimeError, match="promoted from personal libraries"):
             await _downgrade_past_0038(migrator)
-        assert await _scalar(url, "SELECT version_num FROM alembic_version") == "0038_skill_version_promoted"
+        assert await _scalar(url, "SELECT version_num FROM alembic_version") == head
 
         await _execute(url, "DELETE FROM skill_version WHERE source = 'promoted'")
         await _downgrade_past_0038(migrator)

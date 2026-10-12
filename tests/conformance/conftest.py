@@ -225,6 +225,36 @@ async def memory_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
 
 
 @pytest_asyncio.fixture
+async def checkpoint_settings(request: pytest.FixtureRequest, tmp_path: Any) -> AsyncIterator[Any]:
+    """`Settings` for the file-checkpoint ledger on the parametrized backend, with an in-memory
+    object store and a workspace of the test's own."""
+    from felix.config import Settings
+    from felix.db.session import dispose_engine
+    from felix.storage import reset_object_store_cache_for_tests
+    from felix.tools import checkpoint_ledger
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    common = {"object_store": "memory", "workspace_root": str(workspace)}
+    reset_object_store_cache_for_tests()
+    if request.param == "memory":
+        checkpoint_ledger.clear_memory_ledger()
+        yield Settings(database_url="memory://conformance", **common)
+        checkpoint_ledger.clear_memory_ledger()
+        return
+    url = postgres_url()
+    if not url:
+        if os.environ.get(REQUIRE_ENV):
+            pytest.fail(f"{REQUIRE_ENV} is set but {PG_URL_ENV} is not — the Postgres arm cannot run")
+        pytest.skip(f"{PG_URL_ENV} unset — the Postgres arm of the contract did not run")
+    await ready_schema(url)
+    try:
+        yield Settings(database_url=url, **common)
+    finally:
+        await dispose_engine()
+
+
+@pytest_asyncio.fixture
 async def usage_settings(request: pytest.FixtureRequest) -> AsyncIterator[Any]:
     """`Settings` pointed at the backend named by the parametrization, for the usage store.
 

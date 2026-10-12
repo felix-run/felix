@@ -215,6 +215,7 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         "attachments": 0,
         # Its own step for the same reason as uploads: objects plus a ledger row.
         "artifacts": 0,
+        "file_checkpoints": 0,
         # Skill-import sightings go through their store on both backends; none here.
         "skill_import_sighting": 0,
     }

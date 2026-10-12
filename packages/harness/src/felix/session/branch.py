@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from felix.logging_setup import loggable
+from felix.observability.metrics import record_counter
 from felix.patterns.types import ChatMessage
 from felix.session.compaction import (
     STRUCTURED_SUMMARY_PROMPT,
@@ -15,6 +17,7 @@ from felix.session.tree import (
     active_branch_events,
     fork_thread,
     get_event_id,
+    get_parent_id,
     leaf_lock,
     rewind_to,
     stored_leaf,
@@ -180,6 +183,7 @@ async def rewind_and_persist(
     summarize: bool,
     model: Any | None = None,
     instructions: str | None = None,
+    restore_files: bool = False,
 ) -> dict[str, Any]:
     """Rewind ``session`` to ``target_event_id`` and store the leaf -- `/chat/rewind`'s sequence.
 
@@ -200,6 +204,12 @@ async def rewind_and_persist(
     skipped and its next turn starts from the rewound leaf; the appends it makes until then
     still land in the log, on the branch the rewind left.
 
+    With ``restore_files``, the files the model's file tools changed on the abandoned branch are
+    put back as they were before it (`tools/workspace_checkpoints.py`), still inside the hold, so
+    no turn on this replica writes a file between the rewind and its restore; the outcome is
+    ``files``. With or without it, that branch's file checkpoints are forgotten
+    (`_settle_abandoned_files`).
+
     Returns `rewind_to`'s result, with ``branch_summary`` when one was written; an unknown
     target returns ``{"ok": False, ...}`` and moves nothing.
     """
@@ -217,8 +227,24 @@ async def rewind_and_persist(
             settings=settings, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=target_event_id
         )
         await update_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id, phase="idle")
+        result = dict(result)
+        if settings is not None and old_leaf and old_leaf != target_event_id:
+            files = await _settle_abandoned_files(
+                session,
+                settings,
+                tenant_id,
+                old_leaf=old_leaf,
+                new_leaf=target_event_id,
+                restore=restore_files,
+            )
+            if files is not None:
+                result["files"] = files
+        elif restore_files:
+            from felix.tools.workspace_checkpoints import empty_report
+
+            result["files"] = dict(empty_report())
         if not (summarize and old_leaf and old_leaf != target_event_id):
-            return dict(result)
+            return result
         branch_summary = None
         try:
             await update_thread_meta(
@@ -247,6 +273,73 @@ async def rewind_and_persist(
     if branch_summary:
         out["branch_summary"] = branch_summary
     return out
+
+
+async def _settle_abandoned_files(
+    session: Session,
+    settings: Settings,
+    tenant_id: str,
+    *,
+    old_leaf: str | None,
+    new_leaf: str,
+    restore: bool,
+) -> dict[str, Any] | None:
+    """The file changes made on the branch a rewind abandons: put back first when `restore`, then
+    forgotten either way, so a later rewind undoes only what changed after this one.
+
+    A change belongs to the branch when it is anchored on one of its events, or at the event it
+    branched from -- a change made while that event was the leaf came after it, and that event's
+    tool calls do not run again. Forgetting is what keeps a second rewind to the same point from
+    reaching back past the first: without it, the branched-from event's captures from the earlier
+    branch would be read again and put a file back to before a change the person has since made.
+
+    Returns the restore's report, or None without `restore`. A restore that fails answers
+    `{"error": "unavailable"}` (fixed text) and forgets nothing, so a retry can still restore."""
+    from felix.storage import get_object_store
+    from felix.tools import checkpoint_ledger
+    from felix.tools.workspace_checkpoints import empty_report, restore_files
+
+    try:
+        events = await session.get_events()
+    except Exception:
+        # The rewind has already been stored: answer it, never a 500 for a rewind that happened.
+        logger.warning(
+            "reading a rewound branch failed for thread=%s", loggable(session.id, limit=200), exc_info=True
+        )
+        record_counter("felix_file_checkpoint_failed", {"stage": "restore" if restore else "forget"})
+        return {"error": "unavailable"} if restore else None
+    abandoned = abandoned_events(
+        events, old_leaf_id=old_leaf, new_leaf_id=new_leaf, session_id=getattr(session, "id", "") or ""
+    )
+    if not abandoned:
+        return dict(empty_report()) if restore else None
+    anchors = {eid for e in abandoned if (eid := get_event_id(e))}
+    if branched_from := get_parent_id(abandoned[0]):
+        anchors.add(branched_from)
+    report: dict[str, Any] | None = None
+    if restore:
+        try:
+            report = dict(await restore_files(settings, tenant_id, session.id, anchors))
+        except Exception:
+            logger.warning(
+                "restoring files on rewind failed for thread=%s",
+                loggable(session.id, limit=200),
+                exc_info=True,
+            )
+            record_counter("felix_file_checkpoint_failed", {"stage": "restore"})
+            return {"error": "unavailable"}
+    try:
+        await checkpoint_ledger.forget_anchored(
+            settings, get_object_store(settings), tenant_id, session.id, anchors
+        )
+    except Exception:
+        logger.warning(
+            "forgetting a rewound branch's file checkpoints failed for thread=%s",
+            loggable(session.id, limit=200),
+            exc_info=True,
+        )
+        record_counter("felix_file_checkpoint_failed", {"stage": "forget"})
+    return report
 
 
 async def fork_and_persist(

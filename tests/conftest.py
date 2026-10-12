@@ -244,6 +244,9 @@ def _isolate_process_global_stores():
         _memory_plans.clear()
         artifacts.clear_memory_ledger()
         attachments.clear_memory_ledger()
+        from felix.tools import checkpoint_ledger
+
+        checkpoint_ledger.clear_memory_ledger()
         reset_object_store_cache_for_tests()
 
     _clear()

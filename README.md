@@ -283,7 +283,9 @@ zero cloud SDKs.
   that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
   sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix
   nothing else collects), `FELIX_ARTIFACT_RETENTION_DAYS` (30; spilled tool outputs, bytes and
-  ledger row, the same way — on by default because spill is the harness's working copy); a manifest's `governance.retention_days` shortens the audit TTL for its
+  ledger row, the same way — on by default because spill is the harness's working copy),
+  `FELIX_FILE_CHECKPOINT_RETENTION_DAYS` (7; what the file tools changed, kept for `/chat/rewind`
+  with `restore_files`, bytes and ledger row, counted from each file's last change in its thread; `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` caps the content kept, 256 MiB; `FELIX_FILE_CHECKPOINTS=false` records none); a manifest's `governance.retention_days` shortens the audit TTL for its
   own rows
 - Uploads: `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, 0 = no ceiling) bounds what one
   tenant may store through `/files`, on top of the 600 KiB per-upload cap. Over the ceiling

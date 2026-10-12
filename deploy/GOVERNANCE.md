@@ -134,10 +134,22 @@ manifest's value (`governed.yaml` says 30) applies to every tenant that serves t
 and a tenant's own stored version of that name replaces it for that tenant. Usage (the billing
 record, 365 days), fibers and A2A tasks (7 days, terminal rows only) and session threads (off:
 the event log is the chat record) have deployment-wide TTLs, `FELIX_*_RETENTION_DAYS`, `0`
-keeping forever. Two sweeps delete object-store bytes as well as rows, each through a ledger
+keeping forever. Three sweeps delete object-store bytes as well as rows, each through a ledger
 because the store cannot be listed: uploads (`FELIX_ATTACHMENT_RETENTION_DAYS`, off by default,
-caller data) and spilled tool outputs (`FELIX_ARTIFACT_RETENTION_DAYS`, 30 by default, the
-harness's working copy). A manifest's `retention_days` does **not** shorten its spill: a
+caller data), spilled tool outputs (`FELIX_ARTIFACT_RETENTION_DAYS`, 30 by default, the
+harness's working copy) and file checkpoints (`FELIX_FILE_CHECKPOINT_RETENTION_DAYS`, 7 by default:
+the earlier content of every file the model's file tools changed in a thread's own workspace, kept
+for `/chat/rewind` with `restore_files`; `FELIX_FILE_CHECKPOINTS=false` keeps none). Checkpoint
+content is workspace content and needs the same care: a file the agent deleted, a credentials file
+it was told to remove included, stays under `checkpoints/{tenant}/` until the retention period has
+passed since that file's last change in the thread, or a rewind forgets it; deleting the thread
+does not purge it sooner. Retention counts per file, so a file stops being kept on time however
+busy its thread stays, while a file the agent keeps editing keeps its history. Content is kept once
+per tenant by digest and capped by `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` (256 MiB; concurrent
+captures can overshoot it by the few in flight). A
+restore writes and deletes files in the thread's own workspace only, never a scope threads share,
+and each one leaves a `workspace_restore` audit row with the caller and the paths, as the file
+pane's writes do. A manifest's `retention_days` does **not** shorten its spill: a
 manifest set to 7 days still keeps raw tool output for the deployment's artifact TTL, so set that
 no longer than the shortest manifest that needs it. Session retention drops whole idle threads and their metadata; it does not
 reach the facts memory capture extracted from them, which are governed by memory's own rules.
