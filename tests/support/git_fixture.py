@@ -72,3 +72,50 @@ def git(repo: Path | str, *args: str, check: bool = True, extra: dict[str, str] 
         # failure mode the gpgsign line above exists to avoid.
         raise RuntimeError(f"git {' '.join(args)} failed in {repo}:\n{done.stderr.strip()}")
     return done.stdout.strip()
+
+
+def git_worktree(path: Path | str, *args: str, extra: dict[str, str] | None = None) -> str:
+    """`git` in a linked worktree, as scrubbed as `git` is. A worktree's `.git` is a file naming its
+    git directory, which `GIT_DIR` cannot be pointed at; git finds it from the working directory
+    once nothing in the environment names another repository."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CEILING_DIRECTORIES"] = str(Path(path).parent)
+    env.update(extra or {})
+    done = subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", *args], cwd=str(path), env=env, capture_output=True, text=True
+    )
+    if done.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed in {path}:\n{done.stderr.strip()}")
+    return done.stdout
+
+
+IDENTITY = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com"}  # fmt: skip
+
+
+def ready_local_checkout(settings: object, tenant_id: str, thread_id: str, **state: object) -> Path:
+    """A thread's ready local checkout of a one-commit repository, with the state `open_checkout`
+    writes for one (`repos/checkouts.py`) -- not a reduced copy a reader could trip over."""
+    from felix.repos import checkouts
+
+    directory = checkouts.thread_dir(settings, tenant_id, thread_id)  # type: ignore[arg-type]
+    repo = directory / checkouts.REPO_DIR
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q", "-b", "main")
+    (repo / "README.md").write_text("hello\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-q", "-m", "base", extra=IDENTITY)
+    full = {
+        "state": checkouts.READY,
+        "hosted": False,
+        "repo": "o/r",
+        "base": "main",
+        "private": False,
+        "github_user_id": 42,
+        "opened_by": "octo",
+        "size_kb": 1,
+        "created_at": 0,
+    }
+    checkouts._write_state(directory, {**full, **state})
+    (directory / checkouts.USED_FILE).touch()
+    return repo

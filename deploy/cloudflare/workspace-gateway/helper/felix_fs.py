@@ -50,7 +50,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1471,14 +1471,17 @@ class _GitResult:
     truncated: bool
 
 
-async def _git_exec(root: Path, *args: str, stdin: bytes | None, limit: int) -> _GitResult:
-    """`_git_run` on the host: git as a subprocess with a fixed prelude and environment."""
+async def _git_exec(
+    root: Path, *args: str, stdin: bytes | None, limit: int, env: Mapping[str, str] | None = None
+) -> _GitResult:
+    """`_git_run` on the host: git as a subprocess with a fixed prelude and environment, plus
+    `env` on top of it for a caller that fences git further (`repos/worktrees.py`)."""
     proc = await asyncio.create_subprocess_exec(
         "git",
         *_GIT_PRELUDE,
         *args,
         cwd=str(root),
-        env=_git_env(),
+        env={**_git_env(), **(env or {})},
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

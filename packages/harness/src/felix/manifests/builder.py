@@ -2224,6 +2224,7 @@ async def build_agent(
                     manifest_hooks=manifest_hooks,
                     max_background=m.spec.delegation.max_background,
                     egress=egress,
+                    worktree=m.spec.delegation.worktree,
                 )
             )
             if m.spec.delegation.background:

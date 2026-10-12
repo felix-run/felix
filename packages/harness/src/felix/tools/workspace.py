@@ -448,8 +448,10 @@ def _thread_checkout(ctx: Any) -> Path | None:
     a thread whose repository is still cloning or was removed does not fall back to the shared
     workspace and edit files the person never meant it to touch.
     """
+    from felix.tools.workspace_scope import workspace_thread
+
     return _thread_checkout_of(
-        ctx.settings, getattr(getattr(ctx, "auth", None), "tenant_id", None), getattr(ctx, "thread_id", None)
+        ctx.settings, getattr(getattr(ctx, "auth", None), "tenant_id", None), workspace_thread(ctx)
     )
 
 

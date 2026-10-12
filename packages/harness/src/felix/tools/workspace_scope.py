@@ -64,6 +64,34 @@ def current_scope() -> WorkspaceScopeName:
     return _SCOPE.get() or DEFAULT_SCOPE
 
 
+# The thread whose workspace a call works in, when it is not the request's own: a foreground child
+# task given a git worktree (`tools/delegation.py`) runs in its parent's request -- its budgets, its
+# approvals, its stream -- but works in the files of its own thread.
+_WORKSPACE_THREAD: ContextVar[str | None] = ContextVar("felix_workspace_thread", default=None)
+
+
+@contextlib.contextmanager
+def bound_workspace_thread(thread_id: str | None) -> Iterator[None]:
+    """Run the enclosed calls against `thread_id`'s workspace instead of the request's thread's;
+    with None, against the request's thread's as before.
+
+    Every reader of where a call's files are goes through `workspace_thread(ctx)`, never
+    `ctx.thread_id` -- which still names the conversation (its session, its images, its stream)."""
+    if thread_id is None:
+        yield
+        return
+    token = _WORKSPACE_THREAD.set(thread_id)
+    try:
+        yield
+    finally:
+        _WORKSPACE_THREAD.reset(token)
+
+
+def workspace_thread(ctx: Any) -> str | None:
+    """The thread whose workspace this call works in: a bound one, else the request's own."""
+    return _WORKSPACE_THREAD.get() or getattr(ctx, "thread_id", None)
+
+
 def deployment_tenants(settings: Settings) -> frozenset[str]:
     raw = str(getattr(settings, "workspace_deployment_tenants", "") or "")
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
@@ -135,7 +163,7 @@ def ensure_scope_dir(base: Path, rel: str) -> Path:
 def scoped_root(base: Path, ctx: Any) -> Path:
     """The directory this call's tools work in, for a context `ctx` and the bound scope."""
     tenant_id = str(getattr(getattr(ctx, "auth", None), "tenant_id", "") or "")
-    rel = scope_relpath(ctx.settings, tenant_id, getattr(ctx, "thread_id", None), current_scope())
+    rel = scope_relpath(ctx.settings, tenant_id, workspace_thread(ctx), current_scope())
     return ensure_scope_dir(base, rel)
 
 
@@ -216,6 +244,7 @@ __all__ = [
     "MigrateResult",
     "WorkspaceScopeName",
     "bound_scope",
+    "bound_workspace_thread",
     "current_scope",
     "deployment_tenants",
     "ensure_scope_dir",
@@ -224,4 +253,5 @@ __all__ = [
     "scope_relpath",
     "scoped_root",
     "thread_key",
+    "workspace_thread",
 ]

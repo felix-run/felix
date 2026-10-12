@@ -824,6 +824,20 @@ async def _run_fiber_step(
     return row
 
 
+async def _end_background_child(settings: Settings, row: dict[str, Any]) -> None:
+    """A background `task` child's run is over: its worktree, if it left nothing there, goes, so
+    finished tasks do not hold the thread's worktree slots for the checkout TTL. Never raises."""
+    if row.get("status") not in FIBER_TERMINAL_STATUSES:
+        return
+    if (row.get("state_json") or {}).get("parent_thread_id") and row.get("thread_id"):
+        from felix.repos.worktrees import release_if_untouched
+
+        try:
+            await release_if_untouched(settings, str(row["tenant_id"]), str(row["thread_id"]))
+        except Exception:
+            logger.warning("task_worktree_background_cleanup_failed id=%s", row.get("id"), exc_info=True)
+
+
 async def _claim_due_memory(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
     claimed: list[dict[str, Any]] = []
     for row in _memory_fibers.values():
@@ -923,6 +937,7 @@ async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
     except Exception as exc:  # the lease bookkeeping itself, not a step
         landed, failure = 0, exc
     if failure is None:
+        await _end_background_child(settings, row)
         return
     if isinstance(failure, FiberLeaseLost):
         # Someone else's fiber now: charging, parking or releasing it would write over the
@@ -937,9 +952,13 @@ async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
     attempt = 1 if landed else prior_failures + 1
     logger.warning("fiber step failed id=%s attempt=%d", row.get("id"), attempt, exc_info=failure)
     try:
-        await _retry_or_dead(settings, row, attempt, failure)
+        saved = await _retry_or_dead(settings, row, attempt, failure)
     except Exception:  # the store is down; the claim lapses and a later sweep retries it
         logger.warning("fiber retry bookkeeping failed id=%s", row.get("id"), exc_info=True)
+        saved = False
+    if saved:
+        # Only a status the store holds: an unsaved "dead" is claimed and run again.
+        await _end_background_child(settings, row)
 
 
 async def resume_due_fibers(settings: Settings) -> int:
@@ -1038,12 +1057,13 @@ def retry_delay_ms(attempts: int) -> int:
     return min(FIBER_RETRY_BASE_MS * 2 ** max(attempts - 1, 0), FIBER_RETRY_MAX_MS)
 
 
-async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int, exc: Exception) -> None:
+async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int, exc: Exception) -> bool:
     """Park a failed fiber for a backoff, or bury it once it has failed enough times.
 
     A step that reached a terminal status and then failed only at its save is finished:
     that status is kept rather than coerced to `sleeping`, which would re-enter the step
     loop with `cursor` past the end and report the run `completed` over a failed invoke.
+    Returns whether the row's new state was saved.
     """
     if row.get("status") in FIBER_TERMINAL_STATUSES:
         row["attempts"] = 0
@@ -1066,7 +1086,7 @@ async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int,
         _park(row, retry_delay_ms(attempts))
     try:
         await _save_fiber(settings, row)
-        return
+        return True
     except Exception:
         # The save is the thing failing — which is the failure this exists to bound, so
         # the count cannot go through the same write. Record it on the columns alone.
@@ -1075,7 +1095,7 @@ async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int,
         )
     try:
         await _record_attempt(settings, row)
-        return
+        return False
     except Exception:
         # The store itself is down. Nothing can be recorded; drop the claim so the next
         # tick can try again — the count is lost, which errs toward retrying, not burying.
@@ -1085,6 +1105,7 @@ async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int,
     except Exception:
         # Also the store. The lease lapses on its own; the rest of the batch still runs.
         logger.warning("fiber release failed id=%s; lease will lapse", row.get("id"), exc_info=True)
+    return False
 
 
 async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:

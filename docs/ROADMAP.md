@@ -556,7 +556,7 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       *Follow-ups:* MCP HTTP servers onto the same map; the browser behind a local proxy enforcing
       the bound -- every socket, workers' included -- which lifts the refusal of `browser_tools`
       under a list.
-- [~] **W3 — coding toolset.** *Landed:* `glob` (the backend's `tree` walk filtered with
+- [x] **W3 — coding toolset.** *Landed:* `glob` (the backend's `tree` walk filtered with
       `full_match`, files only) and `multi_edit` (ordered exact-string edits, all or none: read,
       apply in memory with `edit_file`'s rules, `write_file_checked` against the read's digest),
       both composed from existing backend operations so the hosted gateway needs nothing new.
@@ -599,7 +599,26 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       arms) swept a file's whole history at once, counted from its last change. Shared scopes (`tenant`, `deployment`) are not recorded.
       *Follow-ups:* a shell command's writes are not recorded; rewinding onto another branch undoes
       the abandoned one but does not replay the target's; deleting a thread does not purge its
-      checkpoints before retention; a truncated restore forgets the captures past its cut. *Next:* a git worktree per child task.
+      checkpoints before retention; a truncated restore forgets the captures past its cut.
+      A git worktree per child task (`repos/worktrees.py`): a background child of
+      a thread with a local repository always works in its own worktree on `felix/task/<id>`, a
+      foreground one under `spec.delegation.worktree` (bound to its own thread's workspace while it
+      keeps the parent's request). A foreground child's parent is told the branch, its commits and
+      whether work was left uncommitted, and an untouched worktree is removed with its branch; a
+      background child's start message names its branch. A repository whose configuration names a
+      filter driver gets none, and a thread holds at most eight that hold work; an untouched
+      background child's goes when its run ends. *Follow-ups:* telling the parent what a
+      background child left in its worktree when it finishes; a route or tool for the parent to
+      release a child's worktree before the TTL (a child thread id is not addressable by
+      `DELETE /{thread}/workspace/repo`); `open_file` from a child shows the parent's checkout,
+      since `/chat/workspace/file` serves the conversation thread's; the clone's own `_git_run`
+      (`describe`, `list_files`) lacks the worktree git's fences (ceiling, protocol, filter check);
+      a repository whose own branch is named `felix` or `felix/task` cannot take a `felix/task/<id>`
+      branch; an invariant holding workspace readers to `workspace_thread(ctx)` rather than
+      `ctx.thread_id`; typed clone and worktree states behind `read_checkout`, and the git runner
+      and its prelude moved out of `github_publish` into `repos/`; a hosted
+      equivalent (clone the parent's branch into the child's sandbox); merging a child's branch is
+      the parent's own git. W3 is complete with this; *Next:* W4.
 - [ ] **W4 — assistant layer.** Inbound triggers (the *Start a run from an inbound event* item,
       pulled forward); a `felix_channels` plugin package (Slack and Telegram, then email) behind
       `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per

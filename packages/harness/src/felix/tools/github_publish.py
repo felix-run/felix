@@ -48,6 +48,7 @@ import contextlib
 import logging
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -188,14 +189,17 @@ async def _git_run(
     return await _git_exec(root, *args, stdin=stdin, limit=limit)
 
 
-async def _git_exec(root: Path, *args: str, stdin: bytes | None, limit: int) -> _GitResult:
-    """`_git_run` on the host: git as a subprocess with a fixed prelude and environment."""
+async def _git_exec(
+    root: Path, *args: str, stdin: bytes | None, limit: int, env: Mapping[str, str] | None = None
+) -> _GitResult:
+    """`_git_run` on the host: git as a subprocess with a fixed prelude and environment, plus
+    `env` on top of it for a caller that fences git further (`repos/worktrees.py`)."""
     proc = await asyncio.create_subprocess_exec(
         "git",
         *_GIT_PRELUDE,
         *args,
         cwd=str(root),
-        env=_git_env(),
+        env={**_git_env(), **(env or {})},
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -633,15 +637,23 @@ class _ThreadPublishExecutor:
         from felix.auth.github import GitHubLoginError
         from felix.context import try_get_context
         from felix.repos import checkouts
+        from felix.tools.workspace_scope import workspace_thread
 
         ctx = try_get_context()
-        thread_id = getattr(ctx, "thread_id", None) if ctx is not None else None
+        # The thread whose repository this call works in: a child task bound to its own worktree
+        # (`workspace_scope.bound_workspace_thread`) included, so it is never the parent's by accident.
+        thread_id = workspace_thread(ctx) if ctx is not None else None
         tenant_id = getattr(getattr(ctx, "auth", None), "tenant_id", None) if ctx is not None else None
         if ctx is None or not thread_id or not tenant_id:
             return "[publish refused] this run has no thread, so no repository to publish to"
         state = checkouts.read_checkout(ctx.settings, tenant_id, thread_id)
         if state is None:
             return "[publish refused] this thread has no repository; open one for it first"
+        if state.get("worktree_of"):
+            return (
+                f"[publish refused] this is a child task's worktree, on branch {state.get('branch')}: "
+                "its commits are already in the thread that started it, which publishes them"
+            )
         if state.get("state") != checkouts.READY:
             return f"[publish refused] this thread's checkout of {state.get('repo')} is {state.get('state')}"
         base = str(state.get("base") or "")

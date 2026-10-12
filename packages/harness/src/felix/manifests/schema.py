@@ -1307,6 +1307,10 @@ class DelegationSpec(_Strict):
     # refused until one ends. Each child runs on what was left of the budget when it started, so
     # this is what bounds a thread's total exposure -- across turns, too.
     max_background: int = Field(default=3, ge=1, le=16)
+    # A foreground child works in its own git worktree of the thread's repository, on its own branch
+    # (`felix/task/...`), instead of in the thread's checkout -- for children that change code side
+    # by side. A background child of a thread with a repository always does (`repos/worktrees.py`).
+    worktree: bool = False
 
     @model_validator(mode="after")
     def _names_unique(self) -> DelegationSpec:
