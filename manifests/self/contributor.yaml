@@ -120,6 +120,7 @@ spec:
   tools:
     - list_dir
     - read_file
+    - open_file
     - search_files
     - write_file
     - edit_file
