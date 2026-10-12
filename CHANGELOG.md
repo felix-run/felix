@@ -10,6 +10,56 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-12
+
+### Added
+
+- `open_file`, a workspace tool that asks the client to show the user a file in its file pane. The harness checks the file exists and the pane can serve it; the client opens what the result names. Bound in `contributor`. (#620)
+
+- `POST /chat/rewind` takes `restore_files`: the files the agent's file tools changed on the abandoned branch are put back, reported as `restored`, `removed`, `conflicts` and `skipped`, and audited as `workspace_restore`. The Python client's `rewind()` takes the same flag. (#621)
+
+- `FELIX_FILE_CHECKPOINTS` (on), `FELIX_FILE_CHECKPOINT_RETENTION_DAYS` (7) and `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` (256 MiB), and migration `0039_file_checkpoints`. (#621)
+
+- A `task` child in a thread with a local repository checkout works in its own git worktree on a `felix/task/<id>` branch: a background child always, a foreground child under the new `spec.delegation.worktree: true`. The parent is told the branch, commit count and uncommitted state; untouched worktrees are removed with their branch, and a thread holds at most eight that hold work. (#622)
+
+- `POST /triggers/{id}`: a signed inbound event (Standard Webhooks or GitHub) starts a durable run of an operator-registered manifest, as the principal `trigger:<id>`. Configured with `FELIX_TRIGGERS`; the payload reaches the model only through the new built-in `trigger_event` tool. (#623)
+
+- `register_trigger_scheme` for further signature schemes. (#623)
+
+- The optional `felix-channels` plugin (`--extra channels`): talk to an agent from Slack. A mention or DM starts a durable run as `slack:<team>:<user>`, a Slack thread is one Felix thread, and the answer is posted back when the run ends. Configured with `FELIX_CHANNELS`. (#624)
+
+- `PluginRegistry.register_run_finished(hook, *, origin=...)` and `start_durable_chat(origin=...)`: a plugin is told when a durable run it started ends. (#624)
+
+- Google sign-in by browser redirect (`/auth/google/authorize`, `/callback`, `/exchange`) for the accounts on `FELIX_GOOGLE_ACCOUNTS` only, with optional `sub` pinning; `GET /auth/methods` reports `google_redirect`. (#625)
+
+- A `felix_manifests` credential claim that holds a token to the named manifests on every invoke path, durable resumes included; Google sign-in mints it from an account's `manifests`. (#625)
+
+- The bundled `kids` manifest: a chat-only agent for children with PII blocked and every reply judged. (#625)
+
+- Google sign-in returns the signed-in account's `email`, `name` and `picture` with the token (`/auth/google/exchange`), for a client to show; none of them is stored. (#627)
+
+- `FELIX_GOOGLE_CLIENT_SECRET` and `FELIX_GOOGLE_COOKIE_KEY` can come from a secrets backend (`GOOGLE_CLIENT_SECRET`, `GOOGLE_COOKIE_KEY`), and are masked like other credentials. (#628)
+
+### Changed
+
+- The `cowork` example manifest's `local_open` description now says a file opens in the editor pane beside the conversation, and a URL in a new tab. (#619)
+
+- The attachment retention sweep stops when a full batch collects nothing, as the artifact sweep already did. (#621)
+
+- `ScriptedTurn.error` accepts any `BaseException`, so a test can script a cancellation. (#622)
+
+- Completion webhooks sign through the shared `security/standard_webhooks.py`; a malformed `whsec_` endpoint secret is still refused at boot, as before. (#623)
+
+- `start_durable_chat` takes `trigger_event=`. (#623)
+
+- The literal-secret gate for triggers, channels and skill import reads one `development_install(settings)`. (#624)
+
+- `/chat/compact` and `/chat/rewind` (with a `manifest`) now apply that manifest's inbound auth before calling its model. (#625)
+
+### Fixed
+
+- `/v1/models` lists only the manifests a credential's `felix_manifests` pin allows, so a client no longer offers, or defaults to, agents that credential would be refused. (#626)
+
 ## [0.13.1] — 2026-10-11
 
 ### Fixed
@@ -4769,3 +4819,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.12.1]: https://github.com/felix-run/felix/releases/tag/v0.12.1
 [0.13.0]: https://github.com/felix-run/felix/releases/tag/v0.13.0
 [0.13.1]: https://github.com/felix-run/felix/releases/tag/v0.13.1
+[0.14.0]: https://github.com/felix-run/felix/releases/tag/v0.14.0
