@@ -115,6 +115,17 @@ def eval_thread_id(tenant_id: str, run_id: str, item_id: str) -> str | None:
     return _compose(tenant_id, "eval", run_id, tail=item_id)
 
 
+def channel_thread_id(tenant_id: str, channel: str, conversation: str, thread: str) -> str | None:
+    """The thread a chat-platform conversation runs on:
+    ``{tenant}:channel:{channel}:{conversation}:{thread}``.
+
+    `channel` is the operator's id for the connection (an `FELIX_CHANNELS` key); `conversation`
+    and `thread` come off the platform's wire (a Slack channel id and thread timestamp), so
+    they get the same checks a client's suffix does.
+    """
+    return _compose(tenant_id, "channel", channel, conversation, tail=thread)
+
+
 def thread_belongs_to_tenant(tenant_id: str, thread_id: str) -> bool:
     """True when ``thread_id`` is one ``tenant_id`` may address.
 
@@ -146,6 +157,7 @@ __all__ = [
     "MAX_THREAD_ID",
     "SUFFIX_DELIMS",
     "a2a_thread_id",
+    "channel_thread_id",
     "effective_thread_id",
     "eval_thread_id",
     "thread_belongs_to_tenant",

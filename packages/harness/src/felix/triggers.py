@@ -37,7 +37,7 @@ from typing import Any
 
 from felix.security.constant_time import constant_time_equal
 from felix.security.standard_webhooks import signature, signing_key
-from felix.settings_registry import parse_registry
+from felix.settings_registry import development_install, parse_registry
 
 TRIGGER_PATH_PREFIX = "/triggers/"
 #: The built-in tool a trigger's manifest lists, and the `RequestContext.extras` key its run's
@@ -282,17 +282,10 @@ def _raw(settings: Any) -> str:
     return str(getattr(settings, "triggers", "") or "")
 
 
-def _development(settings: Any) -> bool:
-    """The repo's meaning of a development install (`deploy/GOVERNANCE.md`): `FELIX_ENVIRONMENT`
-    alone is not it, since Compose and the settings both default it to `development`."""
-    environment, auth_mode = getattr(settings, "environment", ""), getattr(settings, "auth_mode", "")
-    return environment == "development" and auth_mode == "none"
-
-
 def parse_triggers(settings: Any) -> dict[str, Trigger]:
     """`FELIX_TRIGGERS`, validated; parsed once per distinct value. `ValueError` naming what is
-    wrong. A literal secret is accepted only on a development install (`_development`)."""
-    return _parse(_raw(settings), _development(settings))
+    wrong. A literal secret is accepted only on a development install (`development_install`)."""
+    return _parse(_raw(settings), development_install(settings))
 
 
 def triggers_configured(settings: Any) -> bool:

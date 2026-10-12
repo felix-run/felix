@@ -36,7 +36,7 @@ def test_composition_defines_installed_plugins() -> None:
 
 def test_no_hardcoded_optional_plugin_imports() -> None:
     """Core must not hard-import optional plugin packages by name."""
-    banned = {"felix_commerce", "felix_enterprise"}
+    banned = {"felix_commerce", "felix_enterprise", "felix_channels"}
     scanned = 0
     offenders: list[str] = []
     for path in _py_files(HARNESS) + _py_files(API):

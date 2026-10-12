@@ -28,7 +28,12 @@ SOURCE_ROOTS = [
     ROOT / "apps" / "cli" / "src",
     ROOT / "apps" / "api" / "src",
     ROOT / "apps" / "worker" / "src",
+    ROOT / "packages" / "channels" / "src",
 ]
+# Core alone: a plugin package scanned as core would satisfy "core reads this seam" with its own
+# call to the registrar, for every seam, whether or not core reads anything.
+PLUGIN_ROOTS = [ROOT / "packages" / "channels" / "src"]
+CORE_ROOTS = [r for r in SOURCE_ROOTS if r not in PLUGIN_ROOTS]
 
 # Distributions that live behind an optional extra in packages/harness/pyproject.toml.
 # Importing one at module scope breaks the lean install and the default Docker image.
@@ -1242,7 +1247,7 @@ def test_every_plugin_registration_method_has_a_consumer() -> None:
     assert registrars, "PluginRegistry exposes no register_* methods"
 
     used: set[str] = set()
-    for root in SOURCE_ROOTS:
+    for root in CORE_ROOTS:
         for path in root.rglob("*.py"):
             if path == plugins_py:
                 continue

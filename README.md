@@ -870,6 +870,12 @@ Storage and execution:
   development install. The run's instruction is the operator's `prompt`; the sender's payload reaches the
   model only through the `trigger_event` tool the manifest lists, as untrusted output, after a
   marker scan at intake. See `deploy/GOVERNANCE.md`.
+- Talk to an agent from Slack with the optional `felix-channels` plugin (`uv sync --extra
+  channels`). The operator binds a Slack app to one tenant and manifest in `FELIX_CHANNELS`; a
+  mention or a DM starts a durable run as `slack:<team>:<user>`, a Slack thread is one Felix
+  thread, and the worker posts the answer back when the run ends (the `register_run_finished`
+  plugin hook). Requests are verified with the app's signing secret; retries are claimed once.
+  See `deploy/GOVERNANCE.md`.
 - Web Push wakes a subscribed browser -- an installed phone app, a backgrounded tab -- when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to
