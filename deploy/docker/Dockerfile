@@ -47,6 +47,7 @@ COPY packages/ai/pyproject.toml packages/ai/
 COPY apps/cli/pyproject.toml apps/cli/
 COPY packages/client/pyproject.toml packages/client/
 COPY packages/harness/pyproject.toml packages/harness/
+COPY packages/channels/pyproject.toml packages/channels/
 COPY apps/api/pyproject.toml apps/api/
 COPY apps/worker/pyproject.toml apps/worker/
 

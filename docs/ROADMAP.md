@@ -620,8 +620,16 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       equivalent (clone the parent's branch into the child's sandbox); merging a child's branch is
       the parent's own git. W3 is complete with this; *Next:* W4.
 - [~] **W4 — assistant layer.** *Landed:* inbound triggers (`POST /triggers/{id}`, the *Start a
-      run from an inbound event* item below). *Next:* a `felix_channels` plugin package (Slack and Telegram, then email) behind
-      `felix/plugins.py`; `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per
+      run from an inbound event* item below); the `felix-channels` plugin package with Slack
+      (`packages/channels`: a mention or DM starts a durable run as `slack:<team>:<user>`, a Slack
+      thread is a Felix thread, and the answer goes back through the new core
+      `register_run_finished` plugin hook). *Follow-ups:* approvals and `ask_user` as Slack
+      buttons; Telegram, then email, as further adapters; per-user account linking; streaming
+      partial answers; at-least-once delivery for run-finished hooks (row-backed and swept like
+      `webhook_state`), so a Slack outage does not lose a reply; one core `start_run_as(...)` for
+      the start-a-run-as-a-principal flow triggers and channels each copy; the worker running
+      plugin startup hooks (channel secrets masked there before the first reply); a `felix doctor`
+      warning for `FELIX_CHANNELS` set with no plugin installed. *Next:* `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per
       user, plus an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,

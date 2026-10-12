@@ -54,4 +54,13 @@ def tenant_allowed(tenants: frozenset[str] | None, tenant_id: str) -> bool:
     return tenants is None or tenant_id in tenants
 
 
-__all__ = ["REGISTRY_ID_RE", "parse_registry", "parse_tenants", "tenant_allowed"]
+def development_install(settings: Any) -> bool:
+    """A development install, as `deploy/GOVERNANCE.md` means it: `FELIX_ENVIRONMENT=development`
+    *and* `FELIX_AUTH_MODE=none`. The environment alone is not one -- Compose and the settings both
+    default it to `development` -- so a gate that loosens anything (literal secrets in a registry,
+    say) asks this, never the environment."""
+    environment, auth_mode = getattr(settings, "environment", ""), getattr(settings, "auth_mode", "")
+    return environment == "development" and auth_mode == "none"
+
+
+__all__ = ["REGISTRY_ID_RE", "development_install", "parse_registry", "parse_tenants", "tenant_allowed"]

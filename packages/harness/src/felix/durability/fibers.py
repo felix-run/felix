@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select, text
 
@@ -829,11 +829,25 @@ async def _run_fiber_step(
     return row
 
 
-async def _end_background_child(settings: Settings, row: dict[str, Any]) -> None:
-    """A background `task` child's run is over: its worktree, if it left nothing there, goes, so
-    finished tasks do not hold the thread's worktree slots for the checkout TTL. Never raises."""
+#: How long one `register_run_finished` hook may take before the worker moves on. Short: the hook
+#: runs in the step's concurrency slot, so a slow far end (Slack, say) delays every tenant's runs.
+RUN_FINISHED_HOOK_TIMEOUT_S = 10.0
+
+
+async def _after_terminal(settings: Settings, row: dict[str, Any]) -> None:
+    """What follows a run reaching a terminal status, once that status is saved. Never raises."""
     if row.get("status") not in FIBER_TERMINAL_STATUSES:
         return
+    await _end_background_child(settings, row)
+    from felix.durability.runs import DURABLE_CHAT_KIND  # runs imports this module
+
+    if row.get("kind") == DURABLE_CHAT_KIND:
+        await _notify_run_finished(settings, row)
+
+
+async def _end_background_child(settings: Settings, row: dict[str, Any]) -> None:
+    """A background `task` child's run is over: its worktree, if it left nothing there, goes, so
+    finished tasks do not hold the thread's worktree slots for the checkout TTL."""
     if (row.get("state_json") or {}).get("parent_thread_id") and row.get("thread_id"):
         from felix.repos.worktrees import release_if_untouched
 
@@ -841,6 +855,36 @@ async def _end_background_child(settings: Settings, row: dict[str, Any]) -> None
             await release_if_untouched(settings, str(row["tenant_id"]), str(row["thread_id"]))
         except Exception:
             logger.warning("task_worktree_background_cleanup_failed id=%s", row.get("id"), exc_info=True)
+
+
+async def _notify_run_finished(settings: Settings, row: dict[str, Any]) -> None:
+    """The `register_run_finished` hooks of the plugin that started this run, in turn, each bounded
+    and none able to stop the next: a channel posting a run's answer back to where it was asked."""
+    from felix.plugins import RunEnd, RunFinished, get_registry
+
+    origin = (row.get("state_json") or {}).get("origin")
+    owner = str(origin.get("plugin") or "") if isinstance(origin, dict) else ""
+    hooks = get_registry().run_finished_hooks(owner) if owner else []
+    if not hooks:
+        return
+    from felix.durability.runs import run_view
+
+    view = run_view(row)
+    finished = RunFinished(
+        tenant_id=str(row.get("tenant_id") or ""),
+        thread_id=str(row.get("thread_id") or ""),
+        run_id=str(row.get("id") or ""),
+        # Terminal: `_after_terminal` checked it against FIBER_TERMINAL_STATUSES.
+        status=cast("RunEnd", str(view.get("status") or "")),
+        answer=str((view.get("final") or {}).get("content") or ""),
+        error=str(view.get("error") or ""),
+        origin={str(k): str(v) for k, v in origin.items()} if isinstance(origin, dict) else {},
+    )
+    for hook in hooks:
+        try:
+            await asyncio.wait_for(hook(settings, finished), timeout=RUN_FINISHED_HOOK_TIMEOUT_S)
+        except Exception:
+            logger.warning("run_finished_hook_failed id=%s", row.get("id"), exc_info=True)
 
 
 async def _claim_due_memory(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
@@ -942,7 +986,7 @@ async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
     except Exception as exc:  # the lease bookkeeping itself, not a step
         landed, failure = 0, exc
     if failure is None:
-        await _end_background_child(settings, row)
+        await _after_terminal(settings, row)
         return
     if isinstance(failure, FiberLeaseLost):
         # Someone else's fiber now: charging, parking or releasing it would write over the
@@ -963,7 +1007,7 @@ async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
         saved = False
     if saved:
         # Only a status the store holds: an unsaved "dead" is claimed and run again.
-        await _end_background_child(settings, row)
+        await _after_terminal(settings, row)
 
 
 async def resume_due_fibers(settings: Settings) -> int:

@@ -313,6 +313,10 @@ class Settings(BaseSettings):
     # "...{event}...", "events": [...], "scopes": [...], "rate_limit": 60}}. The manifest must
     # list the `trigger_event` tool, which is how the model reads the sender's payload.
     triggers: str = Field(default="", repr=False)
+    # Chat-platform channels, read by the optional `felix-channels` plugin (`packages/channels`):
+    # a JSON map of id -> {platform, tenant, manifest, ...}; the plugin validates it at startup.
+    # Inert without the plugin installed.
+    channels: str = Field(default="", repr=False)
     # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
     webhook_max_attempts: int = Field(default=8, ge=1)
     # Each attempt, end to end. Bounded: a sweep stops starting deliveries after half its 120 s claim,
@@ -1014,8 +1018,9 @@ class Settings(BaseSettings):
             grants = parse_import_sources(self.skill_import_sources)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_SKILL_IMPORT_SOURCES: {exc}") from exc
-        local = self.environment == "development" and self.auth_mode == "none"
-        if not self.skill_import_github_token or local:
+        from felix.settings_registry import development_install
+
+        if not self.skill_import_github_token or development_install(self):
             return
         fix = "Bind each entry to its tenant and owner (acme=github:acme/*), or unset the token."
         if not grants:
