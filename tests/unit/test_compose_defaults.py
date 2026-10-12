@@ -40,6 +40,8 @@ PASSED_THROUGH = {
     "FELIX_GITHUB_OIDC_TTL_SECONDS": "github_oidc_ttl_seconds",
     "FELIX_GITHUB_CALLBACK_PATH": "github_callback_path",
     "FELIX_GITHUB_SIGNUP": "github_signup",
+    "FELIX_GOOGLE_CALLBACK_PATH": "google_callback_path",
+    "FELIX_GOOGLE_LOGIN_TTL_SECONDS": "google_login_ttl_seconds",
     "FELIX_WORKSPACE_DEPLOYMENT_TENANTS": "workspace_deployment_tenants",
     "FELIX_WORKSPACE_BACKEND": "workspace_backend",
     "FELIX_REPO_CLONE_MAX_MB": "repo_clone_max_mb",
@@ -170,12 +172,18 @@ API_ONLY = (
     "FELIX_GITHUB_SIGNUP",
     "FELIX_GITHUB_SIGNUP_LOGINS",
     "FELIX_GITHUB_SIGNUP_SCOPES",
+    "FELIX_GOOGLE_CLIENT_ID",
+    "FELIX_GOOGLE_CLIENT_SECRET",
+    "FELIX_GOOGLE_COOKIE_KEY",
+    "FELIX_GOOGLE_REDIRECT_ORIGINS",
+    "FELIX_GOOGLE_ACCOUNTS",
 )
 # GitHub settings Compose deliberately leaves at the `Settings` default, each with its reason.
 # Anything else named `github_*` must reach the api: a setting that exists and is never
 # delivered is how signup shipped (felix-run/felix#493) with no way to turn it on under Compose.
 GITHUB_NOT_PASSED = {
     "github_timeout_seconds": "a tuning knob; the default is right for every reference deployment",
+    "google_timeout_seconds": "a tuning knob; the default is right for every reference deployment",
 }
 # Read by every process. Without them the setting exists and Compose never delivers it,
 # which is how GitHub login and Web Push shipped unreachable from every Compose deployment.
@@ -209,13 +217,15 @@ def test_signing_and_login_settings_reach_the_api_alone(env_var: str) -> None:
             assert env_var not in values, f"{env_var} reaches {name}, which never mints a token"
 
 
-def test_every_github_setting_reaches_the_api() -> None:
-    """Derived from `Settings`, not listed by hand: the hand-kept list above missed three."""
+def test_every_sign_in_setting_reaches_the_api() -> None:
+    """Derived from `Settings`, not listed by hand: the hand-kept list above missed three, and
+    Google sign-in (0.14.0) shipped with none of its settings delivered, so production could
+    not turn it on."""
     api = _service_env()["api"]
     missing = [
         f"FELIX_{field.upper()}"
         for field in Settings.model_fields
-        if field.startswith("github_")
+        if field.startswith(("github_", "google_"))
         and field not in GITHUB_NOT_PASSED
         and f"FELIX_{field.upper()}" not in api
     ]
