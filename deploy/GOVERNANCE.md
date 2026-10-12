@@ -1253,6 +1253,30 @@ call. The properties above hold unchanged, with three additions:
   the clone runs: the sandbox never holds the token and cannot push. The harness reads the
   repository there with the same git (`git` and `lstat` ops) and still publishes through GitHub's
   API. Removing the repository destroys the sandbox. See `docs/WORKSPACE.md` phase 3c.
+- **A child task works in a worktree of it, on a branch of its own** (`repos/worktrees.py`): a
+  background child always, a foreground one under `spec.delegation.worktree` (not in plan mode,
+  where it is read-only anyway). The harness runs `git worktree add` itself, in the API or worker
+  process, with the same prelude and empty environment as its other git (hooks, fsmonitor and
+  pager off), no lazy fetch, `GIT_ALLOW_PROTOCOL=none` (which outranks a repository's own
+  `protocol.<name>.allow`), and `GIT_CEILING_DIRECTORIES` at the checkout root.
+  A checkout would also run a `filter.<name>.smudge` driver the repository's configuration names,
+  which no fixed key can switch off. So the worktree is registered with `--no-checkout`, its
+  configuration is read *from inside it* with includes resolved (an `includeIf "onbranch:…"` can
+  first apply there), and its files are written only when git answers that no `filter.*` key
+  exists; a match, an error or an over-long answer all refuse, the worktree and its branch are
+  removed, and no child starts. A thread holds at most eight task worktrees that hold work (one
+  turn's parallel `task` calls can pass the count together, so it is a bound, not an exact cap).
+  The file tools refuse `.git`; the dev-box `local` shell runs as the API user and can write a
+  checkout's `.git`, as it can everything else that user owns, so against that shell the filter
+  check is defence in depth, not a boundary: the file pane's `git status` on the thread's own clone
+  runs without it. Use a sandbox backend where that matters. A worktree is the child thread's
+  checkout: when a child's run ends -- foreground, failed, cancelled or background -- a worktree it
+  left nothing in is removed with its branch, unless its own children's worktrees still hang off
+  it; a commit count or status git could not give keeps it. A background run ended some other
+  way (cancelled, expired) keeps its worktree until the TTL. Otherwise it is removed with its thread or after FELIX_REPO_CHECKOUT_TTL_DAYS unused, its
+  branch kept; using it keeps every checkout above it from expiring. It cannot publish: its commits are in
+  the parent's repository, which does. Local checkouts only; under `hosted` a background child is
+  told it has no copy of the repository.
 
 A publish whose opener's connection has lapsed or been revoked publishes nothing and returns
 `[github disconnected]`, naming who must reconnect.

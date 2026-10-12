@@ -21,6 +21,11 @@ child spend the budget again. A background child cannot start background childre
 
 Either way the parent's stream carries `subagent_start` and, for a foreground child,
 `subagent_end`, so a client can tell a child's work from the parent's.
+
+In a thread with a repository checkout, a background child works in a git worktree of it on a
+branch of its own (`repos/worktrees.py`), and so does a foreground child under
+`spec.delegation.worktree` -- bound to its own thread's workspace for the call, while it keeps the
+parent's request. What it committed is in the thread's repository; the answer says on which branch.
 """
 
 from __future__ import annotations
@@ -38,8 +43,10 @@ from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
 from felix.patterns.types import Agent, ChatMessage, InvokeInput
 from felix.security.host_allowlist import EgressBound
 from felix.side_events import emit as emit_side_event
+from felix.tools import task_workspace
 from felix.tools.errors import tool_error_output
 from felix.tools.types import Tool, ToolOutput, define_tool
+from felix.tools.workspace_scope import bound_workspace_thread
 
 if TYPE_CHECKING:
     from felix.limits import EffectiveLimits
@@ -85,12 +92,14 @@ def make_task_tool(
     max_background: int = 3,
     manifest_hooks: ManifestHooks | None = None,
     egress: EgressBound = EgressBound(),
+    worktree: bool = False,
 ) -> Tool:
     """`task(agent, prompt)` over `children`: manifest name -> (compiled agent, description, the
     manifest it compiled from), in declaration order. `ceiling` is the delegating agent's own
     effective limits. `background` adds the `background` argument (`spec.delegation.background`).
     `egress` is the delegating agent's `allow_hosts` bound, which a background child carries into
-    the worker; a foreground child was compiled under it already."""
+    the worker; a foreground child was compiled under it already. `worktree` gives a foreground
+    child a git worktree of the thread's repository (`spec.delegation.worktree`)."""
     names = list(children)
     schema: dict[str, Any] = {
         "type": "object",
@@ -146,25 +155,36 @@ def make_task_tool(
             return await _start_in_background(
                 req, name, manifest, str(args["prompt"]), ceiling, max_background, egress
             )
+        child_thread = _child_thread_id(req.thread_id) if req.thread_id else ""
+        workspace = await task_workspace.prepare(req, child_thread, wanted=worktree)
+        if not isinstance(workspace, task_workspace.ChildWorkspace):
+            return workspace
         await emit_side_event(req.thread_id, "subagent_start", {"agent": name, "background": False})
-        outcome = "error"
+        result = None
         req.limit_state.ceilings.append(ceiling)
         try:
-            result = await child.invoke(
-                InvokeInput(messages=[ChatMessage(role="user", content=str(args["prompt"]))])
-            )
+            with bound_workspace_thread(workspace.thread):
+                result = await child.invoke(
+                    InvokeInput(messages=[ChatMessage(role="user", content=str(args["prompt"]))])
+                )
         except Exception:
             # The child's own failure is the operator's to read; the model gets a fact it can
             # act on (retry, or do the job itself) rather than another agent's traceback.
             logger.warning("task_child_failed agent=%s", name, exc_info=True)
-            return tool_error_output("provider_error", f"[task] agent '{name}' failed before answering")
-        else:
-            outcome = "ok"
         finally:
             req.limit_state.ceilings.remove(ceiling)
+            # Every way out, cancellation included: where its work is, and a worktree it left
+            # nothing in removed. Shielded, so a cancellation that keeps arriving cannot cut it short.
+            where = await asyncio.shield(task_workspace.finish_foreground(req, workspace))
+            outcome = "ok" if result is not None else "error"
             await emit_side_event(req.thread_id, "subagent_end", {"agent": name, "outcome": outcome})
+        if result is None:
+            failed = f"[task] agent '{name}' failed before answering"
+            return tool_error_output("provider_error", f"{failed}\n\n{where}" if where else failed)
         answer = str(result.final.content or "") if result.final else ""
         reply = answer or f"[task] agent '{name}' returned no answer"
+        if where:
+            reply = f"{reply}\n\n{where}"
         if manifest_hooks is not None and manifest_hooks.has("subagent_stop"):
             observed = await manifest_hooks.fire(
                 "subagent_stop", {"agent": name, "outcome": outcome, "answer": answer}
@@ -225,7 +245,11 @@ async def _start_in_background(
         # `task_result` reads a run only from the thread that started it; with no thread there
         # is nothing to tell this caller's runs from another threadless caller's.
         return tool_error_output("invalid_arguments", "[task] a background task needs a conversation thread")
-    child_thread = f"{parent}:task:{uuid.uuid4().hex[:16]}"
+    child_thread = _child_thread_id(parent)
+    # In the thread's repository, if it has one: on a branch of its own, or not at all.
+    workspace = await task_workspace.prepare(req, child_thread, wanted=True)
+    if not isinstance(workspace, task_workspace.ChildWorkspace):
+        return workspace
     try:
         run = await start_durable_chat(
             settings,
@@ -244,6 +268,7 @@ async def _start_in_background(
             egress_ceilings=egress.as_state(),
         )
     except TooManyChildren as full:
+        await task_workspace.discard(req, workspace)
         return tool_error_output(
             "rate_limited",
             f"[task] {full.limit} background tasks are already running here; a slot frees when one "
@@ -251,7 +276,12 @@ async def _start_in_background(
         )
     except Exception:
         logger.warning("task_background_start_failed agent=%s", name, exc_info=True)
+        await task_workspace.discard(req, workspace)
         return tool_error_output("provider_error", f"[task] could not start agent '{name}' in the background")
+    except BaseException:
+        # Cancelled mid-start: no run, so no worktree either.
+        await task_workspace.discard(req, workspace)
+        raise
     task_id = str(run["resume_token"])
     try:
         # Linked once the run exists, so a refused start leaves no orphan thread behind. A failed
@@ -267,10 +297,15 @@ async def _start_in_background(
         "subagent_start",
         {"agent": name, "background": True, "task_id": task_id, "thread_id": child_thread},
     )
+    where = task_workspace.background_note(workspace)
     return (
         f"[task] agent '{name}' is working in the background as task {task_id}. "
-        f"Call {TASK_RESULT_TOOL_NAME} with this id to read its answer."
+        f"Call {TASK_RESULT_TOOL_NAME} with this id to read its answer.{where}"
     )
+
+
+def _child_thread_id(parent: str) -> str:
+    return f"{parent}:task:{uuid.uuid4().hex[:16]}"
 
 
 def make_task_result_tool() -> Tool:

@@ -629,6 +629,11 @@
           "minimum": 1,
           "title": "Max Background",
           "type": "integer"
+        },
+        "worktree": {
+          "default": false,
+          "title": "Worktree",
+          "type": "boolean"
         }
       },
       "required": [

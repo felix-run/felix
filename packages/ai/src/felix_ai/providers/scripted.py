@@ -46,7 +46,7 @@ class ScriptedTurn:
     tool_calls: list[ToolCall] | None = None
     stop_reason: StopReason = "end_turn"
     usage: TokenUsage = field(default_factory=lambda: TokenUsage(input=11, output=7))
-    error: Exception | None = None
+    error: BaseException | None = None
 
 
 @dataclass

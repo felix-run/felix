@@ -7,6 +7,11 @@ through `workspace_root()`, which is synchronous, and can find a thread's checko
 its directory rather than asking a database. API and worker share the root the way they already
 share the workspace volume.
 
+A thread's directory holds one of two shapes of checkout: a clone (`repo`, `branch`, `base` -- the
+branch it tracks -- `github_user_id`, `opened_by`), or a child task's git worktree of another
+thread's clone (`worktree_of`, `parent_key`, `branch`, `base_commit`; `repos/worktrees.py`), which
+has no GitHub identity of its own and publishes nothing.
+
 What keeps a person's repository a person's:
 
 - **Outside the shared workspace.** The checkout root is never under FELIX_WORKSPACE_ROOT, which
@@ -144,6 +149,7 @@ def thread_workspace(settings: Settings, tenant_id: str, thread_id: str) -> Path
             raise ValueError(f"workspace_root: this thread's checkout of {repo} is missing")
         with contextlib.suppress(OSError):
             (directory / USED_FILE).touch()
+        _touch_ancestors(settings, state)
         return path.resolve()
     if status == CLONING:
         raise ValueError(f"workspace_root: this thread's checkout of {repo} is still cloning")
@@ -561,7 +567,37 @@ async def _lstat_all(root: GitRoot, paths: list[str]) -> list[dict[str, Any] | N
     return out
 
 
-async def remove_checkout(settings: Settings, tenant_id: str, thread_id: str) -> bool:
+def _touch_ancestors(settings: Settings, state: dict[str, Any]) -> None:
+    """A child task's worktree in use keeps every checkout above it in use too, up to the clone
+    whose repository they all hang off -- or the sweep would take that out from under it."""
+    seen: set[str] = set()
+    while (key := str(state.get("parent_key") or "")) and key not in seen and len(seen) < 32:
+        seen.add(key)
+        directory = checkout_root(settings) / key
+        with contextlib.suppress(OSError):
+            (directory / USED_FILE).touch()
+        state = _read_state(directory) or {}
+
+
+async def _release_repository(
+    settings: Settings, directory: Path, state: dict[str, Any], *, delete_branch: bool = False
+) -> None:
+    """A local checkout's files, and what hangs off them: a child task's worktree comes out of its
+    parent's repository (`repos/worktrees.py`; its branch kept unless `delete_branch`), and a
+    repository's own task worktrees, which lose their git data with it, are marked failed. The one
+    place removal and the sweep both decide what removing a checkout means."""
+    from felix.repos.worktrees import orphan_worktrees, remove_worktree
+
+    if state.get("worktree_of"):
+        await remove_worktree(settings, directory, state, delete_branch=delete_branch)
+        return
+    await orphan_worktrees(settings, directory.name)
+    await asyncio.to_thread(shutil.rmtree, directory / REPO_DIR, True)
+
+
+async def remove_checkout(
+    settings: Settings, tenant_id: str, thread_id: str, *, delete_branch: bool = False
+) -> bool:
     """Delete the thread's checkout and its state. True when there was one.
 
     A checkout cloned in the thread's sandbox is that scope's whole /workspace, so the sandbox and
@@ -586,6 +622,8 @@ async def remove_checkout(settings: Settings, tenant_id: str, thread_id: str) ->
             raise CheckoutRefused(
                 "workspace_unavailable", "the thread's sandbox could not be cleared; try again shortly"
             ) from exc
+    else:
+        await _release_repository(settings, directory, state, delete_branch=delete_branch)
     shutil.rmtree(directory)
     return True
 
@@ -599,7 +637,11 @@ async def sweep_expired(settings: Settings, *, now: float | None = None) -> int:
     holds the clone (which a re-opened repository would then be refused into)."""
     expired = await asyncio.to_thread(_expired, settings, now)
     removed = 0
-    for directory, state in expired:
+    for directory, snapshot in expired:
+        # Read again: removing an earlier checkout in this sweep may have orphaned this one.
+        state = _read_state(directory)
+        if state is None or state.get("state") != snapshot.get("state"):
+            continue
         if state.get("hosted"):
             from felix.tools.workspace_hosted import GatewayUnavailable, HostedBackend
 
@@ -609,7 +651,7 @@ async def sweep_expired(settings: Settings, *, now: float | None = None) -> int:
                 logger.warning("could not destroy an unused checkout's sandbox; next sweep: %r", exc)
                 continue
         else:
-            await asyncio.to_thread(shutil.rmtree, directory / REPO_DIR, ignore_errors=True)
+            await _release_repository(settings, directory, state)
         _write_state(directory, {**state, "state": EXPIRED, "expired_at": int(time.time() * 1000)})
         removed += 1
     if removed:

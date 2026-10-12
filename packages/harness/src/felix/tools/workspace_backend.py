@@ -305,13 +305,13 @@ def current_workspace_scope() -> tuple[Settings, WorkspaceScope | None]:
     """This call's settings and scope, from the request context; scope None outside a request."""
     from felix.config import get_settings
     from felix.context import try_get_context
-    from felix.tools.workspace_scope import current_scope
+    from felix.tools.workspace_scope import current_scope, workspace_thread
 
     ctx = try_get_context()
     if ctx is None:
         return get_settings(), None
     tenant_id = str(getattr(getattr(ctx, "auth", None), "tenant_id", "") or "")
-    return ctx.settings, WorkspaceScope(tenant_id, getattr(ctx, "thread_id", None), current_scope())
+    return ctx.settings, WorkspaceScope(tenant_id, workspace_thread(ctx), current_scope())
 
 
 def get_workspace_backend(settings: Settings) -> WorkspaceBackend:

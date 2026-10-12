@@ -541,18 +541,19 @@ def hosted_checkout_root() -> HostedRoot | None:
     """This call's thread's repository in its sandbox, when there is one ready under `hosted`."""
     from felix.context import try_get_context
     from felix.repos.checkouts import READY, read_checkout
-    from felix.tools.workspace_scope import current_scope
+    from felix.tools.workspace_scope import current_scope, workspace_thread
 
     ctx = try_get_context()
     if ctx is None or getattr(ctx.settings, "workspace_backend", "local") != "hosted":
         return None
     tenant = str(getattr(ctx.auth, "tenant_id", "") or "")
-    if current_scope() != "thread" or not ctx.thread_id or not tenant:
+    thread = workspace_thread(ctx)
+    if current_scope() != "thread" or not thread or not tenant:
         return None
-    state = read_checkout(ctx.settings, tenant, ctx.thread_id)
+    state = read_checkout(ctx.settings, tenant, thread)
     if not state or not state.get("hosted") or state.get("state") != READY:
         return None
-    return HostedRoot(ctx.settings, thread_scope_path(ctx.settings, tenant, ctx.thread_id))
+    return HostedRoot(ctx.settings, thread_scope_path(ctx.settings, tenant, thread))
 
 
 async def checkpoint_written(ctx: Any) -> None:
