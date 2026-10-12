@@ -169,6 +169,17 @@ services:
       FELIX_GITHUB_SIGNUP: ${FELIX_GITHUB_SIGNUP:-off}
       FELIX_GITHUB_SIGNUP_LOGINS: ${FELIX_GITHUB_SIGNUP_LOGINS:-}
       FELIX_GITHUB_SIGNUP_SCOPES: ${FELIX_GITHUB_SIGNUP_SCOPES:-}
+      # Google sign-in, for the listed accounts only. On this service alone for GitHub's reason:
+      # boot validation mints a probe token with FELIX_JWKS_PRIVATE whenever it is on. The secret
+      # and cookie key may instead come from FELIX_SECRETS_BACKEND (GOOGLE_CLIENT_SECRET,
+      # GOOGLE_COOKIE_KEY), which is how the reference GCP deployment supplies them.
+      FELIX_GOOGLE_CLIENT_ID: ${FELIX_GOOGLE_CLIENT_ID:-}
+      FELIX_GOOGLE_CLIENT_SECRET: ${FELIX_GOOGLE_CLIENT_SECRET:-}
+      FELIX_GOOGLE_COOKIE_KEY: ${FELIX_GOOGLE_COOKIE_KEY:-}
+      FELIX_GOOGLE_REDIRECT_ORIGINS: ${FELIX_GOOGLE_REDIRECT_ORIGINS:-}
+      FELIX_GOOGLE_CALLBACK_PATH: ${FELIX_GOOGLE_CALLBACK_PATH:-/api/auth/google/callback}
+      FELIX_GOOGLE_ACCOUNTS: ${FELIX_GOOGLE_ACCOUNTS:-}
+      FELIX_GOOGLE_LOGIN_TTL_SECONDS: ${FELIX_GOOGLE_LOGIN_TTL_SECONDS:-28800}
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
