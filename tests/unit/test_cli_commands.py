@@ -210,10 +210,13 @@ def test_mint_jwt_refuses_a_ttl_out_of_range(
 
     result = CliRunner().invoke(app, ["mint-jwt", "--sub", "ops", "--ttl", ttl, *extra])
 
-    assert result.exit_code == 2, result.output
-    assert says in result.output, result.output
+    # Under CI (`GITHUB_ACTIONS`) typer colours its usage error, and the escape codes split the
+    # text being matched; read it as a terminal without colour would show it.
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert result.exit_code == 2, output
+    assert says in output, output
     jws = re.compile(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
-    assert jws.search(result.output) is None, result.output
+    assert jws.search(output) is None, output
 
 
 def test_mint_jwt_mints_up_to_a_year_when_asked(
