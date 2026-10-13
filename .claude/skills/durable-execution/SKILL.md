@@ -1,9 +1,9 @@
 ---
 name: durable-execution
-description: How Felix runs work that outlives a request — durable chat runs as fibers (spec.execution.mode durable, 202 + resume_token), the claim/lease/retry loop in the worker, resume and reattach streams and their cursor, signed completion webhooks, cross-process waiters for approvals and client tools, steer/abort, Idempotency-Key on POST /chat and /chat/stream, Web Push for a run waiting on a person, scheduled jobs, and the Taskiq worker and its cron table. Use when editing felix/durability/, felix/jobs/, felix/push/, felix/waiters.py, felix/idempotency.py, felix/steer.py or apps/worker, when a durable run never starts, stalls, repeats a tool call or never reports, when a webhook or push is not delivered, or when adding a periodic task.
+description: How Felix runs work that outlives a request — durable chat runs as fibers (spec.execution.mode durable, 202 + resume_token), the claim/lease/retry loop in the worker, resume and reattach streams and their cursor, signed completion webhooks, cross-process waiters for approvals and client tools, steer/abort, Idempotency-Key on POST /chat and /chat/stream, Web Push for a run waiting on a person, scheduled jobs, authored workflows (typed step graphs and their store), and the Taskiq worker and its cron table. Use when editing felix/durability/, felix/jobs/, felix/workflows/, felix/push/, felix/waiters.py, felix/idempotency.py, felix/steer.py or apps/worker, when a durable run never starts, stalls, repeats a tool call or never reports, when a webhook or push is not delivered, or when adding a periodic task.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*)
 metadata:
-  covers: felix/durability/, felix/jobs/, felix/triggers.py, felix/push/, felix/idempotency.py, felix/waiters.py, felix/steer.py, felix_worker/
+  covers: felix/durability/, felix/jobs/, felix/workflows/, felix/triggers.py, felix/push/, felix/idempotency.py, felix/waiters.py, felix/steer.py, felix_worker/
 ---
 
 # Durable execution
@@ -121,6 +121,23 @@ the worker's startup hook calls. Each built-in task is wrapped in `_instrumented
 `next_run_at_ms` reads the grammar in `jobs/schedule.py` — seconds, `every:30s` / `@every 5m`, the
 `@daily`-style macros and five-field cron in UTC — and a schedule outside it is refused, never
 guessed. An empty schedule is manual only: the sweep skips it and only `POST /jobs/{name}/run` fires it.
+
+## Workflows
+
+An authored workflow (`felix/workflows/`) is a DAG of typed steps, wired output port to input
+port. `schema.py:WorkflowSpec` validates structure on parse; `problems()` checks the graph and
+*returns* (unknown kind, invalid config, unknown step or port, type mismatch, duplicate input,
+unwired required input, cycle), because a half-wired draft must save and only a run refuses one.
+Step kinds are an open registry (`kinds.py:register_step_kind`, built in: `agent_turn`,
+`tool_call`, `approval`, `branch`); a kind's `ports()` is pure, and `kind`/`config` stay open on
+parse so a stored row naming an uninstalled kind still loads. Every step has the implicit control
+input `when`; the workflow's inputs are the outputs of the non-step node `trigger`.
+`store.py` replaces a definition whole and bumps `version`; the row's `revision`
+(`<generation>.<version>`, the generation fixed at creation so a re-created id never reuses one)
+makes a write conditional — `if_revision` / `if_absent`, HTTP's `If-Match` / `If-None-Match: *` —
+and a miss raises `WorkflowConflict` with the current row, a Postgres create race included. A
+plugin kind that raises is a `kind_error` problem, never an exception out of `problems()`. Contract: `tests/conformance/test_workflows_store.py`. Runs,
+routes and execution as fibers are not built yet.
 
 ## memory:// and tests
 
