@@ -53,6 +53,10 @@ x-self-env: &self-env
   # A literal, so it replaces any FELIX_SKILLS_DIR an operator set for the base stack: the
   # setting names one directory, and on this stack it must be this one.
   FELIX_SKILLS_DIR: /app/manifests/self/skills
+  # `contributor` and `triage` declare `spec.workspace.scope: deployment` -- the whole checkout --
+  # which is refused for every tenant the operator has not named. This stack's keys are in
+  # `default` (scripts/dev-key.sh), so that is the one opted in; Settings defaults to none.
+  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-default}
   # Approvals must not be anonymous: under `none` the caller could approve its own mutation.
   # The base anchor already defaults to api_key; pinned here so an overlay cannot loosen it.
   FELIX_AUTH_MODE: api_key
@@ -67,6 +71,11 @@ x-self-env: &self-env
   # the agent writes runs, does not — see deploy/GOVERNANCE.md "Publishing commits". Empty binds
   # an agent with no GitHub tools and no publish tool (logged, not fatal) — set it in .env.
   GITHUB_MCP_TOKEN: ${GITHUB_MCP_TOKEN:-}
+  # The manifests above may name that one secret, for the `default` tenant only -- the tenant
+  # `scripts/dev-key.sh` mints this stack's key for, and FELIX_WORKSPACE_DEPLOYMENT_TENANTS's
+  # default. A stack whose keys name another tenant sets FELIX_MANIFEST_SECRETS in .env. Nothing
+  # else in the environment is reachable through a manifest's `secret:` ref.
+  FELIX_MANIFEST_SECRETS: ${FELIX_MANIFEST_SECRETS:-{"GITHUB_MCP_TOKEN":["default"]}}
   # The default 120s is a chat timeout. A contributor turn carries the skill catalogue, a
   # long transcript and a publication instruction, and the model answers in one go — three
   # runs died here at ~120s, each losing the whole transcript, because `post_with_retry`

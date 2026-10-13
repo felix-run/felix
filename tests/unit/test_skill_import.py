@@ -22,6 +22,7 @@ from felix.skills.library_store import get_skill_library_store
 from felix.storage import MemoryObjectStore
 
 from tests.support.factories import make_settings
+from tests.support.mgmt_keys import long_keys
 from tests.support.skill_import_fake import FakeRepos, blob_sha, skill_md
 
 REPO = "acme/skills"
@@ -898,7 +899,7 @@ _TOKEN_BASE: dict[str, Any] = {
     "database_url": "memory://x",
     "skill_import_github_token": "ghp_" + "b" * 12,
     "auth_mode": "api_key",
-    "auth_api_keys": '{"sk-x": {"tenant_id": "acme", "scopes": ["admin"]}}',
+    "auth_api_keys": long_keys(tenant_id="acme", scopes=["admin"]),
     "redis_url": "redis://127.0.0.1:9/0",
 }
 

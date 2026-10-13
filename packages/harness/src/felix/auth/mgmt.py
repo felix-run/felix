@@ -57,10 +57,21 @@ def holds_mgmt_scopes(settings: Any, held: Iterable[str], *scopes: str) -> bool:
         return True
     if getattr(settings, "auth_mode", "none") == "none":
         return True
-    have = frozenset(held or ())
-    if "admin" in have or "*" in have:
+    if is_operator(settings, held):
         return True
+    have = frozenset(held or ())
     return all(_satisfied(have, s) for s in scopes)
+
+
+def is_operator(settings: Any, held: Iterable[str]) -> bool:
+    """Whether a scope set is an operator's: `admin` or `*`, or anything under `auth_mode=none`,
+    where every caller is the one anonymous operator. The bypass every management check grants,
+    asked on its own by the checks that are not about a scope -- whose approval, whose checkout,
+    whose job."""
+    if getattr(settings, "auth_mode", "none") == "none":
+        return True
+    have = frozenset(held or ())
+    return SCOPE_ADMIN in have or "*" in have
 
 
 def require_mgmt_scopes(request: Request, *scopes: str) -> None:
@@ -105,6 +116,7 @@ def subject_from_request(request: Request) -> str:
 
 
 # Documented management scopes (mint-jwt / API keys).
+SCOPE_ADMIN = "admin"
 SCOPE_MANIFESTS_READ = "manifests:read"
 SCOPE_MANIFESTS_WRITE = "manifests:write"
 SCOPE_AUDIT_READ = "audit:read"
@@ -147,8 +159,12 @@ SCOPE_SKILLS_WRITE = "skills:write"
 # principal, and a shared service credential is one principal for everyone holding it -- so who
 # may author instructions their turns will follow is an operator's decision per credential.
 SCOPE_SKILLS_PERSONAL = "skills:personal"
+# `GET /metrics`. Its label values span every tenant (manifest ids, remote MCP tool names), so
+# reading it is an operator grant, never something any valid credential carries by default.
+SCOPE_METRICS_READ = "metrics:read"
 
 __all__ = [
+    "SCOPE_ADMIN",
     "SCOPE_APPROVALS_READ",
     "SCOPE_APPROVALS_WRITE",
     "SCOPE_ARTIFACTS_READ",
@@ -165,6 +181,7 @@ __all__ = [
     "SCOPE_MANIFESTS_WRITE",
     "SCOPE_MEMORY_READ",
     "SCOPE_MEMORY_WRITE",
+    "SCOPE_METRICS_READ",
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
     "SCOPE_SKILLS_PERSONAL",
@@ -175,6 +192,7 @@ __all__ = [
     "SCOPE_WORKFLOWS_WRITE",
     "auth_from_request",
     "holds_mgmt_scopes",
+    "is_operator",
     "require_mgmt_scopes",
     "subject_from_request",
     "tenant_id_from_request",

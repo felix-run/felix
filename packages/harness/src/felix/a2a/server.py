@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -14,6 +15,11 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns.types import ChatMessage, ImageAttachment, InvokeInput
 from felix.thread_ids import a2a_thread_id
 from felix.tools.provider import ToolProvider
+
+logger = logging.getLogger("felix.a2a.server")
+
+#: What a failed task says about why. Fixed, because the reason is the operator's to read.
+A2A_TASK_FAILED = "the agent run failed; the server log has the reason, under this task's id"
 
 
 def _extract_message(params: dict[str, Any]) -> tuple[str, list[tuple[bytes, str]]]:
@@ -61,6 +67,34 @@ def _rpc_error(rpc_id: str | int | None, code: int, message: str) -> dict[str, A
     return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
 
 
+async def _task_refusal(
+    settings: Settings, tenant_id: str, task: dict[str, Any], auth: AuthContext
+) -> str | None:
+    """Why `auth` may not read or cancel `task`, or None when it may.
+
+    A task holds its manifest's answer, so reading one is reading that agent's output: the caller
+    must be one the task's manifest admits -- its `auth.inbound` and a credential's
+    `felix_manifests` pin, the check `message/send` makes before it runs. Tasks are otherwise shared
+    across the tenant like threads are. A task whose manifest no longer resolves is refused rather
+    than served with no check at all.
+    """
+    from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
+    from felix.runtime import resolve_tenant_manifest
+
+    name = str(task.get("manifest") or settings.default_manifest)
+    try:
+        resolved = await resolve_tenant_manifest(
+            settings, tenant_id, name, thread_id=a2a_thread_id(tenant_id, str(task.get("id") or ""))
+        )
+    except LookupError, ValueError:
+        return "the task's manifest no longer resolves"
+    try:
+        enforce_inbound_auth(resolved.manifest, auth)
+    except InboundAuthError as exc:
+        return exc.detail
+    return None
+
+
 async def handle_rpc(
     *,
     settings: Settings,
@@ -72,6 +106,10 @@ async def handle_rpc(
     auth: AuthContext | None = None,
 ) -> dict[str, Any]:
     from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+
+    # A caller that passes no auth is trusted in-process code (the eval runner, a peer hop), as the
+    # route never is: it always passes the request's.
+    call_auth = auth or AuthContext(tenant_id=tenant_id, principal_sub="a2a", anonymous=False)
 
     if method == "agent/authenticatedExtendedCard":
         from felix.a2a.card import build_agent_card
@@ -91,7 +129,7 @@ async def handle_rpc(
     if method == "message/send":
         from felix.a2a.parts import PartError
 
-        name = str(params.get("manifest") or settings.default_manifest)
+        requested = str(params.get("manifest") or "")
         try:
             text, images = _extract_message(params)
         except PartError as exc:
@@ -117,22 +155,26 @@ async def handle_rpc(
             # none of this, which is why the cap has to be enforced rather than tested
             # for on the CI path.
             return _rpc_error(rpc_id, -32602, f"taskId is not usable as a thread id: {task_id[:80]!r}")
-        ts = int(time.time() * 1000)
-        await task_store.put_task(
-            settings,
-            tenant_id,
-            {
-                "id": task_id,
-                "status": {"state": "working", "timestamp": ts},
-                "manifest": name,
-                "artifacts": [],
-            },
-        )
-        call_auth = auth or AuthContext(tenant_id=tenant_id, principal_sub="a2a", anonymous=False)
+        # A `taskId` naming a task that exists continues it, so the caller is held to that task's
+        # manifest before anything is written: the record carries its answer, and writing first
+        # let a caller its manifest refuses overwrite the answer, state and manifest of the task.
+        existing = await task_store.get_task(settings, tenant_id, task_id) if raw_task_id else None
+        if existing is not None:
+            stored = str(existing.get("manifest") or settings.default_manifest)
+            if requested and requested != stored:
+                return _rpc_error(rpc_id, -32602, "taskId names a task of another manifest")
+            if refusal := await _task_refusal(settings, tenant_id, existing, call_auth):
+                return _rpc_error(rpc_id, -32001, refusal)
+            requested = stored
+        name = requested or settings.default_manifest
+        # Set once the caller is admitted; until then nothing is written for this task id.
+        admitted = False
 
         async def refused(code: int, message: str) -> dict[str, Any]:
             # The task is recorded as failed first: returned from here, it was left `working`
-            # and `tasks/get` said so forever.
+            # and `tasks/get` said so forever. Not before admission: nothing was written then.
+            if not admitted:
+                return _rpc_error(rpc_id, code, message)
             await task_store.put_task(
                 settings,
                 tenant_id,
@@ -148,6 +190,17 @@ async def handle_rpc(
         try:
             resolved = await resolve_tenant_manifest(settings, tenant_id, name, thread_id=thread)
             await prepare_tenant_invoke(settings, resolved=resolved, auth=call_auth, thread_id=thread)
+            await task_store.put_task(
+                settings,
+                tenant_id,
+                {
+                    "id": task_id,
+                    "status": {"state": "working", "timestamp": int(time.time() * 1000)},
+                    "manifest": name,
+                    "artifacts": [],
+                },
+            )
+            admitted = True
             from felix.attachments import AttachmentError
             from felix.governance.inbound import INBOUND_SCREENED_EXTRA, apply_inbound_screening
             from felix.patterns.model_vision import unseeable_image_problem
@@ -202,38 +255,45 @@ async def handle_rpc(
                 return await refused(-32001, exc.detail)
             if isinstance(exc, InboundScreeningError):
                 return await refused(-32002, exc.detail)
+            # The stored task is what `tasks/get` hands any caller in the tenant, so it says the run
+            # failed and nothing more: the exception's text is a database host, an upstream model's
+            # own error body, a path. The task id joins this line to the log entry that has it.
+            # The log gets the type and the message with every registered secret masked -- not the
+            # traceback, which `logger.exception` would write unmasked, since no formatter redacts.
+            from felix.logging_setup import loggable
+            from felix.secrets import collected_secret_values, redact_text
+
+            logger.error(
+                "a2a task %s failed: %s: %s",
+                loggable(task_id, limit=200),
+                type(exc).__name__,
+                loggable(redact_text(str(exc), collected_secret_values(settings)), limit=500),
+            )
             task = {
                 "id": task_id,
                 "status": {
                     "state": "failed",
                     "timestamp": int(time.time() * 1000),
-                    "message": str(exc),
+                    "message": A2A_TASK_FAILED,
                 },
                 "manifest": name,
                 "artifacts": [],
             }
-        await task_store.put_task(settings, tenant_id, task)
+        if admitted:
+            await task_store.put_task(settings, tenant_id, task)
         return {"jsonrpc": "2.0", "id": rpc_id, "result": task}
 
-    if method == "tasks/get":
+    if method in {"tasks/get", "tasks/cancel", "tasks/resubscribe"}:
         task_id = str(params.get("id") or params.get("taskId") or "")
         task = await task_store.get_task(settings, tenant_id, task_id) if task_id else None
         if task is None:
             return _rpc_error(rpc_id, -32001, f"Task not found: {task_id}")
-        return {"jsonrpc": "2.0", "id": rpc_id, "result": task}
-
-    if method == "tasks/cancel":
-        task_id = str(params.get("id") or params.get("taskId") or "")
-        task = await task_store.cancel_task(settings, tenant_id, task_id) if task_id else None
-        if task is None:
-            return _rpc_error(rpc_id, -32001, f"Task not found: {task_id}")
-        return {"jsonrpc": "2.0", "id": rpc_id, "result": task}
-
-    if method == "tasks/resubscribe":
-        task_id = str(params.get("id") or params.get("taskId") or "")
-        task = await task_store.get_task(settings, tenant_id, task_id) if task_id else None
-        if task is None:
-            return _rpc_error(rpc_id, -32001, f"Task not found: {task_id}")
+        if refusal := await _task_refusal(settings, tenant_id, task, call_auth):
+            return _rpc_error(rpc_id, -32001, refusal)
+        if method == "tasks/cancel":
+            task = await task_store.cancel_task(settings, tenant_id, task_id)
+            if task is None:
+                return _rpc_error(rpc_id, -32001, f"Task not found: {task_id}")
         return {"jsonrpc": "2.0", "id": rpc_id, "result": task}
 
     return _rpc_error(rpc_id, -32601, f"Method not found: {method}")

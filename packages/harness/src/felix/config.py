@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import socket
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -21,6 +22,9 @@ MIN_SHELL_RUNNER_TOKEN_CHARS = 32
 # The workspace gateway Worker refuses a bearer shorter than this (`MIN_TOKEN_CHARS` in
 # deploy/cloudflare/workspace-gateway/src/handler.ts); boot refuses it here first.
 MIN_WORKSPACE_GATEWAY_TOKEN_CHARS = 32
+# An API key is a bearer compared verbatim; outside development one shorter than this is guessable
+# enough that the rate limiter is the only thing standing between it and a caller.
+MIN_API_KEY_CHARS = 32
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -256,6 +260,12 @@ class Settings(BaseSettings):
     secrets_dir: str = "./secrets"
     # Extra secret names to resolve via backend for output masking (comma-separated)
     secret_names: str = ""
+    # Which secrets a manifest's `secret:NAME` refs may resolve, per tenant (`felix.secrets.
+    # assert_manifest_secret_permitted`). JSON: {"GITHUB_MCP_TOKEN": ["acme"], "DOCS_MCP_TOKEN": "*"}. Empty
+    # allows none: the backend sees every secret the process holds, and a manifest chooses where
+    # the value is sent. Felix's own (`FELIX_*`, the hydrated keys, infrastructure URLs) are
+    # refused whatever this says.
+    manifest_secrets: str = Field(default="", repr=False)
     aws_region: str = "us-east-1"
     gcp_project: str = ""
     # Deploy target hint (docs/helm only — runtime stays agnostic)
@@ -378,6 +388,12 @@ class Settings(BaseSettings):
     # rows are swept — a grant that can still authorize a call is never deleted, however
     # old, because retention must not silently revoke authorization.
     approval_retention_days: int = Field(default=0, ge=0)
+    # Separation of duties on `POST /approvals/{id}/decide`: when on, the person whose run asked
+    # for an approval cannot answer it -- a second person must, or an operator (`admin` / `*`).
+    # The plan approval is exempt: it is how its asker leaves plan mode. Off by default, because
+    # a person approving their own agent's calls is the ordinary single-user loop; turn it on
+    # where an approval is meant to be a second pair of eyes.
+    approvals_require_second_person: bool = False
 
     # --- scale-out ---
     scale_out: bool = False
@@ -693,7 +709,9 @@ class Settings(BaseSettings):
     # Tenants whose manifests may ask for `spec.workspace.scope: deployment` -- the whole of
     # FELIX_WORKSPACE_ROOT, every other scope's files included. Comma-separated; the operator's own
     # tenants only. Any other tenant asking for it is refused (`felix.tools.workspace_scope`).
-    workspace_deployment_tenants: str = "default"
+    # Empty by default: `default` is where an API key without a `tenant_id` lands, so defaulting
+    # to it handed the whole root to every such key. The self-build overlay opts `default` in.
+    workspace_deployment_tenants: str = ""
     # Where a thread's or a tenant's workspace lives. `local`: under FELIX_WORKSPACE_ROOT, on this
     # host. `hosted`: in its own sandbox, through the workspace gateway Worker
     # (deploy/cloudflare/workspace-gateway), so a model's file operations never touch this host.
@@ -788,6 +806,7 @@ class Settings(BaseSettings):
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
         self._validate_egress_credentials()
+        self._validate_manifest_secrets()
         self._validate_triggers()
         self._validate_skill_update_webhooks()
         self._validate_push()
@@ -902,14 +921,36 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise RuntimeError(f"FELIX_EGRESS_CREDENTIALS: {exc}") from exc
 
+    def _validate_manifest_secrets(self) -> None:
+        """A malformed `FELIX_MANIFEST_SECRETS` fails the boot rather than reading as an empty allowlist,
+        and so does one opening a secret an operator registry (egress, webhooks, …) already binds."""
+        from felix.secret_policy import assert_manifest_secrets_unbound
+
+        try:
+            # Parses the allowlist first, so a malformed one is reported as such.
+            assert_manifest_secrets_unbound(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_MANIFEST_SECRETS: {exc}") from exc
+
     def _validate_triggers(self) -> None:
         """A malformed `FELIX_TRIGGERS` fails the boot, not the first event it would receive."""
-        from felix.triggers import parse_triggers
+        from felix.triggers import TIMESTAMP_TOLERANCE_S, parse_triggers, triggers_configured
 
         try:
             parse_triggers(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_TRIGGERS: {exc}") from exc
+        # A delivery's claim is what stops a replay of it starting a second run, and it lives
+        # `idempotency_ttl_seconds`. The signature accepts a timestamp up to the tolerance either
+        # side of now, so one signed delivery verifies for twice the tolerance: a claim that
+        # expires sooner hands a captured delivery a window to be replayed in.
+        replay_window = 2 * TIMESTAMP_TOLERANCE_S
+        if triggers_configured(self) and self.idempotency_ttl_seconds < replay_window:
+            raise RuntimeError(
+                f"FELIX_IDEMPOTENCY_TTL_SECONDS={self.idempotency_ttl_seconds} is shorter than the "
+                f"{replay_window}s a signed trigger delivery stays valid; with FELIX_TRIGGERS set it "
+                f"must be at least {replay_window}, or a replayed delivery starts a second run."
+            )
 
     def _validate_skill_update_webhooks(self) -> None:
         """A `FELIX_SKILL_UPDATE_WEBHOOKS` binding to an endpoint that is not registered, or not
@@ -1017,7 +1058,8 @@ class Settings(BaseSettings):
         """
         from felix.auth.context import assert_valid_tenant_id
 
-        for label, value in _configured_tenant_ids(self):
+        for found in configured_tenants(self):
+            label, value = found.label, found.tenant
             try:
                 assert_valid_tenant_id(value)
             except ValueError as exc:
@@ -1130,6 +1172,32 @@ class Settings(BaseSettings):
                 "characters: the gateway refuses a shorter one, and so every call."
             )
 
+    def _validate_api_keys(self) -> None:
+        """`FELIX_AUTH_API_KEYS` is checked whole at boot, because the request path cannot say why.
+
+        The parser answered malformed JSON with no keys at all, so a typo in the one setting that
+        admits callers came out as a 401 on every request and no log line. A string `scopes`
+        (`"admin"`) was iterated into the characters `a`, `d`, `m`, `i`, `n` -- a key that held no
+        scope its operator gave it, and every single-letter one nobody did. The door reads the
+        same parser (`felix.auth.api_keys`), so the two cannot disagree about what a key grants.
+        """
+        from felix.auth.api_keys import parse_api_keys
+
+        try:
+            keys = parse_api_keys(self.auth_api_keys)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_AUTH_API_KEYS {exc}") from None
+        # Outside development -- production, staging, anything else: a short key in a local `.env`
+        # is a choice, one on a reachable deployment is a guess away from a caller.
+        if self.environment == "development":
+            return
+        for index, key in enumerate(keys, start=1):
+            if len(key) < MIN_API_KEY_CHARS:
+                raise RuntimeError(
+                    f"FELIX_AUTH_API_KEYS entry {index}: an API key must be at least {MIN_API_KEY_CHARS} "
+                    "characters; generate one with `openssl rand -hex 24`"
+                )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -1145,6 +1213,18 @@ class Settings(BaseSettings):
                     f"FELIX_AUTH_MODE=none may only bind loopback; FELIX_HOST={self.host!r} "
                     "is reachable off-host. Set FELIX_AUTH_MODE=api_key|jwt, or bind 127.0.0.1."
                 )
+            # Said on every boot it is accepted, because nothing else will say it: every request is
+            # anonymous with every scope. And the check above reads the *setting*: Granian binds
+            # what its own command line names, so a `--host 0.0.0.0` beside FELIX_HOST=127.0.0.1
+            # passes it and serves this API to the network.
+            logger.warning(
+                "FELIX_AUTH_MODE=none: the API is unauthenticated, and every caller holds every "
+                "scope. The loopback check read FELIX_HOST=%r, not the address the server actually "
+                "binds; make sure nothing off-host can reach it.",
+                self.host,
+            )
+        if self.auth_mode == "api_key":
+            self._validate_api_keys()
         if not self.redis_url.strip() and self.environment != "development":
             # Approvals, client-tool answers and UI prompts are delivered between processes
             # (API to worker) over Redis; without it the waiter is a process-local future,
@@ -1259,55 +1339,98 @@ DEFAULT_DECISION_ROUTES: dict[str, dict[str, str]] = {
 }
 
 
-def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
-    """(setting name, tenant id) for every tenant an operator pins in configuration.
+# Where in configuration a tenant id comes from. A boot check that cares which doors lead into a
+# tenant filters on this (`felix.auth.google._check_pinned_accounts`), and a test holds that check
+# to every kind, so a new source cannot be added without someone deciding whether it counts.
+TenantSourceKind = Literal[
+    "jwt_fixed",  # a verifier's `;tenant=fixed:` (not the self verifier's)
+    "jwt_self_fixed",  # the self verifier's `;tenant=fixed:`, which every login token lands in
+    "allowlist",  # FELIX_ALLOWED_TENANTS, the tenants a claim may name
+    "api_key",  # FELIX_AUTH_API_KEYS; an entry with no `tenant_id` is `default`
+    "github_org",  # FELIX_GITHUB_ORG_TENANTS
+    "google",  # FELIX_GOOGLE_ACCOUNTS
+    "webhook",  # FELIX_SKILL_UPDATE_WEBHOOKS, an outbound endpoint bound to a tenant
+    "trigger",  # FELIX_TRIGGERS, a signed event that starts a run in a tenant
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredTenant:
+    kind: TenantSourceKind
+    # Names the setting and entry, never a credential: an API key is labelled by its tenant.
+    label: str
+    tenant: str
+
+
+def configured_tenants(settings: Settings) -> list[ConfiguredTenant]:
+    """Every tenant an operator names in configuration, with where it was named.
 
     The claim path checks itself; these do not, and each one fails in a different and
-    unhelpful place if it is malformed — see `_validate_jwt_tenant_posture`.
+    unhelpful place if it is malformed — see `_validate_jwt_tenant_posture`. Shape errors are each
+    setting's own validator's to report, so a setting that does not parse contributes nothing here.
     """
-    import json
 
     from felix.auth.jwt import parse_verifiers
 
-    found: list[tuple[str, str]] = []
+    found: list[ConfiguredTenant] = []
     for verifier in parse_verifiers(settings.jwt_verifiers):
         if verifier.tenant_mode == "fixed" and verifier.fixed_tenant:
             label = f"FELIX_JWT_VERIFIERS (;tenant=fixed:{verifier.fixed_tenant})"
-            found.append((label, verifier.fixed_tenant))
+            kind: TenantSourceKind = "jwt_self_fixed" if verifier.scheme == "self" else "jwt_fixed"
+            found.append(ConfiguredTenant(kind, label, verifier.fixed_tenant))
     found.extend(
-        (f"FELIX_ALLOWED_TENANTS ({name})", name)
+        ConfiguredTenant("allowlist", f"FELIX_ALLOWED_TENANTS ({name})", name)
         for name in (p.strip() for p in (settings.allowed_tenants or "").split(","))
         if name
     )
+    from felix.auth.api_keys import parse_api_keys
+
     try:
-        keys = json.loads(settings.auth_api_keys) if settings.auth_api_keys.strip() else {}
-    except ValueError, TypeError:
-        keys = {}  # shape errors are reported by the api-key parser, not here
-    if isinstance(keys, dict):
-        found.extend(
-            (f"FELIX_AUTH_API_KEYS ({tenant})", tenant)
-            for entry in keys.values()
-            if isinstance(entry, dict) and isinstance(tenant := entry.get("tenant_id"), str) and tenant
-        )
+        keys = parse_api_keys(settings.auth_api_keys)
+    except ValueError:
+        # Shape errors are `_validate_api_keys`'s to report, and only under `auth_mode=api_key`:
+        # in any other mode the setting is unread, so a malformed one is inert.
+        keys = {}
+    # Every entry, the defaulted tenant too: the parser's default is the tenant the door uses.
+    found.extend(
+        ConfiguredTenant("api_key", f"FELIX_AUTH_API_KEYS ({entry.tenant_id})", entry.tenant_id)
+        for entry in keys.values()
+    )
     from felix.auth.github import parse_org_tenants
 
     try:
         grants = parse_org_tenants(settings.github_org_tenants)
     except ValueError:
-        grants = {}  # shape errors are reported by `validate_login_config`, not here
-    found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
+        grants = {}
+    found.extend(
+        ConfiguredTenant("github_org", f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant)
+        for g in grants.values()
+    )
     from felix.auth.google import parse_accounts
 
     try:
         accounts = parse_accounts(settings.google_accounts)
     except ValueError:
-        accounts = {}  # shape errors are reported by `validate_google_config`, not here
-    found.extend((f"FELIX_GOOGLE_ACCOUNTS ({a.email})", a.tenant) for a in accounts.values())
+        accounts = {}
+    found.extend(
+        ConfiguredTenant("google", f"FELIX_GOOGLE_ACCOUNTS ({a.email})", a.tenant) for a in accounts.values()
+    )
     from felix.durability.webhooks import parse_tenant_endpoint_bindings
 
     try:
         bindings = parse_tenant_endpoint_bindings(settings.skill_update_webhooks)
     except ValueError:
-        bindings = {}  # shape errors are reported by `_validate_skill_update_webhooks`, not here
-    found.extend((f"FELIX_SKILL_UPDATE_WEBHOOKS ({tenant})", tenant) for tenant in bindings)
+        bindings = {}
+    found.extend(
+        ConfiguredTenant("webhook", f"FELIX_SKILL_UPDATE_WEBHOOKS ({tenant})", tenant) for tenant in bindings
+    )
+    from felix.triggers import parse_triggers
+
+    try:
+        triggers = parse_triggers(settings)
+    except ValueError:
+        triggers = {}
+    found.extend(
+        ConfiguredTenant("trigger", f"FELIX_TRIGGERS ({name})", t.tenant) for name, t in triggers.items()
+    )
     return found

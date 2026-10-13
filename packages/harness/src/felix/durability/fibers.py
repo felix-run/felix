@@ -7,14 +7,16 @@ import contextlib
 import logging
 import time
 import uuid
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select, text
 
-from felix.auth.context import MANIFESTS_CLAIM
 from felix.config import Settings, process_identity
 from felix.db.models import Fiber
 from felix.db.session import _use_memory, get_session_factory
+
+if TYPE_CHECKING:
+    from felix.context import AuthContext
 
 logger = logging.getLogger("felix.durability.fibers")
 
@@ -592,41 +594,25 @@ async def stop_fiber(settings: Settings, tenant_id: str, fiber_id: str, reason: 
     return False
 
 
-def auth_from_state(tenant_id: str, stored_auth: object) -> Any:
+def auth_from_state(tenant_id: str, stored_auth: object) -> AuthContext:
     """The `AuthContext` a run resumes under, from the caller it recorded at enqueue.
 
     Shared by the invoke op and the workflow engine, which starts each agent step's child run as
-    the person who started the workflow. A fiber with no recorded caller gets principal "fiber"
-    and no scopes: everything policied denies, the fail-closed direction.
+    the person who started the workflow. The reading itself is `felix.auth.recorded.replay_caller`,
+    the one every kind of later work uses: actor `fiber`, `acting_for` the person who started it,
+    their scopes, scheme and manifest pin. The actor is the fiber, not the person -- every other
+    machine actor does the same (`cron`, `eval`, `a2a`) -- so an audit row never claims alice did
+    what a worker did against a manifest that may have changed underneath her. A fiber with no
+    recorded caller gets principal "fiber" and no scopes: everything policied denies, the
+    fail-closed direction.
     """
-    from felix.context import AuthContext
+    from felix.auth.recorded import replay_caller
 
-    if not isinstance(stored_auth, dict):
-        stored_auth = {}
-    return AuthContext(
+    return replay_caller(
+        stored_auth if isinstance(stored_auth, dict) else None,
         tenant_id=tenant_id,
-        # The actor is the fiber, not the person. Every other machine actor in
-        # this codebase does the same — `cron`, `eval`, `a2a` — and making the
-        # resumed run claim to *be* the caller would put `principal_subj=alice,
-        # scheme=jwt` in an audit row for work a worker did against a manifest
-        # that may have changed underneath it.
-        principal_sub="fiber",
-        on_behalf_of=str(stored_auth.get("principal_sub") or ""),
-        # A list, or nothing. `frozenset("admin")` is {"a","d","m","i","n"} —
-        # the one spot where the surrounding defensiveness was decorative.
-        scopes=frozenset(
-            str(x) for x in (stored_auth.get("scopes") or []) if isinstance(stored_auth.get("scopes"), list)
-        ),
-        anonymous=bool(stored_auth.get("anonymous", False)),
-        scheme=str(stored_auth.get("scheme") or "anonymous"),
+        actor="fiber",
         skill_owner=_stored_skill_owner(stored_auth),
-        # The starter's manifest pin, the one claim a resume must carry: without it a
-        # pinned credential's run would delegate to any manifest from the worker.
-        raw_claims=(
-            {MANIFESTS_CLAIM: stored_auth[MANIFESTS_CLAIM]}
-            if isinstance(stored_auth, dict) and MANIFESTS_CLAIM in stored_auth
-            else {}
-        ),
     )
 
 

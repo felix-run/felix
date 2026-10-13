@@ -18,6 +18,12 @@ from felix_cli.skills import skills_app
 if TYPE_CHECKING:
     from felix.config import Settings
 
+# `mint-jwt` lifetimes. A minted token cannot be revoked, so its expiry is the whole of its life: a
+# day by default ceiling (a working session, short enough that a leaked token ages out), a year at
+# most when asked for by name with --allow-long-ttl (a CI secret rotated on a calendar).
+MINT_MAX_TTL_SECONDS = 86_400
+MINT_HARD_MAX_TTL_SECONDS = 31_536_000
+
 app = typer.Typer(
     name="felix",
     help="Felix agents harness CLI.",
@@ -219,13 +225,36 @@ def mint_jwt(
     sub: str = typer.Option(..., "--sub", help="Subject claim."),
     tenant: str = typer.Option("default", "--tenant", "-t"),
     scopes: str = typer.Option(
-        "audit:read,manifests:write",
+        "",
         "--scopes",
-        help="Comma-separated scopes.",
+        help="Comma-separated scopes. None by default: name every grant the token should carry.",
     ),
-    ttl_seconds: int = typer.Option(3600, "--ttl"),
+    ttl_seconds: int = typer.Option(
+        3600, "--ttl", min=1, help=f"Lifetime in seconds, 1 to {MINT_MAX_TTL_SECONDS}."
+    ),
+    allow_long_ttl: bool = typer.Option(
+        False,
+        "--allow-long-ttl",
+        help=f"Permit a --ttl above {MINT_MAX_TTL_SECONDS}s, up to a year ({MINT_HARD_MAX_TTL_SECONDS}s).",
+    ),
+    audience: str = typer.Option("", "--aud", help="Audience claim (`aud`); omitted when empty."),
 ) -> None:
     """Mint a self-issued JWT using FELIX_JWKS_PRIVATE."""
+    # A long token is asked for by name, and none outlives a year; the floor is typer's `min=1`.
+    if ttl_seconds > MINT_HARD_MAX_TTL_SECONDS:
+        typer.echo(
+            f"--ttl may not exceed {MINT_HARD_MAX_TTL_SECONDS} seconds (a year), even with --allow-long-ttl",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if ttl_seconds > MINT_MAX_TTL_SECONDS and not allow_long_ttl:
+        typer.echo(
+            f"--ttl must be between 1 and {MINT_MAX_TTL_SECONDS} seconds; pass --allow-long-ttl "
+            f"for up to {MINT_HARD_MAX_TTL_SECONDS}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    aud = audience.strip()
     from felix.auth.context import assert_valid_tenant_id
     from felix.auth.jwt import mint_token
     from felix.config import get_settings
@@ -255,6 +284,7 @@ def mint_jwt(
         tenant_id=tenant,
         scopes=[s.strip() for s in scopes.split(",") if s.strip()],
         ttl_seconds=ttl_seconds,
+        extra_claims={"aud": aud} if aud else None,
     )
     # Not rprint: rich wraps to the console width, and a 2048-bit RS256 token is about
     # 550 characters, so `TOKEN=$(felix mint-jwt …)` captured seven lines of base64 with
@@ -810,6 +840,45 @@ def _skill_import_check_notes(settings: Settings) -> list[str]:
     return notes
 
 
+def _tenants_refusing(secret: str, tenants: list[str], settings: Settings) -> list[str]:
+    """The tenants among `tenants` whose manifests may not reference `secret`."""
+    from felix.secret_policy import assert_manifest_secret_permitted
+    from felix.secrets import SecretNotPermittedError
+
+    refused = []
+    for tenant in tenants:
+        try:
+            assert_manifest_secret_permitted(secret, tenant, settings)
+        except SecretNotPermittedError:
+            refused.append(tenant)
+    return refused
+
+
+def _manifest_secret_notes(settings: Settings) -> list[str]:
+    """Notes, never failures, for a bundled manifest (`manifests/`, `FELIX_MANIFESTS_DIR`) naming a
+    `secret:` ref that `FELIX_MANIFEST_SECRETS` does not permit for a tenant it would run under: the
+    tenants this configuration pins, or `default` when it pins none. Such a manifest fails every
+    compile for that tenant with a 422, which reads like a broken manifest rather than a setting."""
+    from felix.config import configured_tenants
+    from felix.manifests.loader import list_bundled, load_bundled
+    from felix.manifests.secret_refs import manifest_secret_names
+
+    tenants = sorted({found.tenant for found in configured_tenants(settings)}) or ["default"]
+    notes: list[str] = []
+    for name in list_bundled():
+        try:
+            manifest = load_bundled(name)
+        except Exception:
+            continue  # `make bundle` and `felix validate-manifest` report a manifest that does not load
+        notes.extend(
+            f"manifest {name!r} names secret:{secret}, which FELIX_MANIFEST_SECRETS does not "
+            f"permit for tenant {', '.join(refused)}: it will not compile there"
+            for secret in manifest_secret_names(manifest)
+            if (refused := _tenants_refusing(secret, tenants, settings))
+        )
+    return notes
+
+
 def _skill_update_webhook_notes(settings: Settings) -> list[str]:
     """A note, never a failure, when `FELIX_SKILL_UPDATE_WEBHOOKS` is set. Checks run on the API and
     on the worker and only queue the event; the worker sends it and re-checks the binding first.
@@ -950,7 +1019,12 @@ def doctor_cmd() -> None:
     # judgement, while "this is switched on and cannot work" is true in any environment.
     for row in _capability_findings(settings) + _posture_findings(settings):
         check(row.label, row.passed, row.detail, remedy=row.remedy)
-    for note in _skill_import_check_notes(settings) + _skill_update_webhook_notes(settings):
+    notes = (
+        _skill_import_check_notes(settings)
+        + _skill_update_webhook_notes(settings)
+        + _manifest_secret_notes(settings)
+    )
+    for note in notes:
         rprint(f"  [yellow]note[/yellow]  {note}")
     if settings.environment == "development":
         rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")

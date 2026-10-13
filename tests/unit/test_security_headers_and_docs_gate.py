@@ -18,6 +18,8 @@ from felix.config import Settings
 from felix_api.app import create_app
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.mgmt_keys import long_keys
+
 KEYS = '{"sk-a": {"tenant_id": "acme", "sub": "a", "scopes": ["*"]}}'
 
 
@@ -167,7 +169,7 @@ def test_opening_the_reference_on_an_authenticated_deployment_is_warned(
     """A legitimate choice, so a warning rather than a refusal — but not a silent one."""
     with caplog.at_level("WARNING", logger="felix.config"):
         _settings(
-            auth_mode="api_key", auth_api_keys=KEYS, docs_public=True, environment="production"
+            auth_mode="api_key", auth_api_keys=long_keys(), docs_public=True, environment="production"
         ).validate_runtime()
         warned = [r for r in caplog.records if "FELIX_DOCS_PUBLIC" in r.getMessage()]
     assert len(warned) == 1

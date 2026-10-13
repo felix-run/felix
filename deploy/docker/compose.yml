@@ -17,6 +17,9 @@ x-felix-env: &felix-env
   # Commands MCP stdio servers may spawn. Empty = stdio disabled (the default).
   FELIX_MCP_STDIO_ALLOWED_COMMANDS: ${FELIX_MCP_STDIO_ALLOWED_COMMANDS:-}
   FELIX_CONSUMER_SHARED_SECRET: ${FELIX_CONSUMER_SHARED_SECRET:-}
+  # Which secrets a manifest's `secret:NAME` refs may resolve, per tenant. Empty allows none.
+  # Both processes compile agents, so both need it.
+  FELIX_MANIFEST_SECRETS: ${FELIX_MANIFEST_SECRETS:-}
   # Verifying a JWT, which every process may do. The signing half and GitHub login are on
   # `api` alone (below): only the API mints, and the worker runs agents' tools.
   FELIX_JWT_VERIFIERS: ${FELIX_JWT_VERIFIERS:-}
@@ -52,7 +55,9 @@ x-felix-env: &felix-env
   # workers_ai, typesafe, groq. Values may be `secret:NAME`.
   FELIX_MODEL_PROVIDER_OPTIONS: ${FELIX_MODEL_PROVIDER_OPTIONS:-}
   FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
-  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-default}
+  # Empty: no tenant gets `spec.workspace.scope: deployment` (the whole root) unless named here.
+  # compose.self.yml names `default`, which its `contributor` and `triage` agents need.
+  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-}
   # `hosted`: each scope's files in its own sandbox, through the gateway Worker
   # (deploy/cloudflare/workspace-gateway). The API and the worker both run the tools.
   FELIX_WORKSPACE_BACKEND: ${FELIX_WORKSPACE_BACKEND:-local}

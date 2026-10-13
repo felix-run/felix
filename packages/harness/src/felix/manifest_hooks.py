@@ -191,7 +191,7 @@ class ManifestHooks:
                 req.settings,
                 req.auth.tenant_id,
                 "hook_call",
-                principal_subj=req.auth.on_behalf_of or req.auth.principal_sub or "",
+                principal_subj=req.auth.acting_for,
                 status=status,
                 payload={
                     "hook": rule.id,

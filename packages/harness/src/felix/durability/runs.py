@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from felix.auth.context import MANIFESTS_CLAIM
+from felix.auth import recorded
 from felix.config import Settings
 from felix.context import try_get_context
 from felix.durability.fibers import active_fiber_for_thread, create_fiber, get_fiber, now_ms
@@ -63,7 +63,9 @@ def record_caller(tenant_id: str, expires_at: int) -> tuple[dict[str, Any], int]
 
     Shared by a durable chat and a workflow run (`felix.workflows.engine`), which records its
     starter the same way so each agent step it starts runs as them. `({}, expires_at)` when there
-    is no caller in context for this tenant.
+    is no caller in context for this tenant. What is recorded is `felix.auth.recorded`'s -- one
+    shape for every kind of later work; this adds what is particular to a run: reading the
+    caller from context, the tenant guard, and the expiry clamps.
     """
     # Who asked for this run. Without it a resumed fiber runs with an empty scope set, so
     # `spec.policies` denies every policied tool and `auth.inbound.required_scopes` refuses the
@@ -84,31 +86,20 @@ def record_caller(tenant_id: str, expires_at: int) -> tuple[dict[str, Any], int]
     # Both callers today derive both from the same request, but an admin route or a
     # per-tenant fan-out job would write tenant A's scopes into tenant B's fiber, which
     # `_run_fiber_step` would then apply inside `rls_tenant(B)`.
-    auth: dict[str, Any] = {
-        # The person, not the worker: a run started from inside a durable run is the worker
-        # acting for someone, and the audit trail should keep naming that someone.
-        "principal_sub": caller.auth.on_behalf_of or caller.auth.principal_sub,
-        "scopes": sorted(caller.auth.scopes),
-        "anonymous": bool(caller.auth.anonymous),
-        "scheme": caller.auth.scheme,
-        # The starter's personal skill library, so the resumed compile loads the catalog the
-        # request would have. Without it the resume silently ran on the org's skills alone.
-        "skill_owner": caller.auth.skill_owner,
-    }
-    if MANIFESTS_CLAIM in caller.auth.raw_claims:
-        # A credential pinned to some manifests stays pinned when its run resumes in the
-        # worker: every child the run delegates to is checked against it there. Kept as
-        # written, so a malformed pin is refused on resume exactly as it was at the door.
-        auth[MANIFESTS_CLAIM] = caller.auth.raw_claims[MANIFESTS_CLAIM]
+    #
+    # The person (`acting_for`), their scopes, scheme, anonymity, personal skill library -- so
+    # the resumed compile loads the catalog the request would have -- and a credential's manifest
+    # pin, which every child the run delegates to is checked against.
+    auth = recorded.record_caller(caller.auth, skill_owner=True)
     # The token's own expiry, as a single integer — not the claims. Without it this would
     # be the first path in Felix where authority survives `exp`: there is no revocation
     # anywhere in `felix/auth/`, so `exp` is the sole and complete bound on a compromised
     # credential, and a 60-second JWT starting a 300-second run would confer its scopes for
     # four minutes past its own death. Clamping here makes "a fiber cannot outlive the
     # token that started it" true rather than nearly true.
-    token_exp = caller.auth.raw_claims.get("exp")
-    if isinstance(token_exp, (int, float)):
-        expires_at = min(expires_at, int(token_exp) * 1000)
+    token_exp = recorded.token_expiry_ms(caller.auth)
+    if token_exp is not None:
+        expires_at = min(expires_at, token_exp)
     # Started from inside a durable run, there is no token: the worker rebuilt the caller
     # from state. That run's own expiry is the bound it inherited, and passing it down keeps
     # "a fiber cannot outlive the token that started it" true through a chain of them.

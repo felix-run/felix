@@ -23,7 +23,7 @@ from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
-from felix.secrets import SecretNotFoundError
+from felix.secrets import SecretNotFoundError, SecretNotPermittedError
 from felix.thread_ids import effective_thread_id
 from felix_ai.output_schema import InvalidOutputSchema, validate_output_schema
 from felix_ai.providers.base import ProviderConfigError
@@ -460,6 +460,9 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         except SecretNotFoundError as exc:
             # A manifest's `secret:` ref the deployment has not provisioned: the same 503.
             return _error_json(client_safe_message(exc), "server_error", "secret_not_found", 503)
+        except SecretNotPermittedError as exc:
+            # The same 422 `/chat` answers: the manifest names a secret its tenant may not use.
+            return _error_json(client_safe_message(exc), "invalid_request_error", "secret_not_permitted", 422)
         except InboundScreeningError as exc:
             # Refused inside the run: a `user_prompt_submit` hook (`blocked_by_hook`), or screening
             # that ran in the agent. The caller's input was refused, not a server fault.

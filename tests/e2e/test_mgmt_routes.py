@@ -894,7 +894,7 @@ async def test_audit_metrics_needs_a_read_scope(boot: Any) -> None:
 async def test_a_job_runs_now_as_itself_and_leaves_its_schedule(boot: Any) -> None:
     """`POST /jobs/{name}/run` fires the job through the scheduler's own path and returns the
     run. The schedule is untouched, and the run says who asked — while the job still runs as
-    `cron`, not as the caller."""
+    `cron` for its writer."""
     async with boot(
         [_answer("ran now")], env=scoped_keys(reader=["jobs:read"], writer=["jobs:write"])
     ) as app:
@@ -906,7 +906,8 @@ async def test_a_job_runs_now_as_itself_and_leaves_its_schedule(boot: Any) -> No
                 "enabled": False,
                 "payload": {"prompt": "go"},
             },
-            headers=bearer(ADMIN),
+            # The writer, who may run their own job by hand; anyone else needs `admin`.
+            headers=bearer(WRITER),
         )
         before = (await app.client.get("/jobs/nightly", headers=bearer(ADMIN))).json()
 

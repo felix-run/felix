@@ -30,7 +30,7 @@ On the registry / plugin object:
 | Cron tasks | `plugin.cron_tasks` → registered by the worker at startup |
 | Rate-limit keys | `plugin.rate_limit_key(request)` |
 | Body limits | `plugin.body_limit_bytes` |
-| Self-authenticating mounts | `plugin.self_authenticating_mounts` |
+| Self-authenticating mounts | `plugin.self_authenticating_mounts`: each one's first segment must be its own; `validate_self_authenticating_mounts` (`felix/auth/middleware.py`) refuses the boot on one that overlaps a core route or public path, or is malformed |
 | Model / decision providers | `registry.register_model_provider(name, factory)` / `register_decision_provider(name, factory)` → a `FELIX_MODEL_ROUTES` / `FELIX_DECISION_ROUTES` entry |
 | Audit / usage sinks | `registry.register_audit_sink(factory)` / `register_usage_sink(factory)` |
 | Startup hooks | `registry.register_startup_hook(hook)` (awaited in the API lifespan) |
@@ -52,6 +52,11 @@ Open registries in core, called at import time (not on the registry object):
 
 Manifest config: `spec.extensions.<plugin-name>` is the one field exempt from
 `extra="forbid"`; it reaches a pattern builder as `PatternBuildContext["extensions"]`.
+It is tenant input (anyone with `manifests:write` writes it), not operator config: resolve a
+`secret:NAME` found there through `PatternBuildContext["manifest_secrets"]` — a
+`SecretsProvider | None` (`None` only when the compile has no settings), the backend scoped to
+the compiling tenant by `FELIX_MANIFEST_SECRETS` (`felix.secret_policy.tenant_secrets_provider`) —
+never `felix.secrets.build_secrets`.
 
 The `FelixPlugin` Protocol in `plugins.py` documents the full shape, and
 `examples/felix-plugin-example/` is a working package that exercises every row above.

@@ -117,7 +117,12 @@ is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SC
 Plugin `cron_tasks` become `plugin_<name>` every minute via `_register_plugin_cron_tasks`, which only
 the worker's startup hook calls. Each built-in task is wrapped in `_instrumented`; plugin runners are not. Jobs:
 `jobs/scheduler.py:run_due_jobs_all_tenants` binds each tenant with `rls_tenant`,
-`jobs/store.py:claim_run` compare-and-sets `next_run_at`, `fire_job` runs as `cron` with no scopes.
+`jobs/store.py:claim_run` compare-and-sets `next_run_at`, `fire_job` runs as `cron` on behalf of the
+job's last writer (`created_by`, with the scopes recorded in `created_auth`) through
+`runtime.prepare_tenant_invoke`, so the manifest's inbound auth applies; a job with no recorded
+writer runs with no scopes. Fibers and jobs record and replay a caller through one module,
+`auth/recorded.py` (`record_caller` / `replay_caller`); an API-key writer's job scopes are cut to the
+key's current ones at each firing (`scheduler._current_api_key_scopes`).
 `next_run_at_ms` reads the grammar in `jobs/schedule.py` — seconds, `every:30s` / `@every 5m`, the
 `@daily`-style macros and five-field cron in UTC — and a schedule outside it is refused, never
 guessed. An empty schedule is manual only: the sweep skips it and only `POST /jobs/{name}/run` fires it.

@@ -137,6 +137,25 @@ def _thread(request: Request, thread_id: str) -> tuple[str, str]:
 
 
 _REFUSALS: dict[int | str, dict[str, Any]] = {409: {"model": RepoErrorOut}, 502: {"model": RepoErrorOut}}
+_NOT_OPENER_RESPONSES: dict[int | str, dict[str, Any]] = {403: {"model": RepoErrorOut}}
+NOT_OPENER_MESSAGE = "this thread's repository is the person's who opened it; only they can see or change it"
+
+
+def _refuse_unless_opener(request: Request, tenant: str, scoped: str) -> JSONResponse | None:
+    """403 unless the caller opened the thread's checkout, or holds `admin` / `*`.
+
+    The thread is the tenant's; the checkout in it is one person's repository, cloned with their
+    GitHub authorization, and possibly private. None for a thread with no checkout.
+    """
+    from felix.auth.mgmt import auth_from_request
+    from felix.repos import checkouts
+
+    principal = auth_from_request(request).principal
+    if checkouts.may_reach_checkout(
+        request.app.state.settings, tenant, scoped, principal=principal.subject or "", scopes=principal.scopes
+    ):
+        return None
+    return _refusal(403, "not_checkout_opener", NOT_OPENER_MESSAGE)
 
 
 @github_router.get("/repos", response_model=ReposOut, responses=_REFUSALS)
@@ -160,7 +179,12 @@ async def list_my_repos(request: Request, q: str = "") -> Any:
     "/{thread_id}/workspace/repo",
     status_code=202,
     response_model=CheckoutOut,
-    responses={**_REFUSALS, 404: {"model": RepoErrorOut}, 413: {"model": RepoErrorOut}},
+    responses={
+        **_REFUSALS,
+        **_NOT_OPENER_RESPONSES,
+        404: {"model": RepoErrorOut},
+        413: {"model": RepoErrorOut},
+    },
 )
 async def open_thread_repo(thread_id: str, body: OpenRepoRequest, request: Request) -> Any:
     """Clone a repository you can reach into this thread's checkout. Answers at once with
@@ -170,6 +194,11 @@ async def open_thread_repo(thread_id: str, body: OpenRepoRequest, request: Reque
 
     settings = request.app.state.settings
     tenant, scoped = _thread(request, thread_id)
+    # Someone else's live checkout already here: opening the same repository would answer with
+    # theirs, as though it were the caller's. A failed or expired one is replaced by any opener.
+    live = checkouts.is_live(checkouts.read_checkout(settings, tenant, scoped))
+    if live and (refused := _refuse_unless_opener(request, tenant, scoped)) is not None:
+        return refused
     got = await _caller_token(request)
     if isinstance(got, JSONResponse):
         return got
@@ -215,14 +244,18 @@ async def open_thread_repo(thread_id: str, body: OpenRepoRequest, request: Reque
 
 
 @checkout_router.get(
-    "/{thread_id}/workspace/repo", response_model=CheckoutOut, responses={404: {"model": RepoErrorOut}}
+    "/{thread_id}/workspace/repo",
+    response_model=CheckoutOut,
+    responses={**_NOT_OPENER_RESPONSES, 404: {"model": RepoErrorOut}},
 )
 async def get_thread_repo(thread_id: str, request: Request) -> Any:
     """This thread's checkout: its state, and once ready, its branch, commits ahead and whether
-    it has uncommitted changes."""
+    it has uncommitted changes. Only for the person who opened it (or an admin)."""
     from felix.repos import checkouts
 
     tenant, scoped = _thread(request, thread_id)
+    if (refused := _refuse_unless_opener(request, tenant, scoped)) is not None:
+        return refused
     described = await checkouts.describe(request.app.state.settings, tenant, scoped)
     if described is None:
         return _refusal(404, "no_repository", "this thread has no repository")
@@ -258,6 +291,7 @@ _LIST_MESSAGES = {
     "/{thread_id}/workspace/repo/files",
     response_model=CheckoutFilesOut,
     responses={
+        **_NOT_OPENER_RESPONSES,
         400: {"model": RepoErrorOut},
         404: {"model": RepoErrorOut},
         409: {"model": RepoErrorOut},
@@ -272,10 +306,12 @@ async def list_thread_repo_files(
 ) -> Any:
     """The files in this thread's checkout — tracked, and untracked but not ignored — each with its
     size and git status, sorted by path. A failed or expired checkout answers its state and no
-    files; one still cloning is a 409."""
+    files; one still cloning is a 409. Only for the person who opened it (or an admin)."""
     from felix.repos import checkouts
 
     tenant, scoped = _thread(request, thread_id)
+    if (refused := _refuse_unless_opener(request, tenant, scoped)) is not None:
+        return refused
     try:
         listed = await checkouts.list_files(
             request.app.state.settings, tenant, scoped, prefix=prefix, limit=limit
@@ -292,16 +328,24 @@ async def list_thread_repo_files(
     "/{thread_id}/workspace/repo",
     status_code=204,
     response_model=None,
-    responses={404: {"model": RepoErrorOut}, 409: {"model": RepoErrorOut}, 503: {"model": RepoErrorOut}},
+    responses={
+        **_NOT_OPENER_RESPONSES,
+        404: {"model": RepoErrorOut},
+        409: {"model": RepoErrorOut},
+        503: {"model": RepoErrorOut},
+    },
 )
 async def remove_thread_repo(thread_id: str, request: Request) -> Any:
-    """Delete this thread's checkout. Commits not yet published are lost with it."""
+    """Delete this thread's checkout. Commits not yet published are lost with it. Only for the
+    person who opened it (or an admin)."""
     from felix.audit import store as audit_store
     from felix.auth.mgmt import auth_from_request
     from felix.repos import checkouts
 
     settings = request.app.state.settings
     tenant, scoped = _thread(request, thread_id)
+    if (refused := _refuse_unless_opener(request, tenant, scoped)) is not None:
+        return refused
     try:
         removed = await checkouts.remove_checkout(settings, tenant, scoped)
     except checkouts.CheckoutRefused as exc:

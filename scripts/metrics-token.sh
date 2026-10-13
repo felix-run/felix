@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
-# Mint a zero-scope API key so Prometheus can scrape the API's /metrics.
+# Mint an API key holding only `metrics:read` so Prometheus can scrape the API's /metrics.
 #
 # /metrics is deliberately not public: its label values include tenant-supplied manifest
 # ids and remote MCP tool names, so an anonymous scrape discloses every tenant's manifests
-# and tools. Compose defaults to FELIX_AUTH_MODE=api_key, so the scraper needs a credential.
+# and tools. Compose defaults to FELIX_AUTH_MODE=api_key, so the scraper needs a credential,
+# and /metrics needs the `metrics:read` scope, so not just any valid one.
 #
 # It gets its own key rather than reusing the operator key from scripts/dev-key.sh, with
-# an empty `scopes` array. /metrics has no scope gate — any valid key is accepted — so the
-# result is a credential that can read metrics and do nothing else. Losing it off-host
-# leaks metrics, not write access to PUT /manifests.
+# `metrics:read` and nothing else, in a tenant of its own (`metrics`). /metrics is not
+# tenant-scoped, so the tenant costs the scrape nothing; in `default` the key could run that
+# tenant's anonymous-allowed manifests and, on the self-build overlay, reach the deployment
+# workspace. Losing it off-host leaks metrics, not write access to PUT /manifests.
 #
-# Idempotent: an existing FELIX_METRICS_SCRAPE_TOKEN is never regenerated.
+# Idempotent: an existing FELIX_METRICS_SCRAPE_TOKEN is never regenerated, and must carry
+# the `sk-felix-scrape-` prefix this script mints. Its FELIX_AUTH_API_KEYS entry is added
+# when missing, and upgraded only when it is one this script minted before /metrics had a
+# scope gate (`sub` metrics-scrape, empty `scopes`); any other entry under that token is
+# left alone, with a warning.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ENV_FILE=".env"
 TOKEN_FILE="deploy/docker/.metrics-token"
+PREFIX="sk-felix-scrape-"
 
 if [ ! -f "$ENV_FILE" ]; then
   echo "error: no .env — run 'make bootstrap' first." >&2
@@ -28,22 +35,35 @@ if ! grep -qE '^[[:space:]]*FELIX_AUTH_API_KEYS=.+' "$ENV_FILE"; then
 fi
 
 token="$(grep -E '^[[:space:]]*FELIX_METRICS_SCRAPE_TOKEN=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+# A .env value may be quoted; the quotes are not part of the token.
+token="${token%\"}"; token="${token#\"}"; token="${token%\'}"; token="${token#\'}"
 
+minted=0
 if [ -z "$token" ]; then
   if command -v openssl >/dev/null 2>&1; then
-    token="sk-felix-scrape-$(openssl rand -hex 24)"
+    token="${PREFIX}$(openssl rand -hex 24)"
   else
-    token="sk-felix-scrape-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    token="${PREFIX}$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   fi
+  minted=1
+elif [ "${token#"$PREFIX"}" = "$token" ]; then
+  # Not one this script minted: it could be any key, the operator's included, and granting it
+  # a scrape entry would hand that credential to Prometheus's file.
+  echo "error: FELIX_METRICS_SCRAPE_TOKEN in .env does not start with ${PREFIX}; remove it to mint one." >&2
+  exit 1
+fi
 
-  # Merge into the existing JSON rather than replacing it — the operator key must survive.
-  # python3 because the value is JSON and sed would be guessing at it.
-  FELIX_NEW_TOKEN="$token" python3 - "$ENV_FILE" <<'PY'
+# Merge into the existing JSON rather than replacing it — the operator key must survive.
+# python3 because the value is JSON and sed would be guessing at it.
+FELIX_NEW_TOKEN="$token" FELIX_MINTED="$minted" python3 - "$ENV_FILE" <<'PY'
 import json, os, re, sys
 
 path = sys.argv[1]
 token = os.environ["FELIX_NEW_TOKEN"]
+minted = os.environ["FELIX_MINTED"] == "1"
 lines = open(path).read().splitlines(keepends=True)
+# `metrics:read` and nothing else, in a tenant no manifest or workspace belongs to.
+WANT = {"tenant_id": "metrics", "sub": "metrics-scrape", "scopes": ["metrics:read"]}
 
 for i, line in enumerate(lines):
     m = re.match(r"^(\s*FELIX_AUTH_API_KEYS=)(.*)$", line)
@@ -55,19 +75,29 @@ for i, line in enumerate(lines):
         sys.exit("FELIX_AUTH_API_KEYS in .env is not valid JSON; fix it by hand")
     if not isinstance(keys, dict):
         sys.exit("FELIX_AUTH_API_KEYS in .env is not a JSON object")
-    # No scopes: /metrics needs a valid key, not a privileged one.
-    keys[token] = {"tenant_id": "default", "sub": "metrics-scrape", "scopes": []}
+    entry = keys.get(token)
+    if entry is None:
+        keys[token] = WANT
+    elif isinstance(entry, dict) and entry.get("sub") == "metrics-scrape" and not entry.get("scopes"):
+        keys[token] = WANT  # minted before /metrics had a scope gate
+    elif entry != WANT:
+        print(
+            "warning: FELIX_AUTH_API_KEYS already has an entry for FELIX_METRICS_SCRAPE_TOKEN that "
+            "this script did not write; left as it is",
+            file=sys.stderr,
+        )
     lines[i] = m.group(1) + json.dumps(keys, separators=(",", ":")) + "\n"
     break
 else:
     sys.exit("no FELIX_AUTH_API_KEYS line to merge into")
 
-lines.append(f"\n# Generated by scripts/metrics-token.sh for the Prometheus scrape (no scopes).\nFELIX_METRICS_SCRAPE_TOKEN={token}\n")
+if minted:
+    lines.append(f"\n# Generated by scripts/metrics-token.sh for the Prometheus scrape (metrics:read only).\nFELIX_METRICS_SCRAPE_TOKEN={token}\n")
 open(path, "w").write("".join(lines))
 PY
-fi
 
 # Prometheus reads the bare token from a file; it has no env expansion in scrape configs.
+mkdir -p "$(dirname "$TOKEN_FILE")"
 umask 077
 printf '%s' "$token" > "$TOKEN_FILE"
 chmod 600 "$TOKEN_FILE"

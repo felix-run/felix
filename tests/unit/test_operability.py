@@ -10,6 +10,7 @@ stopped under an already-sent 200 OK with no error event and no `[DONE]`.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -201,6 +202,28 @@ async def test_probe_paths_need_no_credential_under_a_real_auth_mode() -> None:
         assert (await client.get("/metrics")).status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("scopes", "status"),
+    [([], 403), (["usage:read"], 403), (["metrics:read"], 200), (["admin"], 200)],
+    ids=["none", "other", "metrics", "admin"],
+)
+async def test_metrics_needs_the_metrics_scope(scopes: list[str], status: int) -> None:
+    """Its labels span every tenant, so a tenant's own valid key must not read them."""
+    from felix_api.app import create_app
+    from httpx import ASGITransport, AsyncClient
+
+    settings = _settings(
+        auth_mode="api_key",
+        auth_api_keys=json.dumps({"k-scrape": {"tenant_id": "t", "sub": "s", "scopes": scopes}}),
+    )
+    app = create_app(settings=settings, plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/metrics", headers={"authorization": "Bearer k-scrape"})
+    assert resp.status_code == status, resp.text
+    if status == 403:
+        assert resp.json() == {"detail": "missing scopes: metrics:read"}
+
+
 def _deployed_probe_paths() -> set[str]:
     """Every HTTP path a deploy artefact probes, read from the artefacts themselves."""
     root = Path(__file__).resolve().parents[2]
@@ -226,13 +249,13 @@ def test_every_deployed_probe_path_is_a_declared_probe_path() -> None:
     Reading the paths out of the artefacts pins the failure shape this had: the chart
     moved to /ready and /live and the allowlist did not move with it.
     """
-    from felix.auth.middleware import _PUBLIC_EXACT
+    from felix.auth.middleware import anonymous_paths
     from felix.security.rate_limit import PROBE_PATHS, SKIP_EXACT
 
     probed = _deployed_probe_paths()
     assert {"/ready", "/live", "/health"} <= probed, probed
     assert probed <= PROBE_PATHS, probed - PROBE_PATHS
-    assert PROBE_PATHS <= _PUBLIC_EXACT and PROBE_PATHS <= SKIP_EXACT
+    assert anonymous_paths(None).exact >= PROBE_PATHS and PROBE_PATHS <= SKIP_EXACT
     assert "/metrics" not in PROBE_PATHS
 
 

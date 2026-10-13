@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 from typing import Any
 
 import pytest
@@ -25,6 +26,13 @@ _SELF_KEY = jwk.RSAKey.generate_key(2048)
 APP = "http://localhost:5181"
 KID = {"tenant": "kids", "scopes": [], "manifests": ["kids"]}
 PARENT = {"tenant": "family", "scopes": ["sessions:read"]}
+TRIGGER = {
+    "tenant": "kids",
+    "manifest": "kids",
+    "scheme": "standard",
+    "secret": "secret:HOOK_KEY",
+    "prompt": "An event arrived.",
+}
 
 
 def _settings(accounts: dict[str, Any] | None = None, **overrides: Any) -> Any:
@@ -99,6 +107,10 @@ def test_accounts_are_keyed_by_lower_cased_email() -> None:
         ({"a@example.com": {**KID, "sub": "abc"}}, "numeric Google account id"),
         # `$` matches before a final newline; a pin that can never equal a real `sub` is a typo.
         ({"a@example.com": {**KID, "sub": "123\n"}}, "numeric Google account id"),
+        # Joined with spaces into the token's `scope` claim and split on whitespace when verified:
+        # this would pass the pinned-account check as one read scope and arrive as `admin`.
+        ({"a@example.com": {**KID, "scopes": ["admin memory:read"]}}, "may not contain whitespace"),
+        ({"a@example.com": {**KID, "scopes": ["memory:read\tadmin"]}}, "may not contain whitespace"),
     ],
     ids=[
         "email",
@@ -110,6 +122,8 @@ def test_accounts_are_keyed_by_lower_cased_email() -> None:
         "sub-int",
         "sub-text",
         "sub-newline",
+        "scope-space",
+        "scope-tab",
     ],
 )
 def test_a_malformed_account_is_refused(raw: dict[str, Any], fragment: str) -> None:
@@ -268,6 +282,118 @@ def test_a_pinned_account_may_not_share_a_tenant_with_an_unpinned_one() -> None:
     settings = _settings({"kid@example.com": KID, "parent@example.com": {**PARENT, "tenant": "kids"}})
     with pytest.raises(RuntimeError, match="shares tenant 'kids'"):
         google.validate_google_config(settings)
+
+
+@pytest.mark.parametrize(
+    ("accounts", "overrides", "fragment"),
+    [
+        (
+            {"kid@example.com": KID, "sib@example.com": {**KID, "manifests": ["kids", "deep"]}},
+            {},
+            "an account pinned to different ones",
+        ),
+        (
+            {"kid@example.com": {**KID, "tenant": "default"}},
+            {"allowed_tenants": "default"},
+            "may not be in tenant 'default', where every API key without a `tenant_id` lands",
+        ),
+        (
+            {"kid@example.com": KID},
+            {"auth_api_keys": json.dumps({"k-1": {"tenant_id": "kids", "scopes": []}})},
+            "shares tenant 'kids' with FELIX_AUTH_API_KEYS (kids)",
+        ),
+        (
+            {"kid@example.com": KID},
+            {"github_org_tenants": json.dumps({"acme": {"id": 1, "tenant": "kids", "scopes": []}})},
+            "shares tenant 'kids' with FELIX_GITHUB_ORG_TENANTS (acme)",
+        ),
+        (
+            {"kid@example.com": KID},
+            {"jwt_verifiers": "self:felix-self,cognito:https://idp.example.com;tenant=fixed:kids"},
+            "shares tenant 'kids' with FELIX_JWT_VERIFIERS",
+        ),
+        (
+            {"kid@example.com": KID},
+            {"triggers": json.dumps({"nightly": TRIGGER})},
+            "shares tenant 'kids' with FELIX_TRIGGERS (nightly)",
+        ),
+    ],
+    ids=["two-pins", "default-tenant", "api-key", "github-org", "fixed-jwt", "trigger"],
+)
+def test_a_pinned_account_must_have_its_tenant_to_itself(
+    accounts: dict[str, Any], overrides: dict[str, Any], fragment: str
+) -> None:
+    """Every other door into the tenant reaches threads the pin was meant to keep out of reach."""
+    settings = _settings(accounts)
+    for name, value in overrides.items():
+        object.__setattr__(settings, name, value)
+    with pytest.raises(RuntimeError, match=re.escape(fragment)):
+        google.validate_google_config(settings)
+
+
+def test_an_api_key_without_a_tenant_is_in_default() -> None:
+    """`AuthMiddleware` puts a key with no `tenant_id` in `default`; the boot checks read the same
+    rule (`felix.auth.api_keys.parse_api_keys`), so a pinned account can never be in a tenant such a key reaches."""
+    from felix.config import configured_tenants
+
+    settings = _settings({"kid@example.com": KID})
+    object.__setattr__(settings, "auth_api_keys", json.dumps({"k-1": {"scopes": []}}))
+    google.validate_google_config(settings)  # `kids` is not `default`
+    keys = [(t.label, t.tenant) for t in configured_tenants(settings) if t.kind == "api_key"]
+    assert keys == [("FELIX_AUTH_API_KEYS (default)", "default")]
+
+
+@pytest.mark.parametrize(
+    "verifiers",
+    [
+        # The self verifier's own fixed tenant: the login probe requires it to be the account's.
+        "self:felix-self;tenant=fixed:kids",
+        # A claim-mode issuer's tenants cannot be known at boot.
+        "self:felix-self,cognito:https://idp.example.com",
+    ],
+    ids=["self-fixed", "claim-mode"],
+)
+def test_a_pinned_account_boots_beside_verifiers_that_name_no_other_tenant(verifiers: str) -> None:
+    settings = _settings({"kid@example.com": KID})
+    object.__setattr__(settings, "jwt_verifiers", verifiers)
+    google.validate_google_config(settings)
+
+
+def test_every_tenant_source_is_counted_or_exempt_for_a_pin() -> None:
+    """A tenant source added to `configured_tenants` must be decided for pinned-account isolation:
+    counted (a door into the tenant the pin does not hold) or exempt with a reason."""
+    from typing import get_args
+
+    from felix.config import TenantSourceKind
+
+    kinds = set(get_args(TenantSourceKind))
+    assert not (google.PIN_ISOLATION_COUNTED & set(google.PIN_ISOLATION_EXEMPT))
+    assert google.PIN_ISOLATION_COUNTED | set(google.PIN_ISOLATION_EXEMPT) == kinds
+    assert all(reason.strip() for reason in google.PIN_ISOLATION_EXEMPT.values())
+
+
+def test_configured_tenants_reports_every_kind() -> None:
+    """Each kind is emitted by some setting, so the drift test above is about real sources."""
+    from typing import get_args
+
+    from felix.config import TenantSourceKind, configured_tenants
+
+    settings = _settings({"kid@example.com": KID})
+    for name, value in {
+        "jwt_verifiers": "self:felix-self;tenant=fixed:kids,cognito:https://idp.example.com;tenant=fixed:ops",
+        "auth_api_keys": json.dumps({"k-1": {"tenant_id": "ops"}}),
+        "github_org_tenants": json.dumps({"acme": {"id": 1, "tenant": "ops", "scopes": []}}),
+        "skill_update_webhooks": "ops=ops-hook",
+        "triggers": json.dumps({"nightly": {**TRIGGER, "tenant": "ops"}}),
+    }.items():
+        object.__setattr__(settings, name, value)
+    assert {t.kind for t in configured_tenants(settings)} == set(get_args(TenantSourceKind))
+
+
+def test_pinned_accounts_with_the_same_pin_may_share_a_tenant() -> None:
+    google.validate_google_config(
+        _settings({"kid@example.com": KID, "sib@example.com": {**KID, "manifests": ["kids"]}})
+    )
 
 
 def test_accounts_without_a_client_id_only_warn(caplog: pytest.LogCaptureFixture) -> None:

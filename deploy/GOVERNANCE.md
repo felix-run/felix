@@ -22,7 +22,8 @@ felix mint-jwt --sub ops --tenant default --scopes chat:write,tools:calc
 
 `quick` / `support` stay anonymous for local DX. Prefer `governed` (or a
 fork) for JWT / API-key production. Outbound MCP in `governed` is commented
-out until `FELIX_MCP_AUTH_TOKEN` exists — scoped chat works without it.
+out until `DOCS_MCP_AUTH_TOKEN` exists and `FELIX_MANIFEST_SECRETS` lists it — scoped chat
+works without it.
 
 **The public demo stays anonymous, by decision (2026-10-02).** Visitors reach it through the
 chat-ui Worker, which holds the one Felix credential, so nobody has an identity or scopes of
@@ -36,11 +37,52 @@ turn the demo into an account system, and that is not what it is for.
 | Layer | Mechanism |
 |-------|-----------|
 | Platform (model keys, consumer secret) | `FELIX_SECRETS_BACKEND=env\|file\|aws\|gcp` + `hydrate_secrets()` at API/worker startup |
-| Manifest outbound (`mcp_servers.auth`, `env`, peer/container `auth`) | `secret:NAME` or `{secret: NAME}` resolved at compile; **never** store resolved values in `manifest_json` |
+| Manifest outbound (`mcp_servers.auth`, `env`, peer/container `auth`, `github_publish.auth`) | `secret:NAME` or `{secret: NAME}` resolved at compile, only for a name `FELIX_MANIFEST_SECRETS` lists for the tenant (below); **never** store resolved values in `manifest_json` |
 | Redaction | Known secrets scrubbed from tool output, session events, audit payloads, fiber state, skill bodies read over `/skills`, and every `/skill-library` read and write response — file text, and the reason, description, decision note, review-check and security-issue messages a saver or the scan wrote, and feedback bodies, suggested patches, evaluation scenarios, judge reasons and job errors. `FELIX_SKILL_IMPORT_GITHUB_TOKEN` is hydrated from the secrets backend and masked like any credential; it is sent only as a header to `api.github.com`, never in a URL, a log line or a response |
 
 Production (`FELIX_ENVIRONMENT=production`) or `governance.forbid_plaintext_secrets: true`
 rejects Bearer/long-token auth and non-ref MCP `env` values.
+
+### Which secrets a manifest may name
+
+Every secrets backend resolves any name the process can see, and a manifest chooses both the name
+and where the value goes — an MCP server's URL, a peer's, a container gateway's, GitHub. Unchecked,
+anyone holding `manifests:write` could publish `auth: secret:FELIX_AUTH_API_KEYS` against a server
+they run and receive every tenant's API keys as a bearer token. So a manifest's refs are an
+allowlist, per tenant:
+
+```bash
+FELIX_MANIFEST_SECRETS='{"GITHUB_MCP_TOKEN": ["acme"], "DOCS_MCP_AUTH_TOKEN": "*"}'
+```
+
+Each name maps to the tenant ids whose manifests may reference it, or `"*"` for every tenant.
+Empty (the default) allows none. Matching is exact on the name the manifest writes, so
+`github-mcp-token` is not allowed by `GITHUB_MCP_TOKEN`. Felix's own secrets are refused whatever
+the map says, and listing one fails the boot: any name that is `FELIX_*` (or `felix/…`, the cloud
+backends' spelling) after the upper-case and `-`→`_` normalisation the env backend applies, every
+name in the hydrate map (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN_KEY`, `GOOGLE_CLIENT_SECRET`, …), and
+the infrastructure credentials `DATABASE_URL`, `REDIS_URL`, `POSTGRES_PASSWORD`, the MinIO root
+pair and the AWS/GCP process credentials. A malformed value fails `validate_runtime` at boot.
+
+It is checked twice. `PUT /manifests/{name}` — and a canary or rollback onto a stored version —
+answers `422` naming the secret and the setting before anything is stored. Compiling checks again
+in front of the backend's `get` (`felix.secret_policy.TenantScopedSecrets`), so a row stored before the
+check existed fails its request with the same message (`422` on `/chat` and `/v1`) and the backend
+is never asked for the value. A `github_publish.auth` ref is refused the same way, not dropped.
+
+A secret an operator registry already binds cannot also be opened to manifests: listing a name that
+appears as a `secret:` ref in any other setting (`FELIX_EGRESS_CREDENTIALS`, `FELIX_WEBHOOK_ENDPOINTS`,
+`FELIX_TRIGGERS`, `FELIX_CHANNELS`, `FELIX_MODEL_PROVIDER_OPTIONS`, the VAPID key, … — every
+setting is scanned, bare or as JSON, so a new registry is covered without being listed), or in
+`FELIX_SECRET_NAMES`, fails the boot ("already bound by FELIX_…; give manifests a separate secret").
+Those registries scope their secret by tenant, host or endpoint; a manifest ref sends it wherever
+the manifest says, so sharing one would undo that scoping. Give a manifest its own credential. The
+registries themselves are not checked against this map, since their refs are the operator's.
+
+A plugin reading `spec.extensions` is reading tenant input. It resolves a `secret:NAME` found there
+through `PatternBuildContext["manifest_secrets"]`, the same tenant-scoped backend, never
+`build_secrets`. `felix doctor` notes each bundled manifest (including `FELIX_MANIFESTS_DIR`) that
+names a secret not permitted for a tenant the configuration pins (or `default` when none is pinned).
 
 PII: `spec.guardrails.providers: [pii]` uses **Presidio** when
 `felix-harness[pii]` is installed, otherwise a regex fallback. Eval LLM judges
@@ -56,7 +98,7 @@ stderr, and `felix eval --strict-judge` exits 1 rather than pass on the weaker t
 FELIX_SECRETS_BACKEND=aws
 FELIX_AWS_REGION=us-east-1
 # Leave FELIX_ANTHROPIC_API_KEY empty; create SM secret felix-anthropic-api-key
-# Manifest refs use the same backend, e.g. secret:FELIX_MCP_AUTH_TOKEN
+# Manifest refs use the same backend, e.g. secret:DOCS_MCP_AUTH_TOKEN (listed in FELIX_MANIFEST_SECRETS)
 ```
 
 See [aws/README.md](aws/README.md). Prefer IRSA over static keys.
@@ -66,7 +108,7 @@ See [aws/README.md](aws/README.md). Prefer IRSA over static keys.
 ```bash
 FELIX_SECRETS_BACKEND=gcp
 FELIX_GCP_PROJECT=your-project
-# Secret Manager ids: felix-anthropic-api-key, FELIX_MCP_AUTH_TOKEN, …
+# Secret Manager ids: felix-anthropic-api-key, DOCS_MCP_AUTH_TOKEN, …
 ```
 
 See [gcp/README.md](gcp/README.md). Prefer Workload Identity.
@@ -105,7 +147,36 @@ child process does **not** inherit the API environment; it receives
 `secret:NAME` refs resolved), and loader variables such as `LD_PRELOAD` and `PYTHONPATH`
 are rejected. Prefer `transport: http`/`sse` where you can.
 
-`FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment.
+`FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment. Where it is
+accepted, every boot logs a warning that the API is unauthenticated. The loopback check reads
+`FELIX_HOST`, not the address the server actually binds — Granian binds what its own command line
+names — so keep the two in agreement; nothing in the process can see a mismatch.
+
+Under `FELIX_AUTH_MODE=api_key`, a malformed `FELIX_AUTH_API_KEYS` fails the boot: JSON that does
+not parse, a top level that is not an object, an entry that is not an object, a `tenant_id` or `sub`
+that is not a string, or a `scopes` that is not a list of strings (`"scopes": "admin"` once granted
+the scopes `a`, `d`, `m`, `i`, `n`). Outside `FELIX_ENVIRONMENT=development` — production,
+staging, anything else — every key must be at least 32 characters. The refusals name an entry by position, never by its key.
+Boot and the request path read one parser (`felix/auth/api_keys.py`), and the request path fails
+closed — no key authenticates — on a list boot would have refused. An entry without `tenant_id` is
+the `default` tenant.
+
+A plugin's `self_authenticating_mounts` skip Felix's authentication for every path under them, so
+each is checked at boot: a path under `/`, not the root, with no `..`, `//`, whitespace or trailing
+`/`, and a first segment no core route and no anonymous path uses (`/chat`, `/v1`, `/auth`,
+`/.well-known`, …). Anything else refuses to start, naming the plugin. The anonymous paths are one
+list (`anonymous_paths` in `felix/auth/middleware.py`) that both the door and this check read. Every
+path rule — mounts, probes, login, triggers — compares the path the router routes: with an ASGI
+`root_path` (a proxy prefix) taken off, so a request is judged by the route it reaches.
+
+`felix mint-jwt` grants no scope unless `--scopes` names one, mints for at most a day
+(`--ttl` 1 to 86400), and with `--allow-long-ttl` for at most a year (31,536,000 seconds) — never
+longer. `--aud` sets `aud`. A minted token cannot be revoked, so its expiry is the whole of its
+lifetime.
+
+A failed A2A task records only that it failed (`tasks/get` returns it to the tenant). The reason is
+logged as the exception's type and its message with every registered secret masked, without a
+traceback, since no log formatter masks one.
 
 ## Governance frameworks
 
@@ -288,14 +359,38 @@ compiled into it and apply whichever way it was reached.
 **A credential can be pinned to manifests.** A token or api-key entry carrying a `felix_manifests`
 claim (a list of names) may invoke those manifests and no other: refused with 403 on chat, `/v1`,
 A2A, MCP, side questions, `/chat/compact`, a rewind's summary, and each child `delegation`
-compiles. The pin is stored with a durable run and enforced again when it resumes. A claim
+compiles. The routes that reach a manifest without a turn of it are held to the same check, and
+to its `auth.inbound`: the file pane (`/chat/workspace/*`, against the manifest whose
+`spec.workspace.scope` decides the directory — the thread's last, else the one named, else the
+default), `POST /chat/style` naming a style, and A2A `tasks/get`, `tasks/cancel` and
+`tasks/resubscribe` (against the task's manifest; a task whose manifest no longer resolves is
+refused). An A2A `message/send` whose `taskId` names an existing task is admitted against that
+task's manifest before anything is written, and one naming a different `manifest` is refused; a
+refused send writes no task record at all. Threads and tasks are otherwise shared across the tenant. The pin is stored with a
+durable run and enforced again when it resumes. A claim
 that is not a list of strings is refused rather than ignored. Google sign-in mints one for an
 account with `manifests` on `FELIX_GOOGLE_ACCOUNTS` (the bundled `kids` agent is what it is for).
 Boot refuses a pinned account that carries anything but `<area>:read` scopes, since a write scope
-reaches around the pin (rewrite the manifest, schedule a job, run an eval). It also refuses one
-that shares a tenant with an unpinned account, since threads are shared within a tenant. Like
+reaches around the pin (rewrite the manifest, schedule a job, run an eval), and any scope with
+whitespace in it (the token's `scope` claim is split on whitespace, so `"admin memory:read"` would
+arrive as `admin`). Since threads are shared within a tenant, it also refuses a pinned account whose
+tenant is shared with an unpinned account, with an account pinned to different manifests, with any
+entry in `FELIX_AUTH_API_KEYS` (one without a `tenant_id` is in `default`), a
+`FELIX_GITHUB_ORG_TENANTS` grant, a `FELIX_TRIGGERS` trigger or a `FELIX_JWT_VERIFIERS` issuer with
+`;tenant=fixed:`, or that is
+`default` itself or a GitHub signup's personal tenant. A claim- or issuer-mode verifier's tenants
+cannot be known at boot and are not checked. Like
 `auth.inbound`, the pin is checked on the manifest a request names, so a pinned manifest's
 `spec.sub_agents` are the operator's choice and are not checked again.
+
+**A pin limits which agents a credential runs, not what it can read in its tenant.** Threads are
+shared across a tenant, so a turn of a manifest the credential may invoke, sent on another
+credential's thread, replays that thread's history to the agent — whatever manifest wrote it. Two
+API keys or two JWT principals in one tenant, one pinned and one not, are therefore not isolated
+from each other's conversations; the pin is not a confidentiality boundary inside a tenant. The
+boundary is the tenant: give a credential that must not read others' threads a tenant of its own.
+Only Google sign-in enforces that at boot (above); for `FELIX_AUTH_API_KEYS` and external JWTs it
+is the operator's configuration to get right.
 
 **`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
 router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
@@ -1023,6 +1118,9 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
   GitHub the body's digest, since GitHub signs neither `X-GitHub-Delivery` nor `X-GitHub-Event`.
   Standard Webhooks replays are also bounded by the timestamp window; GitHub signs no timestamp, so
   a captured GitHub delivery replayed after the claim expires (default 24 hours) starts a new run.
+  The window is 300 seconds either side of now, so a delivery verifies for 600: with
+  `FELIX_TRIGGERS` set, boot refuses a `FELIX_IDEMPOTENCY_TTL_SECONDS` below that, which would let a
+  claim expire while its delivery still verified.
   Without Redis the claim is per process, so behind several replicas a replay is caught only by the
   replica that saw it, and the in-process store keeps at most 50,000 claims, oldest dropped first
   (a Redis eviction policy that drops keys does the same): a busy hook can age a claim out before
@@ -1417,6 +1515,19 @@ call. The properties above hold unchanged, with three additions:
 
 A publish whose opener's connection has lapsed or been revoked publishes nothing and returns
 `[github disconnected]`, naming who must reconnect.
+
+**Only the opener's run publishes.** The thread is shared by its tenant; the token is the opener's.
+`publish_commits` refuses unless the run is the opener's own -- the caller driving the turn, or for
+a resumed durable run or a scheduled job the person it runs on behalf of (`on_behalf_of`) -- so
+another member driving the thread cannot publish as the opener. A checkout whose state names no
+opener, or one that is not the GitHub account the token is minted for, publishes nothing until it
+is removed and opened again. Reading, listing and removing the checkout (`GET`/`DELETE`
+`/chat/sessions/{thread}/workspace/repo`, `.../files`) and the file pane over it (`/chat/workspace/*`)
+are the opener's too: anyone else gets `403 not_checkout_opener`, unless they hold `admin`/`*`. `POST /chat/rewind` with `restore_files` is gated the same way, since it writes the checkout.
+**What stays open:** the agent's own workspace and shell tools are not gated by opener. Another
+member driving the thread runs an agent that reads the checkout, and can have it edit files and
+commit in it; only publishing those commits is refused them. That is what sharing a thread means,
+and closing it would mean refusing a non-opener's turns on a checkout thread altogether.
 
 ## Sandbox confinement
 
@@ -2065,13 +2176,18 @@ The same channel carries UI prompts and client-tool answers.
 
 A thread is in one of four modes, set with `POST /chat/mode` (or by an approved plan) and kept in
 thread metadata. The change applies from the next run: a run reads the stored mode once.
+Tightening (toward `plan`) is open to anyone driving the thread; loosening — `plan` → `default` →
+`accept_edits` — needs `approvals:write`, because a thread is shared by its tenant and waiving its
+approvals is deciding them, and `bypass` needs `approvals:bypass`.
+So leaving plan mode through `POST /chat/mode` needs `approvals:write` too; the other way out is an
+approved plan (`exit_plan_mode`), which needs whoever answers it to hold `approvals:write`.
 
 | Mode | Effect |
 |------|--------|
 | `default` | Every control runs as the manifest says. |
 | `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
 | `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
-| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass`, and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
 
 `allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
 wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
@@ -2294,8 +2410,9 @@ not an IP address, is not trusted at all: the key falls back to the socket peer,
 address a client cannot choose. A single-valued header (`cf-connecting-ip`) is the
 one-entry case of the same rule.
 
-`/metrics` requires authentication: its label values include tenant-supplied manifest ids
-and remote MCP tool names.
+`/metrics` requires authentication and the `metrics:read` scope: its label values include
+tenant-supplied manifest ids and remote MCP tool names, across every tenant, so a tenant's own
+credential must not read it.
 
 `PUT /manifests/{name}` and `felix validate-manifest` run the same write-time validator.
 Always refused: an outbound `auth` or `env` value that looks like a credential, a URL
@@ -2524,12 +2641,13 @@ implies the matching `*:read`.
 | `audit:read` | `/audit` |
 | `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model. Spill is kept for `FELIX_ARTIFACT_RETENTION_DAYS` (30; `0` keeps forever) and then swept, objects and ledger row together — so evidence meant to outlive that belongs in the audit log, not in an artifact |
 | `approvals:bypass` | Setting a thread's permission mode to `bypass` (`POST /chat/mode`), and having a run honour it — see [Permission modes](#permission-modes) |
-| `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream`, and every `/push` route — a push subscription is a standing request to be told about approvals |
-| `jobs:read` / `jobs:write` | `/jobs`. `POST /jobs/{name}/run` runs a job now and needs `jobs:write`: whoever may rewrite a job's prompt may already make it run. The job runs as itself — principal `cron`, no scopes — not as the caller, whose subject is recorded on the run as `requested_by` |
+| `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream`, and every `/push` route — a push subscription is a standing request to be told about approvals. A decision lands only on a row still pending and inside its deadline (`409 approval_already_decided` / `approval_expired` otherwise), and and, with `FELIX_APPROVALS_REQUIRE_SECOND_PERSON=true` (off by default), never from the person whose run asked (`403 self_approval_forbidden`) unless they hold `admin`/`*` — the plan approval excepted, since it is how its asker leaves plan mode. Off, a person may answer their own run's approvals, the ordinary single-user loop. `approvals:write` is also what loosening a thread's permission mode needs — see [Permission modes](#permission-modes) |
+| `jobs:read` / `jobs:write` | `/jobs`. A job runs as principal `cron` on behalf of whoever last wrote it (`PUT`), with that writer's scopes, scheme and manifest pin as recorded then; `GET /jobs` shows `created_by` and `recorded_at`. Every firing goes through the manifest's inbound auth and the thread's compile pin, so writing a job reaches no manifest its writer could not run; a refusal is the run's error. For a writer who authenticated with an API key, each firing re-reads `FELIX_AUTH_API_KEYS`: the scopes are cut to what that key (by `sub`, in the job's tenant) holds now, and a key no longer configured refuses the run. A JWT writer keeps the grant recorded at the write — Felix keeps nothing of a token to re-check, so re-save or delete the job when a person leaves. `POST /jobs/{name}/run` runs a job now and needs `jobs:write` *and* to be the job's writer or an operator (`admin`/`*`): the run carries the writer's authority, so someone else asking would choose when the writer's run happens — including a job the writer disabled. Rewriting the job instead makes it theirs, with their scopes. The caller's subject is recorded on a manual run as `requested_by`. A job written before writers were recorded runs with no scopes and only an operator may run it by hand |
 | `plans:read` / `plans:write` | `/plans` |
 | `workflows:read` / `workflows:write` | `/workflows` — authored workflow definitions. Its own grant rather than part of `manifests:write` or `jobs:write`: a workflow names the manifests and tools its runs will call. `/-/check` (check a definition without saving) is a read. A tenant keeps at most 500 workflows (409 `workflow_limit` past it; replacing one never counts), a definition is capped at 256 KiB however it is built, and a check lists at most 200 problems (then `too_many_problems` with the count left out), each quoting an author's names cut short — so a definition cannot make its own error report large. Every save and delete is audited (`workflow_saved`, `workflow_deleted`) to the caller. Starting and cancelling a run (`POST /workflows/{id}/runs`, `.../cancel`) need `workflows:write`: each agent step runs as a child durable run **as the person who started the workflow, with their scopes** — recorded once at start like a durable chat's, never widened, and dead with the run, whose deadline is 24 hours clamped to the starter's token `exp`. A run started with no caller in context runs its steps with no scopes. **Each manifest a step names is checked against the starter's inbound rules and pinned when the run starts** (401/403 `not_permitted` otherwise): a step that starts hours later refuses a version published since, as a durable chat does, so the starter's scopes never run code nobody checked. Each child is also held to its manifest's own `execution` TTL. A tenant may have 50 runs going and a run 8 agent steps in flight. Approval steps open ordinary `/approvals` rows; one nobody decides fails the step rather than counting as a denial, and cancelling closes them. A `tool_call` step calls one tool from its step's `manifest` with no model, **through that manifest's governed tool set and the agent loop's own dispatch** — every governance wrapper (policies, screening, limits, approvals, …), the plugin `before_tool` / `after_tool` hooks and the manifest's `pre_tool_use` / `post_tool_use` apply as they would to the agent's call, the `tool_call` audit row is written, and the arguments are screened as a direct MCP call's are. Limits count per step, not per run: each step is a fresh compile, as a direct MCP call is. The step's author chooses the tool and its fixed arguments, and the person who starts the run lends their scopes to it; the tool must still be bound and its input schema must still take what the step sends, or the step fails. A call whose worker died mid-way is repeated only for a tool marked `replay_safe`. Two things to know: anyone with `workflows:read` sees every step's inputs and outputs, which were produced with the starter's scopes; and one step's output becomes the next step's prompt, so text an earlier step read (a web page, an issue body) reaches a later step's tools — turn on `spec.inbound` screening on manifests that take workflow input from untrusted sources. Audited as `workflow_run_started` and `workflow_run_cancelled` |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
+| `metrics:read` | `GET /metrics`. Its label values (manifest ids, remote MCP tool names) span every tenant, so it is an operator grant: give it to the scrape credential (`scripts/metrics-token.sh`, the Helm `serviceMonitor.bearerTokenSecret`), in a tenant of its own (`metrics`), and to nothing a tenant holds |
 | `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
 | `documents:read` / `documents:write` | `/documents` — ingest, search, inspect and remove the corpus an agent retrieves from |
 | `skills:read` | `/skills`, and the read routes of `/skill-library` (the library, the review queue at `/-/review`, each version's review record, digest-checked and redacted files, a read-only gate preview, the policy at `/-/policy`, feedback at `/{name}/feedback` and the `/-/feedback` inbox, evaluations at `/{name}/evals`). `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: `activate_skill` hands it to the model as instructions, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Where the manifest sets `spec.personal_skills: read`, the listing includes the caller's own skills, as the caller's turn would, and its `active` field — like what `activate_skill` reports back — names only skills in the caller's own catalog. Activation *history* (`/activations/recent`) is the audit trail and shows every caller's activations, personal skill names included, each with a `library` field (`org`, or a personal library's digest — never the subject) so an investigator can tell whose instructions ran. Personal is not private: an `activate_skill` result, body and all, is in the thread's session log like any tool result, readable by whoever can read the thread. `pin_compile` covers neither the tenant's library nor a caller's. Worth setting on any manifest that has to be reviewable: a skill body reaches the model as instructions, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |

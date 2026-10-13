@@ -44,6 +44,13 @@ async def _approve(settings: Any, approval_id: str, *, by: str = "operator") -> 
     return await approvals.decide(settings, TENANT, approval_id, decision="approved", decided_by=by)
 
 
+def _later(monkeypatch: Any, *, seconds: int) -> None:
+    """The store's clock, `seconds` on: a grant approved while live, read once it has lapsed.
+    A row created already expired cannot be approved at all (`ApprovalClosed`)."""
+    real = approvals.now_ms
+    monkeypatch.setattr(approvals, "now_ms", lambda: real() + seconds * 1000)
+
+
 # --- creating and deciding ------------------------------------------------------------------
 
 
@@ -106,6 +113,124 @@ async def test_deciding_an_unknown_approval_returns_none(store_settings: Any) ->
         is None
     )
     assert await approvals.get_approval(store_settings, TENANT, "no-such-id") is None
+
+
+@parametrized
+async def test_a_decided_approval_cannot_be_decided_again(store_settings: Any) -> None:
+    """A second answer used to overwrite the first: a denial flipped into a standing grant that
+    `find_approved` then handed to the next identical call, or an approval flipped to denied
+    after the tool had already run on it."""
+    created = await _pending(store_settings)
+    await approvals.decide(store_settings, TENANT, created["id"], decision="denied", decided_by="carol")
+
+    with pytest.raises(approvals.ApprovalClosed) as raised:
+        await approvals.decide(store_settings, TENANT, created["id"], decision="approved", decided_by="dave")
+    assert raised.value.code == "already_decided"
+
+    after = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert (after["status"], after["decided_by"]) == ("denied", "carol"), after
+    assert (
+        await approvals.find_approved(
+            store_settings, TENANT, manifest_id=MANIFEST, tool_name=TOOL, call_signature=SIG
+        )
+        is None
+    )
+
+
+@parametrized
+async def test_a_pending_approval_past_its_deadline_cannot_be_decided(store_settings: Any) -> None:
+    """Its wait is over: the call was already refused, so an approval now would be a grant for a
+    call nobody is making -- and `find_approved` would hand it to the next one that is."""
+    created = await _pending(store_settings, ttl_seconds=-1)
+
+    with pytest.raises(approvals.ApprovalClosed) as raised:
+        await _approve(store_settings, created["id"])
+    assert raised.value.code == "expired"
+
+    after = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert (after["status"], after["decided_by"]) == ("pending", ""), after
+
+
+@parametrized
+async def test_two_decisions_racing_for_one_row_leave_exactly_one_answer(store_settings: Any) -> None:
+    """The Postgres arm reads the row `FOR UPDATE`: without it both transactions read `pending`,
+    both write, and the later commit silently replaces the first person's answer."""
+    import asyncio
+
+    created = await _pending(store_settings)
+    # Several at once, so on Postgres their reads genuinely overlap across pooled connections.
+    deciders = [f"op{i}" for i in range(8)]
+    results = await asyncio.gather(
+        *(
+            approvals.decide(
+                store_settings,
+                TENANT,
+                created["id"],
+                decision="approved" if i % 2 else "denied",
+                decided_by=who,
+            )
+            for i, who in enumerate(deciders)
+        ),
+        return_exceptions=True,
+    )
+
+    won = [r for r in results if isinstance(r, dict)]
+    lost = [r for r in results if isinstance(r, approvals.ApprovalClosed)]
+    assert (len(won), len(lost)) == (1, len(deciders) - 1), results
+    assert {e.code for e in lost} == {"already_decided"}
+    after = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert (after["status"], after["decided_by"]) == (won[0]["status"], won[0]["decided_by"]), after
+
+
+@pytest.mark.parametrize("store_settings", ["postgres"], indirect=True)
+async def test_a_decision_waits_for_one_in_flight_and_then_sees_it(store_settings: Any) -> None:
+    """The lock, made deterministic: another transaction holds the row and answers it while a
+    `decide` is under way. Read `FOR UPDATE`, the `decide` waits for that commit and then sees an
+    answered row; read plainly, it sees `pending` under MVCC and overwrites the answer. Postgres
+    only -- the twin has no concurrent transactions to order."""
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    created = await _pending(store_settings)
+    engine = create_async_engine(store_settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
+            await conn.execute(
+                text("SELECT 1 FROM approvals WHERE tenant_id = :t AND id = :i FOR UPDATE"),
+                {"t": TENANT, "i": created["id"]},
+            )
+            racing = asyncio.create_task(_approve(store_settings, created["id"], by="late"))
+            await asyncio.sleep(0.3)
+            await conn.execute(
+                text(
+                    "UPDATE approvals SET status = 'denied', decided_by = 'first' WHERE tenant_id = :t AND id = :i"
+                ),
+                {"t": TENANT, "i": created["id"]},
+            )
+            await conn.commit()
+            with pytest.raises(approvals.ApprovalClosed):
+                await asyncio.wait_for(racing, timeout=10)
+    finally:
+        await engine.dispose()
+    after = await approvals.get_approval(store_settings, TENANT, created["id"])
+    assert (after["status"], after["decided_by"]) == ("denied", "first"), after
+
+
+@parametrized
+async def test_a_row_the_harness_closed_cannot_then_be_decided(store_settings: Any) -> None:
+    """A wait that ended wrote its row `denied` (`close_timed_out`); a late answer must not reopen
+    it as a grant nobody is waiting on."""
+    created = await _pending(store_settings)
+    assert await approvals.close_timed_out(store_settings, TENANT, created["id"]) is True
+    before = await approvals.get_approval(store_settings, TENANT, created["id"])
+
+    with pytest.raises(approvals.ApprovalClosed) as raised:
+        await _approve(store_settings, created["id"])
+    assert raised.value.code == "already_decided"
+    assert await approvals.get_approval(store_settings, TENANT, created["id"]) == before
 
 
 # --- listing --------------------------------------------------------------------------------
@@ -351,10 +476,11 @@ async def test_a_different_signature_or_tool_is_not_authorised(store_settings: A
 
 
 @parametrized
-async def test_an_expired_grant_authorises_nothing(store_settings: Any) -> None:
+async def test_an_expired_grant_authorises_nothing(store_settings: Any, monkeypatch: Any) -> None:
     """`ttl_seconds` is the operator's statement that consent goes stale."""
-    created = await _pending(store_settings, ttl_seconds=-1)
+    created = await _pending(store_settings, ttl_seconds=60)
     await _approve(store_settings, created["id"])
+    _later(monkeypatch, seconds=120)
 
     assert (
         await approvals.find_approved(
@@ -469,7 +595,7 @@ async def test_the_most_recent_decision_is_the_one_that_authorises(store_setting
 
 
 @parametrized
-async def test_an_expired_grant_does_not_hide_a_live_one(store_settings: Any) -> None:
+async def test_an_expired_grant_does_not_hide_a_live_one(store_settings: Any, monkeypatch: Any) -> None:
     """The divergence a conformance suite exists to find, and it was live in production.
 
     Postgres took the newest approved row with `LIMIT 1` and only *then* checked expiry, so one
@@ -487,9 +613,10 @@ async def test_an_expired_grant_does_not_hide_a_live_one(store_settings: Any) ->
     # A real gap, so "the expired one is newer" is true by construction rather than by tie.
     await asyncio.sleep(0.01)
 
-    expired = await _pending(store_settings, ttl_seconds=-1)
+    expired = await _pending(store_settings, ttl_seconds=60)
     assert expired["id"] != live["id"]
     await _approve(store_settings, expired["id"], by="lapsed")
+    _later(monkeypatch, seconds=120)
 
     found = await approvals.find_approved(
         store_settings, TENANT, manifest_id=MANIFEST, tool_name=TOOL, call_signature=SIG

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from felix import __version__
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.errors import client_safe_message, internal_error_message
+from felix.logging_setup import loggable
 from felix.tools.errors import read_tool_error_code
 from felix.tools.provider import ToolProvider
 from felix.tools.types import (
@@ -16,6 +19,14 @@ from felix.tools.types import (
     tool_output_content,
     tool_output_images,
 )
+
+logger = logging.getLogger("felix.mcp.server")
+
+
+class _UnknownManifest(LookupError):
+    """The manifest the caller named does not resolve. Its message names only that manifest, so it
+    is the one resolution failure relayed; any other `LookupError` (a `KeyError` from deep in a
+    compile) carries whatever key it was, and is not."""
 
 
 def _tool_descriptor(tool: Any) -> dict[str, Any]:
@@ -38,7 +49,10 @@ async def _compiled_tools(
     """Resolve + compile the tenant manifest; return (agent, governed tools, manifest)."""
     from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 
-    resolved = await resolve_tenant_manifest(settings, auth.tenant_id, manifest_name, thread_id=None)
+    try:
+        resolved = await resolve_tenant_manifest(settings, auth.tenant_id, manifest_name, thread_id=None)
+    except LookupError as exc:
+        raise _UnknownManifest(f"Unknown manifest: {manifest_name}") from exc
     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=None)
     agent = await build_tenant_agent(
         settings,
@@ -160,12 +174,15 @@ async def handle_rpc(
                             "isError": failed,
                         },
                     }
-                except Exception as exc:
+                except Exception:
+                    # A raise from the tool, not a marked error it returned: its text is the
+                    # tool's internals, not an answer written for the caller.
+                    logger.exception("mcp tools/call: %s raised", loggable(name, limit=128))
                     return {
                         "jsonrpc": "2.0",
                         "id": rpc_id,
                         "result": {
-                            "content": [{"type": "text", "text": f"error: {exc}"}],
+                            "content": [{"type": "text", "text": f"error: {internal_error_message()}"}],
                             "isError": True,
                         },
                     }
@@ -178,10 +195,13 @@ async def handle_rpc(
                     "id": rpc_id,
                     "error": {"code": -32001, "message": exc.detail},
                 }
+            if isinstance(exc, _UnknownManifest):
+                return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32004, "message": str(exc)}}
+            logger.exception("mcp %s failed", loggable(method, limit=32))
             return {
                 "jsonrpc": "2.0",
                 "id": rpc_id,
-                "error": {"code": -32000, "message": str(exc)},
+                "error": {"code": -32000, "message": client_safe_message(exc)},
             }
 
     return {

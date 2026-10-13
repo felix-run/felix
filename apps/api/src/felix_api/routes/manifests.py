@@ -15,8 +15,9 @@ from felix.auth.mgmt import (
 from felix.manifests.governance import GovernanceError, manifest_warnings, validate_for_write
 from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.manifests.schema import Manifest
-from felix.manifests.secret_refs import redact_manifest_secrets
+from felix.manifests.secret_refs import assert_manifest_secrets_permitted, redact_manifest_secrets
 from felix.manifests.store import UnknownCanaryVersion
+from felix.secrets import SecretNotPermittedError
 from felix.thread_ids import effective_thread_id
 from pydantic import BaseModel, Field
 
@@ -49,6 +50,35 @@ class RollbackRequest(BaseModel):
 
     version: int
     comment: str = "rollback"
+
+
+def _refuse_unpermitted_secrets(manifest: Manifest, request: Request) -> None:
+    """422 for a manifest naming a secret the caller's tenant may not reference
+    (`FELIX_MANIFEST_SECRETS`). The message names the secret and the setting, never a value."""
+    try:
+        assert_manifest_secrets_permitted(
+            manifest, tenant_id_from_request(request), request.app.state.settings
+        )
+    except SecretNotPermittedError as e:
+        raise HTTPException(status_code=422, detail=client_safe_message(e)) from e
+
+
+async def _refuse_unpermitted_version(request: Request, name: str, version: int) -> None:
+    """The same refusal for a stored version a canary or rollback is about to make live: a row
+    written before the check existed must not be activated past it. An absent or unparseable
+    version is left to the store call, which answers it as it always has."""
+    from felix.manifests import store as manifest_store
+
+    row = await manifest_store.get_version(
+        request.app.state.settings, tenant_id_from_request(request), name, version
+    )
+    if row is None:
+        return
+    try:
+        parsed = parse_manifest(row["manifest"])
+    except ManifestParseError:
+        return
+    _refuse_unpermitted_secrets(parsed, request)
 
 
 @router.get("")
@@ -175,6 +205,8 @@ async def upsert_manifest(name: str, body: ManifestUpsert, request: Request) -> 
         validate_for_write(parsed, request.app.state.settings)
     except GovernanceError as e:
         raise HTTPException(status_code=400, detail=client_safe_message(e)) from e
+    # Per tenant, so it cannot live in `validate_for_write`, which the CLI runs with no tenant.
+    _refuse_unpermitted_secrets(parsed, request)
     row = await manifest_store.put_version(
         request.app.state.settings,
         tenant_id_from_request(request),
@@ -197,6 +229,7 @@ async def set_canary(name: str, body: CanaryRequest, request: Request) -> Any:
     from felix.manifests import store as manifest_store
 
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
+    await _refuse_unpermitted_version(request, name, body.canary_version)
     try:
         row = await manifest_store.set_canary(
             request.app.state.settings,
@@ -222,6 +255,7 @@ async def rollback_manifest(name: str, body: RollbackRequest, request: Request) 
     from felix.manifests import store as manifest_store
 
     require_mgmt_scopes(request, SCOPE_MANIFESTS_WRITE)
+    await _refuse_unpermitted_version(request, name, body.version)
     row = await manifest_store.activate_version(
         request.app.state.settings,
         tenant_id_from_request(request),

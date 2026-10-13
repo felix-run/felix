@@ -1,4 +1,12 @@
-"""Open pattern registry — builders register at import time."""
+"""Open pattern registry — builders register at import time.
+
+A builder receives a `PatternBuildContext`, a plain dict the compile fills (`manifests/builder.py`).
+Two keys a plugin pattern reads most: `extensions` (`dict`, `spec.extensions` -- written by whoever
+holds `manifests:write`, so tenant input, never trusted operator config) and `manifest_secrets`
+(`SecretsProvider | None`, the secrets backend scoped to the compiling tenant by
+`FELIX_MANIFEST_SECRETS`; `None` with no settings). A `secret:NAME` found in `extensions` resolves
+through `manifest_secrets`, never `felix.secrets.build_secrets`.
+"""
 
 from __future__ import annotations
 

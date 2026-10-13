@@ -168,6 +168,11 @@ Postgres, so the suite would fail on connection errors that look like code bugs.
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for this and other recurring failure modes.
 `tests/README.md` says where a new test goes.
 
+`make dev` runs `FELIX_AUTH_MODE=none`: the API is unauthenticated and every caller holds every
+scope, and each boot logs a warning saying so. The mode is refused unless `FELIX_HOST` is a loopback
+address, but that check reads the setting, not the socket the server binds: a `--host 0.0.0.0` on
+Granian's own command line passes it and serves the API to the network.
+
 ## Deployment
 
 ### Small VMs and lean images
@@ -216,9 +221,11 @@ them as generations with token usage and cost rather than anonymous timing bars.
 
 `/metrics` is deliberately **not** public: its label values include tenant-supplied manifest
 ids and remote MCP tool names, so an anonymous scrape would disclose every tenant's manifests
-and tools. `scripts/metrics-token.sh` mints a scrape key with no scopes — `/metrics` has no
-scope gate, so it reads metrics and is refused everywhere else. In Kubernetes, set
-`serviceMonitor.enabled=true` and point it at a Secret holding the same kind of key.
+and tools — and since those span every tenant, it also needs the `metrics:read` scope (or
+`admin` / `*`). `scripts/metrics-token.sh` mints a scrape key holding `metrics:read` and nothing
+else, in a `metrics` tenant of its own, so it reads metrics and reaches no tenant's agents; run it
+again to upgrade a key it minted before the scope existed. In Kubernetes, set `serviceMonitor.enabled=true` and point it at a
+Secret holding the same kind of key.
 
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) is the metric catalog and span schema.
 
@@ -272,6 +279,11 @@ zero cloud SDKs.
 
 - Set `FELIX_OBJECT_STORE` to `s3`, `gcs`, `fs`, `memory`, or a backend you register
 - Set `FELIX_SECRETS_BACKEND` to `env`, `file`, `aws`, `gcp`, or a backend you register
+- A manifest's `secret:NAME` refs resolve only names `FELIX_MANIFEST_SECRETS` lists for the
+  tenant (a JSON map of name → `[tenant, …]` or `"*"`; empty allows none). Felix's own secrets —
+  any `FELIX_*` name, the provider and sign-in keys, `DATABASE_URL`, `REDIS_URL` — are refused
+  whatever it says. `PUT /manifests` answers `422` for an unlisted ref, and compiling refuses it
+  before the backend is asked
 - Deploy notes: [`deploy/aws/`](deploy/aws/), [`deploy/gcp/`](deploy/gcp/)
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
@@ -287,6 +299,9 @@ zero cloud SDKs.
   `FELIX_FILE_CHECKPOINT_RETENTION_DAYS` (7; what the file tools changed, kept for `/chat/rewind`
   with `restore_files`, bytes and ledger row, counted from each file's last change in its thread; `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` caps the content kept, 256 MiB; `FELIX_FILE_CHECKPOINTS=false` records none); a manifest's `governance.retention_days` shortens the audit TTL for its
   own rows
+- Approvals: `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` (false) refuses an approval's answer from the
+  person whose run asked for it, so a second person (or an `admin`) must decide; see
+  [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Uploads: `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, 0 = no ceiling) bounds what one
   tenant may store through `/files`, on top of the 600 KiB per-upload cap. Over the ceiling
   answers 409. On the default `fs` store this shares a disk with artifact spill and manifest
