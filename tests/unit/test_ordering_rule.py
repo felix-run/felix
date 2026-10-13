@@ -35,6 +35,7 @@ EXEMPT = {
     "tools/checkpoint_ledger.py:_path_rows": "ends on `capture_id` (newest first), the primary key's last component, unique within one thread",
     "tools/checkpoint_ledger.py:expired_paths": "one row per `(tenant_id, thread_id, path)` (grouped), and both arms end on `path`",
     "repos/checkouts.py:list_files": "sorts a set of paths: every key is the whole path, unique",
+    "workflows/tool_step.py:schema_drift": "sorts required argument names, distinct strings; the cut only shortens a message",
     "session/strategies.py:render": "a stable sort over seq-ordered events: ties keep seq order",
     "session/thread_state.py:threads_missing_preview": "sorts the thread ids themselves (the dict's keys), unique; the SQL arm ends on `thread_id`",
     "skills/quality_store.py:_claim_once": "ends on the head's `id` then `tenant_id`, the primary key of the table passed in (skill_feedback or skill_eval)",

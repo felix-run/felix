@@ -147,8 +147,8 @@ is the one `precondition` — a revision string, `ABSENT` (create only), or `Non
 `tests/conformance/test_workflows_store.py`.
 
 **Runs** (`engine.py`, `executors.py`, `runs.py`). `start_run` refuses a definition with problems
-or a kind with no executor (`not_runnable`; `RUNNABLE_KINDS` is `executors.EXECUTORS`' keys, and
-`tool_call` has none yet), checks the starter against each named manifest's inbound rules
+or a kind with no executor (`not_runnable`; `RUNNABLE_KINDS` is `executors.EXECUTORS`' keys — a
+plugin kind has none), checks the starter against each named manifest's inbound rules
 (`NotPermitted`) and **pins** it (`pins_json`; the child's `pin` forces `pin_compile`), caps a
 tenant at `MAX_ACTIVE_RUNS_PER_TENANT`, records the starter with `durability/runs.py:record_caller`,
 and writes a `workflow_runs` row (definition snapshot) plus an orchestrator fiber
@@ -159,6 +159,12 @@ executor. An `agent_turn` is a child durable chat on `thread_ids.workflow_thread
 derived from run and step (a replay or a second claim adopts it, `RunInProgress` included), started
 as the starter — or with no context when none was recorded — and bounded by the run's deadline and
 the manifest's own TTL; a child's error text is logged and the step gets a written message. An
+`tool_call` is a child fiber of kind `workflow_tool` (op `tool`, `tool_step.py`): it resolves the
+step's `manifest` as the starter, holds it to the pin (forced), compiles it and calls the named tool
+through the governed executor — every wrapper applies, approvals included — after checking the tool
+is still bound and its live input schema still takes what the step sends (`schema_drift`) and
+screening the arguments as MCP does. `tool_began` is checkpointed before the call; a replayed claim
+repeats it only for a `replay_safe` tool. An
 `approval` is found by signature (`approvals.store.find_by_signature`, any status) before
 `create_pending`; a lapsed or swept one fails the step. Stopping (cancel, expiry, fail-fast) calls
 every unfinished step's `stop`: `fibers.stop_fiber` by derived id plus `steer.request_abort`, and

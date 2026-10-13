@@ -623,7 +623,7 @@ async def _run_fiber_step(
 
     ``state_json`` schema:
       {
-        "steps": [{"op": "sleep"|"invoke"|"stash"|"workflow"|"complete", ...}, ...],
+        "steps": [{"op": "sleep"|"invoke"|"stash"|"tool"|"workflow"|"complete", ...}, ...],
         "cursor": 0,
         "stash": {},
         "result": null
@@ -854,6 +854,31 @@ async def _run_fiber_step(
         }
         state["stash"] = stash
         state.pop("invoke_began", None)  # this cursor's; the next invoke records its own
+        state["cursor"] = cursor + 1
+        row["state_json"] = state
+        row["status"] = "failed" if error else "running"
+        row["wake_at"] = None
+        await _save_fiber(settings, row, hold_claim=hold_claim)
+        return row
+
+    if op == "tool":
+        # One workflow `tool_call` step, run as the run's starter (`felix.workflows.tool_step`).
+        from felix.workflows.tool_step import TOOL_BEGAN, run_tool_step
+
+        result = await run_tool_step(settings, row, step, lambda: _checkpoint_state(settings, row))
+        if result.get("lost"):
+            logger.warning("fiber claim lost before tool call id=%s", row["id"])
+            return row
+        error = str(result.get("error") or "")
+        stash["last"] = {
+            "answer": "",
+            "final": "",
+            "output": None if error else result.get("output"),
+            "error": error,
+            "manifest_id": str(step.get("manifest_id") or ""),
+        }
+        state["stash"] = stash
+        state.pop(TOOL_BEGAN, None)
         state["cursor"] = cursor + 1
         row["state_json"] = state
         row["status"] = "failed" if error else "running"

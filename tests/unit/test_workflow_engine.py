@@ -341,7 +341,7 @@ async def test_at_most_eight_agent_steps_of_a_run_are_in_flight() -> None:
     after = await run_store.get_run(settings, TENANT, run["id"])
     assert after is not None
     statuses = [s["status"] for s in after["steps"].values()]
-    assert statuses.count("running") == engine.MAX_AGENT_STEPS_IN_FLIGHT
+    assert statuses.count("running") == engine.MAX_CHILD_STEPS_IN_FLIGHT
     assert statuses.count("pending") == 2
 
 
@@ -544,3 +544,64 @@ async def test_a_dead_orchestrator_fails_its_run_through_the_fiber_hook() -> Non
     await F._after_terminal(settings, fiber)
     after = await run_store.get_run(settings, TENANT, run["id"])
     assert after is not None and after["status"] == "failed"
+
+
+async def test_a_tool_step_is_pinned_started_as_a_child_and_stopped_on_cancel() -> None:
+    settings = make_settings()
+    tool_only = {
+        "name": "Tool",
+        "inputs": {"sum": {"type": "string"}},
+        "steps": [
+            {
+                "id": "calc",
+                "kind": "tool_call",
+                "config": {
+                    "manifest": "quick",
+                    "tool": "calculator",
+                    "input_schema": {"type": "object", "properties": {"expression": {"type": "string"}}},
+                },
+            }
+        ],
+        "edges": [
+            {"source": {"step": "trigger", "port": "sum"}, "target": {"step": "calc", "port": "expression"}}
+        ],
+    }
+    workflow = await _workflow(settings, "tool", tool_only)
+    run = await engine.start_run(settings, TENANT, workflow, {"sum": "1+1"}, trigger="manual", started_by="")
+    assert set(run["pins"]) == {"quick"}, "a tool step's manifest is pinned like an agent step's"
+    await engine.advance(settings, TENANT, run["id"])
+    (child,) = _children(run["id"])
+    assert child["kind"] == "workflow_tool"
+    assert child["state_json"]["steps"][0]["args"] == {"expression": "1+1"}
+    assert child["state_json"]["pin"] == run["pins"]["quick"]["pin"]
+
+    await engine.request_cancel(settings, TENANT, run["id"])
+    await engine.advance(settings, TENANT, run["id"])
+    assert F._memory_fibers[(TENANT, child["id"])]["status"] == "failed", "never claimed, never called"
+
+
+async def test_tool_steps_count_against_the_in_flight_cap() -> None:
+    settings = make_settings()
+    schema = {"type": "object", "properties": {"expression": {"type": "string"}}}
+    wide = {
+        "name": "Wide tools",
+        "steps": [
+            {
+                "id": f"t{i}",
+                "kind": "tool_call",
+                "config": {
+                    "manifest": "quick",
+                    "tool": "calculator",
+                    "input_schema": schema,
+                    "args": {"expression": "1"},
+                },
+            }
+            for i in range(10)
+        ],
+    }
+    workflow = await _workflow(settings, "wide-tools", wide)
+    run = await engine.start_run(settings, TENANT, workflow, {}, trigger="manual", started_by="")
+    await engine.advance(settings, TENANT, run["id"])
+    after = await run_store.get_run(settings, TENANT, run["id"])
+    assert after is not None
+    assert [s["status"] for s in after["steps"].values()].count("running") == engine.MAX_CHILD_STEPS_IN_FLIGHT

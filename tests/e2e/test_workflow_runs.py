@@ -227,27 +227,36 @@ async def test_inputs_must_match_the_workflow(
     assert refused.json()["detail"] == detail
 
 
-async def test_a_workflow_with_problems_or_a_tool_step_does_not_start(boot: Any) -> None:
+async def test_a_workflow_with_problems_or_a_kind_with_no_executor_does_not_start(
+    boot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.workflows import kinds
+    from pydantic import BaseModel
+
+    class Wait(BaseModel):
+        pass
+
+    # A plugin's kind: registered, so the definition checks, but no executor runs it.
+    monkeypatch.setitem(
+        kinds._kinds, "wait", kinds.StepKind(config=Wait, ports=lambda _c: ([], []), label="Wait")
+    )
     draft = _triage()
     draft["edges"] = draft["edges"][1:]  # classify's `issue` is no longer wired
-    tooled = {
-        "name": "Tooled",
-        "steps": [{"id": "call", "kind": "tool_call", "config": {"tool": "calculator"}}],
-    }
+    plugin = {"name": "Plugin", "steps": [{"id": "pause", "kind": "wait"}]}
     async with boot([], manifests={"e2e-wf": _manifest()}) as app:
         await app.client.put("/workflows/triage", json=draft)
-        await app.client.put("/workflows/tooled", json=tooled)
+        await app.client.put("/workflows/plugin", json=plugin)
         unwired = await app.client.post("/workflows/triage/runs", json={"inputs": {"issue": "x"}})
-        tool = await app.client.post("/workflows/tooled/runs", json={})
+        unrunnable = await app.client.post("/workflows/plugin/runs", json={})
         runs = (await app.client.get("/workflows/triage/runs")).json()["items"]
     assert unwired.status_code == 422
     assert [p["code"] for p in unwired.json()["detail"]["problems"]] == ["unconnected_input"]
-    assert tool.status_code == 422
-    assert tool.json()["detail"]["problems"] == [
+    assert unrunnable.status_code == 422
+    assert unrunnable.json()["detail"]["problems"] == [
         {
             "code": "not_runnable",
-            "message": "steps of kind 'tool_call' cannot run yet",
-            "step": "call",
+            "message": "steps of kind 'wait' cannot run yet",
+            "step": "pause",
             "port": None,
         }
     ]
@@ -308,7 +317,13 @@ async def test_cancelling_a_finished_run_changes_nothing(boot: Any) -> None:
     assert (again.json()["status"], again.json()["version"]) == ("completed", done["version"])
 
 
-async def test_the_run_list_is_newest_first(boot: Any) -> None:
+async def test_the_run_list_is_newest_first(boot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from felix.workflows import runs as run_store
+
+    # Runs started in one millisecond tie on `created_at` and then order by id; a moving clock
+    # makes "newest" mean the order they were started in.
+    clock = iter(range(1_800_000_000_000, 1_800_000_100_000, 10))
+    monkeypatch.setattr(run_store, "now_ms", lambda: next(clock))
     async with boot([], manifests={"e2e-wf": _manifest()}) as app:
         await app.client.put("/workflows/triage", json=_triage())
         ids = []
@@ -340,3 +355,134 @@ async def test_run_routes_need_their_scopes(boot: Any) -> None:
         assert (await app.client.get("/workflows/triage/runs", headers=reader)).status_code == 200
         assert (await app.client.post(f"{run_url}/cancel", headers=reader)).status_code == 403
         assert (await app.client.post(f"{run_url}/cancel", headers=writer)).status_code == 200
+
+
+# --- tool_call ----------------------------------------------------------------------------
+
+CALC_SCHEMA = {
+    "type": "object",
+    "properties": {"expression": {"type": "string"}},
+    "required": ["expression"],
+}
+
+
+def _calc_manifest(**spec: Any) -> Any:
+    return parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "e2e-calc"},
+            "spec": {
+                "pattern": "react",
+                "tools": ["calculator"],
+                "auth": {"inbound": {"allow_anonymous": True}},
+                **spec,
+            },
+        }
+    )
+
+
+def _sums(
+    manifest: str = "e2e-calc", schema: dict[str, Any] | None = None, port: str = "expression"
+) -> dict[str, Any]:
+    """sum → calculator; report → agent told the answer."""
+    return {
+        "name": "Sums",
+        "inputs": {"sum": {"type": "string"}},
+        "steps": [
+            {
+                "id": "calc",
+                "kind": "tool_call",
+                "config": {"manifest": manifest, "tool": "calculator", "input_schema": schema or CALC_SCHEMA},
+            },
+            {
+                "id": "report",
+                "kind": "agent_turn",
+                "config": {"manifest": "e2e-wf", "prompt": "The answer is {{ n }}"},
+            },
+        ],
+        "edges": [
+            _edge("trigger", "sum", "calc", port),
+            _edge("calc", "result", "report", "n"),
+        ],
+    }
+
+
+async def _run_sums(app: Any, definition: dict[str, Any]) -> str:
+    assert (await app.client.put("/workflows/sums", json=definition)).status_code == 201
+    started = await app.client.post("/workflows/sums/runs", json={"inputs": {"sum": "2+2"}})
+    assert started.status_code == 202, started.text
+    return f"/workflows/sums/runs/{started.json()['id']}"
+
+
+MANIFESTS = {"e2e-wf": _manifest(), "e2e-calc": _calc_manifest()}
+
+
+async def test_a_tool_step_calls_the_governed_tool_and_feeds_the_next_step(boot: Any) -> None:
+    async with boot([ScriptedTurn(content="Noted.")], manifests=MANIFESTS) as app:
+        run_url = await _run_sums(app, _sums())
+        done = await _tick(app, run_url, {"completed", "failed"})
+        asked = [[str(m.content) for m in p if m.role == "user"][-1] for p in app.spy.prompts]
+    assert done["status"] == "completed", done
+    assert done["steps"]["calc"]["outputs"] == {"result": 4}
+    assert done["steps"]["calc"]["thread_id"].startswith("default:workflow:")
+    assert asked == ["The answer is 4"], "the tool's result became the next step's input"
+
+
+async def test_a_tool_the_manifest_does_not_bind_fails_the_step(boot: Any) -> None:
+    async with boot([], manifests=MANIFESTS) as app:
+        run_url = await _run_sums(app, _sums(manifest="e2e-wf"))
+        done = await _tick(app, run_url, {"completed", "failed"})
+    assert done["steps"]["calc"]["status"] == "failed"
+    assert done["steps"]["calc"]["error"] == "manifest e2e-wf does not bind tool calculator"
+
+
+async def test_a_tool_whose_schema_drifted_since_wiring_fails_the_step(boot: Any) -> None:
+    # Wired against an older calculator that took `expr`; the live one requires `expression`.
+    old = {"type": "object", "properties": {"expr": {"type": "string"}}, "required": ["expr"]}
+    async with boot([], manifests=MANIFESTS) as app:
+        run_url = await _run_sums(app, _sums(schema=old, port="expr"))
+        done = await _tick(app, run_url, {"completed", "failed"})
+    assert done["steps"]["calc"]["status"] == "failed"
+    assert done["steps"]["calc"]["error"].startswith("the tool now requires expression")
+
+
+async def test_a_tool_step_is_governed_by_its_manifests_approvals(boot: Any) -> None:
+    import asyncio
+
+    from felix.durability import fibers as F
+
+    gated = {
+        "e2e-wf": _manifest(),
+        "e2e-calc": _calc_manifest(approvals=[{"id": "ask", "tools": ["calculator"]}]),
+    }
+    async with boot([ScriptedTurn(content="Noted.")], manifests=gated) as app:
+        run_url = await _run_sums(app, _sums())
+        await F.resume_due_fibers(app.settings)  # the orchestrator starts the tool step's fiber
+        sweep = asyncio.create_task(F.resume_due_fibers(app.settings))  # the call waits on its gate
+        pending: list[dict[str, Any]] = []
+        for _ in range(100):
+            pending = (await app.client.get("/approvals")).json()["items"]
+            if pending:
+                break
+            await asyncio.sleep(0.05)
+        assert [p["tool_name"] for p in pending] == ["calculator"], "the manifest's approval rule applied"
+        await app.client.post(f"/approvals/{pending[0]['id']}/decide", json={"decision": "approved"})
+        await sweep
+        done = await _tick(app, run_url, {"completed", "failed"})
+    assert done["status"] == "completed", done
+    assert done["steps"]["calc"]["outputs"] == {"result": 4}
+
+
+async def test_a_tool_step_refuses_a_manifest_republished_after_the_start(boot: Any) -> None:
+    from felix.manifests.resolver import clear_resolver_cache
+    from felix.manifests.store import activate_version, put_version
+
+    async with boot([], manifests=MANIFESTS) as app:
+        run_url = await _run_sums(app, _sums())
+        published = await put_version(app.settings, "default", "e2e-calc", _calc_manifest(recursion_limit=3))
+        await activate_version(app.settings, "default", "e2e-calc", version=published["version"])
+        clear_resolver_cache()
+        done = await _tick(app, run_url, {"completed", "failed"})
+    assert done["steps"]["calc"]["status"] == "failed"
+    assert done["steps"]["calc"]["error"] == "manifest e2e-calc changed since the run started"

@@ -43,6 +43,7 @@ def _triage(**overrides: Any) -> dict[str, Any]:
                 "id": "post",
                 "kind": "tool_call",
                 "config": {
+                    "manifest": "quick",
                     "tool": "github__add_comment",
                     "input_schema": {
                         "type": "object",
@@ -324,6 +325,7 @@ def test_describe(schema: dict[str, Any], shown: str) -> None:
 
 def test_an_optional_tool_input_is_a_port_nothing_has_to_feed() -> None:
     config = kinds.ToolCallConfig(
+        manifest="quick",
         tool="search",
         input_schema={
             "type": "object",
@@ -339,8 +341,18 @@ def test_an_optional_tool_input_is_a_port_nothing_has_to_feed() -> None:
     ("make", "needle"),
     [
         (lambda: WorkflowSpec.model_validate({"name": "w", "inputs": {"Issue Body": {}}}), "input name"),
-        (lambda: kinds.ToolCallConfig(tool="t", input_schema={"properties": {"when": {}}}), "reserved"),
-        (lambda: kinds.ToolCallConfig(tool="t", input_schema={"properties": {"a-b": {}}}), "tool input"),
+        (
+            lambda: kinds.ToolCallConfig(
+                manifest="quick", tool="t", input_schema={"properties": {"when": {}}}
+            ),
+            "reserved",
+        ),
+        (
+            lambda: kinds.ToolCallConfig(
+                manifest="quick", tool="t", input_schema={"properties": {"a-b": {}}}
+            ),
+            "tool input",
+        ),
         (lambda: kinds.BranchConfig(cases=["bug", "bug"]), "distinct"),
         (
             lambda: WorkflowSpec.model_validate(
@@ -459,7 +471,7 @@ def test_a_long_enum_is_shown_cut_short() -> None:
     [
         lambda: WorkflowSpec.model_validate({"name": "w", "inputs": {"issue\n": {}}}),
         lambda: kinds.BranchConfig(cases=["bug\n"]),
-        lambda: kinds.ToolCallConfig(tool="t", input_schema={"properties": {"body\n": {}}}),
+        lambda: kinds.ToolCallConfig(manifest="quick", tool="t", input_schema={"properties": {"body\n": {}}}),
     ],
 )
 def test_a_trailing_newline_does_not_pass_a_name_check(make: Any) -> None:
@@ -473,3 +485,13 @@ def test_a_definition_over_the_size_limit_is_refused() -> None:
     big = {"type": "string", "description": "x" * MAX_DEFINITION_BYTES}
     with pytest.raises(ValidationError, match="limit"):
         WorkflowSpec.model_validate({"name": "w", "inputs": {"issue": big}})
+
+
+def test_a_tool_call_saved_before_it_named_a_manifest_reads_as_a_problem() -> None:
+    # `manifest` became required on `tool_call` once the step could run; a row stored without it
+    # still loads, and the check says what to fix.
+    spec = _triage()
+    del spec["steps"][2]["config"]["manifest"]
+    found = problems(WorkflowSpec.model_validate(spec))
+    assert [(p.code, p.step) for p in found] == [("invalid_config", "post")]
+    assert "manifest" in found[0].message

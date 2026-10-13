@@ -14,8 +14,9 @@ orchestrator never blocks on a step. What a step *does* is its kind's executor (
 **When a step runs.** Once every step it reads from — through data edges or `when` — is finished.
 It is *skipped* instead when a data input's source was skipped or did not produce that port, or
 when it has `when` edges and none of their control ports fired. A failed step fails the run:
-whatever is in flight is stopped and nothing else starts. At most `MAX_AGENT_STEPS_IN_FLIGHT`
-agent steps of one run run at once; the rest wait their turn.
+whatever is in flight is stopped and nothing else starts. At most `MAX_CHILD_STEPS_IN_FLIGHT`
+steps of one run that start a child run (agent and tool steps) are in flight at once; the rest
+wait their turn.
 
 **Running twice.** A claim can replay `advance` after its save was lost, and two claims can
 overlap, so every start is idempotent: a child's fiber id is derived from the run and step and
@@ -48,7 +49,6 @@ from felix.logging_setup import loggable
 from felix.workflows import runs as run_store
 from felix.workflows.check import Problem, check
 from felix.workflows.executors import EXECUTORS, RUNNABLE_KINDS
-from felix.workflows.kinds import AgentTurnConfig
 from felix.workflows.ports import WHEN
 from felix.workflows.runs import STEP_IN_FLIGHT, STEP_TERMINAL, StepState, StepStatus
 from felix.workflows.schema import TRIGGER, Step, WorkflowSpec
@@ -59,11 +59,15 @@ logger = logging.getLogger("felix.workflows.engine")
 POLL_MS = 2000
 # A run's longest life, before the starter's own token clamps it.
 RUN_TTL_SECONDS = 24 * 3600
-# How many of one run's agent steps may run at once, and how many runs a tenant may have going.
-# One request otherwise fans out to as many model runs as the definition has steps (200).
-MAX_AGENT_STEPS_IN_FLIGHT = 8
+# How many of one run's child-run steps (agent and tool) may be in flight at once, and how many
+# runs a tenant may have going. One request otherwise fans out to as many fibers as the definition
+# has steps (200), each holding a worker slot — a tool waiting on an approval holds it for the ttl.
+MAX_CHILD_STEPS_IN_FLIGHT = 8
 MAX_ACTIVE_RUNS_PER_TENANT = 50
 ORCHESTRATOR_KIND = "workflow_run"
+# The kinds whose config names a manifest the step runs as the starter, each in a child run.
+_MANIFEST_KINDS = frozenset({"agent_turn", "tool_call"})
+_CHILD_RUN_KINDS = _MANIFEST_KINDS
 
 
 class NotRunnable(Exception):
@@ -133,7 +137,7 @@ def check_inputs(spec: WorkflowSpec, inputs: dict[str, Any]) -> None:
 
 
 async def _pin_manifests(settings: Settings, tenant_id: str, spec: WorkflowSpec) -> dict[str, Any]:
-    """Each manifest the agent steps name, resolved, checked against the starter, and pinned.
+    """Each manifest an agent or tool step names, resolved, checked against the starter, and pinned.
 
     Raises `NotRunnable` for one that does not resolve and `NotPermitted` for one whose inbound
     rules refuse the caller in context. With no caller in context (no request), nothing is
@@ -149,9 +153,9 @@ async def _pin_manifests(settings: Settings, tenant_id: str, spec: WorkflowSpec)
     pins: dict[str, Any] = {}
     unresolved: list[Problem] = []
     for step in spec.steps:
-        if step.kind != "agent_turn":
+        if step.kind not in _MANIFEST_KINDS:
             continue
-        name = AgentTurnConfig.model_validate(step.config).manifest
+        name = str(step.config["manifest"])  # validated by `run_problems` through the kind's config
         if name in pins:
             continue
         try:
@@ -366,7 +370,7 @@ class _Advance:
                 if readiness == "skip":
                     state.update(status="skipped", finished_at=_now())
                     changed = True
-                elif readiness == "ready" and not self._at_agent_limit(step):
+                elif readiness == "ready" and not self._at_child_limit(step):
                     await self._start_step(step, state)
                     changed = changed or state["status"] in STEP_TERMINAL
 
@@ -379,15 +383,15 @@ class _Advance:
             logger.exception("workflow run %s: step %s did not start", self.run["id"], step.id)
             state.update(status="failed", error="the step could not be started", finished_at=_now())
 
-    def _at_agent_limit(self, step: Step) -> bool:
-        if step.kind != "agent_turn":
+    def _at_child_limit(self, step: Step) -> bool:
+        if step.kind not in _CHILD_RUN_KINDS:
             return False
         running = sum(
             1
             for sid, s in self.steps.items()
-            if s["status"] == "running" and self.by_id[sid].kind == "agent_turn"
+            if s["status"] == "running" and self.by_id[sid].kind in _CHILD_RUN_KINDS
         )
-        return running >= MAX_AGENT_STEPS_IN_FLIGHT
+        return running >= MAX_CHILD_STEPS_IN_FLIGHT
 
     async def stop_everything(self, *, not_started: StepStatus = "cancelled") -> None:
         """Stop every step not yet finished; for cancel, expiry, failure and a buried orchestrator."""
@@ -471,7 +475,7 @@ class _Advance:
 
 __all__ = [
     "MAX_ACTIVE_RUNS_PER_TENANT",
-    "MAX_AGENT_STEPS_IN_FLIGHT",
+    "MAX_CHILD_STEPS_IN_FLIGHT",
     "ORCHESTRATOR_KIND",
     "POLL_MS",
     "RUNNABLE_KINDS",

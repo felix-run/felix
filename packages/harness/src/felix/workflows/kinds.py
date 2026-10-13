@@ -10,8 +10,8 @@ The four built in are the v1 vocabulary:
 - `agent_turn` runs one manifest on a prompt. Every `{{ name }}` in the prompt is a required
   input. With an `output_schema`, the turn answers in that shape and each top-level field is an
   output (plus `output`, the whole object); without one, the output is `text`.
-- `tool_call` calls one tool with no model. Its inputs are the properties of the tool's input
-  schema that `args` does not fix.
+- `tool_call` calls one tool with no model, from its `manifest`'s governed tool set. Its inputs
+  are the properties of the tool's input schema that `args` does not fix.
 - `approval` parks the run until a person decides. `approved` and `denied` are control outputs,
   so what follows each is wired, not configured.
 - `branch` routes on a value an earlier step produced: a boolean to `true`/`false`, or a string to
@@ -133,6 +133,9 @@ def _agent_turn_ports(config: AgentTurnConfig) -> tuple[list[Port], list[Port]]:
 
 
 class ToolCallConfig(_Config):
+    # The manifest whose governed tool set the call is made from: a tool is governed per manifest
+    # (its policies, screening, approvals), so the same name under two manifests is two tools.
+    manifest: str = Field(min_length=1, max_length=200)
     tool: str = Field(min_length=1, max_length=200)
     # The tool's input JSON Schema as the harness listed it when the step was wired. A snapshot:
     # the run checks the call against the tool as it is then, and a drifted schema fails there.
