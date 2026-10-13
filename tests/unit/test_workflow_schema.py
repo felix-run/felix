@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 from felix.workflows import kinds
-from felix.workflows.schema import Port, WorkflowSpec, describe, port_mismatch, problems, resolve_ports
+from felix.workflows.check import check, problems, resolve_ports
+from felix.workflows.ports import Port, describe, port_mismatch
+from felix.workflows.schema import WorkflowSpec
 from pydantic import BaseModel, ValidationError
 
 _LABEL = {"type": "string", "enum": ["bug", "feature"]}
@@ -416,3 +418,58 @@ def test_a_kind_that_raises_is_that_steps_problem(monkeypatch: pytest.MonkeyPatc
     spec["steps"].append({"id": "odd", "kind": "broken"})
     found = problems(WorkflowSpec.model_validate(spec))
     assert [(p.code, p.step) for p in found] == [("kind_error", "odd")]
+
+
+def test_check_returns_the_ports_it_resolved_beside_the_problems() -> None:
+    spec = _triage()
+    spec["steps"][1]["kind"] = "plugin_only"
+    ports, found = check(WorkflowSpec.model_validate(spec))
+    assert set(ports) == {"trigger", "classify", "approve", "post", "route"}
+    assert ports["approve"] is None, "a step whose ports cannot be known maps to None"
+    assert [p.name for p in ports["trigger"].outputs] == ["issue"]  # type: ignore[union-attr]
+    assert [p.name for p in ports["post"].inputs] == ["body", "when"]  # type: ignore[union-attr]
+    assert [p.code for p in found] == ["unknown_kind"]
+
+
+def test_a_wide_and_deep_schema_is_checked_in_bounded_time() -> None:
+    import time
+
+    # Three distinct required fields sharing one subtree, sixteen levels down: 3**16 comparisons
+    # without the node budget, from a single edge.
+    node: dict[str, Any] = {"type": "string"}
+    for _ in range(16):
+        node = {
+            "type": "object",
+            "properties": {"a": node, "b": node, "c": node},
+            "required": ["a", "b", "c"],
+        }
+    started = time.monotonic()
+    port_mismatch(_data(node), _data(node))
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_long_enum_is_shown_cut_short() -> None:
+    shown = describe({"enum": [f"value{i}" * 50 for i in range(10_000)]})
+    assert len(shown) < 500
+    assert shown.endswith("|…>")
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: WorkflowSpec.model_validate({"name": "w", "inputs": {"issue\n": {}}}),
+        lambda: kinds.BranchConfig(cases=["bug\n"]),
+        lambda: kinds.ToolCallConfig(tool="t", input_schema={"properties": {"body\n": {}}}),
+    ],
+)
+def test_a_trailing_newline_does_not_pass_a_name_check(make: Any) -> None:
+    with pytest.raises(ValidationError):
+        make()
+
+
+def test_a_definition_over_the_size_limit_is_refused() -> None:
+    from felix.workflows.schema import MAX_DEFINITION_BYTES
+
+    big = {"type": "string", "description": "x" * MAX_DEFINITION_BYTES}
+    with pytest.raises(ValidationError, match="limit"):
+        WorkflowSpec.model_validate({"name": "w", "inputs": {"issue": big}})

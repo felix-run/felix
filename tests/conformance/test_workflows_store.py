@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from felix.workflows import store as workflows
 from felix.workflows.schema import WorkflowSpec
-from felix.workflows.store import WorkflowConflict
+from felix.workflows.store import ABSENT, WorkflowConflict
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("store_settings", BACKENDS, indirect=True)
@@ -47,7 +47,7 @@ async def test_a_save_round_trips_and_counts_versions(
     # `exclude_none`: an unset position is absent, not a stored null.
     assert "trigger_position" not in stored["definition"]
 
-    second = await _put(store_settings, "triage", "Triage v2", if_revision=first["revision"])
+    second = await _put(store_settings, "triage", "Triage v2", precondition=first["revision"])
     assert second["version"] == 2
     assert second["revision"] != first["revision"]
     assert second["created_at"] == first["created_at"]
@@ -66,10 +66,10 @@ async def test_an_unconditional_save_replaces_and_counts(store_settings: Any) ->
 @parametrized
 async def test_a_stale_revision_is_a_conflict_carrying_the_current_row(store_settings: Any) -> None:
     first = await _put(store_settings, "triage")
-    theirs = await _put(store_settings, "triage", "Theirs", if_revision=first["revision"])
+    theirs = await _put(store_settings, "triage", "Theirs", precondition=first["revision"])
 
     with pytest.raises(WorkflowConflict) as raised:
-        await _put(store_settings, "triage", "Mine", if_revision=first["revision"])
+        await _put(store_settings, "triage", "Mine", precondition=first["revision"])
     assert raised.value.current is not None
     assert raised.value.current["revision"] == theirs["revision"]
     assert raised.value.current["definition"]["name"] == "Theirs"
@@ -88,26 +88,26 @@ async def test_a_revision_from_before_a_delete_cannot_save_over_the_recreated_wo
     assert new["revision"] != old["revision"]
 
     with pytest.raises(WorkflowConflict):
-        await _put(store_settings, "triage", "Stale editor", if_revision=old["revision"])
+        await _put(store_settings, "triage", "Stale editor", precondition=old["revision"])
     with pytest.raises(WorkflowConflict):
-        await workflows.delete_workflow(store_settings, TENANT, "triage", if_revision=old["revision"])
+        await workflows.delete_workflow(store_settings, TENANT, "triage", precondition=old["revision"])
     stored = await workflows.get_workflow(store_settings, TENANT, "triage")
     assert stored is not None and stored["definition"]["name"] == "New"
 
 
 @parametrized
 async def test_if_absent_creates_only(store_settings: Any) -> None:
-    created = await _put(store_settings, "triage", if_absent=True)
+    created = await _put(store_settings, "triage", precondition=ABSENT)
     assert created["version"] == 1
     with pytest.raises(WorkflowConflict) as raised:
-        await _put(store_settings, "triage", "Again", if_absent=True)
+        await _put(store_settings, "triage", "Again", precondition=ABSENT)
     assert raised.value.current is not None and raised.value.current["revision"] == created["revision"]
 
 
 @parametrized
 async def test_saving_over_a_missing_workflow_is_a_conflict_with_nothing_current(store_settings: Any) -> None:
     with pytest.raises(WorkflowConflict) as raised:
-        await _put(store_settings, "gone", if_revision="0123abcd.3")
+        await _put(store_settings, "gone", precondition="0123abcd.3")
     assert raised.value.current is None
     assert await workflows.get_workflow(store_settings, TENANT, "gone") is None
 
@@ -117,16 +117,16 @@ async def test_delete_honours_the_revision(store_settings: Any) -> None:
     saved = await _put(store_settings, "triage")
     for stale in ("not-a-revision", saved["revision"] + "0", saved["revision"].replace(".1", ".2")):
         with pytest.raises(WorkflowConflict) as raised:
-            await workflows.delete_workflow(store_settings, TENANT, "triage", if_revision=stale)
+            await workflows.delete_workflow(store_settings, TENANT, "triage", precondition=stale)
         assert raised.value.current is not None and raised.value.current["revision"] == saved["revision"]
     assert await workflows.get_workflow(store_settings, TENANT, "triage") is not None
     assert (
-        await workflows.delete_workflow(store_settings, TENANT, "triage", if_revision=saved["revision"])
+        await workflows.delete_workflow(store_settings, TENANT, "triage", precondition=saved["revision"])
         is True
     )
     assert await workflows.delete_workflow(store_settings, TENANT, "triage") is False
     assert (
-        await workflows.delete_workflow(store_settings, TENANT, "triage", if_revision=saved["revision"])
+        await workflows.delete_workflow(store_settings, TENANT, "triage", precondition=saved["revision"])
         is False
     )
 
@@ -181,11 +181,31 @@ async def test_a_read_cannot_edit_the_store(store_settings: Any) -> None:
 
 
 @parametrized
-async def test_bad_ids_and_contradictory_preconditions_are_refused(store_settings: Any) -> None:
-    with pytest.raises(ValueError, match="workflow id"):
-        await _put(store_settings, "../etc")
-    with pytest.raises(ValueError, match="both"):
-        await _put(store_settings, "triage", if_absent=True, if_revision="x.1")
+async def test_an_id_outside_the_alphabet_is_refused(store_settings: Any) -> None:
+    for bad in ("../etc", "triage\n"):
+        with pytest.raises(ValueError, match="workflow id"):
+            await _put(store_settings, bad)
+
+
+@parametrized
+async def test_a_revision_the_store_never_issued_matches_nothing_on_either_arm(store_settings: Any) -> None:
+    # `g.07` names version 7 only to a parser; both arms compare revisions as the store wrote them.
+    saved = await _put(store_settings, "triage")
+    generation = saved["revision"].rpartition(".")[0]
+    for padded in (
+        f"{generation}.01",
+        f"{generation}.+1",
+        f"{generation}. 1",
+        f"{generation}.²",
+        f"{generation}.{'9' * 5000}",
+        f"{generation}.9999999999",
+    ):
+        with pytest.raises(WorkflowConflict):
+            await _put(store_settings, "triage", "Mine", precondition=padded)
+        with pytest.raises(WorkflowConflict):
+            await workflows.delete_workflow(store_settings, TENANT, "triage", precondition=padded)
+    stored = await workflows.get_workflow(store_settings, TENANT, "triage")
+    assert stored is not None and stored["revision"] == saved["revision"]
 
 
 @parametrized
@@ -193,8 +213,8 @@ async def test_two_creates_of_one_id_leave_exactly_one_winner(store_settings: An
     # On Postgres neither create finds a row to lock, so both pass the precondition and the loser
     # lands on the primary key; that must surface as a conflict, not an `IntegrityError`.
     results = await asyncio.gather(
-        _put(store_settings, "race", "One", if_absent=True),
-        _put(store_settings, "race", "Two", if_absent=True),
+        _put(store_settings, "race", "One", precondition=ABSENT),
+        _put(store_settings, "race", "Two", precondition=ABSENT),
         return_exceptions=True,
     )
     conflicts = [r for r in results if isinstance(r, WorkflowConflict)]

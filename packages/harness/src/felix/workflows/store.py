@@ -5,9 +5,9 @@ A definition is replaced whole on each save, as the editor sends it. Each row ca
 created. Together they are the row's `revision`, `"<generation>.<version>"`, an opaque string a
 reader hands back to make its write conditional:
 
-- `put_workflow(if_revision=r)` writes only over revision `r`;
-- `put_workflow(if_absent=True)` writes only where no workflow exists yet;
-- `delete_workflow(if_revision=r)` deletes only revision `r`.
+- `put_workflow(precondition=r)` writes only over revision `r`;
+- `put_workflow(precondition=ABSENT)` writes only where no workflow exists yet;
+- `delete_workflow(precondition=r)` deletes only revision `r`.
 
 A miss raises :class:`WorkflowConflict` carrying the row as it stands, so the editor can show what
 changed instead of one save silently erasing the other. The generation is what makes a revision
@@ -26,7 +26,7 @@ import re
 import time
 import uuid
 from copy import deepcopy
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import collate, delete, select
 from sqlalchemy.exc import IntegrityError
@@ -39,6 +39,7 @@ from felix.workflows.schema import WORKFLOW_ID_PATTERN, WorkflowSpec
 now_ms = lambda: int(time.time() * 1000)
 
 _WORKFLOW_ID = re.compile(WORKFLOW_ID_PATTERN)
+_VERSION = re.compile(r"[0-9]{1,9}")
 MAX_LIST = 500
 
 _memory_workflows: dict[tuple[str, str], dict[str, Any]] = {}
@@ -47,6 +48,18 @@ _memory_workflows: dict[tuple[str, str], dict[str, Any]] = {}
 def reset_workflows_for_tests() -> None:
     """Clear the in-memory workflow store."""
     _memory_workflows.clear()
+
+
+class _Absent:
+    """Sentinel precondition: the write succeeds only where no workflow exists yet."""
+
+    def __repr__(self) -> str:
+        return "ABSENT"
+
+
+ABSENT: Final = _Absent()
+# A revision string to match, `ABSENT`, or `None` for an unconditional write.
+Precondition = str | _Absent | None
 
 
 class WorkflowConflict(Exception):
@@ -84,15 +97,28 @@ def _workflow_dict(row: Workflow | dict[str, Any]) -> dict[str, Any]:
 
 
 def _check_id(workflow_id: str) -> None:
-    if not _WORKFLOW_ID.match(workflow_id):
+    if not _WORKFLOW_ID.fullmatch(workflow_id):
         raise ValueError(f"workflow id must match {WORKFLOW_ID_PATTERN}")
 
 
-def _precondition_fails(if_revision: str | None, if_absent: bool, current: str | None) -> bool:
-    """`current` is the stored revision, `None` when there is no row."""
-    if if_absent:
+def _precondition_fails(precondition: Precondition, current: str | None) -> bool:
+    """`current` is the stored revision, `None` when there is no row.
+
+    Revisions compare as strings on both arms: `"g.07"` is not `"g.7"`, because the store never
+    issued it, and a twin that parsed it while Postgres did not would disagree about a conflict.
+    """
+    if isinstance(precondition, _Absent):
         return current is not None
-    return if_revision is not None and current != if_revision
+    return precondition is not None and current != precondition
+
+
+def _parse_revision(revision: str) -> tuple[str, int] | None:
+    """`(generation, version)` for a revision exactly as the store writes it, else `None`."""
+    generation, _, version = revision.rpartition(".")
+    # Nine digits fits a Postgres `Integer`; `isdigit()` would pass `"²"`, which `int()` refuses.
+    if not generation or not _VERSION.fullmatch(version) or _revision(generation, int(version)) != revision:
+        return None
+    return generation, int(version)
 
 
 async def list_workflows(settings: Settings, tenant_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -130,12 +156,12 @@ def _put_in_memory(
     workflow_id: str,
     definition: dict[str, Any],
     ts: int,
-    precondition: tuple[str | None, bool],
+    precondition: Precondition,
     updated_by: str,
 ) -> dict[str, Any]:
     # No await between the check and the store, so this is atomic on the loop.
     existing = _memory_workflows.get((tenant_id, workflow_id))
-    if _precondition_fails(*precondition, existing["revision"] if existing else None):
+    if _precondition_fails(precondition, existing["revision"] if existing else None):
         raise WorkflowConflict(workflow_id, _workflow_dict(existing) if existing else None)
     # The twin keeps the revision rather than a separate generation, so its rows have exactly the
     # keys a Postgres read returns.
@@ -162,25 +188,22 @@ async def put_workflow(
     workflow_id: str,
     spec: WorkflowSpec,
     *,
-    if_revision: str | None = None,
-    if_absent: bool = False,
+    precondition: Precondition = None,
     updated_by: str = "",
 ) -> dict[str, Any]:
-    """Create or replace a workflow; conditional on ``if_revision`` or ``if_absent`` (see module)."""
+    """Create or replace a workflow; conditional on ``precondition`` (see module)."""
     _check_id(workflow_id)
-    if if_absent and if_revision is not None:
-        raise ValueError("if_revision and if_absent cannot both hold")
     definition = spec.model_dump(mode="json", exclude_none=True)
     ts = now_ms()
 
     if _use_memory(settings):
-        return _put_in_memory(tenant_id, workflow_id, definition, ts, (if_revision, if_absent), updated_by)
+        return _put_in_memory(tenant_id, workflow_id, definition, ts, precondition, updated_by)
 
     async with tenant_session(settings, tenant_id) as db:
         # Locked so the precondition and the write see the same row.
         current = await db.get(Workflow, (tenant_id, workflow_id), with_for_update=True)
         stored = _revision(current.generation, current.version) if current else None
-        if _precondition_fails(if_revision, if_absent, stored):
+        if _precondition_fails(precondition, stored):
             snapshot = _workflow_dict(current) if current is not None else None
             await db.rollback()
             raise WorkflowConflict(workflow_id, snapshot)
@@ -216,32 +239,30 @@ async def put_workflow(
 
 
 async def delete_workflow(
-    settings: Settings, tenant_id: str, workflow_id: str, *, if_revision: str | None = None
+    settings: Settings, tenant_id: str, workflow_id: str, *, precondition: str | None = None
 ) -> bool:
-    """Delete a workflow; with ``if_revision``, only that revision (else :class:`WorkflowConflict`)."""
+    """Delete a workflow; with a revision ``precondition``, only that one (else :class:`WorkflowConflict`)."""
     if _use_memory(settings):
         existing = _memory_workflows.get((tenant_id, workflow_id))
         if existing is None:
             return False
-        if _precondition_fails(if_revision, False, existing["revision"]):
+        if _precondition_fails(precondition, existing["revision"]):
             raise WorkflowConflict(workflow_id, _workflow_dict(existing))
         del _memory_workflows[(tenant_id, workflow_id)]
         return True
 
     async with tenant_session(settings, tenant_id) as db:
         stmt = delete(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.id == workflow_id)
-        if if_revision is not None:
-            generation, _, version = if_revision.rpartition(".")
-            # A revision that does not parse matches no row, and so reads as a conflict below.
-            stmt = stmt.where(
-                Workflow.generation == generation,
-                Workflow.version == (int(version) if version.isdigit() else -1),
-            )
+        if precondition is not None:
+            parsed = _parse_revision(precondition)
+            # A revision the store could not have written matches no row: a conflict, below.
+            generation, version = parsed if parsed else ("", -1)
+            stmt = stmt.where(Workflow.generation == generation, Workflow.version == version)
         result = await db.execute(stmt)
         await db.commit()
         if result.rowcount > 0:
             return True
-    if if_revision is None:
+    if precondition is None:
         return False
     current = await get_workflow(settings, tenant_id, workflow_id)
     if current is None:
@@ -250,7 +271,9 @@ async def delete_workflow(
 
 
 __all__ = [
+    "ABSENT",
     "MAX_LIST",
+    "Precondition",
     "WorkflowConflict",
     "delete_workflow",
     "get_workflow",

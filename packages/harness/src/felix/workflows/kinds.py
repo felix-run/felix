@@ -29,7 +29,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from felix.workflows.schema import PORT_NAME_PATTERN, WHEN, Port
+from felix.workflows.ports import PORT_NAME_PATTERN, WHEN, Port
 
 PortsFn = Callable[[Any], tuple[list[Port], list[Port]]]
 
@@ -67,7 +67,7 @@ _PORT_NAME = re.compile(PORT_NAME_PATTERN)
 
 
 def _check_port_name(name: str, what: str) -> str:
-    if not _PORT_NAME.match(name):
+    if not _PORT_NAME.fullmatch(name):
         raise ValueError(f"{what} {name!r} must match {PORT_NAME_PATTERN}")
     if name == WHEN:
         raise ValueError(f"{what} {WHEN!r} is reserved for the step's control input")
