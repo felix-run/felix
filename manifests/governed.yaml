@@ -49,12 +49,13 @@ spec:
   skills_declared_only: true
 
   # Optional outbound MCP — leave commented until the secret exists.
-  # Uncomment and set FELIX_MCP_AUTH_TOKEN (env / Secrets Manager) first:
+  # Uncomment and set DOCS_MCP_AUTH_TOKEN (env / Secrets Manager) first, and list it for the
+  # tenant in FELIX_MANIFEST_SECRETS -- a `FELIX_*` name is never resolvable from a manifest:
   # mcp_servers:
   #   - name: docs
   #     url: https://example.com/mcp
   #     transport: http
-  #     auth: secret:FELIX_MCP_AUTH_TOKEN
+  #     auth: secret:DOCS_MCP_AUTH_TOKEN
 
   session:
     strategy: compacting

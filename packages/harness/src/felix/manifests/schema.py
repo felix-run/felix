@@ -1448,8 +1448,11 @@ class Spec(_Strict):
     #         acme-billing: {plan: pro}
     #
     # Core never reads inside these values; they reach a pattern builder through
-    # `PatternBuildContext["extensions"]`. Governance does not apply to them, so a
-    # plugin must treat its own config as trusted operator input, not model input.
+    # `PatternBuildContext["extensions"]`. Governance does not apply to them, and they are
+    # written by whoever holds `manifests:write` -- a tenant, not the operator. A plugin must
+    # treat them as tenant input: a `secret:NAME` found here is resolved through
+    # `PatternBuildContext["manifest_secrets"]` (scoped to the tenant by
+    # `FELIX_MANIFEST_SECRETS`), never `build_secrets`.
     extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)

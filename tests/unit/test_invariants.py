@@ -1897,3 +1897,23 @@ def test_every_build_after_a_pin_check_compiles_the_children_it_checked() -> Non
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert sites >= 8, f"only {sites} build_tenant_agent(manifest=resolved.manifest) calls matched (10 today)"
     assert offenders == [], f"these compile children the pin did not check: {offenders}"
+
+
+def test_manifest_code_never_reaches_the_unscoped_secrets_backend() -> None:
+    """Every `secret:NAME` under `felix/manifests/` was written by a tenant, so it resolves through
+    `felix.secrets.manifest_secrets` (scoped by `FELIX_MANIFEST_SECRETS`), never `build_secrets`,
+    which reads anything the process can see -- `FELIX_AUTH_API_KEYS` included. AST, not text: the
+    comments explaining the rule name the function too."""
+    files = sorted((HARNESS / "manifests").rglob("*.py"))
+    assert files, "scanned nothing: felix/manifests/ moved"
+    offenders = []
+    for path in files:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            named = (
+                (isinstance(node, ast.Name) and node.id == "build_secrets")
+                or (isinstance(node, ast.Attribute) and node.attr == "build_secrets")
+                or (isinstance(node, ast.alias) and node.name == "build_secrets")
+            )
+            if named:
+                offenders.append(f"{path.relative_to(ROOT)}:{getattr(node, 'lineno', '?')}")
+    assert offenders == [], f"use felix.secrets.manifest_secrets(settings, tenant_id): {offenders}"

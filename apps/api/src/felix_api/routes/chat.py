@@ -114,11 +114,15 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
         # The manifest is fine; the deployment has not configured the provider its model
         # routes to. Unavailable, like a missing secret, not a server fault.
         return HTTPException(status_code=503, detail=client_safe_message(exc))
-    from felix.secrets import SecretNotFoundError
+    from felix.secrets import SecretNotFoundError, SecretNotPermittedError
 
     if isinstance(exc, SecretNotFoundError):
         # A manifest's `secret:` ref names a secret this deployment does not hold.
         return HTTPException(status_code=503, detail=client_safe_message(exc))
+    if isinstance(exc, SecretNotPermittedError):
+        # A manifest's `secret:` ref names a secret its tenant may not reference: the manifest
+        # is wrong for this tenant, as with an unregistered webhook endpoint below.
+        return HTTPException(status_code=422, detail=client_safe_message(exc))
     if isinstance(exc, ValueError) and str(exc).startswith(
         ("unknown checkpointer", "memory.checkpointer is")
     ):

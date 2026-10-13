@@ -252,7 +252,13 @@ def _tool(api: str) -> Tool:
 
 
 def _settings(ws: Path) -> Settings:
-    return Settings(workspace_root=str(ws), allow_insecure=True, auth_mode="none", environment="development")
+    return Settings(
+        workspace_root=str(ws),
+        allow_insecure=True,
+        auth_mode="none",
+        environment="development",
+        manifest_secrets='{"GITHUB_MCP_TOKEN": "*", "TEST_PUBLISH_TOKEN": "*"}',
+    )
 
 
 def _req(ws: Path, thread: str = "default:t-publish") -> RequestContext:
@@ -947,7 +953,7 @@ def _manifest() -> dict[str, Any]:
             "pattern": "react",
             "github_publish": {
                 "repo": REPO,
-                "auth": "secret:FELIX_TEST_PUBLISH_TOKEN",
+                "auth": "secret:TEST_PUBLISH_TOKEN",
                 "base": "main",
                 "branch_prefix": "felix/",
             },
@@ -962,7 +968,7 @@ async def test_the_compile_binds_it_with_its_preview_through_the_governance_stac
     from felix.manifests.builder import build_agent
     from felix.tools.builtins import default_tool_provider
 
-    monkeypatch.setenv("FELIX_TEST_PUBLISH_TOKEN", "t1")
+    monkeypatch.setenv("TEST_PUBLISH_TOKEN", "t1")
     agent = await build_agent(_manifest(), default_tool_provider(), settings=_settings(ws))
     tool = next((t for t in agent.tools if t.name == gp.TOOL_NAME), None)
     assert tool is not None, "spec.github_publish bound nothing"
@@ -982,7 +988,7 @@ async def test_a_call_through_the_compiled_agent_opens_an_approval_with_the_diff
     base = git(ws, "rev-parse", "HEAD").strip()
     head = feature_commit(ws)
     fake = FakeGitHub(ws, {"main": base})
-    monkeypatch.setenv("FELIX_TEST_PUBLISH_TOKEN", "t1")
+    monkeypatch.setenv("TEST_PUBLISH_TOKEN", "t1")
     async with serve(fake) as api:
         real = gp.tool_from_github_publish
         # The compile binds api.github.com; aim the same binder at the fake.
@@ -1006,6 +1012,6 @@ async def test_an_unresolvable_token_binds_no_tool(ws: Path, monkeypatch: pytest
     from felix.manifests.builder import build_agent
     from felix.tools.builtins import default_tool_provider
 
-    monkeypatch.delenv("FELIX_TEST_PUBLISH_TOKEN", raising=False)
+    monkeypatch.delenv("TEST_PUBLISH_TOKEN", raising=False)
     agent = await build_agent(_manifest(), default_tool_provider(), settings=_settings(ws))
     assert gp.TOOL_NAME not in {t.name for t in agent.tools}

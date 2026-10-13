@@ -302,7 +302,7 @@ async def test_two_compiles_share_one_mcp_discovery(monkeypatch: pytest.MonkeyPa
     from felix.storage import MemoryObjectStore
     from felix.tools.provider import InMemoryToolProvider
 
-    monkeypatch.setenv("FELIX_TEST_MCP_TOKEN", "resolved-token")
+    monkeypatch.setenv("TEST_MCP_TOKEN", "resolved-token")
     asked: list[str] = []
 
     async def fake_list(ref: McpServerRef, *, allow_http: bool = False, handshake: Any = None) -> list:
@@ -311,7 +311,11 @@ async def test_two_compiles_share_one_mcp_discovery(monkeypatch: pytest.MonkeyPa
         return [{"name": "search", "description": "Search the docs."}]
 
     monkeypatch.setattr(client, "list_remote_tools", fake_list)
-    settings = Settings(database_url="memory://compile-cache", object_store="memory")
+    settings = Settings(
+        database_url="memory://compile-cache",
+        object_store="memory",
+        manifest_secrets='{"TEST_MCP_TOKEN": "*"}',
+    )
     manifest = {
         "apiVersion": "felix/v1",
         "kind": "Agent",
@@ -319,7 +323,7 @@ async def test_two_compiles_share_one_mcp_discovery(monkeypatch: pytest.MonkeyPa
         "spec": {
             "pattern": "react",
             "mcp_servers": [
-                {"name": "docs", "url": "https://docs.example.com/mcp", "auth": "secret:FELIX_TEST_MCP_TOKEN"}
+                {"name": "docs", "url": "https://docs.example.com/mcp", "auth": "secret:TEST_MCP_TOKEN"}
             ],
         },
     }

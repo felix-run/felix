@@ -29,6 +29,17 @@ class SecretNotFoundError(ValueError):
     """
 
 
+class SecretNotPermittedError(ValueError):
+    """A manifest names a secret its tenant may not reference.
+
+    Every backend resolves any name the process can see, and a manifest picks both the name
+    and where the value is sent (an MCP server's URL, a peer's, a gateway's) — so without this a
+    tenant with `manifests:write` could have `secret:FELIX_AUTH_API_KEYS` delivered as a bearer
+    token to a server of its choosing. The message names the secret and the setting that
+    governs it, never a value, and is written for the manifest's author.
+    """
+
+
 # Values resolved via hydrate_secrets — used for output masking.
 _resolved_secret_values: list[str] = []
 
@@ -101,6 +112,195 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     "google_client_secret": ("GOOGLE_CLIENT_SECRET", "google_client_secret", "felix/google_client_secret"),
     "google_cookie_key": ("GOOGLE_COOKIE_KEY", "google_cookie_key", "felix/google_cookie_key"),
 }
+
+
+# Credentials the deployment itself runs on that live outside `FELIX_*` and outside the map
+# above: the database and cache URLs, the Compose stack's Postgres and MinIO passwords, the
+# Cloudflare Tunnel token, the `gh` CLI's token, and the process's own cloud credentials. A
+# manifest may never resolve one, whatever the allowlist says.
+_INFRA_SECRET_NAMES = frozenset(
+    {
+        "DATABASE_URL",
+        "REDIS_URL",
+        "POSTGRES_PASSWORD",
+        "MINIO_ROOT_USER",
+        "MINIO_ROOT_PASSWORD",
+        "PGPASSWORD",
+        "TUNNEL_TOKEN",
+        "GH_TOKEN",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+    }
+)
+
+
+def _normalise_secret_name(name: str) -> str:
+    """The spelling `EnvSecrets` falls back to, so `felix-auth-api-keys` is `FELIX_AUTH_API_KEYS`."""
+    return name.strip().upper().replace("-", "_")
+
+
+_RESERVED_SECRET_NAMES = frozenset(
+    _normalise_secret_name(n)
+    for n in {*(c for cs in _HYDRATE_MAP.values() for c in cs), *_INFRA_SECRET_NAMES}
+)
+
+
+def reserved_secret_name(name: str) -> bool:
+    """Whether `name` is one of Felix's own secrets: a `FELIX_*` setting (or `felix/…` in a cloud
+    backend), any candidate name in the hydrate map, or an infrastructure credential. Compared
+    after the normalisation `EnvSecrets` applies, so no spelling of one escapes the check."""
+    normalised = _normalise_secret_name(name)
+    return normalised.startswith(("FELIX_", "FELIX/")) or normalised in _RESERVED_SECRET_NAMES
+
+
+@lru_cache(maxsize=4)
+def _parse_manifest_secrets(raw: str) -> dict[str, frozenset[str] | None]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"not valid JSON ({exc.msg})") from None
+    if not isinstance(parsed, dict):
+        raise ValueError('must be a JSON object of secret name -> ["tenant", ...] or "*"')
+    out: dict[str, frozenset[str] | None] = {}
+    for name, tenants in parsed.items():
+        if not name or name != name.strip() or any(ch.isspace() for ch in name):
+            raise ValueError(f"secret name {name!r} must be non-empty with no whitespace")
+        if reserved_secret_name(name):
+            # Refused below whatever this says; listing it is a mistake worth a failed boot.
+            raise ValueError(f"{name!r} is one of Felix's own secrets and cannot be opened to manifests")
+        if tenants == "*":
+            out[name] = None
+        elif isinstance(tenants, list) and tenants and all(isinstance(t, str) and t for t in tenants):
+            out[name] = frozenset(tenants)
+        else:
+            raise ValueError(f'secret {name!r} must map to a list of tenant ids, or "*" for all')
+    return out
+
+
+# Operator settings that bind a `secret:NAME` to a purpose of their own, scoped by their own
+# `tenants`, host or endpoint. A name one of them uses is that binding's: opening it to manifests
+# as well would let a tenant send, say, the egress credential another tenant is bound to, to a URL
+# of its choosing. JSON settings are walked whole, so a key a registry adds later is covered too.
+_OPERATOR_JSON_SECRET_SETTINGS = (
+    "egress_credentials",
+    "webhook_endpoints",
+    "triggers",
+    "channels",
+    "model_provider_options",
+)
+
+
+def _ref_names_in(value: object, *, _depth: int = 0) -> list[str]:
+    """Every `secret:NAME` (or `{"secret": "NAME"}`) inside operator-supplied JSON."""
+    if _depth > 8:
+        return []
+    if isinstance(value, str):
+        name = secret_ref_name(value)
+        return [name] if name else []
+    if isinstance(value, dict):
+        if set(value) == {"secret"} and isinstance(value["secret"], str):
+            name = secret_ref_name(value)
+            return [name] if name else []
+        return [n for v in value.values() for n in _ref_names_in(v, _depth=_depth + 1)]
+    if isinstance(value, list):
+        return [n for v in value for n in _ref_names_in(v, _depth=_depth + 1)]
+    return []
+
+
+def operator_bound_secret_names(settings: Any) -> dict[str, str]:
+    """Normalised secret name -> the `FELIX_*` setting that already binds it. Read before
+    `hydrate_secrets` rewrites `FELIX_MODEL_PROVIDER_OPTIONS` refs into values, which is when
+    `validate_runtime` asks. Malformed JSON contributes nothing: its own validator refuses it."""
+    bound: dict[str, str] = {}
+    for attr in _OPERATOR_JSON_SECRET_SETTINGS:
+        raw = str(getattr(settings, attr, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for name in _ref_names_in(parsed):
+            bound.setdefault(_normalise_secret_name(name), f"FELIX_{attr.upper()}")
+    vapid = secret_ref_name(str(getattr(settings, "push_vapid_private_key", "") or ""))
+    if vapid:
+        bound.setdefault(_normalise_secret_name(vapid), "FELIX_PUSH_VAPID_PRIVATE_KEY")
+    for name in str(getattr(settings, "secret_names", "") or "").split(","):
+        if name.strip():
+            bound.setdefault(_normalise_secret_name(name), "FELIX_SECRET_NAMES")
+    return bound
+
+
+def assert_manifest_secrets_unbound(settings: Any) -> None:
+    """`ValueError` for an allowlisted name an operator registry already binds (boot check)."""
+    bound = operator_bound_secret_names(settings)
+    for name in parse_manifest_secrets(settings):
+        owner = bound.get(_normalise_secret_name(name))
+        if owner:
+            raise ValueError(
+                f"{name!r} is already bound by {owner}; give manifests a separate secret rather than "
+                "sharing that one"
+            )
+
+
+def parse_manifest_secrets(settings: Any) -> dict[str, frozenset[str] | None]:
+    """`FELIX_MANIFEST_SECRETS`: secret name -> the tenants whose manifests may reference it
+    (`None` for `"*"`). `ValueError` naming what is wrong; boot validation turns that into a
+    refusal, so a malformed value is never read as "nothing allowed" in silence."""
+    return _parse_manifest_secrets(str(getattr(settings, "manifest_secrets", "") or ""))
+
+
+def check_manifest_secret(name: str, tenant_id: str, settings: Any) -> None:
+    """Raise `SecretNotPermittedError` unless `tenant_id`'s manifests may reference `name`.
+
+    Felix's own secrets are refused first and always. Anything else must be listed in
+    `FELIX_MANIFEST_SECRETS` for this tenant, or for `"*"`: an allowlist, because every backend
+    can see far more than a tenant should, and a denylist fails open on the next credential
+    someone adds to the environment. Matched exactly, so `github-token` is not allowed by
+    `GITHUB_TOKEN`; a spelling the operator did not write is refused, never widened.
+    """
+    from felix.settings_registry import tenant_allowed
+
+    shown = loggable(name, limit=120)
+    if reserved_secret_name(name):
+        raise SecretNotPermittedError(
+            f"secret:{shown} is one of Felix's own credentials and may not be referenced from a "
+            "manifest; FELIX_MANIFEST_SECRETS cannot allow it"
+        )
+    try:
+        allowed = parse_manifest_secrets(settings)
+    except ValueError:
+        allowed = {}  # boot validation refuses this; fail closed if it got past
+    if name not in allowed or not tenant_allowed(allowed[name], tenant_id):
+        raise SecretNotPermittedError(
+            f"secret:{shown} is not permitted for this tenant's manifests; the operator must list it "
+            "in FELIX_MANIFEST_SECRETS"
+        )
+
+
+class TenantScopedSecrets:
+    """A `SecretsProvider` that resolves only what one tenant's manifests may reference.
+
+    Wraps the configured backend for every lookup whose name a manifest chose, so the check sits
+    in front of `get` itself: no resolve path through it can reach the backend unchecked.
+    """
+
+    def __init__(self, inner: SecretsProvider, *, tenant_id: str, settings: Any) -> None:
+        self._inner = inner
+        self._tenant_id = tenant_id
+        self._settings = settings
+
+    async def get(self, name: str) -> str | None:
+        check_manifest_secret(name, self._tenant_id, self._settings)
+        return await self._inner.get(name)
 
 
 @runtime_checkable
@@ -292,6 +492,12 @@ def build_secrets(settings: object) -> SecretsProvider:
             f"Unknown FELIX_SECRETS_BACKEND={backend!r} (registered: {', '.join(list_secrets_backends())})"
         )
     return factory(settings)
+
+
+def manifest_secrets(settings: object, tenant_id: str) -> SecretsProvider:
+    """The secrets backend as a manifest compiled for `tenant_id` may use it (`TenantScopedSecrets`).
+    Every resolve of a manifest-supplied `secret:NAME` goes through this, never `build_secrets`."""
+    return TenantScopedSecrets(build_secrets(settings), tenant_id=tenant_id, settings=settings)
 
 
 async def _hydrate_provider_options(settings: Any, provider: SecretsProvider) -> list[str]:
@@ -673,19 +879,28 @@ __all__ = [
     "EnvSecrets",
     "FileSecrets",
     "GcpSecretManager",
+    "SecretNotFoundError",
+    "SecretNotPermittedError",
     "SecretsFactory",
     "SecretsProvider",
+    "TenantScopedSecrets",
+    "assert_manifest_secrets_unbound",
     "build_secrets",
+    "check_manifest_secret",
     "collected_secret_values",
     "hydrate_secrets",
     "is_secret_ref",
     "list_secrets_backends",
     "looks_like_plaintext_secret",
+    "manifest_secrets",
     "normalize_secret_ref",
+    "operator_bound_secret_names",
+    "parse_manifest_secrets",
     "redact_json",
     "redact_text",
     "register_resolved_secret",
     "register_secrets_backend",
+    "reserved_secret_name",
     "resolve_secret_value",
     "secret_ref_name",
 ]

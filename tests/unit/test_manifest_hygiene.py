@@ -38,6 +38,9 @@ def _settings(**overrides: Any) -> Settings:
         "auth_mode": "api_key",
         "auth_api_keys": KEYS,
         "host": "127.0.0.1",
+        # The refs these manifests carry, opened to every tenant: what is under test here is the
+        # plaintext check, not which secrets a tenant may name (`test_manifest_secret_tenancy.py`).
+        "manifest_secrets": '{"MCP_TOKEN": "*", "X": "*"}',
         "environment": "development",
     }
     base.update(overrides)

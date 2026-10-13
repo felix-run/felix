@@ -226,7 +226,11 @@ async def test_a_missing_manifest_secret_names_it_on_every_surface(monkeypatch: 
     get_settings.cache_clear()
     clear_bundled_cache()
     try:
-        app = create_app(settings=_settings(secrets_backend="env"), plugins=[])
+        # Listed, so the ref gets past the tenant check and reaches the backend that lacks it.
+        app = create_app(
+            settings=_settings(secrets_backend="env", manifest_secrets='{"GITHUB_MCP_TOKEN": "*"}'),
+            plugins=[],
+        )
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test", timeout=30
         ) as client:
@@ -250,6 +254,45 @@ async def test_a_missing_manifest_secret_names_it_on_every_surface(monkeypatch: 
     assert "internal error" not in streamed.text
     assert v1.status_code == 503, v1.text
     assert "secret not found: GITHUB_MCP_TOKEN" in v1.text
+
+
+async def test_a_manifest_secret_the_tenant_may_not_use_names_it_on_every_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sibling refusal: the secret exists, and `FELIX_MANIFEST_SECRETS` does not open it. The
+    manifest is wrong for this tenant, so 422 rather than 503 -- and the stream, which compiles
+    inside its generator, must name it too rather than answer `internal error`."""
+    from felix.config import get_settings
+    from felix.manifests.loader import clear_bundled_cache
+    from felix_api.app import create_app
+
+    # Present, so a 422 cannot be the missing-secret path under another status.
+    monkeypatch.setenv("GITHUB_MCP_TOKEN", "present-but-not-listed")
+    monkeypatch.setenv("FELIX_MANIFESTS_DIR", str(Path(__file__).resolve().parents[2] / "manifests" / "self"))
+    get_settings.cache_clear()
+    clear_bundled_cache()
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    try:
+        app = create_app(settings=_settings(secrets_backend="env"), plugins=[])
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", timeout=30
+        ) as client:
+            plain = await client.post("/chat", json={"manifest": "triage", **body})
+            streamed = await client.post("/chat/stream", json={"manifest": "triage", **body})
+            v1 = await client.post("/v1/chat/completions", json={"model": "triage", **body})
+    finally:
+        monkeypatch.delenv("FELIX_MANIFESTS_DIR")
+        get_settings.cache_clear()
+        clear_bundled_cache()
+    assert plain.status_code == 422, plain.text
+    assert "secret:GITHUB_MCP_TOKEN is not permitted" in plain.json()["detail"]
+    assert "secret:GITHUB_MCP_TOKEN is not permitted" in streamed.text
+    assert "internal error" not in streamed.text
+    assert v1.status_code == 422, v1.text
+    assert v1.json()["error"]["code"] == "secret_not_permitted"
+    assert "GITHUB_MCP_TOKEN" in v1.json()["error"]["message"]
+    for resp in (plain, streamed, v1):
+        assert "present-but-not-listed" not in resp.text
 
 
 def test_an_unconfigured_decision_provider_is_a_provider_config_error() -> None:
