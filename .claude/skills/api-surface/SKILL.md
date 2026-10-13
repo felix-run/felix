@@ -41,6 +41,7 @@ pinning — that is a security bug, not a shortcut.
 | `mcp.py` | `/mcp` server surface |
 | `triggers.py` | `POST /triggers/{id}`: a signed inbound event starts a durable run (`felix/triggers.py`); no bearer, the sender's signature instead |
 | `audit.py`, `approvals.py`, `plans.py`, `jobs.py`, `manifests.py`, `eval.py`, `usage.py` | management APIs |
+| `workflows.py` | `/workflows`: authored workflow definitions (`felix/workflows/`), each response carrying its ports and problems; saves conditional on `If-Match` / `If-None-Match: *` (412 with the current row), `/-/kinds` and `/-/check`; `workflows:read` / `workflows:write` |
 | `artifacts.py`, `files.py`, `documents.py`, `memory.py`, `skills.py`, `skill_library.py` | tenant data APIs, mounted at `/artifacts`, `/files`, `/documents`, `/memory`, `/skills`, `/skill-library`; each gates on its own `<name>:read` / `<name>:write` scope (`auth/mgmt.py`) |
 | `skill_import.py`, `skill_quality.py` | more of `/skill-library`: import/browse/upstream (`/-/browse`, `/{name}/-/upstream`) and feedback/evals (`/-/feedback`, `/{name}/evals`) |
 | `auth_github.py` | GitHub login under `/auth/github` (device, token, actions, authorize/callback/exchange), `/auth` methods, `/github/connection` (the caller's own) and `/github/connections` (`github:admin`) |

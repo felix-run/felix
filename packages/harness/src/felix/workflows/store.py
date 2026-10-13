@@ -28,7 +28,7 @@ import uuid
 from copy import deepcopy
 from typing import Any, Final
 
-from sqlalchemy import collate, delete, select
+from sqlalchemy import collate, delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from felix.config import Settings
@@ -41,6 +41,9 @@ now_ms = lambda: int(time.time() * 1000)
 _WORKFLOW_ID = re.compile(WORKFLOW_ID_PATTERN)
 _VERSION = re.compile(r"[0-9]{1,9}")
 MAX_LIST = 500
+# How many workflows a tenant may keep. Equal to `MAX_LIST`, so one listing always shows them all;
+# enforced here rather than in a route because a job, a plugin or the CLI can create one too.
+MAX_PER_TENANT = MAX_LIST
 
 _memory_workflows: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -60,6 +63,14 @@ class _Absent:
 ABSENT: Final = _Absent()
 # A revision string to match, `ABSENT`, or `None` for an unconditional write.
 Precondition = str | _Absent | None
+
+
+class WorkflowLimitReached(Exception):
+    """Creating this workflow would take the tenant past `MAX_PER_TENANT`. Replacing one never does."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"a tenant may keep at most {limit} workflows")
+        self.limit = limit
 
 
 class WorkflowConflict(Exception):
@@ -163,6 +174,8 @@ def _put_in_memory(
     existing = _memory_workflows.get((tenant_id, workflow_id))
     if _precondition_fails(precondition, existing["revision"] if existing else None):
         raise WorkflowConflict(workflow_id, _workflow_dict(existing) if existing else None)
+    if existing is None and sum(1 for t, _ in _memory_workflows if t == tenant_id) >= MAX_PER_TENANT:
+        raise WorkflowLimitReached(MAX_PER_TENANT)
     # The twin keeps the revision rather than a separate generation, so its rows have exactly the
     # keys a Postgres read returns.
     generation = existing["revision"].rpartition(".")[0] if existing else uuid.uuid4().hex
@@ -208,6 +221,14 @@ async def put_workflow(
             await db.rollback()
             raise WorkflowConflict(workflow_id, snapshot)
         if current is None:
+            # Counted inside the transaction but not locked against another create: two at the
+            # cap at once can both land. The cap bounds a tenant's footprint, not an exact count.
+            held = await db.scalar(
+                select(func.count()).select_from(Workflow).where(Workflow.tenant_id == tenant_id)
+            )
+            if (held or 0) >= MAX_PER_TENANT:
+                await db.rollback()
+                raise WorkflowLimitReached(MAX_PER_TENANT)
             current = Workflow(
                 tenant_id=tenant_id,
                 id=workflow_id,
@@ -273,8 +294,10 @@ async def delete_workflow(
 __all__ = [
     "ABSENT",
     "MAX_LIST",
+    "MAX_PER_TENANT",
     "Precondition",
     "WorkflowConflict",
+    "WorkflowLimitReached",
     "delete_workflow",
     "get_workflow",
     "list_workflows",

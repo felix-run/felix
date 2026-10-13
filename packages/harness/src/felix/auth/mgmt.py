@@ -115,6 +115,10 @@ SCOPE_JOBS_READ = "jobs:read"
 SCOPE_JOBS_WRITE = "jobs:write"
 SCOPE_PLANS_READ = "plans:read"
 SCOPE_PLANS_WRITE = "plans:write"
+# Authored workflows (`/workflows`). Writing one names manifests and tools its runs will call, so
+# it is a grant of its own rather than a side effect of `manifests:write` or `jobs:write`.
+SCOPE_WORKFLOWS_READ = "workflows:read"
+SCOPE_WORKFLOWS_WRITE = "workflows:write"
 SCOPE_EVAL_READ = "eval:read"
 SCOPE_EVAL_WRITE = "eval:write"
 SCOPE_USAGE_READ = "usage:read"
@@ -167,6 +171,8 @@ __all__ = [
     "SCOPE_SKILLS_READ",
     "SCOPE_SKILLS_WRITE",
     "SCOPE_USAGE_READ",
+    "SCOPE_WORKFLOWS_READ",
+    "SCOPE_WORKFLOWS_WRITE",
     "auth_from_request",
     "holds_mgmt_scopes",
     "require_mgmt_scopes",

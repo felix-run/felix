@@ -32,7 +32,16 @@ ProblemCode = Literal[
     "duplicate_input",
     "unconnected_input",
     "cycle",
+    # A stored definition a later schema no longer parses; the route reports it rather than
+    # failing the read, so the editor can show the workflow and what is wrong with it.
+    "invalid_definition",
+    # The check stopped listing at `MAX_PROBLEMS`; this last entry says how many it left out.
+    "too_many_problems",
 ]
+
+# A response lists at most this many problems. An editor shows the first screenful anyway, and an
+# unbounded list is memory a caller can multiply with every edge they add.
+MAX_PROBLEMS = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +153,9 @@ def check(spec: WorkflowSpec) -> tuple[dict[str, StepPorts | None], list[Problem
     cyclic = _cyclic(graph)
     if cyclic:
         found.append(Problem("cycle", "these steps wait on each other: " + ", ".join(cyclic)))
+    if len(found) > MAX_PROBLEMS:
+        left_out = len(found) - MAX_PROBLEMS
+        found = [*found[:MAX_PROBLEMS], Problem("too_many_problems", f"{left_out} more problems not listed")]
     return ports, found
 
 
@@ -201,4 +213,4 @@ def _cyclic(graph: dict[str, set[str]]) -> list[str]:
     return sorted(found)
 
 
-__all__ = ["Problem", "ProblemCode", "check", "problems", "resolve_ports"]
+__all__ = ["MAX_PROBLEMS", "Problem", "ProblemCode", "check", "problems", "resolve_ports"]

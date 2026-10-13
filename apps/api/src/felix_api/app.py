@@ -62,6 +62,7 @@ from felix_api.routes import (
     triggers,
     usage,
     well_known,
+    workflows,
 )
 from felix_api.routes import (
     eval as eval_routes,
@@ -331,6 +332,7 @@ def create_app(
     app.include_router(push.router, prefix="/push")
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
+    app.include_router(workflows.router, prefix="/workflows")
     app.include_router(triggers.router, prefix=TRIGGER_PATH_PREFIX.rstrip("/"))
     app.include_router(manifests.router, prefix="/manifests")
     if not cfg.bundled_only:
