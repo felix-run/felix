@@ -292,6 +292,9 @@ zero cloud SDKs.
   `FELIX_FILE_CHECKPOINT_RETENTION_DAYS` (7; what the file tools changed, kept for `/chat/rewind`
   with `restore_files`, bytes and ledger row, counted from each file's last change in its thread; `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` caps the content kept, 256 MiB; `FELIX_FILE_CHECKPOINTS=false` records none); a manifest's `governance.retention_days` shortens the audit TTL for its
   own rows
+- Approvals: `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` (false) refuses an approval's answer from the
+  person whose run asked for it, so a second person (or an `admin`) must decide; see
+  [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Uploads: `FELIX_ATTACHMENTS_MAX_BYTES_PER_TENANT` (256 MiB, 0 = no ceiling) bounds what one
   tenant may store through `/files`, on top of the 600 KiB per-upload cap. Over the ceiling
   answers 409. On the default `fs` store this shares a disk with artifact spill and manifest

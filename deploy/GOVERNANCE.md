@@ -1460,6 +1460,19 @@ call. The properties above hold unchanged, with three additions:
 A publish whose opener's connection has lapsed or been revoked publishes nothing and returns
 `[github disconnected]`, naming who must reconnect.
 
+**Only the opener's run publishes.** The thread is shared by its tenant; the token is the opener's.
+`publish_commits` refuses unless the run is the opener's own -- the caller driving the turn, or for
+a resumed durable run or a scheduled job the person it runs on behalf of (`on_behalf_of`) -- so
+another member driving the thread cannot publish as the opener. A checkout whose state names no
+opener, or one that is not the GitHub account the token is minted for, publishes nothing until it
+is removed and opened again. Reading, listing and removing the checkout (`GET`/`DELETE`
+`/chat/sessions/{thread}/workspace/repo`, `.../files`) and the file pane over it (`/chat/workspace/*`)
+are the opener's too: anyone else gets `403 not_checkout_opener`, unless they hold `admin`/`*`. `POST /chat/rewind` with `restore_files` is gated the same way, since it writes the checkout.
+**What stays open:** the agent's own workspace and shell tools are not gated by opener. Another
+member driving the thread runs an agent that reads the checkout, and can have it edit files and
+commit in it; only publishing those commits is refused them. That is what sharing a thread means,
+and closing it would mean refusing a non-opener's turns on a checkout thread altogether.
+
 ## Sandbox confinement
 
 `spec.sandboxes[].binding` names a container image and reaches `docker run`, so images
@@ -2107,13 +2120,18 @@ The same channel carries UI prompts and client-tool answers.
 
 A thread is in one of four modes, set with `POST /chat/mode` (or by an approved plan) and kept in
 thread metadata. The change applies from the next run: a run reads the stored mode once.
+Tightening (toward `plan`) is open to anyone driving the thread; loosening — `plan` → `default` →
+`accept_edits` — needs `approvals:write`, because a thread is shared by its tenant and waiving its
+approvals is deciding them, and `bypass` needs `approvals:bypass`.
+So leaving plan mode through `POST /chat/mode` needs `approvals:write` too; the other way out is an
+approved plan (`exit_plan_mode`), which needs whoever answers it to hold `approvals:write`.
 
 | Mode | Effect |
 |------|--------|
 | `default` | Every control runs as the manifest says. |
 | `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
 | `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
-| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass`, and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
 
 `allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
 wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
@@ -2566,8 +2584,8 @@ implies the matching `*:read`.
 | `audit:read` | `/audit` |
 | `artifacts:read` | `/artifacts` — read back a tool output too large to keep in the transcript. Its own scope rather than part of `audit:read`, because a spilled result is raw tool output and often the most sensitive data a run touches. The model's own way back, the `read_artifact` tool bound beside `spec.artifacts`, checks no scope and is held to something narrower instead: it reads only what its own conversation spilled (the thread, or the request when there is none), so a leaked id does not reach another caller's run through the model. Spill is kept for `FELIX_ARTIFACT_RETENTION_DAYS` (30; `0` keeps forever) and then swept, objects and ledger row together — so evidence meant to outlive that belongs in the audit log, not in an artifact |
 | `approvals:bypass` | Setting a thread's permission mode to `bypass` (`POST /chat/mode`), and having a run honour it — see [Permission modes](#permission-modes) |
-| `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream`, and every `/push` route — a push subscription is a standing request to be told about approvals |
-| `jobs:read` / `jobs:write` | `/jobs`. `POST /jobs/{name}/run` runs a job now and needs `jobs:write`: whoever may rewrite a job's prompt may already make it run. The job runs as itself — principal `cron`, no scopes — not as the caller, whose subject is recorded on the run as `requested_by` |
+| `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream`, and every `/push` route — a push subscription is a standing request to be told about approvals. A decision lands only on a row still pending and inside its deadline (`409 approval_already_decided` / `approval_expired` otherwise), and and, with `FELIX_APPROVALS_REQUIRE_SECOND_PERSON=true` (off by default), never from the person whose run asked (`403 self_approval_forbidden`) unless they hold `admin`/`*` — the plan approval excepted, since it is how its asker leaves plan mode. Off, a person may answer their own run's approvals, the ordinary single-user loop. `approvals:write` is also what loosening a thread's permission mode needs — see [Permission modes](#permission-modes) |
+| `jobs:read` / `jobs:write` | `/jobs`. A job runs as principal `cron` on behalf of whoever last wrote it (`PUT`), with that writer's scopes, scheme and manifest pin as recorded then; `GET /jobs` shows `created_by` and `recorded_at`. Every firing goes through the manifest's inbound auth and the thread's compile pin, so writing a job reaches no manifest its writer could not run; a refusal is the run's error. For a writer who authenticated with an API key, each firing re-reads `FELIX_AUTH_API_KEYS`: the scopes are cut to what that key (by `sub`, in the job's tenant) holds now, and a key no longer configured refuses the run. A JWT writer keeps the grant recorded at the write — Felix keeps nothing of a token to re-check, so re-save or delete the job when a person leaves. `POST /jobs/{name}/run` runs a job now and needs `jobs:write` *and* to be the job's writer or an operator (`admin`/`*`): the run carries the writer's authority, so someone else asking would choose when the writer's run happens — including a job the writer disabled. Rewriting the job instead makes it theirs, with their scopes. The caller's subject is recorded on a manual run as `requested_by`. A job written before writers were recorded runs with no scopes and only an operator may run it by hand |
 | `plans:read` / `plans:write` | `/plans` |
 | `workflows:read` / `workflows:write` | `/workflows` — authored workflow definitions. Its own grant rather than part of `manifests:write` or `jobs:write`: a workflow names the manifests and tools its runs will call. `/-/check` (check a definition without saving) is a read. A tenant keeps at most 500 workflows (409 `workflow_limit` past it; replacing one never counts), a definition is capped at 256 KiB however it is built, and a check lists at most 200 problems (then `too_many_problems` with the count left out), each quoting an author's names cut short — so a definition cannot make its own error report large. Every save and delete is audited (`workflow_saved`, `workflow_deleted`) to the caller. Starting and cancelling a run (`POST /workflows/{id}/runs`, `.../cancel`) need `workflows:write`: each agent step runs as a child durable run **as the person who started the workflow, with their scopes** — recorded once at start like a durable chat's, never widened, and dead with the run, whose deadline is 24 hours clamped to the starter's token `exp`. A run started with no caller in context runs its steps with no scopes. **Each manifest a step names is checked against the starter's inbound rules and pinned when the run starts** (401/403 `not_permitted` otherwise): a step that starts hours later refuses a version published since, as a durable chat does, so the starter's scopes never run code nobody checked. Each child is also held to its manifest's own `execution` TTL. A tenant may have 50 runs going and a run 8 agent steps in flight. Approval steps open ordinary `/approvals` rows; one nobody decides fails the step rather than counting as a denial, and cancelling closes them. Two things to know: anyone with `workflows:read` sees every step's inputs and outputs, which were produced with the starter's scopes; and one step's output becomes the next step's prompt, so text an earlier step read (a web page, an issue body) reaches a later step's tools — turn on `spec.inbound` screening on manifests that take workflow input from untrusted sources. Audited as `workflow_run_started` and `workflow_run_cancelled` |
 | `eval:read` / `eval:write` | `/eval` |

@@ -11,6 +11,9 @@ A manifest author reading `ApprovalRule` had every reason to believe otherwise.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 import pytest
 from felix.approvals import store as approvals_store
 from felix.config import Settings
@@ -128,7 +131,6 @@ async def test_command_require_approval_creates_a_real_approval() -> None:
     The bundled default rule for `sudo` therefore told the model to go ask a human who
     was never asked. Now a pending row exists and the run blocks on a real decision.
     """
-    import asyncio
     from dataclasses import dataclass
 
     from felix.approvals.interrupt import signal_decision
@@ -190,7 +192,6 @@ async def test_a_second_principal_cannot_join_the_first_ones_pending_request() -
     waiting call ran on A's approval -- with `one_shot`, spending it and refusing A. B is now
     refused at once and A's approval is A's.
     """
-    import asyncio
 
     from felix.approvals.interrupt import signal_decision
     from felix.context import AuthContext, RequestContext, async_run_with_context
@@ -269,3 +270,95 @@ async def test_a_preview_error_is_redacted_before_it_is_cut() -> None:
         await _approval_preview(tool, {})
 
     assert "sk-STRADDLE" not in str(failed.value), str(failed.value)[-60:]
+
+
+async def test_a_machine_run_s_pending_approval_names_the_person_it_runs_for() -> None:
+    """A resumed fiber is principal `fiber`. Its row used to say so, which hid its starter from
+    the decide route's refusal of a self-approval and from the `bind_principal` join check."""
+
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import ToolInvocationCtx, define_tool
+
+    async def handler(args: dict, ctx: object = None) -> str:
+        return "deployed"
+
+    rule = ApprovalRule(id="r1", tools=["deploy"], ttl_seconds=10, bind_principal=True)
+    (gated,) = apply_approvals([define_tool(name="deploy", description="d", handler=handler)], [rule], "m")
+    s = make_settings()
+    req = RequestContext(
+        settings=s,
+        auth=AuthContext(principal_sub="fiber", on_behalf_of="alice", tenant_id="t1"),
+        manifest_id="m",
+        thread_id="t1:x",
+    )
+
+    async def call() -> object:
+        async with async_run_with_context(req):
+            return await gated.executor.execute({"command": "deploy"}, ToolInvocationCtx(tool_call_id="c1"))
+
+    task = asyncio.create_task(call())
+    try:
+        for _ in range(200):
+            pending = await approvals_store.list_approvals(s, "t1", status="pending")
+            if pending:
+                break
+            await asyncio.sleep(0.01)
+        (row,) = pending
+        assert row["principal_subj"] == "alice"
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.parametrize(("for_whom", "joins"), [("alice", True), ("bob", False)])
+async def test_a_machine_run_joins_a_pending_request_only_for_the_person_who_opened_it(
+    for_whom: str, joins: bool
+) -> None:
+    """`bind_principal` keeps a pending row to the person who opened it. A fiber working for that
+    person is them for this check; one working for someone else is refused at once."""
+
+    from felix.approvals.interrupt import signal_decision
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.manifests.builder import apply_approvals
+    from felix.manifests.schema import ApprovalRule
+    from felix.tools.types import ToolInvocationCtx, define_tool, tool_output_content
+
+    async def handler(args: dict, ctx: object = None) -> str:
+        return "deployed"
+
+    rule = ApprovalRule(id="r1", tools=["deploy"], ttl_seconds=10, bind_principal=True)
+    (gated,) = apply_approvals([define_tool(name="deploy", description="d", handler=handler)], [rule], "m")
+    s = make_settings()
+
+    async def call(auth: AuthContext, call_id: str) -> str:
+        req = RequestContext(settings=s, auth=auth, manifest_id="m", thread_id="t1:x")
+        async with async_run_with_context(req):
+            out = await gated.executor.execute({"command": "deploy"}, ToolInvocationCtx(tool_call_id=call_id))
+        return tool_output_content(out)
+
+    alice = asyncio.create_task(call(AuthContext(principal_sub="alice", tenant_id="t1"), "a"))
+    for _ in range(200):
+        pending = await approvals_store.list_approvals(s, "t1", status="pending")
+        if pending:
+            break
+        await asyncio.sleep(0.01)
+    (row,) = pending
+    machine = asyncio.create_task(
+        call(AuthContext(principal_sub="fiber", on_behalf_of=for_whom, tenant_id="t1"), "f")
+    )
+    await asyncio.sleep(0.1)
+    refused_at_once = machine.done()
+    await approvals_store.decide(s, "t1", row["id"], decision="approved", decided_by="op")
+    await signal_decision(row["id"], "approved")
+    assert await alice == "deployed"
+    machine_out = await asyncio.wait_for(machine, timeout=5)
+
+    if joins:
+        assert not refused_at_once, machine_out
+        assert machine_out == "deployed"
+    else:
+        assert refused_at_once
+        assert "another caller is already pending" in machine_out, machine_out

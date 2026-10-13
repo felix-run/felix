@@ -42,6 +42,8 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             # fresh dict per read, so without this the twin is a different kind of object.
             "payload": deepcopy(row.get("payload_json") or row.get("payload") or {}),
             "enabled": row.get("enabled", False),
+            "created_by": row.get("created_by"),
+            "created_auth": deepcopy(row.get("created_auth")),
         }
     return {
         "tenant_id": row.tenant_id,
@@ -55,6 +57,8 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
         "created_at": row.created_at,
         "payload": row.payload_json,
         "enabled": row.enabled,
+        "created_by": row.created_by,
+        "created_auth": row.created_auth,
     }
 
 
@@ -144,8 +148,16 @@ async def put_job(
     manifest_id: str = "",
     payload: dict[str, Any] | None = None,
     enabled: bool = True,
+    created_by: str | None = None,
+    created_auth: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar."""
+    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar.
+
+    `created_by` and `created_auth` are whoever wrote it this time and the authority its runs
+    carry (`felix.jobs.scheduler.creator_auth`) -- replaced on every write, because whoever
+    rewrites the prompt is who the job now runs for. None records no one: such a job runs with no
+    scopes, as every job did before they were recorded.
+    """
     from felix.jobs.schedule import parse_schedule
 
     parsed = parse_schedule(schedule)
@@ -178,6 +190,8 @@ async def put_job(
             "created_at": existing["created_at"] if existing else ts,
             "payload_json": deepcopy(payload) if payload else {},
             "enabled": enabled,
+            "created_by": created_by,
+            "created_auth": deepcopy(created_auth),
         }
         _memory_jobs[(tenant_id, name)] = row
         return _job_dict(row)
@@ -194,6 +208,8 @@ async def put_job(
                 created_at=ts,
                 payload_json=deepcopy(payload) if payload else {},
                 enabled=enabled,
+                created_by=created_by,
+                created_auth=deepcopy(created_auth),
             )
             db.add(row)
         else:
@@ -202,6 +218,8 @@ async def put_job(
             row.manifest_id = manifest_id
             row.payload_json = deepcopy(payload) if payload else {}
             row.enabled = enabled
+            row.created_by = created_by
+            row.created_auth = deepcopy(created_auth)
         await db.commit()
         return _job_dict(row)
 

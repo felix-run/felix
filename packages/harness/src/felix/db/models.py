@@ -159,6 +159,10 @@ class Job(Base):
         JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
     enabled: Mapped[bool] = mapped_column(Boolean, server_default=false(), default=False)
+    # Who last wrote the job, and the authority its runs carry (`felix.jobs.scheduler`). Null on
+    # a job written before `0042_job_creator`, which runs as a principal with no scopes.
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_auth: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
 
 class Approval(Base):

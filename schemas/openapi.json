@@ -10375,7 +10375,7 @@
     },
     "/chat/mode": {
       "post": {
-        "description": "Set the thread's permission mode: `default`, `plan`, `accept_edits` or `bypass`.\n\nTakes effect from the next run. A mode the thread's manifest does not allow is stored and\nignored -- the run falls back to the manifest's default -- because the manifest a thread runs\ncan change under it. `bypass` waives every approval, so setting it needs `approvals:bypass`\nhere, and the run checks the scope again for whoever drives the thread then.",
+        "description": "Set the thread's permission mode: `default`, `plan`, `accept_edits` or `bypass`.\n\nTakes effect from the next run. A mode the thread's manifest does not allow is stored and\nignored -- the run falls back to the manifest's default -- because the manifest a thread runs\ncan change under it. `bypass` waives every approval, so setting it needs `approvals:bypass`\nhere, and the run checks the scope again for whoever drives the thread then. Any other move\nto a looser mode than the thread holds (`plan` \u2192 `default` \u2192 `accept_edits`) needs\n`approvals:write`: a thread is shared by its tenant, and waiving its approvals is deciding\nthem. Tightening needs nothing.",
         "operationId": "chat_permission_mode_chat_mode_post",
         "parameters": [
           {
@@ -10492,6 +10492,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: `restore_files` on a thread whose workspace is a repository checkout someone else opened."
           },
           "409": {
             "content": {
@@ -11194,7 +11204,7 @@
     },
     "/chat/sessions/{thread_id}/workspace/repo": {
       "delete": {
-        "description": "Delete this thread's checkout. Commits not yet published are lost with it.",
+        "description": "Delete this thread's checkout. Commits not yet published are lost with it. Only for the\nperson who opened it (or an admin).",
         "operationId": "remove_thread_repo_chat_sessions__thread_id__workspace_repo_delete",
         "parameters": [
           {
@@ -11210,6 +11220,16 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11258,7 +11278,7 @@
         ]
       },
       "get": {
-        "description": "This thread's checkout: its state, and once ready, its branch, commits ahead and whether\nit has uncommitted changes.",
+        "description": "This thread's checkout: its state, and once ready, its branch, commits ahead and whether\nit has uncommitted changes. Only for the person who opened it (or an admin).",
         "operationId": "get_thread_repo_chat_sessions__thread_id__workspace_repo_get",
         "parameters": [
           {
@@ -11281,6 +11301,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -11343,6 +11373,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -11402,7 +11442,7 @@
     },
     "/chat/sessions/{thread_id}/workspace/repo/files": {
       "get": {
-        "description": "The files in this thread's checkout \u2014 tracked, and untracked but not ignored \u2014 each with its\nsize and git status, sorted by path. A failed or expired checkout answers its state and no\nfiles; one still cloning is a 409.",
+        "description": "The files in this thread's checkout \u2014 tracked, and untracked but not ignored \u2014 each with its\nsize and git status, sorted by path. A failed or expired checkout answers its state and no\nfiles; one still cloning is a 409. Only for the person who opened it (or an admin).",
         "operationId": "list_thread_repo_files_chat_sessions__thread_id__workspace_repo_files_get",
         "parameters": [
           {
@@ -11458,6 +11498,16 @@
               }
             },
             "description": "Bad Request"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RepoErrorOut"
+                }
+              }
+            },
+            "description": "Forbidden"
           },
           "404": {
             "content": {
@@ -12051,6 +12101,16 @@
             },
             "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -12152,6 +12212,16 @@
               }
             },
             "description": "`invalid_thread_id`; `invalid_path` (the workspace root, absolute, escaping, through a symlink, or the folder itself a symlink); `reserved_path` (the path is inside, or the folder holds, `.git`, `.felix-scopes` or an edit's temporary file); `not_a_directory` (the path is a file)."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
           },
           "404": {
             "content": {
@@ -12350,6 +12420,16 @@
             },
             "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -12462,6 +12542,16 @@
             },
             "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -12571,6 +12661,16 @@
               }
             },
             "description": "`invalid_thread_id`; `invalid_path` (the workspace root, absolute, escaping, through a symlink, or the folder itself a symlink); `reserved_path` (the path is inside, or the folder holds, `.git`, `.felix-scopes` or an edit's temporary file); `not_a_directory` (the path is a file). Also `invalid_path` for a `to_path` inside `path`, or one whose directory on the way is a file."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
           },
           "404": {
             "content": {
@@ -12701,6 +12801,16 @@
             },
             "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
+          },
           "404": {
             "content": {
               "application/json": {
@@ -12802,6 +12912,16 @@
               }
             },
             "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), `reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceErrorOut"
+                }
+              }
+            },
+            "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone else opened; only they (or an admin) can read or change it here."
           },
           "404": {
             "content": {
@@ -14006,6 +14126,7 @@
         ]
       },
       "put": {
+        "description": "Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their\nscopes: the manifest's inbound auth is checked against them on every firing, so writing a job\nreaches no manifest the writer could not run by asking.",
         "operationId": "upsert_job_jobs__name__put",
         "parameters": [
           {
@@ -14058,7 +14179,7 @@
     },
     "/jobs/{name}/run": {
       "post": {
-        "description": "Run a job now, without waiting for its schedule, and return the run.\n\nSynchronous: the response is the finished run, so a new job can be tried before it is\nleft to cron. It runs exactly as a scheduled firing does \u2014 as `cron`, on the job's thread,\nits prompt screened \u2014 and only the run record says otherwise (`trigger: manual`, and who\nasked). The schedule is left alone, and a disabled job runs: asking is explicit.\n`jobs:write`, because whoever may rewrite the prompt may already make it run.",
+        "description": "Run a job now, without waiting for its schedule, and return the run.\n\nSynchronous: the response is the finished run, so a new job can be tried before it is\nleft to cron. It runs exactly as a scheduled firing does \u2014 as `cron` for the job's writer,\non the job's thread, its prompt screened \u2014 and only the run record says otherwise\n(`trigger: manual`, and who asked). The schedule is left alone, and a disabled job runs:\nasking is explicit.\n\n`jobs:write`, and either be the job's writer or an operator (`admin` / `*`). The run carries\nthe writer's authority, so anyone else asking would be making the writer's run happen at a\ntime the writer did not choose -- a disabled job most of all; rewriting the job instead makes\nit theirs, with their own scopes. A job written before writers were recorded is an operator's.",
         "operationId": "run_job_now_jobs__name__run_post",
         "parameters": [
           {

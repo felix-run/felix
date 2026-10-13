@@ -43,6 +43,28 @@ async def _put(settings: Any, name: str = JOB, **kw: Any) -> dict[str, Any]:
 
 
 @parametrized
+async def test_a_job_records_its_writer_and_the_next_write_replaces_them(store_settings: Any) -> None:
+    """Who a job runs for (`felix.jobs.scheduler`): the last writer, with exactly their authority."""
+    alice = {"scopes": ["jobs:write", "x:read"], "scheme": "api_key", "anonymous": False}
+    created = await _put(store_settings, created_by="alice", created_auth=alice)
+    assert (created["created_by"], created["created_auth"]) == ("alice", alice)
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (fetched["created_by"], fetched["created_auth"]) == ("alice", alice)
+
+    bob = {"scopes": ["jobs:write"], "scheme": "access", "anonymous": False, "felix_manifests": ["quick"]}
+    await _put(store_settings, created_by="bob", created_auth=bob)
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (fetched["created_by"], fetched["created_auth"]) == ("bob", bob)
+    (listed,) = await jobs.list_jobs(store_settings, TENANT)
+    assert (listed["created_by"], listed["created_auth"]) == ("bob", bob)
+
+    # Written with no writer -- what every row before `0042_job_creator` holds -- reads as none.
+    await _put(store_settings)
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (fetched["created_by"], fetched["created_auth"]) == (None, None)
+
+
+@parametrized
 async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     created = await _put(store_settings, payload={"prompt": "summarise", "depth": 2})
 

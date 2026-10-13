@@ -656,6 +656,21 @@ class _ThreadPublishExecutor:
             )
         if state.get("state") != checkouts.READY:
             return f"[publish refused] this thread's checkout of {state.get('repo')} is {state.get('state')}"
+        # The token below is the opener's, so the run has to be theirs. A thread is shared by its
+        # tenant, and without this anyone driving it -- or a job or durable run started by
+        # someone else -- published commits to the opener's repository as the opener.
+        opener = checkouts.checkout_opener(ctx.settings, tenant_id, thread_id)
+        if opener is None or opener is checkouts.NOBODY:
+            return (
+                "[publish refused] this checkout does not record who opened it; remove it and "
+                "open the repository again to publish from it"
+            )
+        caller = ctx.auth.acting_for
+        if caller != opener:
+            return (
+                f"[publish refused] only {opener}, who opened this thread's checkout, can publish "
+                "from it: commits are published with their GitHub account"
+            )
         base = str(state.get("base") or "")
         if base.startswith(self._spec.branch_prefix):
             return f"[publish refused] the checkout's base {base!r} is inside branch_prefix"

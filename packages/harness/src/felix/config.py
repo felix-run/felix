@@ -384,6 +384,12 @@ class Settings(BaseSettings):
     # rows are swept — a grant that can still authorize a call is never deleted, however
     # old, because retention must not silently revoke authorization.
     approval_retention_days: int = Field(default=0, ge=0)
+    # Separation of duties on `POST /approvals/{id}/decide`: when on, the person whose run asked
+    # for an approval cannot answer it -- a second person must, or an operator (`admin` / `*`).
+    # The plan approval is exempt: it is how its asker leaves plan mode. Off by default, because
+    # a person approving their own agent's calls is the ordinary single-user loop; turn it on
+    # where an approval is meant to be a second pair of eyes.
+    approvals_require_second_person: bool = False
 
     # --- scale-out ---
     scale_out: bool = False

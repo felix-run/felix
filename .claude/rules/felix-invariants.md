@@ -78,7 +78,7 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
   state a route returns, or any helper that builds one. An exception's text is the operator's
   business — an egress proxy's name, a DNS failure, a filesystem path, an upstream's own error — and
   CodeQL reports it as `py/stack-trace-exposure` (#475 shipped six in one file). Reach first for
-  `felix_api.errors.client_safe_message(exc)`: it relays only the exception types listed in
+  `felix.errors.client_safe_message(exc)` (re-exported as `felix_api.errors`): it relays only the exception types listed in
   `_relayable()` — each one's message written for a client — and answers anything else with a fixed
   string and the request id. A message a call site wrote for the caller itself passes
   `authored_for_clients=True`, and is caught by its *own* exception type, never a bare `ValueError`

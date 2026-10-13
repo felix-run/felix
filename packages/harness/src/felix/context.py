@@ -24,17 +24,24 @@ class AuthContext:
     # How the caller authenticated, carried from felix.auth.context.Principal so
     # manifest `auth.inbound.schemes` can be enforced on the request path.
     scheme: str = "anonymous"
-    # Set only when a machine actor is running work a human started — today, a resumed durable
-    # fiber. `principal_sub` stays the machine (`fiber`, `cron`, `eval`, `a2a`) so an audit row
-    # never claims a person took an action a worker took minutes later; `on_behalf_of` carries
-    # who it is for, which is what `bind_principal` needs to keep an approval valid across a
-    # resume. Authorization reads it deliberately and in one place; audit does not.
+    # Set only when a machine actor is running work a person started: a resumed durable fiber,
+    # or a scheduled job running for its writer. `principal_sub` stays the machine (`fiber`,
+    # `cron`, `eval`, `a2a`) so it is never mistaken for the person; `on_behalf_of` carries who
+    # the work is for. Read it through `acting_for`, never by hand.
     on_behalf_of: str = ""
     # The caller's personal skill library (`skills.library_keys.personal_owner`), worked out once
     # from the verified principal where its issuer is still known. None for an anonymous caller
     # and for every machine actor but a resumed fiber, which carries its starter's: a compile
     # with None loads the tenant's library and no one's own.
     skill_owner: str | None = None
+
+    @property
+    def acting_for(self) -> str:
+        """The person this run's actions are for: `on_behalf_of` when a machine runs someone's
+        work, else the caller itself. What an approval names as its requester, what
+        `bind_principal` and `publish_commits` match, and what audit rows of a person's action
+        record. `""` only for a context that names nobody."""
+        return self.on_behalf_of or self.principal_sub or ""
 
 
 @dataclass
