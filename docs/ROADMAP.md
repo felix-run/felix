@@ -686,13 +686,13 @@ A read of authentication, per-route authorization and tenancy against v0.14.1, l
 Threads stay shared inside a tenant by decision; the PRs close the places where that sharing let
 one member act with another's authority.
 
-- [~] **C1, manifest secret refs** (#633). `FELIX_MANIFEST_SECRETS` binds each `secret:NAME` to
+- [x] **C1, manifest secret refs** (#633). `FELIX_MANIFEST_SECRETS` binds each `secret:NAME` to
       the tenants that may name it; Felix's own, infrastructure and registry-bound secrets are
       always refused.
-- [~] **In-tenant escalations** (#635). Opener-only GitHub publish and checkout routes; jobs on
-      behalf of their writer through inbound auth (`0041_job_creator`); approvals decided once;
+- [x] **In-tenant escalations** (#635). Opener-only GitHub publish and checkout routes; jobs on
+      behalf of their writer through inbound auth (`0042_job_creator`); approvals decided once;
       loosening `/chat/mode` needs `approvals:write`; opt-in second-person approval.
-- [~] **Authz gaps** (#637). Off-turn admission on the pane, `/chat/style` and A2A task methods;
+- [x] **Authz gaps** (#637). Off-turn admission on the pane, `/chat/style` and A2A task methods;
       `metrics:read`; empty `FELIX_WORKSPACE_DEPLOYMENT_TENANTS` default; pinned Google isolation.
 - [~] **Hardening** (#638). Mount validation, one API-key parser, `mint-jwt` bounds, trigger TTL.
 - [!] **Per-principal thread ownership.** A `threads:*-all` scope and an owner on each thread, so

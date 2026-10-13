@@ -327,7 +327,9 @@ async def test_a_failed_a2a_task_stores_no_exception_text(
     async def _fail(*_a: Any, **_k: Any) -> Any:
         raise RuntimeError(leak)
 
-    monkeypatch.setattr("felix.runtime.resolve_tenant_manifest", _fail)
+    # After admission: a send refused or unresolvable before it stores nothing for the task id
+    # (`a2a.server`), so the failure has to come from the run itself to be recorded at all.
+    monkeypatch.setattr("felix.runtime.build_tenant_agent", _fail)
     settings = make_settings(default_manifest="quick")
     common: dict[str, Any] = {"settings": settings, "tools": InMemoryToolProvider(), "tenant_id": "default"}
 
