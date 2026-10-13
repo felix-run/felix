@@ -22,7 +22,8 @@ felix mint-jwt --sub ops --tenant default --scopes chat:write,tools:calc
 
 `quick` / `support` stay anonymous for local DX. Prefer `governed` (or a
 fork) for JWT / API-key production. Outbound MCP in `governed` is commented
-out until `FELIX_MCP_AUTH_TOKEN` exists — scoped chat works without it.
+out until `DOCS_MCP_AUTH_TOKEN` exists and `FELIX_MANIFEST_SECRETS` lists it — scoped chat
+works without it.
 
 **The public demo stays anonymous, by decision (2026-10-02).** Visitors reach it through the
 chat-ui Worker, which holds the one Felix credential, so nobody has an identity or scopes of
@@ -36,11 +37,52 @@ turn the demo into an account system, and that is not what it is for.
 | Layer | Mechanism |
 |-------|-----------|
 | Platform (model keys, consumer secret) | `FELIX_SECRETS_BACKEND=env\|file\|aws\|gcp` + `hydrate_secrets()` at API/worker startup |
-| Manifest outbound (`mcp_servers.auth`, `env`, peer/container `auth`) | `secret:NAME` or `{secret: NAME}` resolved at compile; **never** store resolved values in `manifest_json` |
+| Manifest outbound (`mcp_servers.auth`, `env`, peer/container `auth`, `github_publish.auth`) | `secret:NAME` or `{secret: NAME}` resolved at compile, only for a name `FELIX_MANIFEST_SECRETS` lists for the tenant (below); **never** store resolved values in `manifest_json` |
 | Redaction | Known secrets scrubbed from tool output, session events, audit payloads, fiber state, skill bodies read over `/skills`, and every `/skill-library` read and write response — file text, and the reason, description, decision note, review-check and security-issue messages a saver or the scan wrote, and feedback bodies, suggested patches, evaluation scenarios, judge reasons and job errors. `FELIX_SKILL_IMPORT_GITHUB_TOKEN` is hydrated from the secrets backend and masked like any credential; it is sent only as a header to `api.github.com`, never in a URL, a log line or a response |
 
 Production (`FELIX_ENVIRONMENT=production`) or `governance.forbid_plaintext_secrets: true`
 rejects Bearer/long-token auth and non-ref MCP `env` values.
+
+### Which secrets a manifest may name
+
+Every secrets backend resolves any name the process can see, and a manifest chooses both the name
+and where the value goes — an MCP server's URL, a peer's, a container gateway's, GitHub. Unchecked,
+anyone holding `manifests:write` could publish `auth: secret:FELIX_AUTH_API_KEYS` against a server
+they run and receive every tenant's API keys as a bearer token. So a manifest's refs are an
+allowlist, per tenant:
+
+```bash
+FELIX_MANIFEST_SECRETS='{"GITHUB_MCP_TOKEN": ["acme"], "DOCS_MCP_AUTH_TOKEN": "*"}'
+```
+
+Each name maps to the tenant ids whose manifests may reference it, or `"*"` for every tenant.
+Empty (the default) allows none. Matching is exact on the name the manifest writes, so
+`github-mcp-token` is not allowed by `GITHUB_MCP_TOKEN`. Felix's own secrets are refused whatever
+the map says, and listing one fails the boot: any name that is `FELIX_*` (or `felix/…`, the cloud
+backends' spelling) after the upper-case and `-`→`_` normalisation the env backend applies, every
+name in the hydrate map (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN_KEY`, `GOOGLE_CLIENT_SECRET`, …), and
+the infrastructure credentials `DATABASE_URL`, `REDIS_URL`, `POSTGRES_PASSWORD`, the MinIO root
+pair and the AWS/GCP process credentials. A malformed value fails `validate_runtime` at boot.
+
+It is checked twice. `PUT /manifests/{name}` — and a canary or rollback onto a stored version —
+answers `422` naming the secret and the setting before anything is stored. Compiling checks again
+in front of the backend's `get` (`felix.secret_policy.TenantScopedSecrets`), so a row stored before the
+check existed fails its request with the same message (`422` on `/chat` and `/v1`) and the backend
+is never asked for the value. A `github_publish.auth` ref is refused the same way, not dropped.
+
+A secret an operator registry already binds cannot also be opened to manifests: listing a name that
+appears as a `secret:` ref in any other setting (`FELIX_EGRESS_CREDENTIALS`, `FELIX_WEBHOOK_ENDPOINTS`,
+`FELIX_TRIGGERS`, `FELIX_CHANNELS`, `FELIX_MODEL_PROVIDER_OPTIONS`, the VAPID key, … — every
+setting is scanned, bare or as JSON, so a new registry is covered without being listed), or in
+`FELIX_SECRET_NAMES`, fails the boot ("already bound by FELIX_…; give manifests a separate secret").
+Those registries scope their secret by tenant, host or endpoint; a manifest ref sends it wherever
+the manifest says, so sharing one would undo that scoping. Give a manifest its own credential. The
+registries themselves are not checked against this map, since their refs are the operator's.
+
+A plugin reading `spec.extensions` is reading tenant input. It resolves a `secret:NAME` found there
+through `PatternBuildContext["manifest_secrets"]`, the same tenant-scoped backend, never
+`build_secrets`. `felix doctor` notes each bundled manifest (including `FELIX_MANIFESTS_DIR`) that
+names a secret not permitted for a tenant the configuration pins (or `default` when none is pinned).
 
 PII: `spec.guardrails.providers: [pii]` uses **Presidio** when
 `felix-harness[pii]` is installed, otherwise a regex fallback. Eval LLM judges
@@ -56,7 +98,7 @@ stderr, and `felix eval --strict-judge` exits 1 rather than pass on the weaker t
 FELIX_SECRETS_BACKEND=aws
 FELIX_AWS_REGION=us-east-1
 # Leave FELIX_ANTHROPIC_API_KEY empty; create SM secret felix-anthropic-api-key
-# Manifest refs use the same backend, e.g. secret:FELIX_MCP_AUTH_TOKEN
+# Manifest refs use the same backend, e.g. secret:DOCS_MCP_AUTH_TOKEN (listed in FELIX_MANIFEST_SECRETS)
 ```
 
 See [aws/README.md](aws/README.md). Prefer IRSA over static keys.
@@ -66,7 +108,7 @@ See [aws/README.md](aws/README.md). Prefer IRSA over static keys.
 ```bash
 FELIX_SECRETS_BACKEND=gcp
 FELIX_GCP_PROJECT=your-project
-# Secret Manager ids: felix-anthropic-api-key, FELIX_MCP_AUTH_TOKEN, …
+# Secret Manager ids: felix-anthropic-api-key, DOCS_MCP_AUTH_TOKEN, …
 ```
 
 See [gcp/README.md](gcp/README.md). Prefer Workload Identity.

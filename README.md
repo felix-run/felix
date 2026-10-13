@@ -272,6 +272,11 @@ zero cloud SDKs.
 
 - Set `FELIX_OBJECT_STORE` to `s3`, `gcs`, `fs`, `memory`, or a backend you register
 - Set `FELIX_SECRETS_BACKEND` to `env`, `file`, `aws`, `gcp`, or a backend you register
+- A manifest's `secret:NAME` refs resolve only names `FELIX_MANIFEST_SECRETS` lists for the
+  tenant (a JSON map of name → `[tenant, …]` or `"*"`; empty allows none). Felix's own secrets —
+  any `FELIX_*` name, the provider and sign-in keys, `DATABASE_URL`, `REDIS_URL` — are refused
+  whatever it says. `PUT /manifests` answers `422` for an unlisted ref, and compiling refuses it
+  before the backend is asked
 - Deploy notes: [`deploy/aws/`](deploy/aws/), [`deploy/gcp/`](deploy/gcp/)
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts

@@ -54,7 +54,7 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
     from felix.prompts import PromptUnavailable
-    from felix.secrets import SecretNotFoundError
+    from felix.secrets import SecretNotFoundError, SecretNotPermittedError
     from felix.security.egress_credentials import EgressCredentialError
     from felix_ai.output_schema import InvalidOutputSchema
     from felix_ai.providers.base import ProviderConfigError
@@ -71,6 +71,9 @@ def _relayable() -> tuple[type[BaseException], ...]:
         # mapped it to a 503 by message prefix, but `/chat/stream` compiles inside the
         # generator, so a missing `GITHUB_MCP_TOKEN` answered `internal error (request …)`.
         SecretNotFoundError,
+        # Names the secret and `FELIX_MANIFEST_SECRETS`, never a value: the manifest's author
+        # has to know which ref to drop, or what to ask the operator for.
+        SecretNotPermittedError,
         ManifestDriftError,
         InboundAuthError,
         # Rendered by felix.manifests.loader without the offending value, precisely so it

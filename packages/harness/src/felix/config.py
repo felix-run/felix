@@ -256,6 +256,12 @@ class Settings(BaseSettings):
     secrets_dir: str = "./secrets"
     # Extra secret names to resolve via backend for output masking (comma-separated)
     secret_names: str = ""
+    # Which secrets a manifest's `secret:NAME` refs may resolve, per tenant (`felix.secrets.
+    # assert_manifest_secret_permitted`). JSON: {"GITHUB_MCP_TOKEN": ["acme"], "DOCS_MCP_TOKEN": "*"}. Empty
+    # allows none: the backend sees every secret the process holds, and a manifest chooses where
+    # the value is sent. Felix's own (`FELIX_*`, the hydrated keys, infrastructure URLs) are
+    # refused whatever this says.
+    manifest_secrets: str = Field(default="", repr=False)
     aws_region: str = "us-east-1"
     gcp_project: str = ""
     # Deploy target hint (docs/helm only — runtime stays agnostic)
@@ -788,6 +794,7 @@ class Settings(BaseSettings):
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
         self._validate_egress_credentials()
+        self._validate_manifest_secrets()
         self._validate_triggers()
         self._validate_skill_update_webhooks()
         self._validate_push()
@@ -901,6 +908,17 @@ class Settings(BaseSettings):
             parse_egress_credentials(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_EGRESS_CREDENTIALS: {exc}") from exc
+
+    def _validate_manifest_secrets(self) -> None:
+        """A malformed `FELIX_MANIFEST_SECRETS` fails the boot rather than reading as an empty allowlist,
+        and so does one opening a secret an operator registry (egress, webhooks, …) already binds."""
+        from felix.secret_policy import assert_manifest_secrets_unbound
+
+        try:
+            # Parses the allowlist first, so a malformed one is reported as such.
+            assert_manifest_secrets_unbound(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_MANIFEST_SECRETS: {exc}") from exc
 
     def _validate_triggers(self) -> None:
         """A malformed `FELIX_TRIGGERS` fails the boot, not the first event it would receive."""
@@ -1017,7 +1035,7 @@ class Settings(BaseSettings):
         """
         from felix.auth.context import assert_valid_tenant_id
 
-        for label, value in _configured_tenant_ids(self):
+        for label, value in configured_tenant_ids(self):
             try:
                 assert_valid_tenant_id(value)
             except ValueError as exc:
@@ -1259,7 +1277,7 @@ DEFAULT_DECISION_ROUTES: dict[str, dict[str, str]] = {
 }
 
 
-def _configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
+def configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
     """(setting name, tenant id) for every tenant an operator pins in configuration.
 
     The claim path checks itself; these do not, and each one fails in a different and

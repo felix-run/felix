@@ -29,6 +29,17 @@ class SecretNotFoundError(ValueError):
     """
 
 
+class SecretNotPermittedError(ValueError):
+    """A manifest names a secret its tenant may not reference.
+
+    Every backend resolves any name the process can see, and a manifest picks both the name
+    and where the value is sent (an MCP server's URL, a peer's, a gateway's) — so without this a
+    tenant with `manifests:write` could have `secret:FELIX_AUTH_API_KEYS` delivered as a bearer
+    token to a server of its choosing. The message names the secret and the setting that
+    governs it, never a value, and is written for the manifest's author.
+    """
+
+
 # Values resolved via hydrate_secrets — used for output masking.
 _resolved_secret_values: list[str] = []
 
@@ -101,6 +112,12 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     "google_client_secret": ("GOOGLE_CLIENT_SECRET", "google_client_secret", "felix/google_client_secret"),
     "google_cookie_key": ("GOOGLE_COOKIE_KEY", "google_cookie_key", "felix/google_cookie_key"),
 }
+
+
+def hydrated_secret_names() -> frozenset[str]:
+    """Every backend name the hydrate map reads a platform credential from: Felix's own, which
+    `felix.secret_policy` keeps out of every manifest's reach."""
+    return frozenset(name for names in _HYDRATE_MAP.values() for name in names)
 
 
 @runtime_checkable
@@ -673,11 +690,14 @@ __all__ = [
     "EnvSecrets",
     "FileSecrets",
     "GcpSecretManager",
+    "SecretNotFoundError",
+    "SecretNotPermittedError",
     "SecretsFactory",
     "SecretsProvider",
     "build_secrets",
     "collected_secret_values",
     "hydrate_secrets",
+    "hydrated_secret_names",
     "is_secret_ref",
     "list_secrets_backends",
     "looks_like_plaintext_secret",

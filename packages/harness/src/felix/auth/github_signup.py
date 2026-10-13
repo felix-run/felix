@@ -200,9 +200,9 @@ def validate_signup_config(settings: Settings) -> None:
         )
     if refused := sorted(_REFUSED_SCOPES & set(scopes)):
         raise RuntimeError(f"FELIX_GITHUB_SIGNUP_SCOPES may not grant {refused} to people who sign up.")
-    from felix.config import _configured_tenant_ids
+    from felix.config import configured_tenant_ids
 
-    for label, tenant in _configured_tenant_ids(settings):
+    for label, tenant in configured_tenant_ids(settings):
         if personal_tenant_owner(tenant) is not None:
             raise RuntimeError(
                 f"{label} names {tenant!r}, which is a personal tenant's id while signup is on; "

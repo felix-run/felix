@@ -52,6 +52,11 @@ Open registries in core, called at import time (not on the registry object):
 
 Manifest config: `spec.extensions.<plugin-name>` is the one field exempt from
 `extra="forbid"`; it reaches a pattern builder as `PatternBuildContext["extensions"]`.
+It is tenant input (anyone with `manifests:write` writes it), not operator config: resolve a
+`secret:NAME` found there through `PatternBuildContext["manifest_secrets"]` — a
+`SecretsProvider | None` (`None` only when the compile has no settings), the backend scoped to
+the compiling tenant by `FELIX_MANIFEST_SECRETS` (`felix.secret_policy.tenant_secrets_provider`) —
+never `felix.secrets.build_secrets`.
 
 The `FelixPlugin` Protocol in `plugins.py` documents the full shape, and
 `examples/felix-plugin-example/` is a working package that exercises every row above.

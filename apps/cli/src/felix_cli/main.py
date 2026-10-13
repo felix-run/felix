@@ -810,6 +810,45 @@ def _skill_import_check_notes(settings: Settings) -> list[str]:
     return notes
 
 
+def _tenants_refusing(secret: str, tenants: list[str], settings: Settings) -> list[str]:
+    """The tenants among `tenants` whose manifests may not reference `secret`."""
+    from felix.secret_policy import assert_manifest_secret_permitted
+    from felix.secrets import SecretNotPermittedError
+
+    refused = []
+    for tenant in tenants:
+        try:
+            assert_manifest_secret_permitted(secret, tenant, settings)
+        except SecretNotPermittedError:
+            refused.append(tenant)
+    return refused
+
+
+def _manifest_secret_notes(settings: Settings) -> list[str]:
+    """Notes, never failures, for a bundled manifest (`manifests/`, `FELIX_MANIFESTS_DIR`) naming a
+    `secret:` ref that `FELIX_MANIFEST_SECRETS` does not permit for a tenant it would run under: the
+    tenants this configuration pins, or `default` when it pins none. Such a manifest fails every
+    compile for that tenant with a 422, which reads like a broken manifest rather than a setting."""
+    from felix.config import configured_tenant_ids
+    from felix.manifests.loader import list_bundled, load_bundled
+    from felix.manifests.secret_refs import manifest_secret_names
+
+    tenants = sorted({tenant for _, tenant in configured_tenant_ids(settings)}) or ["default"]
+    notes: list[str] = []
+    for name in list_bundled():
+        try:
+            manifest = load_bundled(name)
+        except Exception:
+            continue  # `make bundle` and `felix validate-manifest` report a manifest that does not load
+        notes.extend(
+            f"manifest {name!r} names secret:{secret}, which FELIX_MANIFEST_SECRETS does not "
+            f"permit for tenant {', '.join(refused)}: it will not compile there"
+            for secret in manifest_secret_names(manifest)
+            if (refused := _tenants_refusing(secret, tenants, settings))
+        )
+    return notes
+
+
 def _skill_update_webhook_notes(settings: Settings) -> list[str]:
     """A note, never a failure, when `FELIX_SKILL_UPDATE_WEBHOOKS` is set. Checks run on the API and
     on the worker and only queue the event; the worker sends it and re-checks the binding first.
@@ -950,7 +989,12 @@ def doctor_cmd() -> None:
     # judgement, while "this is switched on and cannot work" is true in any environment.
     for row in _capability_findings(settings) + _posture_findings(settings):
         check(row.label, row.passed, row.detail, remedy=row.remedy)
-    for note in _skill_import_check_notes(settings) + _skill_update_webhook_notes(settings):
+    notes = (
+        _skill_import_check_notes(settings)
+        + _skill_update_webhook_notes(settings)
+        + _manifest_secret_notes(settings)
+    )
+    for note in notes:
         rprint(f"  [yellow]note[/yellow]  {note}")
     if settings.environment == "development":
         rprint("  [dim]posture[/dim]  production posture checks skipped — FELIX_ENVIRONMENT=development")

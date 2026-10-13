@@ -53,6 +53,8 @@ from felix.patterns.registry import (
     list_patterns,
 )
 from felix.patterns.types import Agent
+from felix.secret_policy import tenant_secrets_provider
+from felix.secrets import SecretNotPermittedError
 from felix.security.host_allowlist import EgressBound, hosts_outside
 from felix.session.clearing import model_view_strategy
 from felix.skills.types import SkillCatalog
@@ -1839,7 +1841,9 @@ async def build_agent(
         if m.spec.governance.transparency_notice:
             system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
 
-        mcp_refs, peer_refs, container_refs = await resolve_outbound_secrets(m, deps.settings)
+        mcp_refs, peer_refs, container_refs = await resolve_outbound_secrets(
+            m, deps.settings, tenant_id=tenant_id
+        )
         _check_declared_egress(m, egress)
 
         # Outbound MCP servers → remote tools.
@@ -1949,16 +1953,23 @@ async def build_agent(
                 else:
                     if deps.settings is None:
                         raise ValueError("no settings to resolve github_publish.auth with")
-                    from felix.secrets import build_secrets, resolve_secret_value
+                    from felix.secrets import resolve_secret_value
                     from felix.tools.github_publish import tool_from_github_publish
 
+                    # Scoped to the tenant like every other manifest-named secret: this one is a
+                    # write credential sent to GitHub.
                     token = await resolve_secret_value(
-                        build_secrets(deps.settings), m.spec.github_publish.auth
+                        tenant_secrets_provider(deps.settings, tenant_id), m.spec.github_publish.auth
                     )
                     _append_unique_tools(
                         resolved,
                         [tool_from_github_publish(m.spec.github_publish, token=token, allow_http=allow_http)],
                     )
+            except SecretNotPermittedError:
+                # The manifest is wrong for this tenant: refused like an MCP, peer or container
+                # ref naming the same secret, not degraded into an agent that silently lacks
+                # the tool.
+                raise
             except Exception:
                 # The message names the secret, never its value: `resolve_secret_value` raises
                 # `secret not found: NAME`, and the binder raises before a token exists.
@@ -2371,6 +2382,12 @@ async def build_agent(
                 # Plugin-owned config, namespaced by plugin name. Core never reads
                 # inside it; a registered pattern picks out its own key.
                 "extensions": dict(m.spec.extensions),
+                # The secrets backend as this tenant's manifests may use it. `extensions` is
+                # written by whoever holds `manifests:write`, so a plugin resolving a
+                # `secret:NAME` it found there resolves through this, never `build_secrets`.
+                "manifest_secrets": (
+                    tenant_secrets_provider(deps.settings, tenant_id) if deps.settings is not None else None
+                ),
                 "recursion_limit": m.spec.recursion_limit,
                 "output_schema": m.spec.output_schema,
                 "hooks": manifest_hooks,
