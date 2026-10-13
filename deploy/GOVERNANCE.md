@@ -2569,6 +2569,7 @@ implies the matching `*:read`.
 | `approvals:read` / `approvals:write` | `/approvals`; `approvals:read` also gates the `approval_required` frames on a durable `POST /chat/stream`, and every `/push` route — a push subscription is a standing request to be told about approvals |
 | `jobs:read` / `jobs:write` | `/jobs`. `POST /jobs/{name}/run` runs a job now and needs `jobs:write`: whoever may rewrite a job's prompt may already make it run. The job runs as itself — principal `cron`, no scopes — not as the caller, whose subject is recorded on the run as `requested_by` |
 | `plans:read` / `plans:write` | `/plans` |
+| `workflows:read` / `workflows:write` | `/workflows` — authored workflow definitions. Its own grant rather than part of `manifests:write` or `jobs:write`: a workflow names the manifests and tools its runs will call. `/-/check` (check a definition without saving) is a read. A tenant keeps at most 500 workflows (409 `workflow_limit` past it; replacing one never counts), a definition is capped at 256 KiB however it is built, and a check lists at most 200 problems (then `too_many_problems` with the count left out), each quoting an author's names cut short — so a definition cannot make its own error report large. Every save and delete is audited (`workflow_saved`, `workflow_deleted`) to the caller |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
 | `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |

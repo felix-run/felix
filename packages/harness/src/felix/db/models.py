@@ -73,6 +73,35 @@ class Plan(Base):
     )
 
 
+class Workflow(Base):
+    """An authored workflow definition (`felix/workflows/`), one row per id, replaced in place.
+
+    `version` starts at 1 and goes up by one on every write; `generation` is fixed when the row
+    is created, so `"<generation>.<version>"` names one revision for the life of the id, across a
+    delete and a re-create. A conditional write names the revision it read (0040).
+    """
+
+    __tablename__ = "workflows"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[str] = mapped_column(Text, nullable=False)
+    definition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    updated_by: Mapped[str] = mapped_column(Text, server_default="", default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "idx_workflows_tenant_updated_id",
+            "tenant_id",
+            text("updated_at DESC"),
+            text('id COLLATE "C" DESC'),
+        ),
+    )
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

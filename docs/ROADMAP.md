@@ -648,6 +648,31 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       approvals preset for destructive actions.
 - [ ] **W6 — clients.** A TypeScript SDK generated from the wire contract, and a `felix chat` REPL.
 
+### Authored workflows (2026-10-12)
+
+A workflow is a DAG of typed steps the operator draws in chat-ui (React Flow; the UX brief is
+"one canvas, two modes": edit and run on the same graph), run durably and watched live. Steps are
+an open registry, not a fixed vocabulary, so this stays inside the extensibility rule.
+
+- [x] **Definition and store** (#634). `felix/workflows/` — `WorkflowSpec`, the step-kind
+      registry (`agent_turn`, `tool_call`, `approval`, `branch`), `check()` returning ports and
+      problems, and the `workflows` table (`0040`) with revision-checked conditional saves.
+- [~] **Routes.** *Landed in this PR:* `/workflows` CRUD (ports and problems in every response,
+      revision as `ETag`, `If-Match` / `If-None-Match: *`, 412 with the current row), `/-/kinds`,
+      `/-/check`, scopes `workflows:read` / `workflows:write`, a 500-per-tenant cap in the store,
+      audit events. *Next:* what the editor wires against — the tools a manifest binds with their
+      input schemas, and a manifest's `output_schema` — which belongs with the runs PR's
+      check against live tools.
+- [ ] **Runs.** A `workflow_runs` / step-runs table snapshotting the definition it started on;
+      execution as a fiber, one step per fiber step; approval gates through the existing waiters;
+      run and step SSE frames (`make contract`); cancel, and retry from the failed step.
+- [ ] **Entry points.** Manual run with inputs; a job naming a workflow; a trigger naming one.
+- [ ] **Console.** chat-ui Workflows page (list, editor, run view) and the instrument's compact
+      graph — felix-web.
+- [ ] Open: whether a workflow can call another; per-step retry and timeout; a tool schema that
+      drifted since a `tool_call` step was wired (the step stores the snapshot it was wired
+      against; the run must check against the live one).
+
 ### Harness
 
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
