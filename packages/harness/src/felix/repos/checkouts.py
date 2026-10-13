@@ -35,6 +35,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import enum
 import hashlib
 import json
 import logging
@@ -42,11 +43,13 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from felix.logging_setup import loggable
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from felix.config import Settings
     from felix.tools.github_publish import GitRoot
 
@@ -61,6 +64,22 @@ CLONING = "cloning"
 READY = "ready"
 FAILED = "failed"
 EXPIRED = "expired"
+
+
+class _Opener(enum.Enum):
+    NOBODY = "nobody"
+
+
+# `checkout_opener`'s answer for a checkout whose state names no one it can trust: refused by
+# every check, never mistaken for a person (an empty string compares equal to an empty caller).
+NOBODY: Final = _Opener.NOBODY
+
+
+def is_live(state: dict[str, Any] | None) -> bool:
+    """Whether a checkout state is one a thread holds -- cloning or ready -- rather than one a new
+    checkout may replace (failed, expired, or none)."""
+    return state is not None and state.get("state") in {CLONING, READY}
+
 
 # Where repositories are cloned from, and the only URL the credential header is scoped to. One
 # constant so the two cannot disagree; the tests point it at a local server.
@@ -104,6 +123,53 @@ def thread_dir(settings: Settings, tenant_id: str, thread_id: str) -> Path:
 def read_checkout(settings: Settings, tenant_id: str, thread_id: str) -> dict[str, Any] | None:
     """The thread's checkout state, or None when it has none."""
     return _read_state(thread_dir(settings, tenant_id, thread_id))
+
+
+def checkout_opener(
+    settings: Settings, tenant_id: str, thread_id: str
+) -> str | Literal[_Opener.NOBODY] | None:
+    """The principal who opened the thread's checkout: `opened_by`, the subject of the person
+    whose GitHub connection cloned it (`github:<id>`). A child task's worktree answers for the
+    clone it was made from.
+
+    None when the thread has no checkout. `NOBODY` when its state names no one -- a state written
+    before `opened_by` was, one that does not agree with the GitHub account it holds, or a
+    worktree whose parent cannot be found -- which every check refuses.
+    """
+    state = read_checkout(settings, tenant_id, thread_id)
+    if state is None:
+        return None
+    if state.get("worktree_of"):
+        parent_key = str(state.get("parent_key") or "")
+        # The key is a hex digest this module wrote; anything else is not a directory name.
+        parent = _read_state(checkout_root(settings) / parent_key) if parent_key.isalnum() else None
+        if parent is None:
+            return NOBODY
+        state = parent
+    opener = str(state.get("opened_by") or "")
+    if not opener or opener != f"github:{state.get('github_user_id')}":
+        # The token a publish mints is the `github_user_id`'s, so an opener naming someone else
+        # would let one person's check pass for another's credential.
+        return NOBODY
+    return opener
+
+
+def may_reach_checkout(
+    settings: Settings, tenant_id: str, thread_id: str, *, principal: str, scopes: Iterable[str]
+) -> bool:
+    """Whether `principal` may read or remove the thread's checkout through the API.
+
+    A thread is shared by its tenant; a checkout is not. It is a clone of one person's
+    repository, made with their GitHub authorization, so its files, its state and its removal
+    are theirs -- and an operator's (`auth.mgmt.is_operator`). True for a thread with no
+    checkout, which has nothing to keep.
+    """
+    from felix.auth.mgmt import is_operator
+
+    opener = checkout_opener(settings, tenant_id, thread_id)
+    if opener is None or (opener is not NOBODY and opener == principal):
+        return True
+    return is_operator(settings, scopes)
 
 
 def _read_state(directory: Path) -> dict[str, Any] | None:
@@ -212,7 +278,7 @@ async def open_checkout(
         )
     directory = thread_dir(settings, tenant_id, thread_id)
     current = _read_state(directory)
-    if current is not None and current.get("state") in {CLONING, READY}:
+    if is_live(current):
         if current.get("repo") == full_name:
             return current
         raise CheckoutRefused(

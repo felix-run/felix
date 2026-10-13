@@ -1190,6 +1190,14 @@ class PermissionsSpec(_Strict):
         return self
 
 
+# Plan mode's tool and rule, produced only by `governance.permission_mode` (`make_exit_plan_tool`,
+# `plan_approval_rule`) and reserved in a manifest (`Spec._plan_mode_names_are_reserved`). Spelled
+# here rather than imported, because this module sits below that one;
+# `tests/unit/test_permission_mode_order.py` holds the two spellings together.
+RESERVED_PLAN_TOOL_NAME = "exit_plan_mode"
+RESERVED_PLAN_RULE_ID = "plan-approval"
+
+
 class ApprovalRule(_Strict):
     id: str = Field(min_length=1)
     description: str = ""
@@ -1456,6 +1464,28 @@ class Spec(_Strict):
     extensions: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _plan_mode_names_are_reserved(self) -> Spec:
+        """`exit_plan_mode` and its `plan-approval` rule are the harness's: the builder adds them
+        (`governance.permission_mode`), and `approvals.may_decide` lets the asker answer that one
+        approval themselves because it is how they leave plan mode. A manifest declaring a tool or
+        a rule of either name would borrow that exemption for something else, so neither may."""
+        if any(rule.id == RESERVED_PLAN_RULE_ID for rule in self.approvals):
+            raise ValueError(f"approvals: rule id {RESERVED_PLAN_RULE_ID!r} is reserved for plan mode")
+        if any(RESERVED_PLAN_TOOL_NAME in rule.tools for rule in self.approvals):
+            raise ValueError(
+                f"approvals: {RESERVED_PLAN_TOOL_NAME!r} is gated by plan mode's own rule and cannot be "
+                "named by another"
+            )
+        declared = list(self.tools)
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, list):
+                declared += [str(ref.name) for ref in value if isinstance(getattr(ref, "name", None), str)]
+        if RESERVED_PLAN_TOOL_NAME in declared:
+            raise ValueError(f"tool name {RESERVED_PLAN_TOOL_NAME!r} is reserved for plan mode")
+        return self
 
     @model_validator(mode="after")
     def _a_declared_catalog_has_no_personal_skills(self) -> Spec:

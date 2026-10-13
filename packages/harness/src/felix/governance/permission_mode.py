@@ -80,21 +80,44 @@ def may_bypass(settings: Any, scopes: Iterable[str]) -> bool:
     return holds_mgmt_scopes(settings, scopes, BYPASS_SCOPE)
 
 
-async def _read_stored(req: RequestContext) -> str | None:
-    if not req.thread_id:
+# How much each stored mode lets run without asking, least first. Not the order of
+# `PermissionModeName`'s literal: `plan` narrows below the manifest as written, and `bypass`
+# waives what `accept_edits` does and more.
+_LATITUDE: dict[PermissionModeName, int] = {"plan": 0, "default": 1, "accept_edits": 2, "bypass": 3}
+# `tests/unit/test_permission_mode_order.py` holds this to every name in `PermissionModeName`.
+
+
+def widens(current: str | None, new: str) -> bool:
+    """Whether moving a thread from stored mode `current` to `new` lets more run unasked.
+
+    `None` -- never set -- is `default`. A stored value outside the set reads as `plan`, as an
+    unreadable one does (`read_thread_mode`), so leaving it is a widening. Moving to an unknown
+    value is not: a run honours nothing it does not know (`effective_mode`).
+    """
+    have = _LATITUDE.get(current or "default", 0)
+    return _LATITUDE.get(new, 0) > have
+
+
+async def read_thread_mode(settings: Any, tenant_id: str, thread_id: str | None) -> str | None:
+    """The mode stored on `thread_id`, None when none is.
+
+    Fails closed: an unreadable mode is read as `plan`, which only narrows -- a thread that was
+    in plan mode must not leave it because a read failed, and one that was not loses its writes
+    for this run rather than gaining a waiver.
+    """
+    if not thread_id:
         return None
     try:
-        meta = await get_thread_meta(
-            settings=req.settings, tenant_id=req.auth.tenant_id, thread_id=req.thread_id
-        )
+        meta = await get_thread_meta(settings=settings, tenant_id=tenant_id, thread_id=thread_id)
     except Exception:
-        # Fail closed. An unreadable mode is read as `plan`, which only narrows: a thread that
-        # was in plan mode must not leave it because a read failed, and one that was not loses
-        # its writes for this run rather than gaining a waiver.
         logger.warning("permission_mode_unreadable", exc_info=True)
         return "plan"
     value = meta.get("permission_mode")
     return str(value) if value else None
+
+
+async def _read_stored(req: RequestContext) -> str | None:
+    return await read_thread_mode(req.settings, req.auth.tenant_id, req.thread_id)
 
 
 async def _run_state(req: RequestContext) -> _RunState:
@@ -155,7 +178,7 @@ def record_waiver(req: RequestContext, tool_name: str, mode: str, manifest_id: s
         req.settings,
         req.auth.tenant_id,
         "approval_waived",
-        principal_subj=req.auth.on_behalf_of or req.auth.principal_sub or "",
+        principal_subj=req.auth.acting_for,
         status=mode,
         payload={"tool": tool_name, "thread_id": req.thread_id or "", "manifest_id": manifest_id},
     )
@@ -276,7 +299,7 @@ async def set_thread_mode(req: RequestContext, mode: str, *, via: str) -> None:
     record_mode_change(
         req.settings,
         req.auth.tenant_id,
-        req.auth.on_behalf_of or req.auth.principal_sub or "",
+        req.auth.acting_for,
         req.thread_id or "",
         mode,
         via=via,
@@ -302,8 +325,10 @@ __all__ = [
     "make_exit_plan_tool",
     "may_bypass",
     "plan_approval_rule",
+    "read_thread_mode",
     "record_mode_change",
     "record_waiver",
     "set_thread_mode",
     "waives_approval",
+    "widens",
 ]

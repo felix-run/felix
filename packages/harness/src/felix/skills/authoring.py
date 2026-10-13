@@ -158,14 +158,14 @@ def _draft_result(row: dict[str, Any], status: str) -> dict[str, Any]:
 def _principal() -> str | None:
     """The caller behind this turn, for the audit trail; None outside a request.
 
-    `on_behalf_of` first, as the approvals wrapper reads it: a resumed durable fiber runs as
-    principal `fiber`, and the person whose work it is is the one the trail should name.
+    `acting_for`, as the approvals wrapper reads it: a resumed durable fiber runs as principal
+    `fiber`, and the person whose work it is is the one the trail should name.
     """
     from felix.context import try_get_context
 
     ctx = try_get_context()
     auth = getattr(ctx, "auth", None) if ctx is not None else None
-    sub = (getattr(auth, "on_behalf_of", None) or getattr(auth, "principal_sub", None)) if auth else None
+    sub = getattr(auth, "acting_for", "") if auth is not None else ""
     return str(sub) if sub else None
 
 

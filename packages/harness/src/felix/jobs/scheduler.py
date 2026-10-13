@@ -31,6 +31,92 @@ def next_run_at_ms(schedule: str, from_ms: int | None = None) -> int | None:
     return parse_schedule(schedule).next_after(base)
 
 
+def creator_auth(auth: AuthContext) -> dict[str, Any]:
+    """What a job records of the caller writing it: the authority its runs may carry, and when.
+
+    Exactly the writer's own (`felix.auth.recorded.record_caller`), so a job never reaches what
+    its writer could not have reached by asking directly. `recorded_at` is the moment it was
+    recorded -- the write -- for an operator reading `GET /jobs` to see how old a grant is.
+    """
+    from felix.auth.recorded import record_caller
+
+    return {**record_caller(auth), "recorded_at": now_ms()}
+
+
+_warned_unrecorded: set[tuple[str, str]] = set()
+
+
+def _job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthContext:
+    """The caller a firing runs as: `cron`, on behalf of whoever last wrote the job.
+
+    `principal_sub` stays the machine, as a resumed fiber's does, so an audit row never says a
+    person did what the worker did at 3am; `acting_for` is the writer, which is what
+    `bind_principal`, approvals and `publish_commits` read. The scopes are the writer's as
+    recorded, never widened -- and for a writer who authenticated with an API key, narrowed to
+    what that key holds *now* (`_current_api_key_scopes`): a job outlives the request that wrote
+    it, and a key an operator has removed or cut down must stop granting through it.
+
+    A writer who authenticated with a JWT keeps the grant recorded at the write. Felix keeps no
+    record of a token beyond its claims, so there is nothing to re-check it against.
+
+    A job written before writers were recorded has no `created_by`, and runs as what it always
+    ran as -- a principal holding no scopes -- except that its manifest's inbound rules now apply,
+    so one needing scopes or a particular scheme refuses it. Logged once per job and process.
+    """
+    from felix.auth.recorded import replay_caller
+
+    creator = str(job.get("created_by") or "")
+    recorded = job.get("created_auth") if isinstance(job.get("created_auth"), dict) else None
+    if not creator or recorded is None:
+        key = (tenant_id, str(job.get("name") or ""))
+        if key not in _warned_unrecorded:
+            _warned_unrecorded.add(key)
+            logger.warning(
+                "job_has_no_recorded_writer name=%s: running with no scopes; re-save it to run as its writer",
+                loggable(key[1], limit=200),
+            )
+        return replay_caller(None, tenant_id=tenant_id, actor="cron")
+    if str(recorded.get("scheme") or "") in {"api_key", "apikey"}:
+        recorded = _current_api_key_scopes(settings, tenant_id, creator, recorded)
+    return replay_caller(recorded, tenant_id=tenant_id, actor="cron", on_behalf_of=creator)
+
+
+def _current_api_key_scopes(
+    settings: Settings, tenant_id: str, subject: str, recorded: dict[str, Any]
+) -> dict[str, Any]:
+    """`recorded`, with its scopes cut to what the writer's API key holds in today's configuration.
+
+    The key is found by the subject it authenticates as (`sub`, or `api_key` for a key with none)
+    in this tenant. Several entries may share a subject; the job keeps what any of them grants, as
+    the writer could today by presenting that one. None left -- the key removed, or the deployment
+    no longer in `api_key` mode -- refuses the run: an `InboundAuthError`, so the run record says
+    why rather than running with nothing.
+    """
+    from felix.auth.middleware import _parse_api_keys
+    from felix.manifests.inbound_auth import InboundAuthError
+
+    held: set[str] = set()
+    found = False
+    if getattr(settings, "auth_mode", "") == "api_key":
+        for meta in _parse_api_keys(settings.auth_api_keys).values():
+            meta = meta if isinstance(meta, dict) else {}
+            if str(meta.get("tenant_id") or "default") != tenant_id:
+                continue
+            if str(meta.get("sub") or "api_key") != subject:
+                continue
+            found = True
+            held.update(str(x) for x in (meta.get("scopes") or []))
+    if not found:
+        raise InboundAuthError(
+            "the API key this job's writer used is no longer configured; re-save the job as someone "
+            "who may run it",
+            status_code=403,
+        )
+    scopes = recorded.get("scopes")
+    kept = sorted(str(x) for x in scopes if str(x) in held) if isinstance(scopes, list) else []
+    return {**recorded, "scopes": kept}
+
+
 async def _invoke_job_manifest(
     settings: Settings,
     *,
@@ -41,14 +127,14 @@ async def _invoke_job_manifest(
     if not manifest_id:
         return {"status": "skipped", "reason": "no_manifest"}
 
-    from felix.runtime import build_tenant_agent, resolve_tenant_manifest
+    from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
     from felix.tools.builtins import default_tool_provider
 
     payload = job.get("payload") or {}
     prompt = str(payload.get("prompt") or payload.get("message") or "ping")
     provider = default_tool_provider()
 
-    auth = AuthContext(tenant_id=tenant_id, principal_sub="cron", anonymous=False)
+    auth = _job_auth(settings, tenant_id, job)
     # One thread per job by default, so a digest job keeps its own history. `fresh_thread`
     # gives each firing a thread of its own: a job that works a *different* ticket every run
     # must not carry ticket N's transcript into ticket N+1's context.
@@ -57,9 +143,15 @@ async def _invoke_job_manifest(
         # A uuid, not the clock: two firings in one millisecond — a sweep that claims twice,
         # a test — would share a thread again, which is the one thing this exists to prevent.
         thread = f"{thread}:{uuid.uuid4().hex[:16]}"
-    resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
     req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
     async with async_run_with_context(req_ctx):
+        # Resolved inside the context, as a fiber's is: that is what binds the tenant for RLS.
+        resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
+        # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
+        # credential's manifest pin -- and the thread's compile pin, as every other way into a
+        # run checks them. A job used to compile straight past both, so `jobs:write` reached any
+        # manifest in the tenant. A refusal raises, and is recorded as the run's error.
+        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
         # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
         # it like any user turn; a refusal raises and is recorded as an error run.
         messages = [ChatMessage(role="user", content=prompt)]
@@ -69,7 +161,8 @@ async def _invoke_job_manifest(
             sub_agents=resolved.sub_agents,
             tools=provider,
             tenant_id=tenant_id,
-            # A job runs as `cron`, for no one: the tenant's library only.
+            # The tenant's library only: a writer's personal skills are not recorded with the
+            # job, and a job running on them would follow instructions its readers cannot see.
             skill_owner=None,
         )
         result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
@@ -77,6 +170,16 @@ async def _invoke_job_manifest(
         "status": "ok",
         "answer": result.final.content if result.final else "",
     }
+
+
+def _job_error_message(exc: BaseException) -> str:
+    """A failed run's error, as its readers see it -- never the exception's own text unless its
+    type is one written for a caller (`felix.errors`): an inbound refusal names the scopes it
+    lacked, a screening refusal its code. Anything else is a fixed message; the exception is in
+    the log."""
+    from felix.errors import client_safe_message
+
+    return client_safe_message(exc)
 
 
 async def fire_job(
@@ -91,9 +194,10 @@ async def fire_job(
     """Run one job now and record it. Returns the run row.
 
     The one path a job runs by, whether cron found it due or someone asked for it: the same
-    identity (`cron`, with no scopes — a manual run does not borrow the caller's), the same
-    thread, the same screening of its prompt, the same run record. A manual run records its
-    `trigger` and who asked, and leaves the schedule where it was.
+    identity (`cron` on behalf of the job's writer, with the writer's recorded scopes -- a manual
+    run does not borrow the caller's), the same inbound checks, the same thread, the same
+    screening of its prompt, the same run record. A manual run records its `trigger` and who
+    asked, and leaves the schedule where it was.
     """
     try:
         result: dict[str, Any] = {"status": "ok"}
@@ -101,8 +205,10 @@ async def fire_job(
             try:
                 result = await _invoke_job_manifest(settings, tenant_id=tenant_id, job=job)
             except Exception as exc:
-                logger.exception("job_invoke_failed name=%s", job.get("name"))
-                result = {"status": "error", "error": str(exc)}
+                logger.exception("job_invoke_failed name=%s", loggable(str(job.get("name")), limit=200))
+                # Written here, never the exception's text: the run record is returned by
+                # `GET /jobs/{name}/runs` and `POST /jobs/{name}/run`.
+                result = {"status": "error", "error": _job_error_message(exc)}
         result["trigger"] = trigger
         if requested_by:
             result["requested_by"] = requested_by
@@ -228,4 +334,4 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
     return total
 
 
-__all__ = ["fire_job", "next_run_at_ms", "run_due_jobs", "run_due_jobs_all_tenants"]
+__all__ = ["creator_auth", "fire_job", "next_run_at_ms", "run_due_jobs", "run_due_jobs_all_tenants"]

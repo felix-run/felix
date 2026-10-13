@@ -1,0 +1,93 @@
+"""A caller's authority, recorded for work that runs later, and replayed when it does.
+
+Two kinds of work run after the request that asked for them: a durable fiber, resumed by the
+worker (`durability/runs.py` records, `durability/fibers.py` replays), and a scheduled job, fired
+by the scheduler for whoever last wrote it (`routes/jobs.py` records, `jobs/scheduler.py`
+replays). Both used to spell the record and its reading by hand, and two copies of "which claims
+travel, and how a stored list becomes scopes" is how one of them ends up more permissive.
+
+What is recorded is exactly the caller's own -- the person (`acting_for`), their scopes, how they
+authenticated, whether they were anonymous, and a credential's manifest pin -- never widened.
+What is replayed is a *machine* actor (`fiber`, `cron`) acting on behalf of that person, so an
+audit row never says the person did what the worker did later, while every check that is about
+the person (`bind_principal`, approvals, `publish_commits`) reads `acting_for` and finds them.
+
+Absent or malformed, a record replays as a principal holding nothing: no scopes, no pin, not
+anonymous, scheme `anonymous`. That is the fail-closed direction, and it is what a fiber or a
+job recorded before this module existed has always run as.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from felix.auth.context import MANIFESTS_CLAIM
+from felix.context import AuthContext
+
+
+def record_caller(auth: AuthContext, *, skill_owner: bool = False) -> dict[str, Any]:
+    """`auth`'s authority, as JSON to store beside the work it asked for.
+
+    `skill_owner` records the caller's personal skill library too, for a resume that must compile
+    the catalog the request would have (a fiber). A job does not carry it: its runs follow the
+    tenant's library, whose instructions every reader of the job can see.
+    """
+    recorded: dict[str, Any] = {
+        # The person, not the worker: work started from inside a durable run is the worker
+        # acting for someone, and the record should keep naming that someone.
+        "principal_sub": auth.acting_for,
+        "scopes": sorted(auth.scopes),
+        "anonymous": bool(auth.anonymous),
+        "scheme": auth.scheme,
+    }
+    if skill_owner:
+        recorded["skill_owner"] = auth.skill_owner
+    if MANIFESTS_CLAIM in auth.raw_claims:
+        # A credential pinned to some manifests stays pinned when its work runs later. Kept as
+        # written, so a malformed pin is refused then exactly as it was at the door.
+        recorded[MANIFESTS_CLAIM] = auth.raw_claims[MANIFESTS_CLAIM]
+    return recorded
+
+
+def token_expiry_ms(auth: AuthContext) -> int | None:
+    """The caller's token's own expiry (`exp`), in milliseconds, or None for a credential with none.
+
+    A fiber clamps its run to it, so authority recorded from a 60-second token does not outlive the
+    token by the run's whole TTL: there is no revocation in `felix/auth/`, so `exp` is the complete
+    bound on a compromised credential.
+    """
+    exp = auth.raw_claims.get("exp")
+    return int(exp) * 1000 if isinstance(exp, (int, float)) else None
+
+
+def replay_caller(
+    recorded: Mapping[str, Any] | None,
+    *,
+    tenant_id: str,
+    actor: str,
+    on_behalf_of: str | None = None,
+    skill_owner: str | None = None,
+) -> AuthContext:
+    """The caller later work runs as: `actor` (`fiber`, `cron`), on behalf of the recorded person.
+
+    `on_behalf_of` overrides the recorded person where the work keeps its own column for it (a
+    job's `created_by`). `skill_owner` is the caller's to validate and pass; nothing here trusts a
+    stored owner string.
+    """
+    record = recorded if isinstance(recorded, Mapping) else {}
+    scopes = record.get("scopes")
+    return AuthContext(
+        tenant_id=tenant_id,
+        principal_sub=actor,
+        on_behalf_of=str(on_behalf_of if on_behalf_of is not None else record.get("principal_sub") or ""),
+        # A list, or nothing. `frozenset("admin")` is {"a","d","m","i","n"}.
+        scopes=frozenset(str(x) for x in scopes) if isinstance(scopes, list) else frozenset(),
+        anonymous=bool(record.get("anonymous", False)),
+        scheme=str(record.get("scheme") or "anonymous"),
+        skill_owner=skill_owner,
+        raw_claims={MANIFESTS_CLAIM: record[MANIFESTS_CLAIM]} if MANIFESTS_CLAIM in record else {},
+    )
+
+
+__all__ = ["record_caller", "replay_caller", "token_expiry_ms"]

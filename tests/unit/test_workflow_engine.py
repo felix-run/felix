@@ -108,6 +108,22 @@ async def test_a_child_run_starts_as_the_starter_and_dies_with_the_run() -> None
     assert state["steps"][0]["messages"][0]["content"] == "On tides"
 
 
+async def test_an_agent_step_resumes_as_a_machine_acting_for_the_starter() -> None:
+    """What the worker rebuilds from the child's state (`auth_from_state`, the one reading every
+    resume uses): the actor is the fiber, and `acting_for` -- what an approval names as its
+    requester and what `publish_commits` matches against a checkout's opener -- is the person
+    who started the workflow."""
+    settings = make_settings()
+    run = await _start(settings, scopes=frozenset({"workflows:write"}))
+    await engine.advance(settings, TENANT, run["id"])
+    (child,) = _children(run["id"])
+
+    resumed = F.auth_from_state(TENANT, child["state_json"]["auth"])
+    assert (resumed.principal_sub, resumed.acting_for) == ("fiber", "alice")
+    assert resumed.scopes == frozenset({"workflows:write"})
+    assert resumed.scheme == "api_key"
+
+
 async def test_a_run_with_no_recorded_caller_starts_children_with_no_authority() -> None:
     settings = make_settings()
     workflow = await workflow_store.put_workflow(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Iterable
 from typing import Any, Literal
 
 from sqlalchemy import and_, collate, or_, select, update
@@ -440,6 +441,53 @@ def _announce_pending_approval(settings: Settings, row: dict[str, Any]) -> None:
     approval_pending(settings, row)
 
 
+class ApprovalClosed(Exception):
+    """A decision on a row that is no longer waiting for one.
+
+    `code` is `already_decided` -- someone answered it, or the harness closed it as timed out or
+    interrupted -- or `expired`, a row still marked pending whose wait is over. Deciding either
+    used to overwrite the row: an approval could be flipped to denied after the tool had run on
+    it, or a denial flipped to a standing grant `find_approved` would then hand to the next
+    byte-identical call.
+    """
+
+    def __init__(self, code: Literal["already_decided", "expired"]) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def may_decide(settings: Settings, row: dict[str, Any], *, decider: str, scopes: Iterable[str]) -> bool:
+    """Whether `decider`, holding `scopes`, may answer the approval `row` -- who, not when.
+
+    Anyone with `approvals:write` may, unless `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` is on:
+    then the person whose run asked (`principal_subj`, the run's `acting_for`) may not answer
+    their own, so the gate is a second person's answer. Two exceptions under that setting:
+    an operator (`admin` / `*`, or anyone under `auth_mode=none`, where there is one anonymous
+    caller and no second), and the plan approval -- it is how its asker leaves plan mode, which
+    `POST /chat/mode` lets an `approvals:write` holder do directly anyway.
+
+    Whether the row can still be answered at all is `decide`'s check, and always applies.
+    """
+    from felix.auth.mgmt import is_operator
+    from felix.governance.permission_mode import EXIT_PLAN_TOOL_NAME, PLAN_APPROVAL_RULE_ID
+
+    if not getattr(settings, "approvals_require_second_person", False):
+        return True
+    requester = str(row.get("principal_subj") or "")
+    if not requester or requester != decider:
+        return True
+    if (row.get("rule_id"), row.get("tool_name")) == (PLAN_APPROVAL_RULE_ID, EXIT_PLAN_TOOL_NAME):
+        return True
+    return is_operator(settings, scopes)
+
+
+def _refuse_unless_open(status: str, expires_at: int | None, created_at: int, ts: int) -> None:
+    if status != "pending":
+        raise ApprovalClosed("already_decided")
+    if _lapsed(expires_at, created_at, ts):
+        raise ApprovalClosed("expired")
+
+
 async def decide(
     settings: Settings,
     tenant_id: str,
@@ -450,12 +498,19 @@ async def decide(
     note: str = "",
     edited_args: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    """Record a person's answer on a pending row. None when there is no such row.
+
+    Only a row still waiting can be answered: one already decided, or past its deadline, raises
+    `ApprovalClosed` and is left exactly as it was. Who may answer is `may_decide`, which the
+    route asks first.
+    """
     ts = now_ms()
 
     if _use_memory(settings):
         row = _memory_approvals.get((tenant_id, approval_id))
         if row is None:
             return None
+        _refuse_unless_open(row["status"], row.get("expires_at"), row["created_at"], ts)
         row["status"] = decision
         row["decided_at"] = ts
         row["decided_by"] = decided_by
@@ -468,9 +523,12 @@ async def decide(
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
-        row = await db.get(Approval, (tenant_id, approval_id))
+        # Locked, so two decisions racing for one row cannot both see `pending`: the second
+        # waits for the first to commit and then reads what it wrote.
+        row = await db.get(Approval, (tenant_id, approval_id), with_for_update=True)
         if row is None:
             return None
+        _refuse_unless_open(row.status, row.expires_at, row.created_at, ts)
         row.status = decision
         row.decided_at = ts
         row.decided_by = decided_by
@@ -664,6 +722,7 @@ async def consume_approval(settings: Settings, tenant_id: str, approval_id: str)
 
 __all__ = [
     "INTERRUPTED_NOTE",
+    "ApprovalClosed",
     "close_interrupted",
     "close_timed_out",
     "consume_approval",
@@ -672,5 +731,6 @@ __all__ = [
     "find_approved",
     "get_approval",
     "list_approvals",
+    "may_decide",
     "reset_approvals_for_tests",
 ]

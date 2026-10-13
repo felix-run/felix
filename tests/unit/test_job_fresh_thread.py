@@ -38,9 +38,19 @@ async def _fire_twice(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) 
     rec = _Recorder()
 
     async def _resolve(_s: Any, _t: Any, name: str, **k: Any) -> Any:
-        from types import SimpleNamespace
+        from felix.manifests.loader import parse_manifest
+        from felix.manifests.resolver import ResolvedManifest
 
-        return SimpleNamespace(manifest=None, sub_agents={})
+        # A real manifest, because the scheduler checks its inbound auth before the build.
+        manifest = parse_manifest(
+            {
+                "apiVersion": "felix/v1",
+                "kind": "Agent",
+                "metadata": {"name": name},
+                "spec": {"pattern": "react"},
+            }
+        )
+        return ResolvedManifest(manifest=manifest, source="bundled", version=None)
 
     async def _build(settings: Settings, **k: Any) -> Any:
         return rec

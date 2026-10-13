@@ -465,6 +465,11 @@ _WORKSPACE_READ_ERRORS: dict[int | str, dict[str, Any]] = {
         "description": "`invalid_thread_id`, `invalid_path` (absolute, escaping, through a symlink), "
         "`reserved_path` (inside `.git` or `.felix-scopes`), `not_a_file`.",
     },
+    403: {
+        "model": WorkspaceErrorOut,
+        "description": "`not_checkout_opener`: the thread's workspace is a repository checkout someone "
+        "else opened; only they (or an admin) can read or change it here.",
+    },
     404: {
         "model": WorkspaceErrorOut,
         "description": "`not_found`: no such file. "
@@ -1657,17 +1662,26 @@ def _workspace_refusal(exc: Exception, *, missing_dir_is_404: bool = True) -> HT
 async def _thread_workspace(
     request: Request, thread_id: str, manifest: str | None
 ) -> tuple[AuthContext, Any]:
-    """The caller's tenant and the workspace `thread_id` works in (`felix.workspace_files`)."""
+    """The caller's tenant and the workspace `thread_id` works in (`felix.workspace_files`).
+
+    403 when that is a repository checkout someone else opened: the thread is the tenant's, the
+    clone of a person's (possibly private) repository in it is theirs (`repos.checkouts`).
+    """
+    from felix.repos.checkouts import may_reach_checkout
     from felix.workspace_files import UnknownManifest, resolve_thread_workspace
 
     auth = _auth_from_request(request)
+    settings = request.app.state.settings
     thread = effective_thread_id(auth.tenant_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     try:
-        workspace = await resolve_thread_workspace(
-            request.app.state.settings, auth.tenant_id, thread, manifest
-        )
+        # Before resolving, so the answer does not depend on the state the checkout is in.
+        if not may_reach_checkout(
+            settings, auth.tenant_id, thread, principal=auth.principal_sub, scopes=auth.scopes
+        ):
+            raise HTTPException(status_code=403, detail="not_checkout_opener")
+        workspace = await resolve_thread_workspace(settings, auth.tenant_id, thread, manifest)
     except UnknownManifest:
         raise HTTPException(status_code=404, detail="unknown_manifest") from None
     except ValueError as exc:
@@ -2258,7 +2272,17 @@ async def chat_fork(body: ForkRequest, request: Request) -> dict[str, Any]:
     return result
 
 
-@router.post("/rewind", responses=LEASE_REFUSALS)
+@router.post(
+    "/rewind",
+    responses={
+        **LEASE_REFUSALS,
+        403: {
+            "model": WorkspaceErrorOut,
+            "description": "`not_checkout_opener`: `restore_files` on a thread whose workspace is a "
+            "repository checkout someone else opened.",
+        },
+    },
+)
 async def chat_rewind(
     body: RewindRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -2268,6 +2292,15 @@ async def chat_rewind(
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     await _refuse_unless_driver(request, thread, lease_token)
+    if body.restore_files:
+        from felix.repos.checkouts import may_reach_checkout
+
+        # Restoring files writes the thread's workspace, which in a thread holding a repository
+        # checkout is someone's clone: the opener's to change through the API, as the file pane is.
+        if not may_reach_checkout(
+            settings, auth.tenant_id, thread, principal=auth.principal_sub, scopes=auth.scopes
+        ):
+            raise HTTPException(status_code=403, detail="not_checkout_opener")
     session = get_session_store(settings, tenant_id=auth.tenant_id).open(thread)
     # The summariser is resolved before the rewind starts: the rewind holds the thread's leaf
     # lock from reading the leaf it abandons to storing the new one, and a manifest lookup has
@@ -2972,9 +3005,19 @@ async def chat_permission_mode(
     Takes effect from the next run. A mode the thread's manifest does not allow is stored and
     ignored -- the run falls back to the manifest's default -- because the manifest a thread runs
     can change under it. `bypass` waives every approval, so setting it needs `approvals:bypass`
-    here, and the run checks the scope again for whoever drives the thread then.
+    here, and the run checks the scope again for whoever drives the thread then. Any other move
+    to a looser mode than the thread holds (`plan` → `default` → `accept_edits`) needs
+    `approvals:write`: a thread is shared by its tenant, and waiving its approvals is deciding
+    them. Tightening needs nothing.
     """
-    from felix.governance.permission_mode import BYPASS_SCOPE, may_bypass, record_mode_change
+    from felix.auth.mgmt import SCOPE_APPROVALS_WRITE, holds_mgmt_scopes
+    from felix.governance.permission_mode import (
+        BYPASS_SCOPE,
+        may_bypass,
+        read_thread_mode,
+        record_mode_change,
+        widens,
+    )
     from felix.session.thread_state import update_thread_meta
 
     auth = _auth_from_request(request)
@@ -2983,8 +3026,13 @@ async def chat_permission_mode(
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     await _refuse_unless_driver(request, thread, lease_token)
-    if body.mode == "bypass" and not may_bypass(settings, auth.scopes):
-        raise HTTPException(status_code=403, detail=f"missing_scope:{BYPASS_SCOPE}")
+    if body.mode == "bypass":
+        if not may_bypass(settings, auth.scopes):
+            raise HTTPException(status_code=403, detail=f"missing_scope:{BYPASS_SCOPE}")
+    elif widens(
+        await read_thread_mode(settings, auth.tenant_id, thread), body.mode
+    ) and not holds_mgmt_scopes(settings, auth.scopes, SCOPE_APPROVALS_WRITE):
+        raise HTTPException(status_code=403, detail=f"missing_scope:{SCOPE_APPROVALS_WRITE}")
     await update_thread_meta(
         settings=settings, tenant_id=auth.tenant_id, thread_id=thread, permission_mode=body.mode
     )

@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from felix.auth.mgmt import (
     SCOPE_APPROVALS_READ,
     SCOPE_APPROVALS_WRITE,
+    auth_from_request,
     require_mgmt_scopes,
     subject_from_request,
     tenant_id_from_request,
@@ -90,15 +91,29 @@ async def decide_approval(approval_id: str, body: DecideRequest, request: Reques
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="decision_required") from exc
 
-    row = await approvals_store.decide(
-        request.app.state.settings,
-        tenant_id_from_request(request),
-        approval_id,
-        decision=decision,
-        decided_by=subject_from_request(request),
-        note=body.note,
-        edited_args=body.edited_args,
-    )
+    settings = request.app.state.settings
+    tenant = tenant_id_from_request(request)
+    decider = subject_from_request(request)
+    current = await approvals_store.get_approval(settings, tenant, approval_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    if not approvals_store.may_decide(
+        settings, current, decider=decider, scopes=auth_from_request(request).principal.scopes
+    ):
+        raise HTTPException(status_code=403, detail="self_approval_forbidden")
+    try:
+        row = await approvals_store.decide(
+            settings,
+            tenant,
+            approval_id,
+            decision=decision,
+            decided_by=decider,
+            note=body.note,
+            edited_args=body.edited_args,
+        )
+    except approvals_store.ApprovalClosed as exc:
+        # `already_decided` or `expired`, both written for the caller in the store.
+        raise HTTPException(status_code=409, detail=f"approval_{exc.code}") from None
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     await signal_decision(

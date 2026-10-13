@@ -795,7 +795,10 @@ async def _await_approval(
             tool_name=tool_name,
             call_signature=sig,
             args=dict(args),
-            principal_subj=req.auth.principal_sub,
+            # The person the run is for, not the machine running it: a resumed fiber is principal
+            # `fiber`, and naming that would hide its starter from `approvals.may_decide` and from
+            # the `bind_principal` match.
+            principal_subj=req.auth.acting_for,
             rule_id=rule_id,
             ttl_seconds=ttl_seconds,
             # Same argument as `thread_id` above, for the same reason: the row is a durable
@@ -1191,16 +1194,11 @@ def apply_approvals(
                         manifest_id=manifest_id,
                         tool_name=tool.name,
                         call_signature=sig,
-                        # bind_principal: A's approval must not authorize B's call.
-                        # `on_behalf_of` when a machine actor is running A's work — a resumed
-                        # durable fiber is principal `fiber`, and without this A's grant would
-                        # not match its own run. Empty for every ordinary caller, so this
-                        # changes nothing outside that case.
-                        principal_subj=(
-                            (req.auth.on_behalf_of or req.auth.principal_sub or "")
-                            if rule.bind_principal
-                            else None
-                        ),
+                        # bind_principal: A's approval must not authorize B's call. `acting_for`
+                        # is A when a machine actor is running A's work -- a resumed durable
+                        # fiber is principal `fiber`, and without it A's grant would not match
+                        # its own run.
+                        principal_subj=req.auth.acting_for if rule.bind_principal else None,
                         # one_shot: a spent grant must not authorize a replay.
                         unconsumed_only=bool(rule.one_shot),
                     )
@@ -1225,7 +1223,9 @@ def apply_approvals(
                             tool_name=tool.name,
                             call_signature=sig,
                             args=dict(shown_args),
-                            principal_subj=req.auth.principal_sub,
+                            # Who the run is for, as `find_approved` above reads it (see
+                            # `_await_approval`'s note on the same field).
+                            principal_subj=req.auth.acting_for,
                             rule_id=rule.id,
                             ttl_seconds=rule.ttl_seconds,
                             # On the row, not only in the frame. `description` is the one
@@ -1262,7 +1262,7 @@ def apply_approvals(
                 and pending_row is not None
                 and rule.bind_principal
                 and req is not None
-                and str(pending_row.get("principal_subj") or "") != str(req.auth.principal_sub or "")
+                and str(pending_row.get("principal_subj") or "") != req.auth.acting_for
             ):
                 record_counter(
                     "felix_approval_required",
