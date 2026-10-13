@@ -65,6 +65,38 @@ async def test_a_job_records_its_writer_and_the_next_write_replaces_them(store_s
 
 
 @parametrized
+async def test_a_workflow_job_keeps_its_workflow_and_a_rewrite_can_drop_it(store_settings: Any) -> None:
+    created = await _put(
+        store_settings,
+        manifest_id="",
+        workflow_id="triage",
+        workflow_revision="g1.3",
+        payload={"inputs": {"n": 1}},
+    )
+    assert (created["manifest_id"], created["workflow_id"], created["workflow_revision"]) == (
+        "",
+        "triage",
+        "g1.3",
+    )
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert fetched == created
+    (listed,) = await jobs.list_jobs(store_settings, TENANT)
+    assert listed["workflow_id"] == "triage"
+
+    # Rewritten as a manifest job: the workflow goes, rather than both lingering on the row.
+    await _put(store_settings)
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (fetched["manifest_id"], fetched["workflow_id"], fetched["workflow_revision"]) == ("quick", "", "")
+
+
+@parametrized
+async def test_a_job_naming_a_manifest_and_a_workflow_is_refused(store_settings: Any) -> None:
+    with pytest.raises(jobs.BothTargets):
+        await _put(store_settings, workflow_id="triage")
+    assert await jobs.get_job(store_settings, TENANT, JOB) is None
+
+
+@parametrized
 async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     created = await _put(store_settings, payload={"prompt": "summarise", "depth": 2})
 
@@ -74,6 +106,7 @@ async def test_a_job_round_trips_with_every_field(store_settings: Any) -> None:
     assert fetched == created
     assert fetched["schedule"] == "0 3 * * *"
     assert fetched["manifest_id"] == "quick"
+    assert fetched["workflow_id"] == ""
     assert fetched["payload"] == {"prompt": "summarise", "depth": 2}
     assert fetched["enabled"] is True
     assert fetched["created_at"] > 0

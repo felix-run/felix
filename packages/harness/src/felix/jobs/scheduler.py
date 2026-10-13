@@ -1,4 +1,4 @@
-"""Run due scheduled jobs — optionally invoke the configured manifest."""
+"""Run due scheduled jobs — invoke the job's manifest, or start a run of its workflow."""
 
 from __future__ import annotations
 
@@ -174,6 +174,59 @@ async def _invoke_job_manifest(
     }
 
 
+async def _start_job_workflow(settings: Settings, *, tenant_id: str, job: dict[str, Any]) -> dict[str, Any]:
+    """Start a run of the job's workflow with `payload.inputs`, as `cron` for the job's writer.
+
+    Starting is all a firing does: the run goes on in its own orchestrator fiber, and the job's
+    run record names it (`workflow_run_id`) for `GET /workflows/{id}/runs/{run_id}`. The writer
+    must hold `workflows:write` -- what starting a run over HTTP needs -- in the scopes the job
+    recorded, and every manifest a step names is checked against them at the start, as it would
+    be for the writer asking.
+
+    The run is held to `workflow_revision`, the one current when the writer wrote the job (or the
+    one they named, `PUT /jobs/{name}`). Its
+    steps run with the writer's scopes, so a definition someone else saved since -- a new step, a
+    tool with arguments of their choosing -- must not run as the writer until the writer re-saves
+    the job. Each refusal is a written message; nothing is started.
+    """
+    from felix.auth.mgmt import SCOPE_WORKFLOWS_WRITE, holds_mgmt_scopes
+    from felix.workflows import engine
+    from felix.workflows import store as workflow_store
+
+    workflow_id = str(job["workflow_id"])
+    shown = workflow_id[:64]
+    auth = _job_auth(settings, tenant_id, job)
+    if not holds_mgmt_scopes(settings, auth.scopes, SCOPE_WORKFLOWS_WRITE):
+        return {"status": "error", "error": "the job's writer may not start workflow runs (workflows:write)"}
+    inputs = (job.get("payload") or {}).get("inputs", {})
+    if not isinstance(inputs, dict):
+        return {"status": "error", "error": "payload.inputs must be an object of the workflow's inputs"}
+    # The writer's context, not the asker's: `start_run` checks each step's manifest against the
+    # caller in context and records them as the run's starter, whose scopes every step runs with.
+    async with async_run_with_context(RequestContext(settings=settings, auth=auth)):
+        workflow = await workflow_store.get_workflow(settings, tenant_id, workflow_id)
+        if workflow is None:
+            return {"status": "error", "error": f"workflow {shown} does not exist"}
+        try:
+            run = await engine.start_run(
+                settings,
+                tenant_id,
+                workflow,
+                inputs,
+                trigger=f"job:{str(job['name'])[:200]}",
+                started_by=auth.acting_for,
+                revision=str(job.get("workflow_revision") or ""),
+            )
+        except engine.RevisionChanged:
+            return {
+                "status": "error",
+                "error": f"workflow {shown} changed since this job was written; re-save the job to run it",
+            }
+        except engine.StartRefused as refused:
+            return {"status": "error", "error": f"workflow {shown}: {refused.message}"}
+    return {"status": "ok", "workflow_id": workflow_id, "workflow_run_id": run["id"]}
+
+
 def _job_error_message(exc: BaseException) -> str:
     """A failed run's error, as its readers see it -- never the exception's own text unless its
     type is one written for a caller (`felix.errors`): an inbound refusal names the scopes it
@@ -203,9 +256,16 @@ async def fire_job(
     """
     try:
         result: dict[str, Any] = {"status": "ok"}
-        if job.get("manifest_id"):
+        work = (
+            _start_job_workflow
+            if job.get("workflow_id")
+            else _invoke_job_manifest
+            if job.get("manifest_id")
+            else None
+        )
+        if work is not None:
             try:
-                result = await _invoke_job_manifest(settings, tenant_id=tenant_id, job=job)
+                result = await work(settings, tenant_id=tenant_id, job=job)
             except Exception as exc:
                 logger.exception("job_invoke_failed name=%s", loggable(str(job.get("name")), limit=200))
                 # Written here, never the exception's text: the run record is returned by

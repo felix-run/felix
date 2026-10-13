@@ -80,7 +80,9 @@ def _triage() -> dict[str, Any]:
 CLASSIFIED = ScriptedTurn(content='{"label": "bug", "summary": "crash on save"}')
 
 
-async def _tick(app: Any, run_url: str, until: set[str], *, limit: int = 30) -> dict[str, Any]:
+async def _tick(
+    app: Any, run_url: str, until: set[str], *, limit: int = 30, headers: dict[str, str] | None = None
+) -> dict[str, Any]:
     from felix.durability import fibers as F
 
     run: dict[str, Any] = {}
@@ -89,7 +91,7 @@ async def _tick(app: Any, run_url: str, until: set[str], *, limit: int = 30) -> 
             if row.get("status") == "sleeping":
                 row["wake_at"] = 0
         await F.resume_due_fibers(app.settings)
-        run = (await app.client.get(run_url)).json()
+        run = (await app.client.get(run_url, headers=headers)).json()
         if run["status"] in until:
             return run
     raise AssertionError(f"run stuck at {run.get('status')}: {run}")
@@ -583,3 +585,196 @@ async def test_the_tool_listing_names_a_manifest_that_refuses_anonymous_or_does_
         assert unavailable.status_code == 503
         assert unavailable.json()["detail"] == {"error": "manifest_unavailable", "manifest": "e2e-broken"}
         assert "checkpointer" not in unavailable.text, "the compile's own error stays in the log"
+
+
+# --- a job that starts a workflow run ---------------------------------------------------------
+
+JOB_KEYS = {
+    "ops-token": {
+        "tenant_id": "default",
+        "sub": "ops",
+        "scopes": ["jobs:write", "workflows:write", "calc:use"],
+    },
+    "jobs-token": {"tenant_id": "default", "sub": "sched", "scopes": ["jobs:write", "workflows:read"]},
+    "root-token": {"tenant_id": "default", "sub": "root", "scopes": ["admin", "calc:admin"]},
+}
+
+
+def _job_env() -> dict[str, str]:
+    import json
+
+    return {"FELIX_AUTH_MODE": "api_key", "FELIX_AUTH_API_KEYS": json.dumps(JOB_KEYS)}
+
+
+OPS, JOBS_ONLY, ROOT = ({"Authorization": f"Bearer {k}"} for k in JOB_KEYS)
+
+# A tool step whose manifest admits only `calc:use` (ops holds it) or only `calc:admin` (root).
+JOB_MANIFESTS = {
+    **MANIFESTS,
+    "e2e-calc": _calc_manifest(auth={"inbound": {"required_scopes": ["calc:use"]}}),
+    "e2e-root": _calc_manifest(auth={"inbound": {"required_scopes": ["calc:admin"]}}),
+}
+NIGHTLY = {"schedule": "@daily", "workflow_id": "sums", "payload": {"inputs": {"sum": "2+2"}}}
+
+
+async def _job_on_sums(app: Any, definition: dict[str, Any] | None = None) -> None:
+    saved = await app.client.put("/workflows/sums", json=definition or _sums(), headers=OPS)
+    assert saved.status_code == 201, saved.text
+    written = await app.client.put("/jobs/nightly", json=NIGHTLY, headers=OPS)
+    assert written.status_code == 200, written.text
+
+
+async def _only_run(app: Any) -> dict[str, Any]:
+    from felix.jobs import store as jobs_store
+
+    (record,) = await jobs_store.list_runs(app.settings, "default", "nightly")
+    return record
+
+
+async def test_a_scheduled_firing_runs_the_workflow_as_the_jobs_writer(boot: Any) -> None:
+    """No request in context: what the run records and its steps run with is the writer's alone."""
+    from felix.audit import store as audit_store
+    from felix.jobs.scheduler import run_due_jobs
+
+    async with boot([ScriptedTurn(content="Noted.")], env=_job_env(), manifests=JOB_MANIFESTS) as app:
+        await _job_on_sums(app)
+        assert await run_due_jobs(app.settings) == 1, "a job never run is due"
+        record = await _only_run(app)
+        assert record["status"] == "ok", record
+        run_url = f"/workflows/sums/runs/{record['result']['workflow_run_id']}"
+        started = (await app.client.get(run_url, headers=OPS)).json()
+        assert (started["trigger"], started["started_by"]) == ("job:nightly", "ops")
+        assert started["inputs"] == {"sum": "2+2"}
+        # The calc step's manifest needs `calc:use`: it runs only on the writer's recorded scopes.
+        done = await _tick(app, run_url, {"completed", "failed"}, headers=OPS)
+        await audit_store.flush_pending(app.settings)
+        events, _ = await audit_store.list_events(app.settings, "default", event_type="workflow_run_started")
+    assert done["status"] == "completed", done
+    assert done["steps"]["calc"]["outputs"] == {"result": 4}
+    assert [(e["principal_subj"], e["payload_json"]["trigger"]) for e in events] == [("ops", "job:nightly")]
+
+
+async def test_an_operator_running_someone_elses_job_lends_it_nothing(boot: Any) -> None:
+    async with boot([ScriptedTurn(content="Noted.")], env=_job_env(), manifests=JOB_MANIFESTS) as app:
+        await _job_on_sums(app, _sums(manifest="e2e-root"))
+        fired = await app.client.post("/jobs/nightly/run", headers=ROOT)
+        assert fired.status_code == 200, fired.text
+        listed = (await app.client.get("/workflows/sums/runs", headers=OPS)).json()["items"]
+    # Root may run the job by hand, and the run is still ops's: `calc:admin` is root's, not ops's.
+    assert (fired.json()["status"], fired.json()["error"]) == (
+        "error",
+        "workflow sums: the starter may not use manifest e2e-root",
+    )
+    assert listed == [], "nothing was started"
+
+
+async def test_a_job_refuses_a_workflow_saved_again_since_it_was_written(boot: Any) -> None:
+    async with boot([ScriptedTurn(content="Noted.")], env=_job_env(), manifests=JOB_MANIFESTS) as app:
+        await _job_on_sums(app)
+        # Someone else with `workflows:write` saves a new definition: the job does not run it
+        # with ops's scopes until ops, having seen it, re-saves the job.
+        assert (await app.client.put("/workflows/sums", json=_sums(), headers=ROOT)).status_code == 200
+        refused = (await app.client.post("/jobs/nightly/run", headers=OPS)).json()
+        assert (refused["status"], refused["error"]) == (
+            "error",
+            "workflow sums changed since this job was written; re-save the job to run it",
+        )
+        assert (await app.client.get("/workflows/sums/runs", headers=OPS)).json()["items"] == []
+        assert (await app.client.put("/jobs/nightly", json=NIGHTLY, headers=OPS)).status_code == 200
+        again = (await app.client.post("/jobs/nightly/run", headers=OPS)).json()
+    assert again["status"] == "ok", again
+
+
+async def test_writing_a_workflow_job_checks_the_grant_the_workflow_and_its_inputs(boot: Any) -> None:
+    async with boot([], env=_job_env(), manifests=JOB_MANIFESTS) as app:
+        assert (await app.client.put("/workflows/sums", json=_sums(), headers=OPS)).status_code == 201
+
+        async def put(job: dict[str, Any], headers: dict[str, str] = OPS) -> Any:
+            return await app.client.put("/jobs/a", json={**NIGHTLY, **job}, headers=headers)
+
+        assert (await put({}, JOBS_ONLY)).status_code == 403
+        both = await put({"manifest_id": "e2e-wf"})
+        assert (both.status_code, both.json()["detail"]) == (422, {"error": "manifest_and_workflow"})
+        missing = await put({"workflow_id": "nope"})
+        assert (missing.status_code, missing.json()["detail"]) == (422, {"error": "unknown_workflow"})
+        misnamed = await put({"payload": {"inputs": {"total": "1"}}})
+        assert (misnamed.status_code, misnamed.json()["detail"]) == (
+            422,
+            {"error": "bad_inputs", "missing": ["sum"], "unknown": ["total"]},
+        )
+        listed = await put({"payload": {"inputs": ["1"]}})
+        assert (listed.status_code, listed.json()["detail"]["error"]) == (422, "bad_inputs")
+        assert (await app.client.get("/jobs/a", headers=OPS)).status_code == 404, "nothing was written"
+        current = (await app.client.get("/workflows/sums", headers=OPS)).json()["revision"]
+        stale = await put({"workflow_revision": "0.0"})
+        assert (stale.status_code, stale.json()["detail"]) == (
+            412,
+            {"error": "workflow_changed", "revision": current},
+        ), "an edit saved while the writer read is not what the job pins"
+        assert (await app.client.get("/jobs/a", headers=OPS)).status_code == 404
+        written = await put({"workflow_revision": current})
+        assert written.status_code == 200, written.text
+        assert written.json()["workflow_revision"] == current
+
+
+OPS_AUTH = {"scopes": ["jobs:write", "workflows:write", "calc:use"], "scheme": "access"}
+
+
+@pytest.mark.parametrize(
+    ("job", "error"),
+    [
+        (
+            {"payload": {"inputs": {"total": "1"}}},
+            "workflow sums: the inputs do not match the workflow: missing sum; unknown total",
+        ),
+        ({"payload": {"inputs": ["1"]}}, "payload.inputs must be an object of the workflow's inputs"),
+        ({"workflow_id": "gone"}, "workflow gone does not exist"),
+        (
+            {"created_auth": {"scopes": ["jobs:write"], "scheme": "access"}},
+            "the job's writer may not start workflow runs (workflows:write)",
+        ),
+        # An API-key writer is held to what the key holds now: `jobs-token` lacks workflows:write.
+        (
+            {"created_by": "sched", "created_auth": {**OPS_AUTH, "scheme": "api_key"}},
+            "the job's writer may not start workflow runs (workflows:write)",
+        ),
+        (
+            {"created_by": "ghost", "created_auth": {**OPS_AUTH, "scheme": "api_key"}},
+            "the API key this job's writer used is no longer configured; re-save the job as someone "
+            "who may run it",
+        ),
+        (
+            {"created_auth": {**OPS_AUTH, "scopes": ["jobs:write", "workflows:write"]}},
+            ("workflow sums: the starter may not use manifest e2e-calc"),
+        ),
+        (
+            {"workflow_revision": "0.0"},
+            "workflow sums changed since this job was written; re-save the job to run it",
+        ),
+    ],
+)
+async def test_a_firing_that_cannot_start_the_run_says_why(
+    boot: Any, job: dict[str, Any], error: str
+) -> None:
+    from felix.jobs import store as jobs_store
+    from felix.jobs.scheduler import fire_job, now_ms
+
+    async with boot([], env=_job_env(), manifests=JOB_MANIFESTS) as app:
+        saved = await app.client.put("/workflows/sums", json=_sums(), headers=OPS)
+        assert saved.status_code == 201
+        # Written to the store directly, and fired with no request in context: the route refuses
+        # some of these, and a stored job drifts into each anyway -- the workflow deleted or
+        # edited, its inputs renamed, the writer's key cut down or removed.
+        fields = {
+            "workflow_id": "sums",
+            "workflow_revision": saved.json()["revision"],
+            "payload": {"inputs": {"sum": "1"}},
+            "created_by": "ops",
+            "created_auth": OPS_AUTH,
+            **job,
+        }
+        stored = await jobs_store.put_job(app.settings, "default", "nightly", **fields)
+        run = await fire_job(app.settings, "default", stored, started_at=now_ms())
+        listed = (await app.client.get("/workflows/sums/runs", headers=OPS)).json()["items"]
+    assert (run["status"], run["error"]) == ("error", error)
+    assert listed == [], "nothing was started"

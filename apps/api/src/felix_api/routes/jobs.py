@@ -11,7 +11,7 @@ from felix.auth.mgmt import (
     require_mgmt_scopes,
     tenant_id_from_request,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from felix_api.errors import client_safe_message
 
@@ -23,6 +23,12 @@ class JobUpsert(BaseModel):
 
     schedule: str = ""
     manifest_id: str = ""
+    # A workflow whose run each firing starts, with `payload.inputs` as its inputs. A job names a
+    # manifest or a workflow, never both.
+    workflow_id: str = Field(default="", max_length=64)
+    # The workflow revision the writer reviewed. When set, the job is written only over that one
+    # (else 412 with the current), so an edit saved while they read cannot become what the job runs.
+    workflow_revision: str | None = Field(default=None, max_length=128)
     payload: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
 
@@ -56,17 +62,61 @@ async def get_job(name: str, request: Request) -> Any:
     return _public(row)
 
 
+async def _workflow_revision(request: Request, tenant_id: str, body: JobUpsert) -> str:
+    """The revision of the workflow a job names, which its firings are held to; refuses a writer
+    without `workflows:write`, a workflow that does not exist, and inputs it does not take."""
+    from felix.auth.mgmt import SCOPE_WORKFLOWS_WRITE
+    from felix.workflows import engine
+    from felix.workflows import store as workflow_store
+    from felix.workflows.schema import WorkflowSpec
+
+    require_mgmt_scopes(request, SCOPE_WORKFLOWS_WRITE)
+    found = await workflow_store.get_workflow(request.app.state.settings, tenant_id, body.workflow_id)
+    if found is None:
+        raise HTTPException(status_code=422, detail={"error": "unknown_workflow"})
+    if body.workflow_revision is not None and body.workflow_revision != found["revision"]:
+        raise HTTPException(
+            status_code=412, detail={"error": "workflow_changed", "revision": found["revision"]}
+        )
+    inputs = body.payload.get("inputs", {})
+    if not isinstance(inputs, dict):
+        raise HTTPException(status_code=422, detail={"error": "bad_inputs", "missing": [], "unknown": []})
+    try:
+        engine.check_inputs(WorkflowSpec.model_validate(found["definition"]), inputs)
+    except ValidationError:
+        # A stored definition that no longer parses: no run of it could start.
+        raise HTTPException(status_code=422, detail={"error": "not_runnable"}) from None
+    except engine.BadInputs as bad:
+        raise HTTPException(
+            status_code=422, detail={"error": "bad_inputs", "missing": bad.missing, "unknown": bad.unknown}
+        ) from None
+    return str(found["revision"])
+
+
 @router.put("/{name}")
 async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     """Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their
     scopes: the manifest's inbound auth is checked against them on every firing, so writing a job
-    reaches no manifest the writer could not run by asking."""
+    reaches no manifest the writer could not run by asking.
+
+    A job naming a workflow starts a run of it on each firing, and writing one needs
+    `workflows:write` beside `jobs:write`, as starting a run does. The job keeps the workflow's
+    revision -- `workflow_revision` if the writer names the one they reviewed (412 if it is no
+    longer current), else the current one -- and runs only that: after anyone saves the workflow
+    again, the job refuses to fire until it is re-saved, so a later edit never runs on the writer's
+    scopes unless the writer saves the job over it.
+    """
     from felix.context import try_get_context
     from felix.jobs import store as jobs_store
     from felix.jobs.schedule import ScheduleError
     from felix.jobs.scheduler import creator_auth
 
     require_mgmt_scopes(request, SCOPE_JOBS_WRITE)
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+    if body.manifest_id and body.workflow_id:
+        raise HTTPException(status_code=422, detail={"error": "manifest_and_workflow"})
+    revision = await _workflow_revision(request, tenant_id, body) if body.workflow_id else ""
     ctx = try_get_context()
     if ctx is None:
         # AuthMiddleware installs the context on every request; without it there is no writer
@@ -76,11 +126,13 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     writer = ctx.auth.acting_for
     try:
         row = await jobs_store.put_job(
-            request.app.state.settings,
-            tenant_id_from_request(request),
+            settings,
+            tenant_id,
             name,
             schedule=body.schedule,
             manifest_id=body.manifest_id,
+            workflow_id=body.workflow_id,
+            workflow_revision=revision,
             payload=body.payload,
             enabled=body.enabled,
             created_by=writer,

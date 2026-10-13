@@ -122,7 +122,13 @@ job's last writer (`created_by`, with the scopes recorded in `created_auth`) thr
 `runtime.prepare_tenant_invoke`, so the manifest's inbound auth applies; a job with no recorded
 writer runs with no scopes. Fibers and jobs record and replay a caller through one module,
 `auth/recorded.py` (`record_caller` / `replay_caller`); an API-key writer's job scopes are cut to the
-key's current ones at each firing (`scheduler._current_api_key_scopes`).
+key's current ones at each firing (`scheduler._current_api_key_scopes`). A job with a `workflow_id`
+(`0043_job_workflow`) starts a workflow run instead (`scheduler._start_job_workflow`): the same
+identity, `payload.inputs` as the inputs, `workflows:write` required of the recorded scopes, the
+run's `trigger` `job:<name>` and its id in the job run's `result.workflow_run_id`. The job keeps
+`workflow_revision` from its write and `start_run(revision=)` refuses any other
+(`RevisionChanged`), so a later editor's steps never run on the writer's scopes. `start_run`'s
+refusals share `engine.StartRefused` and its written `message`; it audits every start.
 `next_run_at_ms` reads the grammar in `jobs/schedule.py` — seconds, `every:30s` / `@every 5m`, the
 `@daily`-style macros and five-field cron in UTC — and a schedule outside it is refused, never
 guessed. An empty schedule is manual only: the sweep skips it and only `POST /jobs/{name}/run` fires it.

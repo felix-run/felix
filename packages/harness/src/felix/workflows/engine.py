@@ -70,34 +70,62 @@ _MANIFEST_KINDS = frozenset({"agent_turn", "tool_call"})
 _CHILD_RUN_KINDS = _MANIFEST_KINDS
 
 
-class NotRunnable(Exception):
+class StartRefused(Exception):
+    """`start_run` refused; nothing was started. `message` is written for whoever asked, so a
+    caller with no structured answer to give (a job's run record) relays it as it is, and a new
+    refusal reaches every caller without each one learning it."""
+
+    message = "the run could not start"
+
+
+def _names(names: list[str]) -> str:
+    return ", ".join(n[:64] for n in names[:5]) + (", …" if len(names) > 5 else "")
+
+
+class NotRunnable(StartRefused):
     """The definition has problems, or names something this run cannot use; nothing was started."""
 
     def __init__(self, problems: list[Problem]) -> None:
         super().__init__("workflow is not runnable")
         self.problems = problems
+        self.message = "the workflow has problems and cannot run"
 
 
-class BadInputs(Exception):
+class BadInputs(StartRefused):
     """The inputs do not match the workflow's: `missing` declared ones absent, `unknown` extra."""
 
     def __init__(self, missing: list[str], unknown: list[str]) -> None:
         super().__init__("inputs do not match the workflow")
         self.missing = missing
         self.unknown = unknown
+        parts = [f"missing {_names(missing)}"] if missing else []
+        parts += [f"unknown {_names(unknown)}"] if unknown else []
+        self.message = f"the inputs do not match the workflow: {'; '.join(parts)}"
 
 
-class NotPermitted(Exception):
+class NotPermitted(StartRefused):
     """The starter may not invoke a manifest a step names (its inbound rules refuse them)."""
 
     def __init__(self, manifest: str, status_code: int) -> None:
         super().__init__(f"may not run manifest {manifest!r}")
         self.manifest = manifest
         self.status_code = status_code
+        self.message = f"the starter may not use manifest {manifest[:200]}"
 
 
-class TooManyRuns(Exception):
+class TooManyRuns(StartRefused):
     """The tenant already has `MAX_ACTIVE_RUNS_PER_TENANT` runs going."""
+
+    message = "the tenant has too many workflow runs going"
+
+
+class RevisionChanged(StartRefused):
+    """The workflow is no longer at the revision the starter named."""
+
+    def __init__(self, current: str) -> None:
+        super().__init__("workflow changed")
+        self.current = current
+        self.message = "the workflow changed since its revision was taken"
 
 
 def _now() -> int:
@@ -188,14 +216,20 @@ async def start_run(
     *,
     trigger: str,
     started_by: str,
+    revision: str | None = None,
 ) -> dict[str, Any]:
     """Start a run of a stored workflow (a `store.get_workflow` row) and its orchestrator fiber.
 
     The caller in context is recorded as the run's starter, and `started_by` defaults to them.
-    Raises `NotRunnable`, `BadInputs`, `NotPermitted` or `TooManyRuns` before anything is written.
+    `revision`, when given, is the one the starter agreed to run: any other is `RevisionChanged`.
+    Raises a `StartRefused` before anything is written; a start is audited as
+    `workflow_run_started`, whoever asked for it.
     """
+    from felix.audit import store as audit_store
     from felix.durability.runs import record_caller
 
+    if revision is not None and revision != workflow["revision"]:
+        raise RevisionChanged(workflow["revision"])
     spec = WorkflowSpec.model_validate(workflow["definition"])
     problems = run_problems(spec)
     if problems:
@@ -221,6 +255,19 @@ async def start_run(
             trigger=trigger,
             started_by=str(auth.get("principal_sub") or started_by),
         ),
+    )
+    audit_store.record_event(
+        settings,
+        tenant_id,
+        "workflow_run_started",
+        principal_subj=run["started_by"],
+        status="ok",
+        payload={
+            "workflow_id": workflow["id"],
+            "run_id": run["id"],
+            "revision": run["revision"],
+            "trigger": trigger,
+        },
     )
     try:
         fiber = await _create_orchestrator(settings, tenant_id, run["id"], expires_at)
@@ -484,6 +531,8 @@ __all__ = [
     "NotPermitted",
     "NotRunnable",
     "Outcome",
+    "RevisionChanged",
+    "StartRefused",
     "TooManyRuns",
     "advance",
     "check_inputs",

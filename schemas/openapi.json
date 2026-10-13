@@ -1397,6 +1397,24 @@
             "default": "",
             "title": "Schedule",
             "type": "string"
+          },
+          "workflow_id": {
+            "default": "",
+            "maxLength": 64,
+            "title": "Workflow Id",
+            "type": "string"
+          },
+          "workflow_revision": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Revision"
           }
         },
         "title": "JobUpsert",
@@ -14242,7 +14260,7 @@
         ]
       },
       "put": {
-        "description": "Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their\nscopes: the manifest's inbound auth is checked against them on every firing, so writing a job\nreaches no manifest the writer could not run by asking.",
+        "description": "Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their\nscopes: the manifest's inbound auth is checked against them on every firing, so writing a job\nreaches no manifest the writer could not run by asking.\n\nA job naming a workflow starts a run of it on each firing, and writing one needs\n`workflows:write` beside `jobs:write`, as starting a run does. The job keeps the workflow's\nrevision -- `workflow_revision` if the writer names the one they reviewed (412 if it is no\nlonger current), else the current one -- and runs only that: after anyone saves the workflow\nagain, the job refuses to fire until it is re-saved, so a later edit never runs on the writer's\nscopes unless the writer saves the job over it.",
         "operationId": "upsert_job_jobs__name__put",
         "parameters": [
           {
