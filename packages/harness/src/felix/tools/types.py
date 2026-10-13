@@ -215,6 +215,22 @@ def output_metadata(output: ToolOutput) -> dict[Any, Any] | None:
     return None
 
 
+def tool_input_schema(tool: Any) -> dict[str, Any]:
+    """A tool's input JSON Schema: its raw schema, else its args model's, else an empty object.
+
+    One reading for every caller that lists or checks a tool's arguments — the MCP listing and a
+    workflow tool step's drift check — so the two cannot disagree about what a tool takes.
+    """
+    if getattr(tool, "raw_input_schema", None):
+        return dict(tool.raw_input_schema)
+    args = getattr(tool, "args_schema", None)
+    if isinstance(args, dict):
+        return args
+    if args is not None and hasattr(args, "model_json_schema"):
+        return args.model_json_schema()
+    return {"type": "object", "properties": {}}
+
+
 def is_wrapper_deny(output: ToolOutput) -> bool:
     md = output_metadata(output)
     return md is not None and md.get(_WRAPPER_DENY_MARKER) is True
@@ -440,6 +456,7 @@ __all__ = [
     "output_metadata",
     "output_text",
     "replace_tool_output",
+    "tool_input_schema",
     "tool_output_content",
     "tool_output_images",
     "untrusted_output",

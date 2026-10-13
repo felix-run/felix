@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from felix.config import Settings
 from felix.logging_setup import loggable
-from felix.workflows.kinds import AgentTurnConfig, ApprovalConfig, BranchConfig, render_prompt
+from felix.workflows.kinds import AgentTurnConfig, ApprovalConfig, BranchConfig, ToolCallConfig, render_prompt
 from felix.workflows.runs import StepState
 from felix.workflows.schema import Step, WorkflowSpec
 
@@ -147,11 +147,40 @@ class _Approval:
             await approvals.close_interrupted(run.settings, run.tenant_id, key, [step.id])
 
 
-class _AgentTurn:
-    @staticmethod
-    def child_id(run: RunContext, step: Step) -> str:
-        return uuid.uuid5(_CHILD_NAMESPACE, f"{run.tenant_id}:{run.run['id']}:{step.id}").hex
+def child_fiber_id(run: RunContext, step: Step) -> str:
+    """The fiber id of a step's child run, derived so a replayed or overlapping start finds it."""
+    return uuid.uuid5(_CHILD_NAMESPACE, f"{run.tenant_id}:{run.run['id']}:{step.id}").hex
 
+
+async def _stop_child(run: RunContext, step: Step, state: StepState) -> None:
+    """Stop a step's child run, started or not: end its fiber, abort its turn, answer its gates.
+
+    A tool call already executing has no loop to read the abort: it runs to its end, and its
+    worker's save then loses to the stop (or its next lease renewal does, within
+    `FIBER_LEASE_RENEW_MS`). Its result is discarded either way.
+    """
+    from felix.approvals import store as approvals
+    from felix.approvals.interrupt import signal_decision
+    from felix.durability.fibers import stop_fiber
+    from felix.steer import request_abort
+    from felix.thread_ids import workflow_thread_id
+
+    # By the derived id, so a child a lost attempt started — or one not yet claimed — stops.
+    stopped = await stop_fiber(
+        run.settings, run.tenant_id, child_fiber_id(run, step), "stopped by its workflow"
+    )
+    thread = state.get("thread_id") or workflow_thread_id(run.tenant_id, run.run["id"], step.id)
+    if not thread or not (stopped or state.get("status") == "running"):
+        return
+    # A turn under way is told to abort, and a gate it is waiting on is answered `denied` now:
+    # approving it later would run the tool with the starter's scopes after the run ended
+    # (felix-run/felix#531's shape).
+    await request_abort(run.tenant_id, thread)
+    for approval_id in await approvals.close_pending_on_thread(run.settings, run.tenant_id, thread):
+        await signal_decision(approval_id, "denied", note=approvals.INTERRUPTED_NOTE)
+
+
+class _AgentTurn:
     async def start(self, run: RunContext, step: Step, inputs: dict[str, Any], state: StepState) -> None:
         from felix.durability.fibers import RunInProgress, get_fiber
         from felix.thread_ids import workflow_thread_id
@@ -161,7 +190,7 @@ class _AgentTurn:
         if thread is None:
             _fail(state, "no thread id for this step")
             return
-        child_id = self.child_id(run, step)
+        child_id = child_fiber_id(run, step)
         state.update(thread_id=thread, fiber_id=child_id)
         if await get_fiber(run.settings, run.tenant_id, child_id) is not None:
             state["status"] = "running"  # a replay: an earlier attempt started it
@@ -241,7 +270,7 @@ class _AgentTurn:
                 child["status"],
                 loggable(view["error"], limit=500),
             )
-            _fail(state, _CHILD_FAILURE.get(child["status"], "the agent run failed"))
+            _fail(state, _child_failure("agent run", child["status"]))
             return
         answer = str((view["final"] or {}).get("content") or "")
         config = AgentTurnConfig.model_validate(step.config)
@@ -256,36 +285,102 @@ class _AgentTurn:
         state.update(status="completed", outputs={"output": parsed, **fields}, finished_at=_now())
 
     async def stop(self, run: RunContext, step: Step, state: StepState) -> None:
-        from felix.approvals import store as approvals
-        from felix.approvals.interrupt import signal_decision
-        from felix.durability.fibers import stop_fiber
-        from felix.steer import request_abort
+        await _stop_child(run, step, state)
+
+
+class _ToolCall:
+    async def start(self, run: RunContext, step: Step, inputs: dict[str, Any], state: StepState) -> None:
+        from felix.durability.fibers import RunInProgress, create_fiber, get_fiber
         from felix.thread_ids import workflow_thread_id
+        from felix.workflows.tool_step import TOOL_CHILD_KIND
 
-        # By the derived id, so a child a lost attempt started — or one not yet claimed — stops.
-        stopped = await stop_fiber(
-            run.settings, run.tenant_id, self.child_id(run, step), "stopped by its workflow"
-        )
-        thread = state.get("thread_id") or workflow_thread_id(run.tenant_id, run.run["id"], step.id)
-        if not thread or not (stopped or state.get("status") == "running"):
+        config = ToolCallConfig.model_validate(step.config)
+        thread = workflow_thread_id(run.tenant_id, run.run["id"], step.id)
+        if thread is None:
+            _fail(state, "no thread id for this step")
             return
-        # A turn under way is told to abort, and a gate it is waiting on is answered `denied`
-        # now: approving it later would run the tool with the starter's scopes after the run
-        # ended (felix-run/felix#531's shape).
-        await request_abort(run.tenant_id, thread)
-        for approval_id in await approvals.close_pending_on_thread(run.settings, run.tenant_id, thread):
-            await signal_decision(approval_id, "denied", note=approvals.INTERRUPTED_NOTE)
+        child_id = child_fiber_id(run, step)
+        state.update(thread_id=thread, fiber_id=child_id)
+        if await get_fiber(run.settings, run.tenant_id, child_id) is not None:
+            state["status"] = "running"  # a replay: an earlier attempt started it
+            return
+        pinned = run.run["pins"].get(config.manifest) or {}
+        ttl_ms = int(pinned.get("ttl_s") or 86400) * 1000
+        child_state: dict[str, Any] = {
+            "steps": [
+                {
+                    "op": "tool",
+                    "manifest_id": config.manifest,
+                    "tool": config.tool,
+                    # Fixed arguments, then what the edges carried in; an unwired optional input
+                    # is simply not sent.
+                    "args": {**config.args, **inputs},
+                    "input_schema": config.input_schema,
+                    "thread_id": thread,
+                    "step_id": step.id,
+                }
+            ],
+            "cursor": 0,
+            "stash": {},
+            "expires_at": min(int(run.run["expires_at"]), _now() + ttl_ms),
+        }
+        if run.run["auth"]:
+            child_state["auth"] = run.run["auth"]  # the starter, as recorded when the run began
+        if pinned.get("pin"):
+            child_state["pin"] = pinned["pin"]
+        try:
+            await create_fiber(
+                run.settings,
+                run.tenant_id,
+                kind=TOOL_CHILD_KIND,
+                state=child_state,
+                thread_id=thread,
+                exclusive_on_thread=True,
+                fiber_id=child_id,
+            )
+        except RunInProgress as busy:
+            if busy.resume_token == child_id:
+                state["status"] = "running"
+                return
+            _fail(state, "the step's thread already has a run")
+            return
+        state["status"] = "running"
+
+    async def poll(self, run: RunContext, step: Step, state: StepState) -> None:
+        from felix.durability.fibers import FIBER_TERMINAL_STATUSES, get_fiber
+
+        child = await get_fiber(run.settings, run.tenant_id, state.get("fiber_id", ""))
+        if child is None:
+            _fail(state, "the step's tool call is gone")
+            return
+        if child["status"] not in FIBER_TERMINAL_STATUSES:
+            return
+        last = dict(((child.get("state_json") or {}).get("stash") or {}).get("last") or {})
+        if child["status"] != "completed" or last.get("error"):
+            # `tool_step` writes these for a client; a status with no error of its own is mapped.
+            _fail(state, str(last.get("error") or _child_failure("tool call", child["status"])))
+            return
+        state.update(status="completed", outputs={"result": last.get("output")}, finished_at=_now())
+
+    async def stop(self, run: RunContext, step: Step, state: StepState) -> None:
+        await _stop_child(run, step, state)
 
 
-_CHILD_FAILURE = {
-    "failed": "the agent run failed",
-    "expired": "the agent run expired",
-    "dead": "the agent run could not be completed",
+def _child_failure(what: str, status: str) -> str:
+    """What a client reads when a step's child run ended without a usable result."""
+    return {"expired": f"the {what} expired", "dead": f"the {what} could not be completed"}.get(
+        status, f"the {what} failed"
+    )
+
+
+EXECUTORS: dict[str, Executor] = {
+    "agent_turn": _AgentTurn(),
+    "approval": _Approval(),
+    "branch": _Branch(),
+    "tool_call": _ToolCall(),
 }
-
-EXECUTORS: dict[str, Executor] = {"agent_turn": _AgentTurn(), "approval": _Approval(), "branch": _Branch()}
-# The kinds this engine can run. A registered kind with no executor (a plugin's, or `tool_call`
-# today) is refused at start rather than stalling the run on it.
+# The kinds this engine can run. A registered kind with no executor (a plugin's) is refused at
+# start rather than stalling the run on it.
 RUNNABLE_KINDS = frozenset(EXECUTORS)
 
 
@@ -312,4 +407,11 @@ def _kind_of(value: Any) -> str:
     return type(value).__name__
 
 
-__all__ = ["APPROVAL_DEFAULT_TTL_SECONDS", "EXECUTORS", "RUNNABLE_KINDS", "Executor", "RunContext"]
+__all__ = [
+    "APPROVAL_DEFAULT_TTL_SECONDS",
+    "EXECUTORS",
+    "RUNNABLE_KINDS",
+    "Executor",
+    "RunContext",
+    "child_fiber_id",
+]

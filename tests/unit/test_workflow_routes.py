@@ -276,6 +276,7 @@ async def test_a_long_name_is_quoted_short_and_problems_are_capped() -> None:
             "id": f"post{i}",
             "kind": "tool_call",
             "config": {
+                "manifest": "quick",
                 "tool": "t",
                 "input_schema": {
                     "properties": {

@@ -19,19 +19,12 @@ from felix.tools.types import (
 
 
 def _tool_descriptor(tool: Any) -> dict[str, Any]:
-    schema: dict[str, Any] = {"type": "object", "properties": {}}
-    if getattr(tool, "raw_input_schema", None):
-        schema = dict(tool.raw_input_schema)
-    elif getattr(tool, "args_schema", None) is not None:
-        args = tool.args_schema
-        if isinstance(args, dict):
-            schema = args
-        elif hasattr(args, "model_json_schema"):
-            schema = args.model_json_schema()
+    from felix.tools.types import tool_input_schema
+
     return {
         "name": tool.name,
         "description": tool.description,
-        "inputSchema": schema,
+        "inputSchema": tool_input_schema(tool),
     }
 
 
