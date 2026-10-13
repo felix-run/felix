@@ -49,8 +49,8 @@ def test_every_configured_key_still_resolves_to_its_own_metadata() -> None:
     parsed = mw._parse_api_keys(RAW)
     for token, meta in KEYS.items():
         assert parsed.get(token) is not None, f"{token[:12]} no longer resolves"
-        assert parsed[token]["sub"] == meta["sub"]
-        assert parsed[token]["tenant_id"] == meta["tenant_id"]
+        assert parsed[token].sub == meta["sub"]
+        assert parsed[token].tenant_id == meta["tenant_id"]
 
 
 def test_an_unknown_token_resolves_to_nothing() -> None:
@@ -119,6 +119,7 @@ def test_the_match_does_not_stop_early(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Req:
         url = type("U", (), {"path": "/chat"})()
+        scope: ClassVar[dict[str, str]] = {"path": "/chat"}
         headers: ClassVar[dict[str, str]] = {"authorization": f"Bearer {first}"}
 
     result = asyncio.run(mw.authenticate_request(_Req(), settings))

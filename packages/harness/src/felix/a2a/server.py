@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -14,6 +15,11 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.patterns.types import ChatMessage, ImageAttachment, InvokeInput
 from felix.thread_ids import a2a_thread_id
 from felix.tools.provider import ToolProvider
+
+logger = logging.getLogger("felix.a2a.server")
+
+#: What a failed task says about why. Fixed, because the reason is the operator's to read.
+A2A_TASK_FAILED = "the agent run failed; the server log has the reason, under this task's id"
 
 
 def _extract_message(params: dict[str, Any]) -> tuple[str, list[tuple[bytes, str]]]:
@@ -249,12 +255,26 @@ async def handle_rpc(
                 return await refused(-32001, exc.detail)
             if isinstance(exc, InboundScreeningError):
                 return await refused(-32002, exc.detail)
+            # The stored task is what `tasks/get` hands any caller in the tenant, so it says the run
+            # failed and nothing more: the exception's text is a database host, an upstream model's
+            # own error body, a path. The task id joins this line to the log entry that has it.
+            # The log gets the type and the message with every registered secret masked -- not the
+            # traceback, which `logger.exception` would write unmasked, since no formatter redacts.
+            from felix.logging_setup import loggable
+            from felix.secrets import collected_secret_values, redact_text
+
+            logger.error(
+                "a2a task %s failed: %s: %s",
+                loggable(task_id, limit=200),
+                type(exc).__name__,
+                loggable(redact_text(str(exc), collected_secret_values(settings)), limit=500),
+            )
             task = {
                 "id": task_id,
                 "status": {
                     "state": "failed",
                     "timestamp": int(time.time() * 1000),
-                    "message": str(exc),
+                    "message": A2A_TASK_FAILED,
                 },
                 "manifest": name,
                 "artifacts": [],

@@ -333,7 +333,7 @@ def test_a_pinned_account_must_have_its_tenant_to_itself(
 
 def test_an_api_key_without_a_tenant_is_in_default() -> None:
     """`AuthMiddleware` puts a key with no `tenant_id` in `default`; the boot checks read the same
-    rule (`api_key_tenant`), so a pinned account can never be in a tenant such a key reaches."""
+    rule (`felix.auth.api_keys.parse_api_keys`), so a pinned account can never be in a tenant such a key reaches."""
     from felix.config import configured_tenants
 
     settings = _settings({"kid@example.com": KID})

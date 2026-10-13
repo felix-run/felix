@@ -168,6 +168,11 @@ Postgres, so the suite would fail on connection errors that look like code bugs.
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for this and other recurring failure modes.
 `tests/README.md` says where a new test goes.
 
+`make dev` runs `FELIX_AUTH_MODE=none`: the API is unauthenticated and every caller holds every
+scope, and each boot logs a warning saying so. The mode is refused unless `FELIX_HOST` is a loopback
+address, but that check reads the setting, not the socket the server binds: a `--host 0.0.0.0` on
+Granian's own command line passes it and serves the API to the network.
+
 ## Deployment
 
 ### Small VMs and lean images

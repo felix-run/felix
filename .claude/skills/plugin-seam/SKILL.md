@@ -30,7 +30,7 @@ On the registry / plugin object:
 | Cron tasks | `plugin.cron_tasks` → registered by the worker at startup |
 | Rate-limit keys | `plugin.rate_limit_key(request)` |
 | Body limits | `plugin.body_limit_bytes` |
-| Self-authenticating mounts | `plugin.self_authenticating_mounts` |
+| Self-authenticating mounts | `plugin.self_authenticating_mounts`: each one's first segment must be its own; `validate_self_authenticating_mounts` (`felix/auth/middleware.py`) refuses the boot on one that overlaps a core route or public path, or is malformed |
 | Model / decision providers | `registry.register_model_provider(name, factory)` / `register_decision_provider(name, factory)` → a `FELIX_MODEL_ROUTES` / `FELIX_DECISION_ROUTES` entry |
 | Audit / usage sinks | `registry.register_audit_sink(factory)` / `register_usage_sink(factory)` |
 | Startup hooks | `registry.register_startup_hook(hook)` (awaited in the API lifespan) |

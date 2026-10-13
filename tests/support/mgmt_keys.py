@@ -7,6 +7,14 @@ import json
 ADMIN = "sk-admin-not-a-secret"
 READER = "sk-reader-not-a-secret"
 WRITER = "sk-writer-not-a-secret"
+# Outside development, boot refuses an API key shorter than 32 characters (`MIN_API_KEY_CHARS`);
+# this one is long enough and plainly not a credential.
+LONG_KEY = "test-key-" + "x" * 30
+
+
+def long_keys(*, tenant_id: str = "default", scopes: list[str] | None = None) -> str:
+    """`FELIX_AUTH_API_KEYS` holding one key boot accepts in any environment."""
+    return json.dumps({LONG_KEY: {"tenant_id": tenant_id, "sub": "ops", "scopes": scopes or []}})
 
 
 def scoped_keys(*, reader: list[str], writer: list[str] | None = None) -> dict[str, str]:

@@ -147,7 +147,36 @@ child process does **not** inherit the API environment; it receives
 `secret:NAME` refs resolved), and loader variables such as `LD_PRELOAD` and `PYTHONPATH`
 are rejected. Prefer `transport: http`/`sse` where you can.
 
-`FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment.
+`FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment. Where it is
+accepted, every boot logs a warning that the API is unauthenticated. The loopback check reads
+`FELIX_HOST`, not the address the server actually binds — Granian binds what its own command line
+names — so keep the two in agreement; nothing in the process can see a mismatch.
+
+Under `FELIX_AUTH_MODE=api_key`, a malformed `FELIX_AUTH_API_KEYS` fails the boot: JSON that does
+not parse, a top level that is not an object, an entry that is not an object, a `tenant_id` or `sub`
+that is not a string, or a `scopes` that is not a list of strings (`"scopes": "admin"` once granted
+the scopes `a`, `d`, `m`, `i`, `n`). Outside `FELIX_ENVIRONMENT=development` — production,
+staging, anything else — every key must be at least 32 characters. The refusals name an entry by position, never by its key.
+Boot and the request path read one parser (`felix/auth/api_keys.py`), and the request path fails
+closed — no key authenticates — on a list boot would have refused. An entry without `tenant_id` is
+the `default` tenant.
+
+A plugin's `self_authenticating_mounts` skip Felix's authentication for every path under them, so
+each is checked at boot: a path under `/`, not the root, with no `..`, `//`, whitespace or trailing
+`/`, and a first segment no core route and no anonymous path uses (`/chat`, `/v1`, `/auth`,
+`/.well-known`, …). Anything else refuses to start, naming the plugin. The anonymous paths are one
+list (`anonymous_paths` in `felix/auth/middleware.py`) that both the door and this check read. Every
+path rule — mounts, probes, login, triggers — compares the path the router routes: with an ASGI
+`root_path` (a proxy prefix) taken off, so a request is judged by the route it reaches.
+
+`felix mint-jwt` grants no scope unless `--scopes` names one, mints for at most a day
+(`--ttl` 1 to 86400), and with `--allow-long-ttl` for at most a year (31,536,000 seconds) — never
+longer. `--aud` sets `aud`. A minted token cannot be revoked, so its expiry is the whole of its
+lifetime.
+
+A failed A2A task records only that it failed (`tasks/get` returns it to the tenant). The reason is
+logged as the exception's type and its message with every registered secret masked, without a
+traceback, since no log formatter masks one.
 
 ## Governance frameworks
 
@@ -1089,6 +1118,9 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
   GitHub the body's digest, since GitHub signs neither `X-GitHub-Delivery` nor `X-GitHub-Event`.
   Standard Webhooks replays are also bounded by the timestamp window; GitHub signs no timestamp, so
   a captured GitHub delivery replayed after the claim expires (default 24 hours) starts a new run.
+  The window is 300 seconds either side of now, so a delivery verifies for 600: with
+  `FELIX_TRIGGERS` set, boot refuses a `FELIX_IDEMPOTENCY_TTL_SECONDS` below that, which would let a
+  claim expire while its delivery still verified.
   Without Redis the claim is per process, so behind several replicas a replay is caught only by the
   replica that saw it, and the in-process store keeps at most 50,000 claims, oldest dropped first
   (a Redis eviction policy that drops keys does the same): a busy hook can age a claim out before

@@ -92,20 +92,22 @@ def _current_api_key_scopes(
     no longer in `api_key` mode -- refuses the run: an `InboundAuthError`, so the run record says
     why rather than running with nothing.
     """
-    from felix.auth.middleware import _parse_api_keys
+    from felix.auth.api_keys import parse_api_keys
     from felix.manifests.inbound_auth import InboundAuthError
 
     held: set[str] = set()
     found = False
     if getattr(settings, "auth_mode", "") == "api_key":
-        for meta in _parse_api_keys(settings.auth_api_keys).values():
-            meta = meta if isinstance(meta, dict) else {}
-            if str(meta.get("tenant_id") or "default") != tenant_id:
-                continue
-            if str(meta.get("sub") or "api_key") != subject:
-                continue
-            found = True
-            held.update(str(x) for x in (meta.get("scopes") or []))
+        try:
+            # The door's own parser, so a key's tenant and subject default exactly as they do
+            # there; malformed config refuses to boot, so `{}` here only means "nothing to find".
+            entries = parse_api_keys(settings.auth_api_keys)
+        except ValueError:
+            entries = {}
+        for entry in entries.values():
+            if entry.tenant_id == tenant_id and entry.subject == subject:
+                found = True
+                held.update(entry.scopes)
     if not found:
         raise InboundAuthError(
             "the API key this job's writer used is no longer configured; re-save the job as someone "

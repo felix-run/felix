@@ -72,13 +72,6 @@ def assert_valid_tenant_id(tenant_id: str) -> None:
         )
 
 
-def api_key_tenant(entry: dict[str, Any]) -> str:
-    """The tenant an `FELIX_AUTH_API_KEYS` entry authenticates into: its `tenant_id`, else
-    `default`. One rule for the middleware and for every boot check that asks which tenants
-    config names (`felix.config.configured_tenants`), so the two cannot disagree."""
-    return str(entry.get("tenant_id") or "default")
-
-
 @dataclass(slots=True)
 class Principal:
     subject: str
@@ -137,7 +130,6 @@ __all__ = [
     "AuthContext",
     "OutboundTokenFn",
     "Principal",
-    "api_key_tenant",
     "require_scope",
     "require_scopes",
 ]
