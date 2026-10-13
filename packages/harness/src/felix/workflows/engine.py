@@ -217,11 +217,14 @@ async def start_run(
     trigger: str,
     started_by: str,
     revision: str | None = None,
+    untrusted_inputs: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Start a run of a stored workflow (a `store.get_workflow` row) and its orchestrator fiber.
 
     The caller in context is recorded as the run's starter, and `started_by` defaults to them.
     `revision`, when given, is the one the starter agreed to run: any other is `RevisionChanged`.
+    `untrusted_inputs` names the inputs a third party supplied; while any are, each agent step
+    reads every value its prompt is filled with as data (`kinds.render_prompt`).
     Raises a `StartRefused` before anything is written; a start is audited as
     `workflow_run_started`, whoever asked for it.
     """
@@ -254,6 +257,7 @@ async def start_run(
             expires_at=expires_at,
             trigger=trigger,
             started_by=str(auth.get("principal_sub") or started_by),
+            untrusted_inputs=tuple(sorted(set(untrusted_inputs))),
         ),
     )
     audit_store.record_event(

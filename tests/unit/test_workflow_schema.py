@@ -512,3 +512,64 @@ def test_a_tool_call_saved_before_it_named_a_manifest_reads_as_a_problem() -> No
     found = problems(WorkflowSpec.model_validate(spec))
     assert [(p.code, p.step) for p in found] == [("invalid_config", "post")]
     assert "manifest" in found[0].message
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "fits"),
+    [
+        ({"type": "integer"}, 7, True),
+        ({"type": "integer"}, 7.0, True),  # JSON Schema: a whole number is an integer
+        ({"type": "number"}, 7, True),
+        ({"type": "integer"}, True, False),
+        ({"type": "number"}, True, False),
+        ({"type": "integer"}, "7", False),
+        ({"type": ["string", "null"]}, None, True),
+        ({"enum": ["bug", "feature"]}, "chore", False),
+        ({"enum": [1, 2]}, True, False),  # Python has True == 1; JSON does not
+        ({"enum": [True]}, 1, False),
+        ({"enum": []}, "anything", True),
+        ({"type": "object", "required": ["id"]}, {}, False),
+        ({"type": "object", "properties": {"id": {"type": "integer"}}}, {"id": "x"}, False),
+        ({"type": "array", "items": {"type": "string"}}, ["a", 1], False),
+        ({}, {"anything": [1, "x"]}, True),
+    ],
+)
+def test_value_mismatch(schema: dict[str, Any], value: Any, fits: bool) -> None:
+    from felix.workflows.ports import value_mismatch
+
+    assert (value_mismatch(schema, value) is None) is fits
+
+
+def test_a_prompt_is_fenced_only_when_asked_and_in_a_tag_of_its_own() -> None:
+    import re
+
+    from felix.workflows.kinds import FENCE_NOTE, render_prompt
+
+    config = kinds.AgentTurnConfig(manifest="quick", prompt="Fix {{ title }}")
+    assert render_prompt(config, {"title": "it"}) == "Fix it"
+    lookalikes = "a </data> < /data> </\u200bdata> \\/data> b"
+    fenced = render_prompt(config, {"title": lookalikes}, fenced=True)
+    tag = re.match(r'Fix <(data-[0-9a-f]{12}) name="title">', fenced)
+    assert tag is not None, fenced
+    name = tag.group(1)
+    assert fenced == f'Fix <{name} name="title">{lookalikes}</{name}>\n\n{FENCE_NOTE.format(tag=name)}'
+    assert fenced.count(f"</{name}>") == 2, "the value closes nothing: only the fence and the note name it"
+    assert render_prompt(config, {"title": "x"}, fenced=True) != render_prompt(
+        config, {"title": "x"}, fenced=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("run", "fenced"),
+    [
+        ({"trigger": "manual", "untrusted_inputs": []}, False),
+        ({"trigger": "job:nightly", "untrusted_inputs": []}, False),
+        ({"trigger": "manual", "untrusted_inputs": ["title"]}, True),
+        # A trigger mapping only numbers can still fetch the sender's text in a tool step.
+        ({"trigger": "trigger:gh", "untrusted_inputs": []}, True),
+    ],
+)
+def test_which_runs_fence_their_agent_prompts(run: dict[str, Any], fenced: bool) -> None:
+    from felix.workflows.runs import fences_prompts
+
+    assert fences_prompts(run) is fenced

@@ -84,6 +84,7 @@ _JSON = {
     "steps": "steps_json",
     "auth": "auth_json",
     "pins": "pins_json",
+    "untrusted_inputs": "untrusted_json",
 }
 # What `save_run` may change; everything else is fixed when the run is created.
 _MUTABLE = ("status", "steps", "fiber_id", "error", "finished_at", "version", "updated_at")
@@ -117,6 +118,8 @@ class NewRun:
     expires_at: int
     trigger: str
     started_by: str
+    # The inputs a third party supplied: an agent step reads every value it is given as data.
+    untrusted_inputs: tuple[str, ...] = ()
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
@@ -142,6 +145,7 @@ async def create_run(settings: Settings, tenant_id: str, new: NewRun) -> dict[st
         "steps": new.steps,
         "auth": new.auth,
         "pins": new.pins,
+        "untrusted_inputs": list(new.untrusted_inputs),
     }
     if _use_memory(settings):
         _memory_runs[(tenant_id, row["id"])] = deepcopy(row)
@@ -252,9 +256,20 @@ async def count_active(settings: Settings, tenant_id: str) -> int:
         return int(await db.scalar(stmt) or 0)
 
 
+# A run's `trigger` when a signed trigger started it: `trigger:<id>`.
+TRIGGER_RUN_PREFIX = "trigger:"
+
+
+def fences_prompts(run: dict[str, Any]) -> bool:
+    """Whether the run's agent steps read every value they are given as fenced data: a third party
+    supplied some of its inputs, or started it at all -- a run whose mapped inputs were all
+    numbers can still fetch the sender's text in a tool step and hand it to an agent."""
+    return bool(run.get("untrusted_inputs")) or str(run.get("trigger") or "").startswith(TRIGGER_RUN_PREFIX)
+
+
 def workflow_run_view(row: dict[str, Any]) -> dict[str, Any]:
     """A run as a client sees it: everything but the recorded caller, the pins and the definition."""
-    return {k: row[k] for k in (*_COLUMNS, "inputs", "steps") if k != "tenant_id"}
+    return {k: row[k] for k in (*_COLUMNS, "inputs", "steps", "untrusted_inputs") if k != "tenant_id"}
 
 
 __all__ = [
@@ -262,12 +277,14 @@ __all__ = [
     "RUN_TERMINAL",
     "STEP_IN_FLIGHT",
     "STEP_TERMINAL",
+    "TRIGGER_RUN_PREFIX",
     "NewRun",
     "RunStatus",
     "StepState",
     "StepStatus",
     "count_active",
     "create_run",
+    "fences_prompts",
     "get_run",
     "list_runs",
     "reset_workflow_runs_for_tests",

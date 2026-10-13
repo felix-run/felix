@@ -1156,6 +1156,31 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
   who may read the tenant's sessions may read it there.
 - **Results go out the usual way:** the manifest's `spec.execution.webhooks` announces the run's
   end, so an event in can become a result out.
+- **A trigger may start a workflow run instead** (`workflow` in place of `manifest` and `prompt`).
+  `inputs` maps each workflow input to a JSON Pointer into the payload (`""` is the whole of it),
+  `$event` (a type `events` lists — mapping it without `events` fails the boot) or `$delivery`
+  (the short token). Each value must be what the workflow declares for that input — `type`,
+  `enum` (compared by JSON type, so `true` is not `1`), an object's `required` and `properties`,
+  an array's `items` (`ports.value_mismatch`, deliberately partial) — and nest no deeper than 32
+  levels, or the delivery is `422 invalid_payload` and starts nothing; so is a quarantined payload.
+  These are checked before the rate limit, so a delivery that starts nothing spends none of it,
+  and the 422 is kept as that delivery's answer. A workflow that is missing, does not parse,
+  declares inputs the trigger does not map, or is no longer at a pinned `revision` is the
+  operator's problem: `503 trigger_unavailable`, not kept, so a redelivery after the fix runs.
+  **A string, object or array from the payload, and `$delivery`, are the sender's text** and are
+  listed on the run as `untrusted_inputs`. **Every agent step of a trigger-started run fences what
+  it is given** — a later step's output included, since an agent that read the sender's text can
+  repeat it, and a run whose mapped inputs are all numbers included, since a tool step can fetch
+  the sender's text: each value is wrapped in a tag made new for that prompt
+  (`<data-<12 hex> name="…">…</data-<12 hex>>`), so a value cannot forge its close, and the prompt
+  ends by naming the tag and saying what is inside is data, not instructions. A fence is a
+  convention a model is told to honour, not a boundary it cannot cross: keep `spec.inbound`
+  screening on manifests a triggered workflow reaches, and give the trigger only the `scopes` its
+  steps need. A tool step receives mapped values as arguments, screened as every tool step's are.
+  The run is `trigger:<id>`'s with the trigger's `scopes`, its manifests checked and pinned at the
+  start; it is audited as `workflow_run_started` with trigger `trigger:<id>`. **The workflow's
+  current definition runs**: anyone with `workflows:write` can change what a trigger's scopes
+  reach, so an operator granting those scopes pins the workflow with `revision`.
 
 ### Chat channels: Slack (`felix-channels` plugin)
 

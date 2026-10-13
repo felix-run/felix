@@ -187,4 +187,69 @@ def port_mismatch(source: Port, target: Port) -> str | None:
     return _schema_mismatch(source.schema, target.schema, 0, _Budget())
 
 
-__all__ = ["PORT_NAME_PATTERN", "WHEN", "Port", "StepPorts", "describe", "port_mismatch"]
+# --- values -------------------------------------------------------------------------------
+
+# How many of an array's items a value check reads, per level.
+_MAX_ITEMS_CHECKED = 1000
+
+
+def _value_type(value: Any) -> str:
+    """A value's JSON Schema type: as `_json_type`, but `7.0` is an integer, as JSON Schema says."""
+    if isinstance(value, float) and value.is_integer():
+        return "integer"
+    return _json_type(value)
+
+
+def value_mismatch(schema: dict[str, Any], value: Any, _depth: int = 0) -> str | None:
+    """Why `value` is not what `schema` declares, or `None`.
+
+    A deliberately partial check, for a value from outside the harness (a trigger's payload)
+    before it becomes a workflow input: `type`, `enum`, an object's `required` and declared
+    `properties`, an array's `items`. Anything else the schema says is not checked, and a schema
+    nested past `_MAX_TYPE_DEPTH` is accepted from there down. Never a step's own output: that is
+    the step's to shape.
+    """
+    if _depth > _MAX_TYPE_DEPTH:
+        return None
+    got = _value_type(value)
+    enum = schema.get("enum")
+    # By type as well as equality: Python has `True == 1` and `1 == 1.0`, JSON does not.
+    if (
+        isinstance(enum, list)
+        and enum
+        and not any(member == value and _value_type(member) == got for member in enum)
+    ):
+        return "is not one of the allowed values"
+    allowed = _types(schema) if "type" in schema else set()
+    if allowed and got not in allowed and not (got == "integer" and "number" in allowed):
+        return f"is {got}, not {'|'.join(sorted(allowed))}"
+    if isinstance(value, dict):
+        required = schema.get("required")
+        if isinstance(required, list):
+            absent = [str(k) for k in required if isinstance(k, str) and k not in value]
+            if absent:
+                return f"lacks {_shown(absent[0])}"
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            for name, sub in properties.items():
+                if name in value and isinstance(sub, dict):
+                    reason = value_mismatch(sub, value[name], _depth + 1)
+                    if reason is not None:
+                        return f"{_shown(str(name))} {reason}"
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for item in value[:_MAX_ITEMS_CHECKED]:
+            reason = value_mismatch(schema["items"], item, _depth + 1)
+            if reason is not None:
+                return f"has an item that {reason}"
+    return None
+
+
+__all__ = [
+    "PORT_NAME_PATTERN",
+    "WHEN",
+    "Port",
+    "StepPorts",
+    "describe",
+    "port_mismatch",
+    "value_mismatch",
+]

@@ -83,18 +83,9 @@ CLASSIFIED = ScriptedTurn(content='{"label": "bug", "summary": "crash on save"}'
 async def _tick(
     app: Any, run_url: str, until: set[str], *, limit: int = 30, headers: dict[str, str] | None = None
 ) -> dict[str, Any]:
-    from felix.durability import fibers as F
+    from tests.support.e2e import tick_workflow_run
 
-    run: dict[str, Any] = {}
-    for _ in range(limit):
-        for row in F._memory_fibers.values():
-            if row.get("status") == "sleeping":
-                row["wake_at"] = 0
-        await F.resume_due_fibers(app.settings)
-        run = (await app.client.get(run_url, headers=headers)).json()
-        if run["status"] in until:
-            return run
-    raise AssertionError(f"run stuck at {run.get('status')}: {run}")
+    return await tick_workflow_run(app, run_url, until, limit=limit, headers=headers)
 
 
 async def _start(app: Any, inputs: dict[str, Any] | None = None) -> str:

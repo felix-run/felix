@@ -3470,6 +3470,13 @@
             "title": "Trigger",
             "type": "string"
           },
+          "untrusted_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Untrusted Inputs",
+            "type": "array"
+          },
           "updated_at": {
             "title": "Updated At",
             "type": "integer"
@@ -3498,6 +3505,7 @@
           "updated_at",
           "finished_at",
           "inputs",
+          "untrusted_inputs",
           "steps"
         ],
         "title": "RunOut",
@@ -20564,7 +20572,7 @@
             "description": "The body is larger than a trigger accepts (`payload_too_large`)."
           },
           "422": {
-            "description": "The body is not UTF-8 JSON (`invalid_payload`)."
+            "description": "The body is not UTF-8 JSON, or does not supply the workflow's inputs (`invalid_payload`)."
           },
           "429": {
             "description": "The trigger's per-minute limit is spent (`rate_limited`)."

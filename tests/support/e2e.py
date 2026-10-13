@@ -233,3 +233,25 @@ def assert_routes_to_the_script(settings: Any) -> None:
         f"{len(live)} model route(s) still resolve to a real provider: {', '.join(live)}; "
         "this suite must not be able to reach a model vendor by any route"
     )
+
+
+async def tick_workflow_run(
+    app: Any, run_url: str, until: set[str], *, limit: int = 30, headers: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Drive a workflow run until its status is in `until`, as the worker's fiber loop would.
+
+    No worker runs in tests, so this wakes every parked fiber and claims what is due, reading the
+    run back over HTTP each round; a run that never gets there fails with the state it reached.
+    """
+    from felix.durability import fibers as F
+
+    run: dict[str, Any] = {}
+    for _ in range(limit):
+        for row in F._memory_fibers.values():
+            if row.get("status") == "sleeping":
+                row["wake_at"] = 0
+        await F.resume_due_fibers(app.settings)
+        run = (await app.client.get(run_url, headers=headers)).json()
+        if run.get("status") in until:
+            return run
+    raise AssertionError(f"run stuck at {run.get('status')}: {run}")

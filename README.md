@@ -881,10 +881,14 @@ Storage and execution:
   `{tenant, manifest, scheme, secret, prompt, events?, scopes?, rate_limit?}`); `scheme` is
   `standard` (Standard Webhooks) or `github` (`X-Hub-Signature-256`). The signature is verified
   before the body is read, a replay gets the first delivery's answer, and each trigger has its own
-  per-minute limit counted only for deliveries that start a run. Secrets are `secret:NAME` outside a
+  per-minute limit counted only for deliveries that would start a run. Secrets are `secret:NAME` outside a
   development install. The run's instruction is the operator's `prompt`; the sender's payload reaches the
   model only through the `trigger_event` tool the manifest lists, as untrusted output, after a
-  marker scan at intake. See `deploy/GOVERNANCE.md`.
+  marker scan at intake. A trigger may instead name a `workflow` and map payload fields to its
+  inputs by JSON Pointer (`inputs`), each checked against the input's declared type before the
+  rate limit is spent; the sender's strings, objects and arrays are recorded as untrusted, and
+  every agent step of a triggered run reads what it is given inside a fence of its own. See
+  `deploy/GOVERNANCE.md`.
 - Talk to an agent from Slack with the optional `felix-channels` plugin (`uv sync --extra
   channels`). The operator binds a Slack app to one tenant and manifest in `FELIX_CHANNELS`; a
   mention or a DM starts a durable run as `slack:<team>:<user>`, a Slack thread is one Felix

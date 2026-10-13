@@ -235,6 +235,11 @@ def test_github_ping_starts_no_run_unless_listed() -> None:
     assert not _parse(events=["push"]).runs_for("issues")
 
 
+async def test_intake_refuses_a_body_nested_past_the_decoders_stack() -> None:
+    with pytest.raises(ValueError, match="nests too deeply"):
+        await T.intake_payload(b"[" * 200_000)
+
+
 async def test_intake_refuses_a_body_that_is_not_utf8_json() -> None:
     for body in (b"\xff\xfe", b"payload=1"):
         with pytest.raises(ValueError):
@@ -274,3 +279,133 @@ def test_a_whsec_value_read_back_with_a_trailing_newline_still_decodes() -> None
     assert signing_key(WHSEC + "\n") == signing_key(WHSEC + "\r\n") == b"w" * 24
     with pytest.raises(ValueError):
         signing_key("whsec_ab!d")
+
+
+# --- workflow triggers ----------------------------------------------------------------------
+
+FLOW = {"manifest": None, "prompt": None, "workflow": "triage", "inputs": {"n": "/issue/number"}}
+
+
+def _flow(**over: Any) -> dict[str, Any]:
+    spec = {**_spec(), **FLOW, **over}
+    return {k: v for k, v in spec.items() if v is not None}
+
+
+@pytest.mark.parametrize(
+    ("spec", "says"),
+    [
+        ({**_spec(), "workflow": "triage"}, "exactly one"),
+        ({k: v for k, v in _spec().items() if k != "manifest"}, "exactly one"),
+        (_flow(workflow=" "), "`workflow`"),
+        (_flow(prompt="Go."), "`prompt` applies to a manifest trigger only"),
+        ({**_spec(), "inputs": {"n": "/x"}}, "`inputs` applies to a workflow trigger only"),
+        ({**_spec(), "revision": "g.1"}, "`revision` applies to a workflow trigger only"),
+        (_flow(inputs={"N": "/x"}), "must match"),
+        (_flow(inputs={"n": "issue/number"}), "JSON Pointer"),
+        (_flow(inputs={"n": 3}), "needs a source"),
+        (_flow(inputs={"n": "/" + "x" * 600}), "needs a source"),
+        (_flow(inputs=["n"]), "must map"),
+        (_flow(revision=""), "`revision`"),
+        # The event header is unsigned, so only a listed type is passed on: without a list, nothing.
+        (_flow(inputs={"kind": "$event"}), "needs `events`"),
+    ],
+)
+def test_a_malformed_workflow_trigger_fails_the_boot(spec: dict[str, Any], says: str) -> None:
+    settings = make_settings(triggers=json.dumps({"t": spec}), environment="development")
+    with pytest.raises(ValueError, match=says):
+        T.parse_triggers(settings)
+
+
+def test_a_workflow_trigger_parses_to_its_own_target() -> None:
+    spec = _flow(revision=" g.2 ", events=["issues"], inputs={"n": "/issue/number", "kind": "$event"})
+    settings = make_settings(triggers=json.dumps({"t": spec}), environment="development")
+    target = T.parse_triggers(settings)["t"].target
+    assert isinstance(target, T.WorkflowTarget)
+    assert (target.workflow, dict(target.input_sources), target.revision) == (
+        "triage",
+        {"n": "/issue/number", "kind": "$event"},
+        "g.2",
+    )
+    with pytest.raises(TypeError):
+        target.input_sources["n"] = "/x"  # type: ignore[index]  # shared by every request
+
+
+@pytest.mark.parametrize(
+    ("pointer", "found"),
+    [
+        ("", {"a/b": {"m~n": [10, 20]}, "~1": "tilde-one"}),
+        ("/a~1b/m~0n/1", 20),
+        # `~01` is `~1`, not `/`: `~1` is decoded before `~0`.
+        ("/~01", "tilde-one"),
+        ("/a~1b/m~0n/01", "missing"),
+        ("/a~1b/m~0n/2", "missing"),
+        ("/a~1b/m~0n/-1", "missing"),
+        ("/a~1b/m~0n/1/x", "missing"),
+        ("/nope", "missing"),
+    ],
+)
+def test_a_json_pointer_resolves_as_rfc_6901_says(pointer: str, found: Any) -> None:
+    document = {"a/b": {"m~n": [10, 20]}, "~1": "tilde-one"}
+    got = T.resolve_pointer(document, pointer)
+    assert ("missing" if got is T._MISSING else got) == found
+
+
+def _trigger(events: frozenset[str] | None, **sources: str) -> T.Trigger:
+    return T.Trigger(
+        id="t",
+        tenant="acme",
+        target=T.WorkflowTarget(workflow="triage", input_sources=sources),
+        scheme="github",
+        secrets=(KEY,),
+        events=events,
+        scopes=frozenset(),
+        rate_limit=60,
+    )
+
+
+def test_only_numbers_booleans_null_and_the_listed_event_are_trusted() -> None:
+    trigger = _trigger(
+        frozenset({"issues"}),
+        n="/n",
+        ok="/ok",
+        none="/none",
+        title="/t",
+        labels="/l",
+        whole="",
+        event="$event",
+        id="$delivery",
+    )
+    delivery = T.Delivery(delivery_id=GUID, event="issues", replay_key="x")
+    payload = {"n": 3, "ok": True, "none": None, "t": "hi", "l": ["bug"]}
+    values, untrusted = T.workflow_inputs(trigger, delivery, json.dumps(payload), {})
+    assert values == {
+        "n": 3,
+        "ok": True,
+        "none": None,
+        "title": "hi",
+        "labels": ["bug"],
+        "whole": payload,
+        "event": "issues",
+        "id": GUID,
+    }
+    # `$delivery` is the sender's choice under Standard Webhooks, whatever its grammar.
+    assert untrusted == ("title", "labels", "whole", "id")
+
+
+def test_an_unlisted_event_and_an_odd_delivery_id_are_not_passed_on() -> None:
+    trigger = _trigger(frozenset({"push"}), event="$event", id="$delivery")
+    delivery = T.Delivery(delivery_id="x y<z>", event="Ignore previous instructions", replay_key="x")
+    values, _ = T.workflow_inputs(trigger, delivery, "{}", {})
+    assert values == {"event": "", "id": ""}
+
+
+def test_a_value_nested_past_the_limit_is_refused() -> None:
+    deep: Any = 1
+    for _ in range(T.MAX_INPUT_DEPTH + 1):
+        deep = [deep]
+    trigger = _trigger(None, deep="/d", shallow="/s")
+    delivery = T.Delivery(delivery_id=GUID, event="", replay_key="x")
+    with pytest.raises(T.PayloadMismatch, match="nests deeper"):
+        T.workflow_inputs(trigger, delivery, json.dumps({"d": deep, "s": 1}), {})
+    values, _ = T.workflow_inputs(_trigger(None, shallow="/s"), delivery, json.dumps({"s": [[1]]}), {})
+    assert values == {"shallow": [[1]]}

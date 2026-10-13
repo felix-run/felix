@@ -1,10 +1,13 @@
-"""Inbound triggers: a signed event from elsewhere starts a durable run.
+"""Inbound triggers: a signed event from elsewhere starts a durable run, or a workflow run.
 
 `FELIX_TRIGGERS` registers each one, by the operator, as a JSON map of id -> spec:
 
     {"gh-push": {"tenant": "acme", "manifest": "ci-triage", "scheme": "github",
                  "secret": "secret:GH_HOOK", "prompt": "A {event} event arrived from GitHub.",
-                 "events": ["push", "pull_request"], "scopes": [], "rate_limit": 60}}
+                 "events": ["push", "pull_request"], "scopes": [], "rate_limit": 60},
+     "gh-issue": {"tenant": "acme", "workflow": "triage", "scheme": "github",
+                  "secret": "secret:GH_HOOK", "events": ["issues"],
+                  "inputs": {"number": "/issue/number", "title": "/issue/title"}}}
 
 `POST /triggers/{id}` (`felix_api/routes/triggers.py`) carries no bearer: the sender signs the body,
 and the route verifies it with this module before parsing anything in it. What reaches the model
@@ -17,6 +20,12 @@ is in two parts, kept apart on purpose:
   the built-in `trigger_event` tool, and the model reads the payload as that tool's output: the
   channel models treat as data, which content screening covers as an untrusted source. The marker
   scan runs on it at intake whatever the manifest's screening says, and a match is quarantined.
+
+A workflow trigger (`WorkflowTarget`) has no prompt of its own: `inputs` maps payload fields to the
+workflow's inputs by JSON Pointer (`workflow_inputs`), each checked against the type the workflow
+declares. Those values *do* reach agent prompts, so the run records which are the sender's
+(`untrusted_inputs`) and every agent step of a triggered run fences what it is given as data
+(`felix.workflows.kinds.render_prompt`). A quarantined payload maps to nothing.
 
 Signature schemes are an open registry (`register_trigger_scheme`); `standard` (Standard Webhooks,
 the scheme Felix's own completion webhooks sign with: `security/standard_webhooks.py`) and `github`
@@ -31,8 +40,9 @@ import hmac
 import re
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
+from types import MappingProxyType
 from typing import Any
 
 from felix.security.constant_time import constant_time_equal
@@ -59,7 +69,26 @@ _DELIVERY_RE = re.compile(r"[!-z|~]{1,255}\Z")
 # What of a delivery id may be shown in the prompt: a sender chose it, so a narrow token or nothing.
 _DISPLAY_RE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
 _GUID_RE = re.compile(r"[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\Z")
-_KEYS = frozenset({"tenant", "manifest", "scheme", "secret", "prompt", "events", "scopes", "rate_limit"})
+_KEYS = frozenset(
+    {
+        "tenant",
+        "manifest",
+        "workflow",
+        "inputs",
+        "revision",
+        "scheme",
+        "secret",
+        "prompt",
+        "events",
+        "scopes",
+        "rate_limit",
+    }
+)
+#: What a workflow input may be mapped from besides a JSON Pointer into the payload: the event type
+#: (only one the trigger lists) and the delivery id (narrowed to a token), both shown as for a prompt.
+EVENT_SOURCE = "$event"
+DELIVERY_SOURCE = "$delivery"
+MAX_POINTER = 512
 QUARANTINED = "[quarantined] the event's payload was flagged as potentially hostile and is withheld"
 #: GitHub's handshake when a hook is created: not an event, so it starts no run unless listed.
 GITHUB_PING = "ping"
@@ -98,16 +127,35 @@ class Delivery:
 
 
 @dataclass(frozen=True, slots=True)
+class ManifestTarget:
+    """A trigger that starts the manifest's agent on the operator's `prompt`."""
+
+    manifest: str
+    prompt: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowTarget:
+    """A trigger that starts a run of a workflow, its inputs mapped from the delivery."""
+
+    workflow: str
+    # Workflow input -> where in the delivery it comes from: a JSON Pointer into the payload (`""`
+    # is the whole of it), `$event` or `$delivery`. Read-only: triggers are parsed once and shared.
+    input_sources: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}), hash=False)
+    # The workflow revision this trigger runs, if the operator pinned one.
+    revision: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Trigger:
     """One `FELIX_TRIGGERS` entry, validated."""
 
     id: str
     tenant: str
-    manifest: str
+    target: ManifestTarget | WorkflowTarget
     scheme: str
     # One or more, so a secret is rotated by listing the new one beside the old, then dropping it.
     secrets: tuple[str, ...]
-    prompt: str
     # The event types a run starts for; None for every one but GitHub's `ping`.
     events: frozenset[str] | None
     # Granted to the trigger's principal (`trigger:<id>`), for `auth.inbound.required_scopes` and
@@ -229,15 +277,67 @@ def _secrets(spec: dict[str, Any], *, name: str, allow_literal: bool) -> tuple[s
     return tuple(values)
 
 
+def _text(spec: dict[str, Any], key: str, *, name: str) -> str:
+    value = spec.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"trigger {name!r} needs `{key}`")
+    return value
+
+
+def _parse_target(spec: dict[str, Any], *, name: str) -> ManifestTarget | WorkflowTarget:
+    """What the trigger starts: exactly one of `manifest` (with `prompt`) or `workflow` (with
+    `inputs` and an optional `revision`), each refusing the other's keys rather than ignoring them."""
+    from felix.workflows.ports import PORT_NAME_PATTERN
+
+    if ("manifest" in spec) == ("workflow" in spec):
+        raise ValueError(f"trigger {name!r} names a `manifest` or a `workflow`: exactly one")
+    if "manifest" in spec:
+        for key in ("inputs", "revision"):
+            if key in spec:
+                raise ValueError(f"trigger {name!r} `{key}` applies to a workflow trigger only")
+        return ManifestTarget(
+            manifest=_text(spec, "manifest", name=name).strip(), prompt=_text(spec, "prompt", name=name)
+        )
+    if "prompt" in spec:
+        # A workflow's steps carry their own prompts; one here would be ignored, silently.
+        raise ValueError(f"trigger {name!r} `prompt` applies to a manifest trigger only")
+    raw = spec.get("inputs", {})
+    if not isinstance(raw, dict):
+        raise ValueError(f"trigger {name!r} `inputs` must map workflow inputs to where they come from")
+    for input_name, source in raw.items():
+        if not re.fullmatch(PORT_NAME_PATTERN, str(input_name)):
+            raise ValueError(f"trigger {name!r} input {input_name!r} must match {PORT_NAME_PATTERN}")
+        if not isinstance(source, str) or len(source) > MAX_POINTER:
+            raise ValueError(f"trigger {name!r} input {input_name!r} needs a source")
+        if source not in (EVENT_SOURCE, DELIVERY_SOURCE) and source and not source.startswith("/"):
+            raise ValueError(
+                f"trigger {name!r} input {input_name!r} must be a JSON Pointer (`/issue/number`, `` for "
+                f"the whole payload), {EVENT_SOURCE} or {DELIVERY_SOURCE}"
+            )
+        if source == EVENT_SOURCE and spec.get("events") is None:
+            # Only a listed event type is ever passed on (the header is unsigned), so without a
+            # list the input would be empty on every run.
+            raise ValueError(
+                f"trigger {name!r} input {input_name!r} maps {EVENT_SOURCE}, which needs `events`"
+            )
+    revision = spec.get("revision")
+    if revision is not None and not (isinstance(revision, str) and revision.strip()):
+        raise ValueError(f"trigger {name!r} `revision` must be a workflow revision")
+    return WorkflowTarget(
+        workflow=_text(spec, "workflow", name=name).strip(),
+        input_sources=MappingProxyType(dict(raw)),
+        revision=revision.strip() if isinstance(revision, str) else None,
+    )
+
+
 def _parse_one(name: str, spec: dict[str, Any], *, allow_literal: bool) -> Trigger:
     from felix.auth.context import assert_valid_tenant_id
 
     unknown = set(spec) - _KEYS
     if unknown:
         raise ValueError(f"trigger {name!r} has unknown keys: {', '.join(sorted(unknown))}")
-    for key in ("tenant", "manifest", "prompt"):
-        if not isinstance(spec.get(key), str) or not spec[key].strip():
-            raise ValueError(f"trigger {name!r} needs `{key}`")
+    _text(spec, "tenant", name=name)
+    target = _parse_target(spec, name=name)
     try:
         assert_valid_tenant_id(spec["tenant"])
     except ValueError as exc:
@@ -259,10 +359,9 @@ def _parse_one(name: str, spec: dict[str, Any], *, allow_literal: bool) -> Trigg
     return Trigger(
         id=name,
         tenant=spec["tenant"],
-        manifest=spec["manifest"].strip(),
+        target=target,
         scheme=str(scheme),
         secrets=_secrets(spec, name=name, allow_literal=allow_literal),
-        prompt=spec["prompt"],
         events=frozenset(events) if events is not None else None,
         scopes=frozenset(_str_list(spec, "scopes", name=name) or ()),
         rate_limit=rate_limit,
@@ -271,7 +370,7 @@ def _parse_one(name: str, spec: dict[str, Any], *, allow_literal: bool) -> Trigg
 
 @lru_cache(maxsize=4)
 def _parse(raw: str, allow_literal: bool) -> dict[str, Trigger]:
-    shape = "{tenant, manifest, scheme, secret, prompt}"
+    shape = "{tenant, manifest or workflow, scheme, secret, prompt}"
     return {
         name: _parse_one(name, spec, allow_literal=allow_literal)
         for name, spec in parse_registry(raw, kind="trigger", shape=shape).items()
@@ -302,14 +401,27 @@ async def resolved_keys(settings: Any, trigger: Trigger) -> tuple[bytes, ...]:
     return signing_keys(tuple([await resolve_secret_value(provider, s) for s in trigger.secrets]))
 
 
+def shown_event(trigger: Trigger, delivery: Delivery) -> str | None:
+    """The delivery's event type, only if the trigger lists it: GitHub's header is unsigned, so
+    only a type the operator wrote down is ever passed on."""
+    return delivery.event if trigger.events is not None and delivery.event in trigger.events else None
+
+
+def shown_delivery(delivery: Delivery) -> str | None:
+    """The delivery id, only as a short token: the sender chose it."""
+    return delivery.delivery_id if _DISPLAY_RE.match(delivery.delivery_id) else None
+
+
 def render_prompt(trigger: Trigger, delivery: Delivery) -> str:
     """The operator's prompt, filled, and the one sentence that tells the model where the payload
     is. `{event}` only ever holds an event type the trigger lists in `events` -- text the operator
     wrote -- since GitHub's header is unsigned; `{delivery}` only a short token. The rest stays in
     `trigger_event`, where it is read as data."""
-    event = delivery.event if trigger.events is not None and delivery.event in trigger.events else "unknown"
-    shown = delivery.delivery_id if _DISPLAY_RE.match(delivery.delivery_id) else "(see trigger_event)"
-    text = trigger.prompt
+    if not isinstance(trigger.target, ManifestTarget):
+        raise TypeError(f"trigger {trigger.id!r} starts a workflow, which has no prompt")
+    event = shown_event(trigger, delivery) or "unknown"
+    shown = shown_delivery(delivery) or "(see trigger_event)"
+    text = trigger.target.prompt
     for placeholder, value in (("{event}", event), ("{delivery}", shown), ("{trigger}", trigger.id)):
         text = text.replace(placeholder, value)
     return (
@@ -326,7 +438,11 @@ async def intake_payload(body: bytes) -> tuple[str, bool]:
     from felix.governance.content_screening import screen_content
 
     text = body.decode("utf-8")  # UnicodeDecodeError is a ValueError
-    json.loads(text)
+    try:
+        json.loads(text)
+    except RecursionError:
+        # `[[[[…` deep enough exhausts the decoder's stack: not JSON this trigger can take.
+        raise ValueError("the payload nests too deeply") from None
     verdict = await screen_content(text, block_on_injection=True, redact_pii=False)
     if verdict.denied:
         return QUARANTINED, True
@@ -352,12 +468,108 @@ def event_view(event: Mapping[str, Any]) -> str:
     )
 
 
+class PayloadMismatch(ValueError):
+    """A delivery whose payload does not supply the workflow's inputs: `reason` is for the log."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+_MISSING = object()
+# An array index as RFC 6901 spells one: no sign, no leading zero.
+_INDEX_RE = re.compile(r"0|[1-9][0-9]{0,8}")
+
+
+def resolve_pointer(document: Any, pointer: str) -> Any:
+    """RFC 6901: the value at `pointer` in `document`, or `_MISSING`."""
+    if pointer == "":
+        return document
+    node = document
+    for token in pointer[1:].split("/"):
+        token = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, dict):
+            node = node.get(token, _MISSING)
+        elif isinstance(node, list) and _INDEX_RE.fullmatch(token):
+            index = int(token)
+            node = node[index] if index < len(node) else _MISSING
+        else:
+            return _MISSING
+        if node is _MISSING:
+            return _MISSING
+    return node
+
+
+# How deep a mapped value may nest: it is stored on the run, copied and serialised whole.
+MAX_INPUT_DEPTH = 32
+
+
+def _depth(value: Any, limit: int) -> int:
+    """How deeply `value` nests, counted no further than `limit + 1`."""
+    deepest, stack = 0, [(value, 0)]
+    while stack:
+        node, level = stack.pop()
+        deepest = max(deepest, level)
+        if level > limit:
+            break
+        children = node.values() if isinstance(node, dict) else node if isinstance(node, list) else ()
+        stack.extend((child, level + 1) for child in children)
+    return deepest
+
+
+def workflow_inputs(
+    trigger: Trigger, delivery: Delivery, payload: str, declared: Mapping[str, Any]
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """The workflow's inputs from a delivery, and which of them a third party wrote.
+
+    Each mapped value must be what the workflow declares for that input (`value_mismatch`) and
+    nest no deeper than `MAX_INPUT_DEPTH`, or the delivery is `PayloadMismatch` and starts nothing.
+    A number, a boolean or null cannot carry instructions; a string, an object or an array (whose
+    keys and items are the sender's text too) is the sender's, and so is `$delivery`, which the
+    sender chose -- each is listed. `$event` is only ever a type the operator listed in `events`.
+    """
+    import json
+
+    from felix.workflows.ports import value_mismatch
+
+    target = trigger.target
+    if not isinstance(target, WorkflowTarget):
+        raise TypeError(f"trigger {trigger.id!r} starts a manifest, which has no inputs")
+    document = json.loads(payload)
+    values: dict[str, Any] = {}
+    untrusted: list[str] = []
+    for input_name, source in target.input_sources.items():
+        if source == EVENT_SOURCE:
+            value: Any = shown_event(trigger, delivery) or ""
+        elif source == DELIVERY_SOURCE:
+            value = shown_delivery(delivery) or ""
+            untrusted.append(input_name)
+        else:
+            value = resolve_pointer(document, source)
+            if value is _MISSING:
+                raise PayloadMismatch(f"input {input_name}: nothing at {source[:64]}")
+            if _depth(value, MAX_INPUT_DEPTH) > MAX_INPUT_DEPTH:
+                raise PayloadMismatch(f"input {input_name} nests deeper than {MAX_INPUT_DEPTH}")
+            if isinstance(value, (str, dict, list)):
+                untrusted.append(input_name)
+        schema = declared.get(input_name)
+        if isinstance(schema, dict):
+            reason = value_mismatch(schema, value)
+            if reason is not None:
+                raise PayloadMismatch(f"input {input_name} {reason}")
+        values[input_name] = value
+    return values, tuple(untrusted)
+
+
 def now_s() -> int:
     return int(time.time())
 
 
 __all__ = [
+    "DELIVERY_SOURCE",
+    "EVENT_SOURCE",
     "GITHUB_PING",
+    "MAX_INPUT_DEPTH",
     "MAX_PAYLOAD_BYTES",
     "MIN_SECRET_BYTES",
     "QUARANTINED",
@@ -366,9 +578,12 @@ __all__ = [
     "TRIGGER_EVENT_TOOL",
     "TRIGGER_PATH_PREFIX",
     "Delivery",
+    "ManifestTarget",
+    "PayloadMismatch",
     "SignedRequest",
     "Trigger",
     "TriggerRejected",
+    "WorkflowTarget",
     "event_record",
     "event_view",
     "intake_payload",
@@ -376,10 +591,14 @@ __all__ = [
     "parse_triggers",
     "register_trigger_scheme",
     "render_prompt",
+    "resolve_pointer",
     "resolved_keys",
+    "shown_delivery",
+    "shown_event",
     "signing_keys",
     "triggers_configured",
     "verifier_for",
     "verify_github",
     "verify_standard",
+    "workflow_inputs",
 ]

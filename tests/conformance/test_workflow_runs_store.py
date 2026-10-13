@@ -44,6 +44,18 @@ async def test_a_run_round_trips_and_its_view_hides_the_caller(store_settings: A
 
 
 @parametrized
+async def test_a_runs_untrusted_inputs_round_trip_and_default_to_empty(store_settings: Any) -> None:
+    plain = await runs.create_run(store_settings, TENANT, _new())
+    tainted = await runs.create_run(store_settings, TENANT, _new(untrusted_inputs=("issue",)))
+    for created, expected in ((plain, []), (tainted, ["issue"])):
+        stored = await runs.get_run(store_settings, TENANT, created["id"])
+        assert stored is not None and stored["untrusted_inputs"] == expected
+        assert runs.workflow_run_view(stored)["untrusted_inputs"] == expected
+    listed = await runs.list_runs(store_settings, TENANT, "triage")
+    assert sorted(r["untrusted_inputs"] for r in listed) == [[], ["issue"]]
+
+
+@parametrized
 async def test_a_save_over_a_stale_version_writes_nothing(store_settings: Any) -> None:
     created = await runs.create_run(store_settings, TENANT, _new())
     first = await runs.get_run(store_settings, TENANT, created["id"])
