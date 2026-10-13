@@ -19,6 +19,14 @@ _memory_jobs: dict[tuple[str, str], dict[str, Any]] = {}
 _memory_runs: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
+class BothTargets(ValueError):
+    """A job naming a manifest and a workflow: a firing does one or the other, so a row holding
+    both would silently drop one."""
+
+    def __init__(self) -> None:
+        super().__init__("a job names a manifest or a workflow, not both")
+
+
 def reset_jobs_for_tests() -> None:
     """Clear the in-memory jobs and their run history."""
     _memory_jobs.clear()
@@ -32,6 +40,8 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             "name": row["name"],
             "schedule": row.get("schedule", ""),
             "manifest_id": row.get("manifest_id", ""),
+            "workflow_id": row.get("workflow_id", ""),
+            "workflow_revision": row.get("workflow_revision", ""),
             "last_run_at": row.get("last_run_at"),
             "next_run_at": row.get("next_run_at"),
             "last_status": row.get("last_status", ""),
@@ -50,6 +60,8 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
         "name": row.name,
         "schedule": row.schedule,
         "manifest_id": row.manifest_id,
+        "workflow_id": row.workflow_id,
+        "workflow_revision": row.workflow_revision,
         "last_run_at": row.last_run_at,
         "next_run_at": row.next_run_at,
         "last_status": row.last_status,
@@ -146,12 +158,15 @@ async def put_job(
     *,
     schedule: str = "",
     manifest_id: str = "",
+    workflow_id: str = "",
+    workflow_revision: str = "",
     payload: dict[str, Any] | None = None,
     enabled: bool = True,
     created_by: str | None = None,
     created_auth: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar.
+    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar, and
+    `BothTargets` for a job naming a manifest and a workflow.
 
     `created_by` and `created_auth` are whoever wrote it this time and the authority its runs
     carry (`felix.jobs.scheduler.creator_auth`) -- replaced on every write, because whoever
@@ -160,6 +175,8 @@ async def put_job(
     """
     from felix.jobs.schedule import parse_schedule
 
+    if manifest_id and workflow_id:
+        raise BothTargets()
     parsed = parse_schedule(schedule)
     ts = now_ms()
 
@@ -181,6 +198,8 @@ async def put_job(
             "name": name,
             "schedule": schedule,
             "manifest_id": manifest_id,
+            "workflow_id": workflow_id,
+            "workflow_revision": workflow_revision,
             "last_run_at": existing.get("last_run_at") if existing else None,
             "next_run_at": _next_run_at(existing["schedule"], existing.get("next_run_at"))
             if existing
@@ -205,6 +224,8 @@ async def put_job(
                 name=name,
                 schedule=schedule,
                 manifest_id=manifest_id,
+                workflow_id=workflow_id,
+                workflow_revision=workflow_revision,
                 created_at=ts,
                 payload_json=deepcopy(payload) if payload else {},
                 enabled=enabled,
@@ -216,6 +237,8 @@ async def put_job(
             row.next_run_at = _next_run_at(row.schedule, row.next_run_at)
             row.schedule = schedule
             row.manifest_id = manifest_id
+            row.workflow_id = workflow_id
+            row.workflow_revision = workflow_revision
             row.payload_json = deepcopy(payload) if payload else {}
             row.enabled = enabled
             row.created_by = created_by
@@ -407,6 +430,7 @@ async def record_run(
 
 
 __all__ = [
+    "BothTargets",
     "delete_job",
     "get_job",
     "list_jobs",

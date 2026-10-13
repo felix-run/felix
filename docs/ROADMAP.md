@@ -676,7 +676,13 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       *Found on the way:* MCP `tools/call` executes the governed executor directly, so the
       plugin and manifest tool hooks and the `tool_call` audit row do not apply to it — the gap the
       tool step closed by dispatching through `ToolRunner`.
-- [ ] **Entry points.** Manual run with inputs; a job naming a workflow; a trigger naming one.
+- [~] **Entry points.** Manual run with inputs (#639). *Landed:* a job naming a workflow
+      (`workflow_id`, `0043_job_workflow`) starts a run on each firing with `payload.inputs`, as
+      `cron` for the job's writer, who needs `workflows:write`; the run's trigger is `job:<name>`.
+      The job is held to the workflow revision its writer saw (re-save after an edit). Open: a
+      JWT writer's job keeps its grant with no expiry, and each firing lends it for 24 hours.
+      *Next:* a trigger naming a workflow — decide how the sender's payload reaches the inputs,
+      since a trigger keeps it out of the user turn today (`trigger_event`).
 - [ ] **Console.** chat-ui Workflows page (list, editor, run view) and the instrument's compact
       graph — felix-web.
 - [ ] Open: whether a workflow can call another; per-step retry and timeout; a tool schema that

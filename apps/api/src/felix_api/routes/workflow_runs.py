@@ -198,15 +198,21 @@ async def start_run(body: RunStart, request: Request, workflow_id: str = _WORKFL
     workflow = await workflow_store.get_workflow(settings, tenant_id, workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="not_found")
-    if body.revision is not None and body.revision != workflow["revision"]:
-        raise HTTPException(
-            status_code=412, detail={"error": "workflow_changed", "revision": workflow["revision"]}
-        )
     who = subject_from_request(request)
     try:
         run = await engine.start_run(
-            settings, tenant_id, workflow, body.inputs, trigger="manual", started_by=who
+            settings,
+            tenant_id,
+            workflow,
+            body.inputs,
+            trigger="manual",
+            started_by=who,
+            revision=body.revision,
         )
+    except engine.RevisionChanged as changed:
+        raise HTTPException(
+            status_code=412, detail={"error": "workflow_changed", "revision": changed.current}
+        ) from None
     except engine.NotRunnable as refused:
         problems = [
             {"code": p.code, "message": p.message, "step": p.step, "port": p.port} for p in refused.problems
@@ -225,16 +231,6 @@ async def start_run(body: RunStart, request: Request, workflow_id: str = _WORKFL
         raise HTTPException(
             status_code=409, detail={"error": "too_many_runs", "limit": engine.MAX_ACTIVE_RUNS_PER_TENANT}
         ) from None
-    from felix.audit import store as audit_store
-
-    audit_store.record_event(
-        settings,
-        tenant_id,
-        "workflow_run_started",
-        principal_subj=who,
-        status="ok",
-        payload={"workflow_id": workflow_id, "run_id": run["id"], "revision": run["revision"]},
-    )
     return run_store.workflow_run_view(run)
 
 

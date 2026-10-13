@@ -150,6 +150,10 @@ class Job(Base):
     name: Mapped[str] = mapped_column(Text, primary_key=True)
     schedule: Mapped[str] = mapped_column(Text, server_default="", default="")
     manifest_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # A workflow whose run each firing starts, instead of a manifest (`0043_job_workflow`).
+    workflow_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # The workflow's revision when the job was written: the only one a firing runs.
+    workflow_revision: Mapped[str] = mapped_column(Text, server_default="", default="")
     last_run_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     next_run_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_status: Mapped[str] = mapped_column(Text, server_default="", default="")
