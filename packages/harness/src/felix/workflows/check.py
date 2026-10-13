@@ -35,6 +35,8 @@ ProblemCode = Literal[
     # A stored definition a later schema no longer parses; the route reports it rather than
     # failing the read, so the editor can show the workflow and what is wrong with it.
     "invalid_definition",
+    # A step this deployment has no executor for (`engine.RUNNABLE_KINDS`); reported at run start.
+    "not_runnable",
     # The check stopped listing at `MAX_PROBLEMS`; this last entry says how many it left out.
     "too_many_problems",
 ]

@@ -146,6 +146,36 @@
         "title": "AuthMethodsOut",
         "type": "object"
       },
+      "BadInputsDetail": {
+        "properties": {
+          "error": {
+            "const": "bad_inputs",
+            "title": "Error",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "unknown": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown",
+            "type": "array"
+          }
+        },
+        "required": [
+          "error",
+          "missing",
+          "unknown"
+        ],
+        "title": "BadInputsDetail",
+        "type": "object"
+      },
       "BrowseItemOut": {
         "properties": {
           "description": {
@@ -2030,6 +2060,20 @@
         "title": "NewVersionIn",
         "type": "object"
       },
+      "NotFound": {
+        "properties": {
+          "detail": {
+            "const": "not_found",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "NotFound",
+        "type": "object"
+      },
       "NotFoundResponse": {
         "properties": {
           "detail": {
@@ -2042,6 +2086,113 @@
           "detail"
         ],
         "title": "NotFoundResponse",
+        "type": "object"
+      },
+      "NotPermittedDetail": {
+        "properties": {
+          "error": {
+            "const": "not_permitted",
+            "title": "Error",
+            "type": "string"
+          },
+          "manifest": {
+            "title": "Manifest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "manifest"
+        ],
+        "title": "NotPermittedDetail",
+        "type": "object"
+      },
+      "NotPermittedResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/NotPermittedDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "NotPermittedResponse",
+        "type": "object"
+      },
+      "NotRunnableDetail": {
+        "properties": {
+          "error": {
+            "const": "not_runnable",
+            "title": "Error",
+            "type": "string"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/NotRunnableProblem"
+            },
+            "title": "Problems",
+            "type": "array"
+          }
+        },
+        "required": [
+          "error",
+          "problems"
+        ],
+        "title": "NotRunnableDetail",
+        "type": "object"
+      },
+      "NotRunnableProblem": {
+        "properties": {
+          "code": {
+            "enum": [
+              "unknown_kind",
+              "invalid_config",
+              "kind_error",
+              "unknown_step",
+              "unknown_port",
+              "type_mismatch",
+              "duplicate_input",
+              "unconnected_input",
+              "cycle",
+              "invalid_definition",
+              "not_runnable",
+              "too_many_problems"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "NotRunnableProblem",
         "type": "object"
       },
       "OpenAIMessage": {
@@ -2568,6 +2719,7 @@
               "unconnected_input",
               "cycle",
               "invalid_definition",
+              "not_runnable",
               "too_many_problems"
             ],
             "title": "Code",
@@ -3068,6 +3220,37 @@
         "title": "ReviewQueueOut",
         "type": "object"
       },
+      "RevisionChangedDetail": {
+        "properties": {
+          "error": {
+            "const": "workflow_changed",
+            "title": "Error",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "revision"
+        ],
+        "title": "RevisionChangedDetail",
+        "type": "object"
+      },
+      "RevisionChangedResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/RevisionChangedDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "RevisionChangedResponse",
+        "type": "object"
+      },
       "RewindRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3145,6 +3328,232 @@
           "version"
         ],
         "title": "RollbackRequest",
+        "type": "object"
+      },
+      "RunList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RunList",
+        "type": "object"
+      },
+      "RunOut": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "fiber_id": {
+            "title": "Fiber Id",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "started_by": {
+            "title": "Started By",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "waiting",
+              "cancelling",
+              "completed",
+              "failed",
+              "cancelled",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StepRunOut"
+            },
+            "title": "Steps",
+            "type": "object"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "workflow_id": {
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workflow_id",
+          "revision",
+          "status",
+          "trigger",
+          "started_by",
+          "fiber_id",
+          "error",
+          "expires_at",
+          "version",
+          "created_at",
+          "updated_at",
+          "finished_at",
+          "inputs",
+          "steps"
+        ],
+        "title": "RunOut",
+        "type": "object"
+      },
+      "RunStart": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "title": "RunStart",
+        "type": "object"
+      },
+      "RunSummary": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "started_by": {
+            "title": "Started By",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "waiting",
+              "cancelling",
+              "completed",
+              "failed",
+              "cancelled",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "step_statuses": {
+            "additionalProperties": {
+              "enum": [
+                "pending",
+                "running",
+                "waiting",
+                "completed",
+                "failed",
+                "skipped",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "title": "Step Statuses",
+            "type": "object"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "status",
+          "trigger",
+          "started_by",
+          "error",
+          "created_at",
+          "finished_at",
+          "step_statuses"
+        ],
+        "title": "RunSummary",
         "type": "object"
       },
       "SecurityIssueOut": {
@@ -5849,6 +6258,26 @@
         "title": "SkillWriteOut",
         "type": "object"
       },
+      "StartRefused": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotRunnableDetail"
+              },
+              {
+                "$ref": "#/components/schemas/BadInputsDetail"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "StartRefused",
+        "type": "object"
+      },
       "SteerRequest": {
         "additionalProperties": false,
         "properties": {
@@ -5986,6 +6415,143 @@
         "title": "StepPortsOut",
         "type": "object"
       },
+      "StepRunOut": {
+        "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided By"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "fiber_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fiber Id"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "fired": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fired"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs"
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputs"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "waiting",
+              "completed",
+              "failed",
+              "skipped",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "StepRunOut",
+        "type": "object"
+      },
       "SubscribeRequest": {
         "description": "`PushSubscription.toJSON()`, as the browser produces it.",
         "properties": {
@@ -6085,6 +6651,37 @@
           "device_code"
         ],
         "title": "TokenRequest",
+        "type": "object"
+      },
+      "TooManyRunsDetail": {
+        "properties": {
+          "error": {
+            "const": "too_many_runs",
+            "title": "Error",
+            "type": "string"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error",
+          "limit"
+        ],
+        "title": "TooManyRunsDetail",
+        "type": "object"
+      },
+      "TooManyRunsResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/TooManyRunsDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "TooManyRunsResponse",
         "type": "object"
       },
       "ToolResultRequest": {
@@ -20422,6 +21019,285 @@
           }
         },
         "summary": "Put Workflow",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/{workflow_id}/runs": {
+      "get": {
+        "description": "The workflow's runs, newest first, each with its steps' statuses.",
+        "operationId": "list_runs_workflows__workflow_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "Workflows"
+        ]
+      },
+      "post": {
+        "description": "Start a run of the workflow's current revision with `inputs`.",
+        "operationId": "start_run_workflows__workflow_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotPermittedResponse"
+                }
+              }
+            },
+            "description": "A step names a manifest the caller may not run"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            },
+            "description": "No such workflow or run"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TooManyRunsResponse"
+                }
+              }
+            },
+            "description": "The tenant has too many runs going"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionChangedResponse"
+                }
+              }
+            },
+            "description": "The workflow is no longer at `revision`"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartRefused"
+                }
+              }
+            },
+            "description": "Not runnable, or inputs do not match"
+          }
+        },
+        "summary": "Start Run",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/{workflow_id}/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_workflows__workflow_id__runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            },
+            "description": "No such workflow or run"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/{workflow_id}/runs/{run_id}/cancel": {
+      "post": {
+        "description": "Ask the run to stop: `cancelling` until the orchestrator aborts what is in flight.\n\nA run already over is returned as it is.",
+        "operationId": "cancel_run_workflows__workflow_id__runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            },
+            "description": "No such workflow or run"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Run",
         "tags": [
           "Workflows"
         ]

@@ -108,6 +108,17 @@ class AgentTurnConfig(_Config):
         return v
 
 
+def render_prompt(config: AgentTurnConfig, inputs: dict[str, Any]) -> str:
+    """The prompt with each `{{ name }}` replaced by its input: text as is, anything else as JSON."""
+    import json
+
+    def value(match: re.Match[str]) -> str:
+        got = inputs.get(match.group(1))
+        return got if isinstance(got, str) else json.dumps(got, ensure_ascii=False, default=str)
+
+    return _TEMPLATE_VAR.sub(value, config.prompt)
+
+
 def _agent_turn_ports(config: AgentTurnConfig) -> tuple[list[Port], list[Port]]:
     names = list(dict.fromkeys(_TEMPLATE_VAR.findall(config.prompt)))
     inputs = [Port(name, {}, required=True) for name in names]
@@ -222,4 +233,5 @@ __all__ = [
     "get_step_kind",
     "list_step_kinds",
     "register_step_kind",
+    "render_prompt",
 ]

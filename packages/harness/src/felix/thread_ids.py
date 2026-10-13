@@ -126,6 +126,21 @@ def channel_thread_id(tenant_id: str, channel: str, conversation: str, thread: s
     return _compose(tenant_id, "channel", channel, conversation, tail=thread)
 
 
+def workflow_thread_id(tenant_id: str, run_id: str, step_id: str) -> str | None:
+    """The thread one workflow step's agent turn runs on: ``{tenant}:workflow:{run}:{step}``.
+
+    `run_id` is a `uuid4().hex` the harness mints; `step_id` is the workflow author's, held to
+    `STEP_ID_PATTERN` by the definition, and gets the same checks a client's suffix does here.
+    """
+    return _compose(tenant_id, "workflow", run_id, tail=step_id)
+
+
+def workflow_run_key(tenant_id: str, run_id: str) -> str | None:
+    """``{tenant}:workflow:{run}``: what a workflow run's approval rows carry as their thread, so a
+    cancelled run can close them (`approvals.store.close_interrupted`). No agent writes to it."""
+    return _compose(tenant_id, "workflow", tail=run_id)
+
+
 def thread_belongs_to_tenant(tenant_id: str, thread_id: str) -> bool:
     """True when ``thread_id`` is one ``tenant_id`` may address.
 
@@ -161,4 +176,6 @@ __all__ = [
     "effective_thread_id",
     "eval_thread_id",
     "thread_belongs_to_tenant",
+    "workflow_run_key",
+    "workflow_thread_id",
 ]
