@@ -657,15 +657,22 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
 - [x] **Definition and store** (#634). `felix/workflows/` — `WorkflowSpec`, the step-kind
       registry (`agent_turn`, `tool_call`, `approval`, `branch`), `check()` returning ports and
       problems, and the `workflows` table (`0040`) with revision-checked conditional saves.
-- [~] **Routes.** *Landed in this PR:* `/workflows` CRUD (ports and problems in every response,
-      revision as `ETag`, `If-Match` / `If-None-Match: *`, 412 with the current row), `/-/kinds`,
-      `/-/check`, scopes `workflows:read` / `workflows:write`, a 500-per-tenant cap in the store,
-      audit events. *Next:* what the editor wires against — the tools a manifest binds with their
-      input schemas, and a manifest's `output_schema` — which belongs with the runs PR's
-      check against live tools.
-- [ ] **Runs.** A `workflow_runs` / step-runs table snapshotting the definition it started on;
-      execution as a fiber, one step per fiber step; approval gates through the existing waiters;
-      run and step SSE frames (`make contract`); cancel, and retry from the failed step.
+- [x] **Routes** (#636). `/workflows` CRUD with ports and problems, revision as `ETag`,
+      `If-Match` / `If-None-Match: *`, `/-/kinds`, `/-/check`, `workflows:read` / `workflows:write`.
+- [~] **Runs.** *Landed in this PR:* `felix/workflows/engine.py` + `runs.py` (`0041`): a run
+      snapshots its revision; an orchestrator fiber (op `workflow`) advances it; agent steps are
+      child durable chats on `{tenant}:workflow:{run}:{step}` as the starter; approval steps are
+      `/approvals` rows; branch routes; fail fast; cancel and a 24 h deadline clamped to the
+      token. `POST/GET /workflows/{id}/runs`, `GET .../runs/{run}`, `POST .../cancel`.
+      Manifests are pinned and checked against the starter at start; 50 active runs per tenant,
+      8 agent steps in flight per run; children stopped by id on cancel/fail; a buried
+      orchestrator fails its run.
+      *Next:* `tool_call` execution (an executor in `executors.py`, a `manifest` on the step for
+      its governed tool set, the stored input schema checked against the live tool); run and step
+      SSE frames (polling until then); `workflow_runs` in the retention sweep, and `auth_json` /
+      `pins_json` cleared once a run ends; a cap on stored output size; whether the starter may
+      approve their own approval step (four-eyes); a scope of its own for starting runs if
+      operators want run-without-edit; whether `workflows:read` should see step outputs.
 - [ ] **Entry points.** Manual run with inputs; a job naming a workflow; a trigger naming one.
 - [ ] **Console.** chat-ui Workflows page (list, editor, run view) and the instrument's compact
       graph — felix-web.

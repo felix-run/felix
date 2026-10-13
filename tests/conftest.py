@@ -141,6 +141,7 @@ def _isolate_process_global_stores():
     from felix.skills import quality_store as skill_quality_store
     from felix.skills import store as skills_store
     from felix.usage import store as usage_store
+    from felix.workflows.runs import reset_workflow_runs_for_tests
     from felix.workflows.store import reset_workflows_for_tests
 
     def _clear() -> None:
@@ -197,6 +198,7 @@ def _isolate_process_global_stores():
         reset_eval_for_tests()
         reset_jobs_for_tests()
         reset_workflows_for_tests()
+        reset_workflow_runs_for_tests()
         reset_approvals_for_tests()
         reset_push_for_tests()
         reset_push_keys_for_tests()

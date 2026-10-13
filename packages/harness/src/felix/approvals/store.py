@@ -255,6 +255,42 @@ async def find_approved(
         return _approval_dict(row)
 
 
+async def find_by_signature(
+    settings: Settings, tenant_id: str, *, tool_name: str, call_signature: str
+) -> dict[str, Any] | None:
+    """The newest row for this call, in any status, or None.
+
+    For a caller that opens a row for a call it may make twice — a workflow step replayed after
+    its save was lost — and must find the first row even once it is decided, which
+    `create_pending` (reusing only a live pending row) would not.
+    """
+    if _use_memory(settings):
+        rows = [
+            r
+            for r in _memory_approvals.values()
+            if r["tenant_id"] == tenant_id
+            and r["tool_name"] == tool_name
+            and r["call_signature"] == call_signature
+        ]
+        rows.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
+        return _approval_dict(rows[0]) if rows else None
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        row = (
+            await db.scalars(
+                select(Approval)
+                .where(
+                    Approval.tenant_id == tenant_id,
+                    Approval.tool_name == tool_name,
+                    Approval.call_signature == call_signature,
+                )
+                .order_by(Approval.created_at.desc(), collate(Approval.id, "C").desc())
+                .limit(1)
+            )
+        ).first()
+        return _approval_dict(row) if row is not None else None
+
+
 async def create_pending(
     settings: Settings,
     tenant_id: str,
@@ -551,6 +587,48 @@ async def close_interrupted(
         )
         await db.commit()
         return int(getattr(result, "rowcount", 0) or 0)
+
+
+async def close_pending_on_thread(settings: Settings, tenant_id: str, thread_id: str) -> list[str]:
+    """Close every pending row on `thread_id` as interrupted; returns their ids.
+
+    For a run stopped from outside while its turn may be waiting on a gate — a workflow step
+    cancelled with its agent mid-approval. The caller signals each id (`interrupt.signal_decision`)
+    so the waiting tool is answered `denied` now, rather than approved after the run is gone.
+    """
+    if not thread_id:
+        return []
+    ts = now_ms()
+    values = {
+        "status": "denied",
+        "decided_at": ts,
+        "decided_by": TIMEOUT_DECIDER,
+        "decision_note": INTERRUPTED_NOTE,
+    }
+    if _use_memory(settings):
+        closed: list[str] = []
+        for (tenant, approval_id), row in _memory_approvals.items():
+            if (
+                tenant == tenant_id
+                and row.get("status") == "pending"
+                and row.get("thread_id", "") == thread_id
+            ):
+                row.update(values)
+                closed.append(approval_id)
+        return closed
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Approval)
+            .where(
+                Approval.tenant_id == tenant_id, Approval.thread_id == thread_id, Approval.status == "pending"
+            )
+            .values(**values)
+            .returning(Approval.id)
+        )
+        ids = [str(i) for i in result.scalars().all()]
+        await db.commit()
+        return ids
 
 
 async def consume_approval(settings: Settings, tenant_id: str, approval_id: str) -> bool:

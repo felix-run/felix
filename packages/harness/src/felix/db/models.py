@@ -102,6 +102,47 @@ class Workflow(Base):
     )
 
 
+class WorkflowRun(Base):
+    """One run of a workflow (`felix/workflows/engine.py`): the definition it started on, and each
+    step's state. The orchestrator fiber advances it; `version` is its compare-and-set (0041).
+    """
+
+    __tablename__ = "workflow_runs"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[str] = mapped_column(Text, nullable=False)
+    definition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    inputs_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    steps_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # Who started it, as `start_durable_chat` records a caller; read by the engine only.
+    auth_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # Each manifest the steps name, pinned at start: a child run carrying the starter's scopes
+    # runs the manifest that was checked then, never one published since.
+    pins_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    trigger: Mapped[str] = mapped_column(Text, server_default="", default="")
+    started_by: Mapped[str] = mapped_column(Text, server_default="", default="")
+    fiber_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    error: Mapped[str] = mapped_column(Text, server_default="", default="")
+    expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_workflow_runs_workflow_created_id",
+            "tenant_id",
+            "workflow_id",
+            text("created_at DESC"),
+            text('id COLLATE "C" DESC'),
+        ),
+    )
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

@@ -182,6 +182,7 @@ async def create_fiber(
     thread_id: str | None = None,
     exclusive_on_thread: bool = False,
     max_children: int | None = None,
+    fiber_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a fiber. `webhooks` are endpoint ids announced when it reaches a terminal status
     (see `felix.durability.webhooks`); already validated by the caller.
@@ -195,10 +196,14 @@ async def create_fiber(
     `TooManyChildren` when that parent thread already has that many in flight. Each child has a
     thread of its own, so the one-run-per-thread rule alone never bounded how many a parent
     could start.
+
+    `fiber_id` lets a caller that may run twice name the fiber it means, so its second attempt
+    finds the first one's fiber (`get_fiber`) instead of starting another: a workflow step whose
+    run was saved after its child started, and lost that save, replays the start.
     """
     from felix.secrets import redact_json
 
-    fiber_id = uuid.uuid4().hex
+    fiber_id = fiber_id or uuid.uuid4().hex
     ts = now_ms()
     safe_state = redact_json(state or {})
     row = {
@@ -562,6 +567,69 @@ async def _invoke_resume_point(
     return "fresh", None
 
 
+async def stop_fiber(settings: Settings, tenant_id: str, fiber_id: str, reason: str) -> bool:
+    """End a fiber that has not finished: `failed`, with `reason` as its error. False if none.
+
+    For a run that no longer wants a child — a cancelled or failed workflow. A fiber not yet
+    claimed never runs; one a worker holds keeps its invoke, but the worker's save then loses the
+    compare-and-set and the stopped status stands. Pair it with `steer.request_abort` to cut a
+    turn already under way short.
+    """
+    for _ in range(3):
+        row = await get_fiber(settings, tenant_id, fiber_id)
+        if row is None or row.get("status") in FIBER_TERMINAL_STATUSES:
+            return row is not None
+        read_at = int(row.get("version") or 0)
+        state = dict(row.get("state_json") or {})
+        state["stash"] = {
+            **(state.get("stash") or {}),
+            "last": {"answer": "", "final": "", "error": reason, "manifest_id": ""},
+        }
+        row.update(status="failed", state_json=state, wake_at=None)
+        await _save_fiber(settings, row)
+        if int(row.get("version") or 0) == read_at + 1:
+            return True
+    return False
+
+
+def auth_from_state(tenant_id: str, stored_auth: object) -> Any:
+    """The `AuthContext` a run resumes under, from the caller it recorded at enqueue.
+
+    Shared by the invoke op and the workflow engine, which starts each agent step's child run as
+    the person who started the workflow. A fiber with no recorded caller gets principal "fiber"
+    and no scopes: everything policied denies, the fail-closed direction.
+    """
+    from felix.context import AuthContext
+
+    if not isinstance(stored_auth, dict):
+        stored_auth = {}
+    return AuthContext(
+        tenant_id=tenant_id,
+        # The actor is the fiber, not the person. Every other machine actor in
+        # this codebase does the same — `cron`, `eval`, `a2a` — and making the
+        # resumed run claim to *be* the caller would put `principal_subj=alice,
+        # scheme=jwt` in an audit row for work a worker did against a manifest
+        # that may have changed underneath it.
+        principal_sub="fiber",
+        on_behalf_of=str(stored_auth.get("principal_sub") or ""),
+        # A list, or nothing. `frozenset("admin")` is {"a","d","m","i","n"} —
+        # the one spot where the surrounding defensiveness was decorative.
+        scopes=frozenset(
+            str(x) for x in (stored_auth.get("scopes") or []) if isinstance(stored_auth.get("scopes"), list)
+        ),
+        anonymous=bool(stored_auth.get("anonymous", False)),
+        scheme=str(stored_auth.get("scheme") or "anonymous"),
+        skill_owner=_stored_skill_owner(stored_auth),
+        # The starter's manifest pin, the one claim a resume must carry: without it a
+        # pinned credential's run would delegate to any manifest from the worker.
+        raw_claims=(
+            {MANIFESTS_CLAIM: stored_auth[MANIFESTS_CLAIM]}
+            if isinstance(stored_auth, dict) and MANIFESTS_CLAIM in stored_auth
+            else {}
+        ),
+    )
+
+
 async def _run_fiber_step(
     settings: Settings, row: dict[str, Any], *, hold_claim: bool = False
 ) -> dict[str, Any]:
@@ -569,7 +637,7 @@ async def _run_fiber_step(
 
     ``state_json`` schema:
       {
-        "steps": [{"op": "sleep"|"invoke"|"stash"|"complete", ...}, ...],
+        "steps": [{"op": "sleep"|"invoke"|"stash"|"workflow"|"complete", ...}, ...],
         "cursor": 0,
         "stash": {},
         "result": null
@@ -627,7 +695,7 @@ async def _run_fiber_step(
         error = ""
         if manifest_id:
             try:
-                from felix.context import AuthContext, RequestContext, async_run_with_context
+                from felix.context import RequestContext, async_run_with_context
                 from felix.manifests.pin import assert_resume_pin
                 from felix.patterns.types import ChatMessage, InvokeInput
                 from felix.runtime import (
@@ -649,33 +717,7 @@ async def _run_fiber_step(
                 # A fiber with no recorded caller — enqueued before this, or with no request
                 # context — keeps the old behaviour: principal "fiber", no scopes, everything
                 # policied denies. That is the fail-closed direction.
-                auth = AuthContext(
-                    tenant_id=tenant_id,
-                    # The actor is the fiber, not the person. Every other machine actor in
-                    # this codebase does the same — `cron`, `eval`, `a2a` — and making the
-                    # resumed run claim to *be* the caller would put `principal_subj=alice,
-                    # scheme=jwt` in an audit row for work a worker did against a manifest
-                    # that may have changed underneath it.
-                    principal_sub="fiber",
-                    on_behalf_of=str(stored_auth.get("principal_sub") or ""),
-                    # A list, or nothing. `frozenset("admin")` is {"a","d","m","i","n"} —
-                    # the one spot where the surrounding defensiveness was decorative.
-                    scopes=frozenset(
-                        str(x)
-                        for x in (stored_auth.get("scopes") or [])
-                        if isinstance(stored_auth.get("scopes"), list)
-                    ),
-                    anonymous=bool(stored_auth.get("anonymous", False)),
-                    scheme=str(stored_auth.get("scheme") or "anonymous"),
-                    skill_owner=_stored_skill_owner(stored_auth),
-                    # The starter's manifest pin, the one claim a resume must carry: without it a
-                    # pinned credential's run would delegate to any manifest from the worker.
-                    raw_claims=(
-                        {MANIFESTS_CLAIM: stored_auth[MANIFESTS_CLAIM]}
-                        if isinstance(stored_auth, dict) and MANIFESTS_CLAIM in stored_auth
-                        else {}
-                    ),
-                )
+                auth = auth_from_state(tenant_id, stored_auth)
                 thread = thread_id or fiber_thread_id(tenant_id, str(row["id"]))
                 req_ctx = RequestContext(
                     settings=settings,
@@ -752,6 +794,12 @@ async def _run_fiber_step(
                             resolved_out=resolved.sub_agents,
                         )
                     await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
+                    step_schema = step.get("output_schema")
+                    if isinstance(step_schema, dict):
+                        # A workflow step's own output contract, applied to this turn only and
+                        # after the pin check, which judged the manifest as stored.
+                        spec = resolved.manifest.spec.model_copy(update={"output_schema": step_schema})
+                        resolved.manifest = resolved.manifest.model_copy(update={"spec": spec})
                     request = next((m.content or "" for m in reversed(messages) if m.role == "user"), "")
                     point, logged = await _invoke_resume_point(
                         settings, row, state, cursor, resolved.manifest, thread, request
@@ -827,6 +875,26 @@ async def _run_fiber_step(
         await _save_fiber(settings, row, hold_claim=hold_claim)
         return row
 
+    if op == "workflow":
+        # A workflow run's orchestrator: advance the graph once, then park until the next look or
+        # finish. Never moves the cursor until the run is over, so a replayed claim re-reads the
+        # run row and decides again; the engine's own starts are idempotent (see `engine.py`).
+        from felix.workflows.engine import advance
+
+        outcome = await advance(settings, row["tenant_id"], str(step.get("run_id") or ""))
+        if outcome.finished:
+            state["cursor"] = cursor + 1
+            stash["last"] = {"answer": "", "final": "", "error": outcome.error, "manifest_id": ""}
+            state["stash"] = stash
+            row["state_json"] = state
+            row["status"] = "failed" if outcome.error else "completed"
+            row["wake_at"] = None
+        else:
+            row["state_json"] = state
+            _park(row, outcome.delay_ms)
+        await _save_fiber(settings, row, hold_claim=hold_claim)
+        return row
+
     # complete / unknown
     row["status"] = "completed"
     state["cursor"] = cursor + 1
@@ -851,6 +919,14 @@ async def _after_terminal(settings: Settings, row: dict[str, Any]) -> None:
 
     if row.get("kind") == DURABLE_CHAT_KIND:
         await _notify_run_finished(settings, row)
+    if row.get("kind") == "workflow_run":  # `felix.workflows.engine.ORCHESTRATOR_KIND`
+        # A buried orchestrator would otherwise leave its run `running` for good.
+        try:
+            from felix.workflows.engine import orchestrator_ended
+
+            await orchestrator_ended(settings, row)
+        except Exception:
+            logger.exception("workflow orchestrator %s: closing its run failed", row.get("id"))
 
 
 async def _end_background_child(settings: Settings, row: dict[str, Any]) -> None:
@@ -1475,6 +1551,7 @@ __all__ = [
     "TooManyChildren",
     "active_fiber_for_thread",
     "advance_fiber",
+    "auth_from_state",
     "create_fiber",
     "fiber_thread_id",
     "get_fiber",
@@ -1483,4 +1560,5 @@ __all__ = [
     "run_fiber_loop",
     "run_in_flight",
     "save_fiber",
+    "stop_fiber",
 ]
