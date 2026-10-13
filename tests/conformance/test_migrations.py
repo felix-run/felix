@@ -232,7 +232,8 @@ async def _as_migrator(url: str) -> str:
     Plus every table a migration *after* `0033` alters, because reaching `0033` from head
     downgrades through each of them first: `fibers` (`0034_fiber_thread`), `usage_events`
     (`0035_usage_thread`), `session_events` (`0036_session_events_one_index`), `thread_state`
-    (`0037_thread_state_listing_index`) and `file_checkpoints` (`0039_file_checkpoints`)."""
+    (`0037_thread_state_listing_index`), `file_checkpoints` (`0039_file_checkpoints`) and
+    `workflows` (`0040_workflows`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -252,6 +253,7 @@ async def _as_migrator(url: str) -> str:
                 "session_events",
                 "thread_state",
                 "file_checkpoints",  # 0039, created after 0038 and dropped before reaching it
+                "workflows",  # 0040, the same
                 "alembic_version",
             )
         ),
