@@ -233,7 +233,7 @@ async def _as_migrator(url: str) -> str:
     downgrades through each of them first: `fibers` (`0034_fiber_thread`), `usage_events`
     (`0035_usage_thread`), `session_events` (`0036_session_events_one_index`), `thread_state`
     (`0037_thread_state_listing_index`), `file_checkpoints` (`0039_file_checkpoints`) and
-    `workflows` (`0040_workflows`)."""
+    `workflows` (`0040_workflows`) and `workflow_runs` (`0041_workflow_runs`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -254,6 +254,7 @@ async def _as_migrator(url: str) -> str:
                 "thread_state",
                 "file_checkpoints",  # 0039, created after 0038 and dropped before reaching it
                 "workflows",  # 0040, the same
+                "workflow_runs",  # 0041, the same
                 "alembic_version",
             )
         ),

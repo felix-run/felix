@@ -31,7 +31,7 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
    `rls_bypass`; sets `running`, `lease_owner` (replica id), `lease_until` (+`FIBER_LEASE_MS`, 5 min).
    `FELIX_FIBER_CONCURRENCY` (8) fibers per worker; one parked on an approval holds its slot.
 4. **Step.** `_advance_claimed` → `_step_with_lease` renews the lease every `FIBER_LEASE_RENEW_MS`
-   and runs `_run_fiber_step` (`sleep`, `stash`, `invoke`, `complete`) until the fiber suspends, at
+   and runs `_run_fiber_step` (`sleep`, `stash`, `invoke`, `workflow`, `complete`) until the fiber suspends, at
    most one `invoke` per claim. The invoke runs as principal `fiber`, `on_behalf_of` the starter,
    with the recorded scopes; resolves the manifest inside a `RequestContext` so RLS binds; and
    checks `assert_resume_pin`, forcing `pin_compile` when authority was recorded.
@@ -139,7 +139,27 @@ input `when`; the workflow's inputs are the outputs of the non-step node `trigge
 is the one `precondition` — a revision string, `ABSENT` (create only), or `None` — matching HTTP's
 `If-Match` / `If-None-Match: *`; revisions compare as written on both arms. A miss raises
 `WorkflowConflict` with the current row, a Postgres create race included. Contract:
-`tests/conformance/test_workflows_store.py`. Runs, routes and execution as fibers are not built yet.
+`tests/conformance/test_workflows_store.py`.
+
+**Runs** (`engine.py`, `executors.py`, `runs.py`). `start_run` refuses a definition with problems
+or a kind with no executor (`not_runnable`; `RUNNABLE_KINDS` is `executors.EXECUTORS`' keys, and
+`tool_call` has none yet), checks the starter against each named manifest's inbound rules
+(`NotPermitted`) and **pins** it (`pins_json`; the child's `pin` forces `pin_compile`), caps a
+tenant at `MAX_ACTIVE_RUNS_PER_TENANT`, records the starter with `durability/runs.py:record_caller`,
+and writes a `workflow_runs` row (definition snapshot) plus an orchestrator fiber
+(`kind: workflow_run`, op `workflow`) that calls `advance` and parks `POLL_MS`. `advance` polls
+in-flight steps, starts what is ready (at most `MAX_AGENT_STEPS_IN_FLIGHT` agent steps), and saves
+under the `version` CAS only when something changed. Each kind's `start`/`poll`/`stop` is its
+executor. An `agent_turn` is a child durable chat on `thread_ids.workflow_thread_id`, its fiber id
+derived from run and step (a replay or a second claim adopts it, `RunInProgress` included), started
+as the starter — or with no context when none was recorded — and bounded by the run's deadline and
+the manifest's own TTL; a child's error text is logged and the step gets a written message. An
+`approval` is found by signature (`approvals.store.find_by_signature`, any status) before
+`create_pending`; a lapsed or swept one fails the step. Stopping (cancel, expiry, fail-fast) calls
+every unfinished step's `stop`: `fibers.stop_fiber` by derived id plus `steer.request_abort`, and
+`close_interrupted` for approvals. A buried orchestrator fails its run (`_after_terminal` →
+`orchestrator_ended`). Contracts: `tests/conformance/test_workflow_runs_store.py`,
+`tests/unit/test_workflow_engine.py`, `tests/e2e/test_workflow_runs.py`.
 
 ## memory:// and tests
 

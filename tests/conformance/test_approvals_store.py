@@ -605,3 +605,25 @@ async def test_a_pending_row_past_its_deadline_is_not_listed_as_pending(store_se
 
     assert live["id"] in listed and dead["id"] not in listed
     assert dead["id"] in everything, "only the pending view leaves it out"
+
+
+@parametrized
+async def test_closing_a_thread_closes_only_its_pending_rows(store_settings: Any) -> None:
+    tenant = "conformance-close"
+    mine = await approvals.create_pending(
+        store_settings, tenant, tool_name="shell", call_signature="a", thread_id=f"{tenant}:t1"
+    )
+    decided = await approvals.create_pending(
+        store_settings, tenant, tool_name="shell", call_signature="b", thread_id=f"{tenant}:t1"
+    )
+    await approvals.decide(store_settings, tenant, decided["id"], decision="approved", decided_by="op")
+    other = await approvals.create_pending(
+        store_settings, tenant, tool_name="shell", call_signature="c", thread_id=f"{tenant}:t2"
+    )
+
+    assert await approvals.close_pending_on_thread(store_settings, tenant, f"{tenant}:t1") == [mine["id"]]
+    statuses = [
+        (await approvals.get_approval(store_settings, tenant, row["id"]))["status"]  # type: ignore[index]
+        for row in (mine, decided, other)
+    ]
+    assert statuses == ["denied", "approved", "pending"]
