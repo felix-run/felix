@@ -383,6 +383,37 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "CheckOut": {
+        "properties": {
+          "ports": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StepPortsOut"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Ports",
+            "type": "object"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/ProblemOut"
+            },
+            "title": "Problems",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ports",
+          "problems"
+        ],
+        "title": "CheckOut",
+        "type": "object"
+      },
       "CheckoutFileOut": {
         "description": "One path in the checkout, relative to its root.",
         "properties": {
@@ -844,6 +875,24 @@
           "text"
         ],
         "title": "DocumentIngestRequest",
+        "type": "object"
+      },
+      "Edge": {
+        "additionalProperties": false,
+        "description": "An output port (or a workflow input, on `trigger`) wired to an input port.",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/PortRef"
+          },
+          "target": {
+            "$ref": "#/components/schemas/PortRef"
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ],
+        "title": "Edge",
         "type": "object"
       },
       "EvalRunRequest": {
@@ -1981,6 +2030,20 @@
         "title": "NewVersionIn",
         "type": "object"
       },
+      "NotFoundResponse": {
+        "properties": {
+          "detail": {
+            "const": "not_found",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "NotFoundResponse",
+        "type": "object"
+      },
       "OpenAIMessage": {
         "properties": {
           "content": {
@@ -2412,6 +2475,136 @@
           }
         },
         "title": "PolicyPatchIn",
+        "type": "object"
+      },
+      "PortOut": {
+        "properties": {
+          "control": {
+            "title": "Control",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "schema": {
+            "additionalProperties": true,
+            "title": "Schema",
+            "type": "object"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "schema",
+          "control",
+          "required"
+        ],
+        "title": "PortOut",
+        "type": "object"
+      },
+      "PortRef": {
+        "additionalProperties": false,
+        "properties": {
+          "port": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Port",
+            "type": "string"
+          },
+          "step": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Step",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "port"
+        ],
+        "title": "PortRef",
+        "type": "object"
+      },
+      "Position": {
+        "additionalProperties": false,
+        "description": "Where the editor drew a node. Saved with the definition so a reload does not re-lay it.",
+        "properties": {
+          "x": {
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "Position",
+        "type": "object"
+      },
+      "ProblemOut": {
+        "properties": {
+          "code": {
+            "enum": [
+              "unknown_kind",
+              "invalid_config",
+              "kind_error",
+              "unknown_step",
+              "unknown_port",
+              "type_mismatch",
+              "duplicate_input",
+              "unconnected_input",
+              "cycle",
+              "invalid_definition",
+              "too_many_problems"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ProblemOut",
         "type": "object"
       },
       "PromoteIn": {
@@ -5686,6 +5879,113 @@
         "title": "SteerRequest",
         "type": "object"
       },
+      "Step": {
+        "additionalProperties": false,
+        "properties": {
+          "config": {
+            "additionalProperties": true,
+            "title": "Config",
+            "type": "object"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "title": "Step",
+        "type": "object"
+      },
+      "StepKindList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StepKindOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "StepKindList",
+        "type": "object"
+      },
+      "StepKindOut": {
+        "properties": {
+          "config_schema": {
+            "additionalProperties": true,
+            "title": "Config Schema",
+            "type": "object"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "config_schema"
+        ],
+        "title": "StepKindOut",
+        "type": "object"
+      },
+      "StepPortsOut": {
+        "properties": {
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/PortOut"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "outputs": {
+            "items": {
+              "$ref": "#/components/schemas/PortOut"
+            },
+            "title": "Outputs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "inputs",
+          "outputs"
+        ],
+        "title": "StepPortsOut",
+        "type": "object"
+      },
       "SubscribeRequest": {
         "description": "`PushSubscription.toJSON()`, as the browser produces it.",
         "properties": {
@@ -6267,6 +6567,274 @@
           "created_at"
         ],
         "title": "VersionHeadOut",
+        "type": "object"
+      },
+      "WorkflowChanged": {
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "const": "workflow_changed",
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "current"
+        ],
+        "title": "WorkflowChanged",
+        "type": "object"
+      },
+      "WorkflowChangedResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/WorkflowChanged"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "WorkflowChangedResponse",
+        "type": "object"
+      },
+      "WorkflowLimit": {
+        "properties": {
+          "error": {
+            "const": "workflow_limit",
+            "title": "Error",
+            "type": "string"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "error",
+          "limit"
+        ],
+        "title": "WorkflowLimit",
+        "type": "object"
+      },
+      "WorkflowLimitResponse": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowLimit"
+              },
+              {
+                "$ref": "#/components/schemas/WorkflowChanged"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "WorkflowLimitResponse",
+        "type": "object"
+      },
+      "WorkflowList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit"
+        ],
+        "title": "WorkflowList",
+        "type": "object"
+      },
+      "WorkflowOut": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "definition": {
+            "additionalProperties": true,
+            "title": "Definition",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ports": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/StepPortsOut"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Ports",
+            "type": "object"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/ProblemOut"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ports",
+          "problems",
+          "id",
+          "version",
+          "revision",
+          "definition",
+          "created_at",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "WorkflowOut",
+        "type": "object"
+      },
+      "WorkflowSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/Edge"
+            },
+            "maxItems": 1000,
+            "title": "Edges",
+            "type": "array"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Inputs",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/Step"
+            },
+            "maxItems": 200,
+            "title": "Steps",
+            "type": "array"
+          },
+          "trigger_position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Position"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "WorkflowSpec",
+        "type": "object"
+      },
+      "WorkflowSummary": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "step_count": {
+            "title": "Step Count",
+            "type": "integer"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "version",
+          "revision",
+          "step_count",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "WorkflowSummary",
         "type": "object"
       },
       "WorkspaceChangedOut": {
@@ -19494,6 +20062,368 @@
         "summary": "List Models",
         "tags": [
           "OpenAI"
+        ]
+      }
+    },
+    "/workflows": {
+      "get": {
+        "description": "The tenant's workflows, most recently saved first, without their definitions.",
+        "operationId": "list_workflows_workflows_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Workflows",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/-/check": {
+      "post": {
+        "description": "Ports and problems for a definition, without saving it \u2014 what the editor shows as you wire.",
+        "operationId": "check_definition_workflows___check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Definition",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/-/kinds": {
+      "get": {
+        "description": "The step kinds a workflow can use: built in, and any a plugin registered.",
+        "operationId": "list_kinds_workflows___kinds_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepKindList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Kinds",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/{workflow_id}": {
+      "delete": {
+        "description": "Delete a workflow; with `If-Match`, only that revision.",
+        "operationId": "delete_workflow_workflows__workflow_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Delete Workflow Workflows  Workflow Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponse"
+                }
+              }
+            },
+            "description": "No such workflow"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowChangedResponse"
+                }
+              }
+            },
+            "description": "The precondition named another revision"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Workflow",
+        "tags": [
+          "Workflows"
+        ]
+      },
+      "get": {
+        "operationId": "get_workflow_workflows__workflow_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundResponse"
+                }
+              }
+            },
+            "description": "No such workflow"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Workflow",
+        "tags": [
+          "Workflows"
+        ]
+      },
+      "put": {
+        "description": "Save a definition whole. `201` when this created it, `200` when it replaced one.",
+        "operationId": "put_workflow_workflows__workflow_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "if-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-Match"
+            }
+          },
+          {
+            "in": "header",
+            "name": "if-none-match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowOut"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowLimitResponse"
+                }
+              }
+            },
+            "description": "Over the tenant's cap, or lost a race to create"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowChangedResponse"
+                }
+              }
+            },
+            "description": "The precondition named another revision"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Workflow",
+        "tags": [
+          "Workflows"
         ]
       }
     }

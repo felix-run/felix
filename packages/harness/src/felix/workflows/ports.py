@@ -73,6 +73,11 @@ _MAX_ENUM_SHOWN = 8
 _MAX_VALUE_SHOWN = 40
 
 
+def _shown(value: str) -> str:
+    """An author's name as a message quotes it: a field name inside a schema has no length rule."""
+    return value if len(value) <= _MAX_VALUE_SHOWN else value[:_MAX_VALUE_SHOWN] + "…"
+
+
 def describe(schema: dict[str, Any], _depth: int = 0) -> str:
     """A port type as the editor shows it: `string`, `array<object>`, `enum<bug|feature>`.
 
@@ -154,12 +159,12 @@ def _object_mismatch(
     names = [n for n in required if isinstance(n, str)] if isinstance(required, list) else []
     for name in dict.fromkeys(names):
         if name not in src_props:
-            return f"{describe(source)} has no field {name!r}"
+            return f"{describe(source)} has no field {_shown(name)!r}"
         src_field, dst_field = src_props[name], dst_props.get(name)
         if isinstance(src_field, dict) and isinstance(dst_field, dict):
             inner = _schema_mismatch(src_field, dst_field, depth + 1, budget)
             if inner is not None:
-                return f"field {name!r}: {inner}"
+                return f"field {_shown(name)!r}: {inner}"
     return None
 
 

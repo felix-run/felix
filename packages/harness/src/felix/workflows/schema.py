@@ -102,6 +102,14 @@ class WorkflowSpec(_Strict):
             if step.id in seen:
                 raise ValueError(f"step id {step.id!r} is used twice")
             seen.add(step.id)
+        # An edge twice is never what an author meant, and each copy is checked and reported
+        # again: a thousand of one edge is a thousand copies of its problem message.
+        wired: set[tuple[str, str, str, str]] = set()
+        for edge in self.edges:
+            key = (edge.source.step, edge.source.port, edge.target.step, edge.target.port)
+            if key in wired:
+                raise ValueError(f"edge {key[0]}.{key[1]} → {key[2]}.{key[3]} is listed twice")
+            wired.add(key)
         size = len(self.model_dump_json().encode())
         if size > MAX_DEFINITION_BYTES:
             raise ValueError(f"definition is {size} bytes; the limit is {MAX_DEFINITION_BYTES}")

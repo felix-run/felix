@@ -222,3 +222,19 @@ async def test_two_creates_of_one_id_leave_exactly_one_winner(store_settings: An
     assert len(conflicts) == 1 and len(saved) == 1, results
     assert conflicts[0].current is not None
     assert conflicts[0].current["revision"] == saved[0]["revision"]
+
+
+@parametrized
+async def test_the_tenant_cap_refuses_a_create_but_not_a_replace(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(workflows, "MAX_PER_TENANT", 2)
+    await _put(store_settings, "one")
+    await _put(store_settings, "two")
+    await workflows.put_workflow(store_settings, "other-tenant", "three", _spec())  # another tenant's count
+    with pytest.raises(workflows.WorkflowLimitReached):
+        await _put(store_settings, "three")
+    assert await workflows.get_workflow(store_settings, TENANT, "three") is None
+    assert (await _put(store_settings, "one", "Replaced"))["version"] == 2
+    await workflows.delete_workflow(store_settings, TENANT, "two")
+    assert (await _put(store_settings, "three"))["version"] == 1
