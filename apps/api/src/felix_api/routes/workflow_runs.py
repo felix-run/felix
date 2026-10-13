@@ -79,6 +79,9 @@ class RunOut(BaseModel):
     updated_at: int
     finished_at: int | None
     inputs: dict[str, Any]
+    # The inputs a third party supplied (a trigger's payload). While any are, every value an agent
+    # step's prompt is filled with is fenced as data, not instructions.
+    untrusted_inputs: list[str]
     steps: dict[str, StepRunOut]
 
 

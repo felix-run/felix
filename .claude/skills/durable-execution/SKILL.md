@@ -128,7 +128,14 @@ identity, `payload.inputs` as the inputs, `workflows:write` required of the reco
 run's `trigger` `job:<name>` and its id in the job run's `result.workflow_run_id`. The job keeps
 `workflow_revision` from its write and `start_run(revision=)` refuses any other
 (`RevisionChanged`), so a later editor's steps never run on the writer's scopes. `start_run`'s
-refusals share `engine.StartRefused` and its written `message`; it audits every start.
+refusals share `engine.StartRefused` and its written `message`; it audits every start. A
+`FELIX_TRIGGERS` entry with a `WorkflowTarget` starts a run too (`routes/triggers.py`: prepared
+before the rate limit, started after): `triggers.workflow_inputs` maps the payload to inputs by JSON
+Pointer, checks each against the declared schema (`ports.value_mismatch`), and lists the sender's
+strings, objects, arrays and `$delivery` as the run's `untrusted_inputs`
+(`0044_workflow_run_untrusted`). `runs.fences_prompts` (any untrusted input, or a `trigger:` run)
+makes `kinds.render_prompt(fenced=)` wrap every value an agent step is given in a per-prompt
+`data-<hex>` tag and append `FENCE_NOTE`.
 `next_run_at_ms` reads the grammar in `jobs/schedule.py` — seconds, `every:30s` / `@every 5m`, the
 `@daily`-style macros and five-field cron in UTC — and a schedule outside it is refused, never
 guessed. An empty schedule is manual only: the sweep skips it and only `POST /jobs/{name}/run` fires it.

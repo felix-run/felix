@@ -122,6 +122,11 @@ class WorkflowRun(Base):
     # Each manifest the steps name, pinned at start: a child run carrying the starter's scopes
     # runs the manifest that was checked then, never one published since.
     pins_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # The inputs a third party supplied (a trigger's payload); non-empty fences an agent step's
+    # prompt values as data (`0044_workflow_run_untrusted`).
+    untrusted_json: Mapped[list[str]] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb"), default=list, nullable=False
+    )
     trigger: Mapped[str] = mapped_column(Text, server_default="", default="")
     started_by: Mapped[str] = mapped_column(Text, server_default="", default="")
     fiber_id: Mapped[str] = mapped_column(Text, server_default="", default="")

@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from felix.config import Settings
 from felix.logging_setup import loggable
 from felix.workflows.kinds import AgentTurnConfig, ApprovalConfig, BranchConfig, ToolCallConfig, render_prompt
-from felix.workflows.runs import StepState
+from felix.workflows.runs import StepState, fences_prompts
 from felix.workflows.schema import Step, WorkflowSpec
 
 logger = logging.getLogger("felix.workflows.executors")
@@ -220,7 +220,12 @@ class _AgentTurn:
             run.settings,
             run.tenant_id,
             manifest_id=config.manifest,
-            messages=[ChatMessage(role="user", content=render_prompt(config, inputs))],
+            messages=[
+                ChatMessage(
+                    role="user",
+                    content=render_prompt(config, inputs, fenced=fences_prompts(run.run)),
+                )
+            ],
             thread_id=thread,
             model_id=None,
             # The run's remaining life, and never more than the manifest grants a durable run.

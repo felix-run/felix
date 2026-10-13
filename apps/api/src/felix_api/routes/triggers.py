@@ -3,8 +3,10 @@
 No bearer: the sender signs the body, and nothing in it is parsed before the signature verifies.
 In order: the body fits; the trigger exists and the signature verifies (one answer for both, so
 ids cannot be probed); the body is UTF-8 JSON; then, once per delivery -- a replay gets the first
-answer back -- the event type is one the trigger runs for, the trigger's per-minute limit has room,
-and the run starts as the trigger's own principal on a thread of its own. Ignored deliveries are
+answer back -- the event type is one the trigger runs for; for a workflow trigger, the payload
+supplies the workflow's inputs (else `invalid_payload`, kept as the answer); the trigger's
+per-minute limit has room; and the run starts as the trigger's own principal -- a durable chat on
+a thread of its own, or a workflow run. Ignored deliveries are
 claimed too, so a captured one cannot be relabelled into a run later; only deliveries that would
 start a run spend the limit. Every refusal names its kind and nothing else: the reason is logged.
 """
@@ -14,18 +16,23 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from felix.context import RequestContext, async_run_with_context
 from felix.logging_setup import loggable
 from felix.triggers import (
     MAX_PAYLOAD_BYTES,
     TRIGGER_EVENT_TOOL,
     Delivery,
+    ManifestTarget,
+    PayloadMismatch,
     SignedRequest,
     Trigger,
     TriggerRejected,
+    WorkflowTarget,
     event_record,
     intake_payload,
     now_s,
@@ -33,8 +40,13 @@ from felix.triggers import (
     render_prompt,
     resolved_keys,
     verifier_for,
+    workflow_inputs,
 )
+from felix.workflows.runs import TRIGGER_RUN_PREFIX
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from felix.context import AuthContext
 
 logger = logging.getLogger("felix_api.routes.triggers")
 
@@ -58,7 +70,11 @@ _ERRORS: dict[int | str, dict[str, Any]] = {
     401: {"description": "No such trigger, or the signature did not verify (`invalid_signature`)."},
     409: {"description": "`delivery_in_progress`, or `delivery_id_reused` for another body."},
     413: {"description": "The body is larger than a trigger accepts (`payload_too_large`)."},
-    422: {"description": "The body is not UTF-8 JSON (`invalid_payload`)."},
+    422: {
+        "description": (
+            "The body is not UTF-8 JSON, or does not supply the workflow's inputs (`invalid_payload`)."
+        )
+    },
     429: {"description": "The trigger's per-minute limit is spent (`rate_limited`)."},
     503: {"description": "The trigger is misconfigured or its run could not start (`trigger_unavailable`)."},
 }
@@ -100,11 +116,39 @@ async def receive_trigger(trigger_id: str, request: Request) -> Any:
     async def handle() -> StoredResponse:
         if not trigger.runs_for(delivery.event):
             return StoredResponse(status=200, body={"status": "ignored"})
+        target = trigger.target
+        prepared: _PreparedWorkflowRun | None = None
+        if isinstance(target, WorkflowTarget):
+            # Before the limit, so a payload that starts nothing spends none of it. Refusals here are
+            # the sender's payload, not the trigger: told as `invalid_payload`, and kept as the answer
+            # to this delivery, so a retry of the same body gets it back.
+            if quarantined:
+                from felix.observability.metrics import record_counter
+
+                logger.info("trigger_payload_quarantined trigger=%s", trigger.id)
+                record_counter(
+                    "felix_content_screening",
+                    {"manifest_id": "", "tool": TRIGGER_EVENT_TOOL, "action": "quarantine"},
+                )
+                return StoredResponse(status=422, body={"detail": "invalid_payload"})
+            try:
+                prepared = await _prepare_workflow_run(settings, trigger, target, delivery, payload)
+            except PayloadMismatch as mismatch:
+                logger.info(
+                    "trigger_payload_mismatch trigger=%s reason=%s",
+                    trigger.id,
+                    loggable(mismatch.reason, limit=200),
+                )
+                return StoredResponse(status=422, body={"detail": "invalid_payload"})
         if not await request.app.state.trigger_limiter.hit(
             f"trigger:{trigger.id}", limit=trigger.rate_limit, window_seconds=WINDOW_S
         ):
             raise _RateLimited
-        run_id = await _start_run(settings, trigger, delivery, payload, quarantined)
+        if prepared is not None:
+            run_id = await _start_workflow_run(settings, trigger, delivery, prepared)
+        else:
+            assert isinstance(target, ManifestTarget)
+            run_id = await _start_run(settings, trigger, target, delivery, payload, quarantined)
         return StoredResponse(status=202, body={"status": "accepted", "run_id": run_id})
 
     try:
@@ -140,19 +184,19 @@ async def _verify(settings: Any, trigger: Trigger, request: Request, body: bytes
     return verifier_for(trigger.scheme)(keys, signed)
 
 
-async def _admitted(settings: Any, trigger: Trigger, thread: str, auth: Any) -> Any:
+async def _admitted(settings: Any, trigger: Trigger, target: ManifestTarget, thread: str, auth: Any) -> Any:
     """The trigger's manifest, resolved and admitted for its principal -- or `_Unavailable`. Called
     inside the trigger tenant's context, which is what the store's row-level security reads."""
     from felix.runtime import prepare_tenant_invoke, resolve_tenant_manifest
 
     try:
-        resolved = await resolve_tenant_manifest(settings, trigger.tenant, trigger.manifest, thread_id=thread)
+        resolved = await resolve_tenant_manifest(settings, trigger.tenant, target.manifest, thread_id=thread)
     except Exception as exc:
-        raise _Unavailable(f"manifest {trigger.manifest!r} did not resolve") from exc
+        raise _Unavailable(f"manifest {target.manifest!r} did not resolve") from exc
     if TRIGGER_EVENT_TOOL not in resolved.manifest.spec.tools:
         # Without it the model has no way to read the event, and a run on the prompt alone is a
         # run that cannot do what it was started for.
-        raise _Unavailable(f"manifest {trigger.manifest!r} does not list {TRIGGER_EVENT_TOOL}")
+        raise _Unavailable(f"manifest {target.manifest!r} does not list {TRIGGER_EVENT_TOOL}")
     try:
         await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
     except Exception as exc:
@@ -160,39 +204,110 @@ async def _admitted(settings: Any, trigger: Trigger, thread: str, auth: Any) -> 
     return resolved
 
 
-async def _start_run(
-    settings: Any, trigger: Trigger, delivery: Delivery, payload: str, quarantined: bool
-) -> str:
-    """The run, started as `trigger:<id>` with the trigger's scopes, on a fresh thread; its id."""
-    from felix.context import AuthContext, RequestContext, async_run_with_context
-    from felix.durability.runs import start_durable_chat
-    from felix.manifests.pin import pin_fields_for
-    from felix.observability.metrics import record_counter
-    from felix_ai.types import ChatMessage
+def _trigger_auth(trigger: Trigger) -> AuthContext:
+    from felix.context import AuthContext
 
-    auth = AuthContext(
-        principal_sub=f"trigger:{trigger.id}",
+    return AuthContext(
+        principal_sub=f"{TRIGGER_RUN_PREFIX}{trigger.id}",
         tenant_id=trigger.tenant,
         scopes=trigger.scopes,
         anonymous=False,
         scheme="trigger",
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedWorkflowRun:
+    workflow: dict[str, Any]
+    inputs: dict[str, Any]
+    untrusted: tuple[str, ...]
+
+
+async def _prepare_workflow_run(
+    settings: Any, trigger: Trigger, target: WorkflowTarget, delivery: Delivery, payload: str
+) -> _PreparedWorkflowRun:
+    """The trigger's workflow and its inputs from the payload, as the trigger maps them: each
+    checked against what the workflow declares (`PayloadMismatch` otherwise), and those that are
+    the sender's text listed. `_Unavailable` when the workflow is not there to run."""
+    from felix.workflows import store as workflow_store
+    from felix.workflows.schema import WorkflowSpec
+
+    async with async_run_with_context(RequestContext(settings=settings, auth=_trigger_auth(trigger))):
+        workflow = await workflow_store.get_workflow(settings, trigger.tenant, target.workflow)
+    if workflow is None:
+        raise _Unavailable(f"workflow {target.workflow!r} does not exist")
+    try:
+        declared = WorkflowSpec.model_validate(workflow["definition"]).inputs
+    except ValueError as exc:
+        raise _Unavailable(f"workflow {target.workflow!r} does not parse") from exc
+    inputs, untrusted = workflow_inputs(trigger, delivery, payload, declared)
+    return _PreparedWorkflowRun(workflow=workflow, inputs=inputs, untrusted=untrusted)
+
+
+async def _start_workflow_run(
+    settings: Any, trigger: Trigger, delivery: Delivery, prepared: _PreparedWorkflowRun
+) -> str:
+    """The run, as `trigger:<id>` with the trigger's scopes, held to the trigger's `revision` if
+    it pins one; its id. Every agent step of it fences what it is given (`runs.fences_prompts`)."""
+    from felix.workflows import engine
+
+    assert isinstance(trigger.target, WorkflowTarget)
+    who = f"{TRIGGER_RUN_PREFIX}{trigger.id}"
+    async with async_run_with_context(RequestContext(settings=settings, auth=_trigger_auth(trigger))):
+        try:
+            run = await engine.start_run(
+                settings,
+                trigger.tenant,
+                prepared.workflow,
+                prepared.inputs,
+                trigger=who,
+                started_by=who,
+                revision=trigger.target.revision,
+                untrusted_inputs=prepared.untrusted,
+            )
+        except engine.StartRefused as refused:
+            # Not the sender's doing: the trigger or its workflow needs the operator.
+            raise _Unavailable(f"workflow {trigger.target.workflow!r}: {refused.message}") from None
+    logger.info(
+        "trigger_started trigger=%s event=%s workflow_run=%s",
+        trigger.id,
+        loggable(delivery.event, limit=64),
+        run["id"],
+    )
+    return str(run["id"])
+
+
+async def _start_run(
+    settings: Any,
+    trigger: Trigger,
+    target: ManifestTarget,
+    delivery: Delivery,
+    payload: str,
+    quarantined: bool,
+) -> str:
+    """The run, started as `trigger:<id>` with the trigger's scopes, on a fresh thread; its id."""
+    from felix.durability.runs import start_durable_chat
+    from felix.manifests.pin import pin_fields_for
+    from felix.observability.metrics import record_counter
+    from felix_ai.types import ChatMessage
+
+    auth = _trigger_auth(trigger)
     thread = f"{trigger.tenant}:trigger:{trigger.id}:{uuid.uuid4().hex[:16]}"
-    ctx = RequestContext(settings=settings, auth=auth, manifest_id=trigger.manifest, thread_id=thread)
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=target.manifest, thread_id=thread)
     # Everything from here as the trigger's tenant: resolution, admission and the pin read the
     # manifest store, and the enqueue records this principal as the run's authority.
     async with async_run_with_context(ctx):
-        resolved = await _admitted(settings, trigger, thread, auth)
+        resolved = await _admitted(settings, trigger, target, thread, auth)
         if quarantined:
             record_counter(
                 "felix_content_screening",
-                {"manifest_id": trigger.manifest, "tool": TRIGGER_EVENT_TOOL, "action": "quarantine"},
+                {"manifest_id": target.manifest, "tool": TRIGGER_EVENT_TOOL, "action": "quarantine"},
             )
         try:
             started = await start_durable_chat(
                 settings,
                 trigger.tenant,
-                manifest_id=trigger.manifest,
+                manifest_id=target.manifest,
                 messages=[ChatMessage(role="user", content=render_prompt(trigger, delivery))],
                 thread_id=thread,
                 model_id=None,
