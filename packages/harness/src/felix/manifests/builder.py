@@ -53,7 +53,8 @@ from felix.patterns.registry import (
     list_patterns,
 )
 from felix.patterns.types import Agent
-from felix.secrets import SecretNotPermittedError, manifest_secrets
+from felix.secret_policy import tenant_secrets_provider
+from felix.secrets import SecretNotPermittedError
 from felix.security.host_allowlist import EgressBound, hosts_outside
 from felix.session.clearing import model_view_strategy
 from felix.skills.types import SkillCatalog
@@ -1958,7 +1959,7 @@ async def build_agent(
                     # Scoped to the tenant like every other manifest-named secret: this one is a
                     # write credential sent to GitHub.
                     token = await resolve_secret_value(
-                        manifest_secrets(deps.settings, tenant_id), m.spec.github_publish.auth
+                        tenant_secrets_provider(deps.settings, tenant_id), m.spec.github_publish.auth
                     )
                     _append_unique_tools(
                         resolved,
@@ -2385,7 +2386,7 @@ async def build_agent(
                 # written by whoever holds `manifests:write`, so a plugin resolving a
                 # `secret:NAME` it found there resolves through this, never `build_secrets`.
                 "manifest_secrets": (
-                    manifest_secrets(deps.settings, tenant_id) if deps.settings is not None else None
+                    tenant_secrets_provider(deps.settings, tenant_id) if deps.settings is not None else None
                 ),
                 "recursion_limit": m.spec.recursion_limit,
                 "output_schema": m.spec.output_schema,

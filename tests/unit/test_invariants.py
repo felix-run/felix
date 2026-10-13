@@ -1901,7 +1901,7 @@ def test_every_build_after_a_pin_check_compiles_the_children_it_checked() -> Non
 
 def test_manifest_code_never_reaches_the_unscoped_secrets_backend() -> None:
     """Every `secret:NAME` under `felix/manifests/` was written by a tenant, so it resolves through
-    `felix.secrets.manifest_secrets` (scoped by `FELIX_MANIFEST_SECRETS`), never `build_secrets`,
+    `felix.secret_policy.tenant_secrets_provider` (scoped by `FELIX_MANIFEST_SECRETS`), never `build_secrets`,
     which reads anything the process can see -- `FELIX_AUTH_API_KEYS` included. AST, not text: the
     comments explaining the rule name the function too."""
     files = sorted((HARNESS / "manifests").rglob("*.py"))
@@ -1916,4 +1916,6 @@ def test_manifest_code_never_reaches_the_unscoped_secrets_backend() -> None:
             )
             if named:
                 offenders.append(f"{path.relative_to(ROOT)}:{getattr(node, 'lineno', '?')}")
-    assert offenders == [], f"use felix.secrets.manifest_secrets(settings, tenant_id): {offenders}"
+    assert offenders == [], (
+        f"use felix.secret_policy.tenant_secrets_provider(settings, tenant_id): {offenders}"
+    )

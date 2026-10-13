@@ -12,13 +12,15 @@ import json
 from typing import Any
 
 import pytest
+from felix.config import Settings
 from felix.manifests.loader import parse_manifest
 from felix.manifests.secret_refs import (
     assert_manifest_secrets_permitted,
     manifest_secret_names,
     resolve_outbound_secrets,
 )
-from felix.secrets import SecretNotPermittedError, check_manifest_secret
+from felix.secret_policy import assert_manifest_secret_permitted, assert_manifest_secrets_unbound
+from felix.secrets import SecretNotPermittedError
 
 from tests.support.factories import make_settings
 from tests.support.recording_secrets import BACKEND, install_recording_secrets
@@ -74,13 +76,13 @@ _FELIX_OWN = [
 
 @pytest.mark.parametrize("name", _FELIX_OWN + _INFRA)
 def test_felix_own_secrets_are_refused_for_every_tenant(name: str) -> None:
-    # Listing one of these fails `parse_manifest_secrets`, and `check_manifest_secret` reads an
+    # Listing one of these fails `parse_manifest_secrets`, and `assert_manifest_secret_permitted` reads an
     # unparseable setting as an empty allowlist -- so the call below would refuse it as unlisted even
     # without the reserved-name check. The message match is what pins that the reserved-name check
     # is the one that refused it.
     settings = _allow({name: "*"})
     with pytest.raises(SecretNotPermittedError, match="one of Felix's own credentials") as caught:
-        check_manifest_secret(name, "acme", settings)
+        assert_manifest_secret_permitted(name, "acme", settings)
     assert name in str(caught.value)
     assert "FELIX_MANIFEST_SECRETS" in str(caught.value)
 
@@ -88,7 +90,7 @@ def test_felix_own_secrets_are_refused_for_every_tenant(name: str) -> None:
 def test_github_token_is_an_ordinary_integration_name() -> None:
     # A tenant's own GitHub integration is the commonest legitimate ref; only `gh`'s GH_TOKEN is the
     # process's.
-    check_manifest_secret("GITHUB_TOKEN", "acme", _allow({"GITHUB_TOKEN": ["acme"]}))
+    assert_manifest_secret_permitted("GITHUB_TOKEN", "acme", _allow({"GITHUB_TOKEN": ["acme"]}))
 
 
 @pytest.mark.parametrize(
@@ -153,8 +155,6 @@ def test_a_secret_an_operator_registry_binds_cannot_be_opened_to_manifests(
     ],
 )
 def test_every_operator_registry_is_read_for_bound_secrets(setting: str, value: Any, owner: str) -> None:
-    from felix.secrets import assert_manifest_secrets_unbound
-
     raw = value if isinstance(value, str) else json.dumps(value)
     with pytest.raises(ValueError, match=rf"already bound by {owner}"):
         assert_manifest_secrets_unbound(_allow({"SHARED_TOKEN": "*"}, **{setting: raw}))
@@ -166,34 +166,34 @@ def test_every_operator_registry_is_read_for_bound_secrets(setting: str, value: 
 def test_an_unlisted_secret_is_refused() -> None:
     settings = _allow({"DOCS_TOKEN": "*"})
     with pytest.raises(SecretNotPermittedError, match="not permitted for this tenant") as caught:
-        check_manifest_secret("OTHER_TOKEN", "acme", settings)
+        assert_manifest_secret_permitted("OTHER_TOKEN", "acme", settings)
     assert "OTHER_TOKEN" in str(caught.value)
     assert "FELIX_MANIFEST_SECRETS" in str(caught.value)
 
 
 def test_nothing_is_allowed_when_the_setting_is_empty() -> None:
     with pytest.raises(SecretNotPermittedError):
-        check_manifest_secret("DOCS_TOKEN", "default", make_settings())
+        assert_manifest_secret_permitted("DOCS_TOKEN", "default", make_settings())
 
 
 def test_a_secret_listed_for_one_tenant_is_refused_for_another() -> None:
     settings = _allow({"ACME_TOKEN": ["acme"]})
-    check_manifest_secret("ACME_TOKEN", "acme", settings)
+    assert_manifest_secret_permitted("ACME_TOKEN", "acme", settings)
     with pytest.raises(SecretNotPermittedError, match="ACME_TOKEN"):
-        check_manifest_secret("ACME_TOKEN", "globex", settings)
+        assert_manifest_secret_permitted("ACME_TOKEN", "globex", settings)
 
 
 def test_a_star_opens_a_secret_to_every_tenant() -> None:
     settings = _allow({"DOCS_TOKEN": "*"})
     for tenant in ("acme", "globex", "default"):
-        check_manifest_secret("DOCS_TOKEN", tenant, settings)
+        assert_manifest_secret_permitted("DOCS_TOKEN", tenant, settings)
 
 
 def test_a_listed_name_is_matched_exactly_not_by_normalised_spelling() -> None:
     # The env backend would resolve `docs-token` to `DOCS_TOKEN`; allowing `DOCS_TOKEN` must not
     # also allow spellings the operator never wrote.
     with pytest.raises(SecretNotPermittedError):
-        check_manifest_secret("docs-token", "acme", _allow({"DOCS_TOKEN": "*"}))
+        assert_manifest_secret_permitted("docs-token", "acme", _allow({"DOCS_TOKEN": "*"}))
 
 
 @pytest.mark.parametrize(
@@ -407,4 +407,90 @@ def test_every_secret_the_self_manifests_name_is_open_to_the_self_tenant() -> No
     names = {n for path in manifests for n in manifest_secret_names(load_manifest_file(path))}
     assert names, "the self manifests name no secret: this test is checking nothing"
     for name in sorted(names):
-        check_manifest_secret(name, "default", settings)
+        assert_manifest_secret_permitted(name, "default", settings)
+
+
+# --- coverage of every operator setting -----------------------------------------------------------
+
+
+# Settings the operator-binding scan reads some other way, each with why. Everything else is scanned
+# whole; adding to this needs a reason, because a field left out is one whose secret a manifest
+# could be opened to.
+EXEMPT = {"manifest_secrets": "the allowlist itself: its keys are the names being opened"}
+_STR_FIELDS = sorted(name for name, field in Settings.model_fields.items() if field.annotation is str)
+
+
+def test_the_exemptions_are_the_ones_written_down() -> None:
+    from felix import secret_policy
+
+    assert set(secret_policy._NOT_REFS) == set(EXEMPT)
+    assert "egress_credentials" in _STR_FIELDS and "triggers" in _STR_FIELDS, "scanned no registry"
+
+
+@pytest.mark.parametrize("field", _STR_FIELDS)
+def test_every_string_setting_is_scanned_for_bound_secrets(field: str) -> None:
+    """Planted in each shape a setting carries a ref in -- a bare ref, and nested JSON -- every
+    `Settings` string reports it, so a registry added later is covered without being listed."""
+    from felix.secret_policy import operator_bound_secret_names
+
+    if field in EXEMPT:
+        pytest.skip(EXEMPT[field])
+    owner = f"FELIX_{field.upper()}"
+    if field == "secret_names":
+        shapes = ["OTHER,planted-x"]
+    else:
+        shapes = ["secret:PLANTED_X", json.dumps({"id": {"secret": "secret:PLANTED_X", "n": [1]}})]
+    for value in shapes:
+        settings = make_settings().model_copy(update={field: value})
+        assert operator_bound_secret_names(settings).get("PLANTED_X") == owner, value
+
+
+def test_json_nested_past_the_scan_fails_the_boot_check() -> None:
+    nested: Any = "secret:SHARED_TOKEN"
+    for _ in range(12):
+        nested = {"k": nested}
+    settings = _allow({"OTHER": "*"}).model_copy(update={"channels": json.dumps(nested)})
+    with pytest.raises(ValueError, match="FELIX_CHANNELS is nested deeper"):
+        assert_manifest_secrets_unbound(settings)
+
+
+# --- every ref field reaches the guard ------------------------------------------------------------
+
+
+async def test_a_compile_resolves_exactly_the_names_the_write_check_sees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`manifest_secret_names` is what `PUT /manifests` checks; the compile is what reaches the
+    backend. A ref field one reads and the other does not is a secret checked at write and never at
+    compile, or the reverse, so a manifest touching every field holds the two equal."""
+    from felix.manifests.builder import build_agent
+    from felix.mcp import client
+    from felix.tools.builtins import default_tool_provider
+
+    names = ["MCP_AUTH", "MCP_ENV", "PEER_AUTH", "CONTAINER_AUTH", "PUBLISH_AUTH"]
+    backend = install_recording_secrets(monkeypatch, **{n: f"{n.lower()}-value" for n in names})
+
+    async def fake_list(ref: Any, *, allow_http: bool = False, handshake: Any = None) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(client, "list_remote_tools", fake_list)
+    manifest = _manifest(
+        pattern="react",
+        mcp_servers=[_mcp("secret:MCP_AUTH", env={"K": "secret:MCP_ENV"})],
+        peers=[{"name": "p", "url": "https://peer.example.com/a2a", "auth": "secret:PEER_AUTH"}],
+        containers=[
+            {
+                "name": "c",
+                "gateway_url": "https://gw.example.com",
+                "image": "img",
+                "auth": "secret:CONTAINER_AUTH",
+            }
+        ],
+        github_publish={"repo": "acme/app", "auth": "secret:PUBLISH_AUTH", "branch_prefix": "felix/"},
+    )
+    settings = _allow(dict.fromkeys(names, "*"), secrets_backend=BACKEND)
+    await build_agent(
+        manifest.model_dump(mode="json", by_alias=True), default_tool_provider(), settings=settings
+    )
+    assert manifest_secret_names(manifest) == names
+    assert sorted(set(backend.calls)) == sorted(names)

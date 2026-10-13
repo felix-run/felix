@@ -66,13 +66,14 @@ pair and the AWS/GCP process credentials. A malformed value fails `validate_runt
 
 It is checked twice. `PUT /manifests/{name}` — and a canary or rollback onto a stored version —
 answers `422` naming the secret and the setting before anything is stored. Compiling checks again
-in front of the backend's `get` (`felix.secrets.TenantScopedSecrets`), so a row stored before the
+in front of the backend's `get` (`felix.secret_policy.TenantScopedSecrets`), so a row stored before the
 check existed fails its request with the same message (`422` on `/chat` and `/v1`) and the backend
 is never asked for the value. A `github_publish.auth` ref is refused the same way, not dropped.
 
 A secret an operator registry already binds cannot also be opened to manifests: listing a name that
-appears as a `secret:` ref in `FELIX_EGRESS_CREDENTIALS`, `FELIX_WEBHOOK_ENDPOINTS`,
-`FELIX_TRIGGERS`, `FELIX_CHANNELS`, `FELIX_MODEL_PROVIDER_OPTIONS` or the VAPID key, or in
+appears as a `secret:` ref in any other setting (`FELIX_EGRESS_CREDENTIALS`, `FELIX_WEBHOOK_ENDPOINTS`,
+`FELIX_TRIGGERS`, `FELIX_CHANNELS`, `FELIX_MODEL_PROVIDER_OPTIONS`, the VAPID key, … — every
+setting is scanned, bare or as JSON, so a new registry is covered without being listed), or in
 `FELIX_SECRET_NAMES`, fails the boot ("already bound by FELIX_…; give manifests a separate secret").
 Those registries scope their secret by tenant, host or endpoint; a manifest ref sends it wherever
 the manifest says, so sharing one would undo that scoping. Give a manifest its own credential. The

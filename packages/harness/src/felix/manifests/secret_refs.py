@@ -10,12 +10,11 @@ from felix.manifests.schema import (
     Manifest,
     McpServerRef,
 )
+from felix.secret_policy import assert_manifest_secret_permitted, tenant_secrets_provider
 from felix.secrets import (
     SecretsProvider,
-    check_manifest_secret,
     is_secret_ref,
     looks_like_plaintext_secret,
-    manifest_secrets,
     resolve_secret_value,
     secret_ref_name,
 )
@@ -125,15 +124,14 @@ def assert_no_plaintext_secrets(manifest: Manifest, *, strict: bool = True) -> N
 
 def manifest_secret_names(manifest: Manifest) -> list[str]:
     """Every backend name a manifest's `secret:NAME` refs point at, in document order, each once:
-    `auth` and `env` on MCP servers, `auth` on peers and containers, and `github_publish.auth`.
-    The write-time check and the compile-time resolve guard the same set, so a field added to one
-    has to be added here."""
+    `auth` and `env` on every `OUTBOUND_SECTIONS` ref, and `github_publish.auth`. The write-time
+    check and the compile-time resolve guard the same set; `test_manifest_secret_tenancy.py`
+    compiles a manifest touching every field and holds what the backend saw to this list."""
     values: list[str] = []
-    for ref in manifest.spec.mcp:
-        values.append(ref.auth)
-        values.extend((ref.env or {}).values())
-    values.extend(ref.auth for ref in manifest.spec.peers)
-    values.extend(ref.auth for ref in manifest.spec.containers)
+    for section in OUTBOUND_SECTIONS:
+        for ref in getattr(manifest.spec, section):
+            values.append(ref.auth)
+            values.extend((getattr(ref, "env", None) or {}).values())
     if manifest.spec.github_publish is not None:
         values.append(manifest.spec.github_publish.auth)  # `person` is not a ref, so it drops out
     names = [n for n in (secret_ref_name(v) for v in values if v) if n]
@@ -145,7 +143,7 @@ def assert_manifest_secrets_permitted(manifest: Manifest, tenant_id: str, settin
     Checked when a manifest is stored, so the refusal reaches its author rather than every request;
     compiling checks again (`resolve_outbound_secrets`), for rows stored before this existed."""
     for name in manifest_secret_names(manifest):
-        check_manifest_secret(name, tenant_id, settings)
+        assert_manifest_secret_permitted(name, tenant_id, settings)
 
 
 async def resolve_mcp_ref(ref: McpServerRef, provider: SecretsProvider) -> McpServerRef:
@@ -174,13 +172,13 @@ async def resolve_outbound_secrets(
 ) -> tuple[list[McpServerRef], list[A2APeerRef], list[ContainerRef]]:
     """Return copies of MCP/peer/container refs with secrets resolved.
 
-    Resolved for `tenant_id` only (`felix.secrets.manifest_secrets`): a name the tenant may not
+    Resolved for `tenant_id` only (`felix.secret_policy.tenant_secrets_provider`): a name the tenant may not
     reference raises `SecretNotPermittedError` before the backend is asked for it. The source
     manifest is unchanged so ``manifest_json`` never stores values.
     """
     if settings is None:
         return list(manifest.spec.mcp), list(manifest.spec.peers), list(manifest.spec.containers)
-    provider = manifest_secrets(settings, tenant_id)
+    provider = tenant_secrets_provider(settings, tenant_id)
     mcp = [await resolve_mcp_ref(r, provider) for r in manifest.spec.mcp]
     peers = [await resolve_peer_ref(r, provider) for r in manifest.spec.peers]
     containers = [await resolve_container_ref(r, provider) for r in manifest.spec.containers]
