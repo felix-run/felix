@@ -20,6 +20,8 @@ from felix.security.rate_limit import (
     should_skip_rate_limit,
 )
 
+from tests.support.factories import make_settings
+
 
 def _settings(**kw: object) -> Settings:
     base: dict[str, object] = {
@@ -107,13 +109,15 @@ def test_the_docs_pages_are_rate_limited_like_any_other_path() -> None:
 
 def test_metrics_is_no_longer_public() -> None:
     """Counter labels carry tenant-supplied manifest ids and MCP tool names."""
-    from felix.auth.middleware import _is_public_path
+    from felix.auth.middleware import anonymous_paths
 
-    assert _is_public_path("/metrics") is False
-    assert _is_public_path("/health") is True
+    public = anonymous_paths(make_settings())
+    assert public.admits("/metrics") is False
+    assert anonymous_paths(None).admits("/metrics") is False, "no configuration opens it"
+    assert public.admits("/health") is True
     # The probe paths the Helm chart actually uses; kubelet cannot present a credential.
     for path in ("/live", "/ready"):
-        assert _is_public_path(path) is True
+        assert public.admits(path) is True
         assert should_skip_rate_limit(path) is True
 
 

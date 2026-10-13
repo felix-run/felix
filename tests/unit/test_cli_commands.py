@@ -175,16 +175,77 @@ def test_mint_jwt_applies_the_requested_ttl(
     assert payload is not None, getattr(ok, "reason", ok)
     assert payload["exp"] - payload["iat"] == 900, payload
 
-    # Already expired when it was printed: the mint succeeds, the verifier refuses it.
-    stale = runner.invoke(app, ["mint-jwt", "--sub", "ops", "--ttl", "-300"])
-    assert stale.exit_code == 0, stale.output
-    refused = _verify(stale.output.strip(), public_pem)
-    # The reason, not just the absence of a principal: `VerifyFail` has no `principal`
-    # attribute at all, so a `getattr(..., None) is None` check also passes for a bad
-    # signature or no matching verifier, and would keep passing if the ttl stopped being
-    # applied for some other reason entirely.
-    assert getattr(refused, "principal", None) is None, "an expired token verified"
-    assert refused.reason == "expired", refused.reason
+    # Past a day only by name: the expiry is the only thing that ends a minted token.
+    long = runner.invoke(app, ["mint-jwt", "--sub", "ops", "--ttl", "86401", "--allow-long-ttl"])
+    assert long.exit_code == 0, long.output
+    long_payload = getattr(_verify(long.output.strip(), public_pem), "payload", None)
+    assert long_payload is not None
+    assert long_payload["exp"] - long_payload["iat"] == 86401, long_payload
+
+
+@pytest.mark.parametrize(
+    ("ttl", "extra", "says"),
+    [
+        # The floor is typer's own `min=1`, so the message is typer's.
+        ("0", [], "Invalid value for '--ttl'"),
+        ("-300", [], "Invalid value for '--ttl'"),
+        ("-300", ["--allow-long-ttl"], "Invalid value for '--ttl'"),
+        ("86401", [], "between 1 and 86400 seconds; pass --allow-long-ttl"),
+        (
+            "31536001",
+            ["--allow-long-ttl"],
+            "may not exceed 31536000 seconds (a year), even with --allow-long-ttl",
+        ),
+    ],
+)
+def test_mint_jwt_refuses_a_ttl_out_of_range(
+    rsa_keypair: tuple[str, str], monkeypatch: pytest.MonkeyPatch, ttl: str, extra: list[str], says: str
+) -> None:
+    """A token already dead on arrival, one that lives past a day without being asked for, or one
+    that outlives a year whatever was asked for."""
+    private_pem, _public_pem = rsa_keypair
+    monkeypatch.setenv("FELIX_JWKS_PRIVATE", private_pem)
+    monkeypatch.setenv("COLUMNS", "300")  # typer's error box wraps to the console width
+    get_settings.cache_clear()
+
+    result = CliRunner().invoke(app, ["mint-jwt", "--sub", "ops", "--ttl", ttl, *extra])
+
+    assert result.exit_code == 2, result.output
+    assert says in result.output, result.output
+    jws = re.compile(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
+    assert jws.search(result.output) is None, result.output
+
+
+def test_mint_jwt_mints_up_to_a_year_when_asked(
+    rsa_keypair: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_pem, public_pem = rsa_keypair
+    monkeypatch.setenv("FELIX_JWKS_PRIVATE", private_pem)
+    get_settings.cache_clear()
+
+    result = CliRunner().invoke(app, ["mint-jwt", "--sub", "ops", "--ttl", "31536000", "--allow-long-ttl"])
+
+    assert result.exit_code == 0, result.output
+    payload = getattr(_verify(result.output.strip(), public_pem), "payload", None)
+    assert payload is not None
+    assert payload["exp"] - payload["iat"] == 31_536_000, payload
+
+
+def test_mint_jwt_grants_no_scope_unless_named_and_sets_the_audience(
+    rsa_keypair: tuple[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default was `audit:read,manifests:write` -- a management write nobody asked for."""
+    private_pem, public_pem = rsa_keypair
+    monkeypatch.setenv("FELIX_JWKS_PRIVATE", private_pem)
+    get_settings.cache_clear()
+
+    result = CliRunner().invoke(app, ["mint-jwt", "--sub", "ops", "--aud", "felix-api"])
+    assert result.exit_code == 0, result.output
+
+    payload = getattr(_verify(result.output.strip(), public_pem), "payload", None)
+    assert payload is not None
+    assert payload["scope"] == "", payload
+    assert payload["aud"] == "felix-api", payload
 
 
 def test_mint_jwt_without_a_signing_key_prints_no_token(monkeypatch: pytest.MonkeyPatch) -> None:

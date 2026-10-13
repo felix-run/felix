@@ -8,7 +8,7 @@ name: Smoke
 # into the secret, so it is never printed:
 #
 #   gcloud compute ssh felix-api --command "sudo docker exec felix-api-1 felix mint-jwt \
-#     --sub smoke-workflow --tenant default --scopes '' --ttl <seconds>" \
+#     --sub smoke-workflow --tenant default --scopes '' --ttl <seconds> --allow-long-ttl" \
 #     | tail -1 | tr -d '\r\n' | gh secret set FELIX_SMOKE_API_KEY --repo felix-run/felix
 #
 # The current one expires 2027-01-02, with the chat-ui Worker's token: rotate both together.

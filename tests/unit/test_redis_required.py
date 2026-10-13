@@ -14,13 +14,18 @@ from pathlib import Path
 import pytest
 from felix.config import Settings, get_settings
 
+from tests.support.mgmt_keys import long_keys
+
 DEV = {"auth_mode": "none", "allow_insecure": True, "host": "127.0.0.1", "database_url": "memory://redis"}
 
 
 def test_an_empty_redis_url_is_refused_outside_development() -> None:
     with pytest.raises(RuntimeError, match="FELIX_REDIS_URL is required"):
         Settings(
-            environment="production", auth_mode="api_key", auth_api_keys="k", redis_url="  "
+            environment="production",
+            auth_mode="api_key",
+            auth_api_keys=long_keys(),
+            redis_url="  ",
         ).validate_runtime()
 
 

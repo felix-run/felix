@@ -22,6 +22,9 @@ MIN_SHELL_RUNNER_TOKEN_CHARS = 32
 # The workspace gateway Worker refuses a bearer shorter than this (`MIN_TOKEN_CHARS` in
 # deploy/cloudflare/workspace-gateway/src/handler.ts); boot refuses it here first.
 MIN_WORKSPACE_GATEWAY_TOKEN_CHARS = 32
+# An API key is a bearer compared verbatim; outside development one shorter than this is guessable
+# enough that the rate limiter is the only thing standing between it and a caller.
+MIN_API_KEY_CHARS = 32
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -931,12 +934,23 @@ class Settings(BaseSettings):
 
     def _validate_triggers(self) -> None:
         """A malformed `FELIX_TRIGGERS` fails the boot, not the first event it would receive."""
-        from felix.triggers import parse_triggers
+        from felix.triggers import TIMESTAMP_TOLERANCE_S, parse_triggers, triggers_configured
 
         try:
             parse_triggers(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_TRIGGERS: {exc}") from exc
+        # A delivery's claim is what stops a replay of it starting a second run, and it lives
+        # `idempotency_ttl_seconds`. The signature accepts a timestamp up to the tolerance either
+        # side of now, so one signed delivery verifies for twice the tolerance: a claim that
+        # expires sooner hands a captured delivery a window to be replayed in.
+        replay_window = 2 * TIMESTAMP_TOLERANCE_S
+        if triggers_configured(self) and self.idempotency_ttl_seconds < replay_window:
+            raise RuntimeError(
+                f"FELIX_IDEMPOTENCY_TTL_SECONDS={self.idempotency_ttl_seconds} is shorter than the "
+                f"{replay_window}s a signed trigger delivery stays valid; with FELIX_TRIGGERS set it "
+                f"must be at least {replay_window}, or a replayed delivery starts a second run."
+            )
 
     def _validate_skill_update_webhooks(self) -> None:
         """A `FELIX_SKILL_UPDATE_WEBHOOKS` binding to an endpoint that is not registered, or not
@@ -1158,6 +1172,32 @@ class Settings(BaseSettings):
                 "characters: the gateway refuses a shorter one, and so every call."
             )
 
+    def _validate_api_keys(self) -> None:
+        """`FELIX_AUTH_API_KEYS` is checked whole at boot, because the request path cannot say why.
+
+        The parser answered malformed JSON with no keys at all, so a typo in the one setting that
+        admits callers came out as a 401 on every request and no log line. A string `scopes`
+        (`"admin"`) was iterated into the characters `a`, `d`, `m`, `i`, `n` -- a key that held no
+        scope its operator gave it, and every single-letter one nobody did. The door reads the
+        same parser (`felix.auth.api_keys`), so the two cannot disagree about what a key grants.
+        """
+        from felix.auth.api_keys import parse_api_keys
+
+        try:
+            keys = parse_api_keys(self.auth_api_keys)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_AUTH_API_KEYS {exc}") from None
+        # Outside development -- production, staging, anything else: a short key in a local `.env`
+        # is a choice, one on a reachable deployment is a guess away from a caller.
+        if self.environment == "development":
+            return
+        for index, key in enumerate(keys, start=1):
+            if len(key) < MIN_API_KEY_CHARS:
+                raise RuntimeError(
+                    f"FELIX_AUTH_API_KEYS entry {index}: an API key must be at least {MIN_API_KEY_CHARS} "
+                    "characters; generate one with `openssl rand -hex 24`"
+                )
+
     def validate_runtime(self) -> None:
         """Fail fast on unsafe or incomplete configuration."""
         self._validate_registry_backed_settings()
@@ -1173,6 +1213,18 @@ class Settings(BaseSettings):
                     f"FELIX_AUTH_MODE=none may only bind loopback; FELIX_HOST={self.host!r} "
                     "is reachable off-host. Set FELIX_AUTH_MODE=api_key|jwt, or bind 127.0.0.1."
                 )
+            # Said on every boot it is accepted, because nothing else will say it: every request is
+            # anonymous with every scope. And the check above reads the *setting*: Granian binds
+            # what its own command line names, so a `--host 0.0.0.0` beside FELIX_HOST=127.0.0.1
+            # passes it and serves this API to the network.
+            logger.warning(
+                "FELIX_AUTH_MODE=none: the API is unauthenticated, and every caller holds every "
+                "scope. The loopback check read FELIX_HOST=%r, not the address the server actually "
+                "binds; make sure nothing off-host can reach it.",
+                self.host,
+            )
+        if self.auth_mode == "api_key":
+            self._validate_api_keys()
         if not self.redis_url.strip() and self.environment != "development":
             # Approvals, client-tool answers and UI prompts are delivered between processes
             # (API to worker) over Redis; without it the waiter is a process-local future,
@@ -1317,9 +1369,7 @@ def configured_tenants(settings: Settings) -> list[ConfiguredTenant]:
     unhelpful place if it is malformed — see `_validate_jwt_tenant_posture`. Shape errors are each
     setting's own validator's to report, so a setting that does not parse contributes nothing here.
     """
-    import json
 
-    from felix.auth.context import api_key_tenant
     from felix.auth.jwt import parse_verifiers
 
     found: list[ConfiguredTenant] = []
@@ -1333,17 +1383,19 @@ def configured_tenants(settings: Settings) -> list[ConfiguredTenant]:
         for name in (p.strip() for p in (settings.allowed_tenants or "").split(","))
         if name
     )
+    from felix.auth.api_keys import parse_api_keys
+
     try:
-        keys = json.loads(settings.auth_api_keys) if settings.auth_api_keys.strip() else {}
-    except ValueError, TypeError:
+        keys = parse_api_keys(settings.auth_api_keys)
+    except ValueError:
+        # Shape errors are `_validate_api_keys`'s to report, and only under `auth_mode=api_key`:
+        # in any other mode the setting is unread, so a malformed one is inert.
         keys = {}
-    if isinstance(keys, dict):
-        found.extend(
-            ConfiguredTenant("api_key", f"FELIX_AUTH_API_KEYS ({tenant})", tenant)
-            for entry in keys.values()
-            if isinstance(entry, dict)
-            for tenant in (api_key_tenant(entry),)
-        )
+    # Every entry, the defaulted tenant too: the parser's default is the tenant the door uses.
+    found.extend(
+        ConfiguredTenant("api_key", f"FELIX_AUTH_API_KEYS ({entry.tenant_id})", entry.tenant_id)
+        for entry in keys.values()
+    )
     from felix.auth.github import parse_org_tenants
 
     try:

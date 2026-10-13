@@ -249,13 +249,13 @@ def test_every_deployed_probe_path_is_a_declared_probe_path() -> None:
     Reading the paths out of the artefacts pins the failure shape this had: the chart
     moved to /ready and /live and the allowlist did not move with it.
     """
-    from felix.auth.middleware import _PUBLIC_EXACT
+    from felix.auth.middleware import anonymous_paths
     from felix.security.rate_limit import PROBE_PATHS, SKIP_EXACT
 
     probed = _deployed_probe_paths()
     assert {"/ready", "/live", "/health"} <= probed, probed
     assert probed <= PROBE_PATHS, probed - PROBE_PATHS
-    assert PROBE_PATHS <= _PUBLIC_EXACT and PROBE_PATHS <= SKIP_EXACT
+    assert anonymous_paths(None).exact >= PROBE_PATHS and PROBE_PATHS <= SKIP_EXACT
     assert "/metrics" not in PROBE_PATHS
 
 

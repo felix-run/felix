@@ -10,11 +10,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.routing import iter_route_contexts
 from felix import __version__ as harness_version
 from felix.auth.github import GITHUB_LOGIN_PREFIX
 from felix.auth.google import GOOGLE_LOGIN_PREFIX
 from felix.auth.mgmt import SCOPE_METRICS_READ, require_mgmt_scopes
-from felix.auth.middleware import AuthMiddleware
+from felix.auth.middleware import AuthMiddleware, validate_self_authenticating_mounts
 from felix.config import Settings, get_settings
 from felix.idempotency import build_idempotency_store
 from felix.logging_setup import (
@@ -113,9 +114,13 @@ def create_app(
 
     plugin_limits = [int(getattr(p, "body_limit_bytes", None) or 0) for p in plugin_list]
     body_limit = max([CORE_BODY_LIMIT_BYTES, *plugin_limits])
-    self_auth_mounts = tuple(
-        m for p in plugin_list for m in (getattr(p, "self_authenticating_mounts", ()) or ())
-    )
+    # (plugin name, mount): checked against the core routes once they exist, below.
+    declared_mounts = [
+        (str(getattr(p, "name", type(p).__name__)), m)
+        for p in plugin_list
+        for m in (getattr(p, "self_authenticating_mounts", ()) or ())
+    ]
+    self_auth_mounts = tuple(m for _name, m in declared_mounts)
     rate_key_resolvers = [
         p.rate_limit_key for p in plugin_list if callable(getattr(p, "rate_limit_key", None))
     ]
@@ -376,6 +381,12 @@ def create_app(
     app.include_router(repos.github_router, prefix="/github")
     app.include_router(repos.checkout_router, prefix="/chat/sessions")
 
+    # Before any plugin router is added: the core route set is what a mount may not overlap, and a
+    # plugin must not be able to claim a root by registering a route under it first.
+    # `iter_route_contexts` and not `app.routes`: an included router is one opaque entry there,
+    # and its routes' full paths only exist once flattened.
+    core_paths = [c.path for c in iter_route_contexts(app.routes) if c.path]
+    validate_self_authenticating_mounts(declared_mounts, core_paths)
     for plugin in plugin_list:
         routes_fn = getattr(plugin, "routes", None)
         if callable(routes_fn):
