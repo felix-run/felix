@@ -276,8 +276,8 @@ async def _mcp_call(
     async def _echo(args: dict) -> str:
         return str(args)
 
-    async def _compiled(**k: Any) -> tuple[Any, list[Any], Any]:
-        return None, [define_tool(name="echo", description="echo", handler=_echo)], manifest
+    async def _compiled(**k: Any) -> tuple[list[Any], Any]:
+        return [define_tool(name="echo", description="echo", handler=_echo)], manifest
 
     monkeypatch.setattr(server, "_compiled_tools", _compiled)
     return await server.handle_rpc(

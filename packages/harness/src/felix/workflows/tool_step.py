@@ -1,4 +1,5 @@
-"""One `tool_call` step, run inside its own fiber (op `tool`, kind `workflow_tool`).
+"""One `tool_call` step, run inside its own fiber (op `tool`, kind `workflow_tool`) — and the
+tools such a step may name, as the editor lists them (`step_tools`, `step_ports`).
 
 The step's tool is the one its manifest binds, governed exactly as the agent would have it: the
 manifest is resolved as the run's starter, checked against the pin taken when the run started, and
@@ -69,6 +70,59 @@ def schema_drift(stored: dict[str, Any], live: dict[str, Any], sent: set[str]) -
     return None
 
 
+def step_refusal(tool: Any) -> str | None:
+    """Why a tool step cannot call `tool`, or `None`.
+
+    A client tool (`spec.client_tools`) is run by the chat client that sent the turn and answered
+    over `POST /chat/tool_result`; a workflow step has no client, so the call would only wait out
+    the tool's timeout. It is left out of the editor's listing and refused at run.
+    """
+    if getattr(tool, "source", None) == "client":
+        return f"tool {str(tool.name)[:200]} runs in the chat client, which a workflow does not have"
+    return None
+
+
+async def step_tools(settings: Settings, tenant_id: str, manifest_id: str, auth: Any) -> list[Any]:
+    """The tools a `tool_call` step naming `manifest_id` can call, as `auth` would get them.
+
+    What the editor wires against: the manifest admitted for the caller (its inbound rules) and
+    compiled, so the list is its governed tool set exactly as a run resolves it, less what
+    `step_refusal` refuses. Raises `runtime.UnknownManifest`, and `InboundAuthError` from the admission.
+    """
+    from felix.runtime import UnknownManifest, governed_tools, resolve_tenant_manifest
+    from felix.tools.builtins import default_tool_provider
+
+    try:
+        resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id)
+    except (LookupError, ValueError) as exc:
+        # `ValueError` is a name the resolver refuses outright (`assert_valid_manifest_name`).
+        raise UnknownManifest(manifest_id) from exc
+    tools = await governed_tools(settings, resolved=resolved, auth=auth, tools=default_tool_provider())
+    return [t for t in tools if step_refusal(t) is None]
+
+
+def step_ports(manifest_id: str, tool: Any) -> tuple[list[Port] | None, str | None]:
+    """A `tool_call` step's input ports for `tool` with no `args` fixed, or `None` and why not.
+
+    The step's own config validation (`ToolCallConfig`) decides: a schema it refuses is one a
+    step wired to this tool could not save either.
+    """
+    from pydantic import ValidationError
+
+    from felix.tools.types import tool_input_schema
+    from felix.workflows.kinds import ToolCallConfig, get_step_kind
+
+    kind = get_step_kind("tool_call")
+    if kind is None:
+        return None, "the tool_call step kind is not registered"
+    try:
+        config = ToolCallConfig(manifest=manifest_id, tool=tool.name, input_schema=tool_input_schema(tool))
+    except ValidationError:
+        return None, "this tool's input schema cannot become step ports"
+    inputs, _ = kind.ports(config)
+    return inputs, None
+
+
 async def run_tool_step(
     settings: Settings,
     row: dict[str, Any],
@@ -118,7 +172,7 @@ async def _governed_tools(
 ) -> tuple[Any, list[Any]]:
     """The step's manifest, resolved as the starter and held to its pin, and its governed tools."""
     from felix.manifests.pin import assert_resume_pin
-    from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+    from felix.runtime import governed_tools, resolve_tenant_manifest
     from felix.tools.builtins import default_tool_provider
 
     tenant_id, state = row["tenant_id"], row["state_json"]
@@ -135,16 +189,14 @@ async def _governed_tools(
             version=resolved.version,
             resolved_out=resolved.sub_agents,
         )
-    await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
-    agent = await build_tenant_agent(
+    tools = await governed_tools(
         settings,
-        manifest=resolved.manifest,
-        sub_agents=resolved.sub_agents,
+        resolved=resolved,
+        auth=auth,
         tools=default_tool_provider(),
-        tenant_id=tenant_id,
-        skill_owner=auth.skill_owner,
+        thread_id=thread,
     )
-    return resolved.manifest, list(getattr(agent, "tools", None) or [])
+    return resolved.manifest, tools
 
 
 async def _call(
@@ -168,6 +220,9 @@ async def _call(
     tool = next((t for t in tools if t.name == name), None)
     if tool is None:
         return {"error": f"manifest {manifest_id[:200]} does not bind tool {name[:200]}"}
+    refusal = step_refusal(tool)
+    if refusal is not None:
+        return {"error": refusal}
     args: dict[str, Any] = dict(step.get("args") or {})
     drift = schema_drift(dict(step.get("input_schema") or {}), tool_input_schema(tool), set(args))
     if drift is not None:
@@ -220,4 +275,12 @@ def _outcome(text: str, denied: bool) -> dict[str, Any]:
         return {"output": text}
 
 
-__all__ = ["TOOL_BEGAN", "TOOL_CHILD_KIND", "run_tool_step", "schema_drift"]
+__all__ = [
+    "TOOL_BEGAN",
+    "TOOL_CHILD_KIND",
+    "run_tool_step",
+    "schema_drift",
+    "step_ports",
+    "step_refusal",
+    "step_tools",
+]

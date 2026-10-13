@@ -57,7 +57,7 @@ async def test_a_raising_tool_is_not_relayed(
     tool = SimpleNamespace(name="leaky", description="", executor=_Raises(), args_schema=None)
 
     async def compiled(**_: Any) -> Any:
-        return None, [tool], object()
+        return [tool], object()
 
     async def passthrough(_manifest: Any, args: dict[str, Any], _settings: Any) -> dict[str, Any]:
         return args

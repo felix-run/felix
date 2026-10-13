@@ -153,7 +153,7 @@ plugin kind has none), checks the starter against each named manifest's inbound 
 tenant at `MAX_ACTIVE_RUNS_PER_TENANT`, records the starter with `durability/runs.py:record_caller`,
 and writes a `workflow_runs` row (definition snapshot) plus an orchestrator fiber
 (`kind: workflow_run`, op `workflow`) that calls `advance` and parks `POLL_MS`. `advance` polls
-in-flight steps, starts what is ready (at most `MAX_AGENT_STEPS_IN_FLIGHT` agent steps), and saves
+in-flight steps, starts what is ready (at most `MAX_CHILD_STEPS_IN_FLIGHT` agent and tool steps), and saves
 under the `version` CAS only when something changed. Each kind's `start`/`poll`/`stop` is its
 executor. An `agent_turn` is a child durable chat on `thread_ids.workflow_thread_id`, its fiber id
 derived from run and step (a replay or a second claim adopts it, `RunInProgress` included), started
@@ -164,7 +164,11 @@ step's `manifest` as the starter, holds it to the pin (forced), compiles it and 
 through the governed executor — every wrapper applies, approvals included — after checking the tool
 is still bound and its live input schema still takes what the step sends (`schema_drift`) and
 screening the arguments as MCP does. `tool_began` is checkpointed before the call; a replayed claim
-repeats it only for a `replay_safe` tool. An
+repeats it only for a `replay_safe` tool. A client tool (`spec.client_tools`) has no client to
+answer it and is refused (`step_refusal`). `step_tools` is what `GET /workflows/-/tools` lists for
+the editor: the same `runtime.governed_tools` compile, as the caller, less what `step_refusal`
+refuses — so the listing, the MCP server and the step agree on a manifest's tools. A tool input
+keeps the tool's own argument name (`pullNumber`), not the port-name alphabet. An
 `approval` is found by signature (`approvals.store.find_by_signature`, any status) before
 `create_pending`; a lapsed or swept one fails the step. Stopping (cancel, expiry, fail-fast) calls
 every unfinished step's `stop`: `fibers.stop_fiber` by derived id plus `steer.request_abort`, and

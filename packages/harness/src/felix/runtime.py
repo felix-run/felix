@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
 from felix.manifests.builder import BuildDeps, build_agent
@@ -17,6 +17,9 @@ from felix.patterns.types import Agent
 from felix.session.store import build_checkpointer, validate_checkpointer_config
 from felix.session.strategies import get_session_strategy
 from felix.tools.provider import ToolProvider
+
+if TYPE_CHECKING:
+    from felix.context import AuthContext
 
 logger = logging.getLogger("felix.runtime")
 
@@ -254,9 +257,42 @@ def _tenant_sub_agent_builder(
     return build
 
 
+class UnknownManifest(LookupError):
+    """No manifest by that name resolves for the tenant: what a surface answers as not found."""
+
+
+async def governed_tools(
+    settings: Settings,
+    *,
+    resolved: ResolvedManifest,
+    auth: AuthContext,
+    tools: ToolProvider,
+    thread_id: str | None = None,
+) -> list[Any]:
+    """`resolved` admitted for `auth` and compiled; its tools, each wrapped in the governance stack.
+
+    What every surface that calls a manifest's tools without its model uses — the MCP server
+    and a workflow's tool step list and call these, and the workflow editor wires against them —
+    so the three cannot disagree about which tools a manifest offers. The tenant is `auth`'s:
+    admission and compile can never be for two different tenants.
+    """
+    await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread_id)
+    agent = await build_tenant_agent(
+        settings,
+        manifest=resolved.manifest,
+        sub_agents=resolved.sub_agents,
+        tools=tools,
+        tenant_id=auth.tenant_id,
+        skill_owner=auth.skill_owner,
+    )
+    return list(getattr(agent, "tools", None) or [])
+
+
 __all__ = [
+    "UnknownManifest",
     "build_tenant_agent",
     "default_object_store",
+    "governed_tools",
     "prepare_tenant_invoke",
     "resolve_tenant_manifest",
     "session_plumbing",

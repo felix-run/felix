@@ -668,9 +668,14 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       required (an older stored step reads as `invalid_config`).
       *Next:* run and step SSE frames (polling until then); `workflow_runs` in the retention
       sweep, and `auth_json` / `pins_json` cleared once a run ends; a cap on stored output size;
-      four-eyes approval steps; a run scope; whether `workflows:read` sees step outputs; a route
-      listing a manifest's governed tools with their input schemas, for the editor to wire
-      against.
+      four-eyes approval steps; a run scope; whether `workflows:read` sees step outputs.
+- [x] **Editor tool listing.** `GET /workflows/-/tools?manifest=` lists the tools a `tool_call`
+      step can name — the manifest compiled as the caller (`runtime.governed_tools`, shared with
+      the MCP server and the step), each with its input schema and the step's input ports; client
+      tools are left out and refused at run. Tool inputs keep the tool's own argument names.
+      *Found on the way:* MCP `tools/call` executes the governed executor directly, so the
+      plugin and manifest tool hooks and the `tool_call` audit row do not apply to it — the gap the
+      tool step closed by dispatching through `ToolRunner`.
 - [ ] **Entry points.** Manual run with inputs; a job naming a workflow; a trigger naming one.
 - [ ] **Console.** chat-ui Workflows page (list, editor, run view) and the instrument's compact
       graph — felix-web.
@@ -714,7 +719,9 @@ one member act with another's authority.
       agent edit and commit there; the opener then publishes it. Show the opener the diff's
       authorship before publish, or refuse non-opener turns on a checkout thread.
 - [ ] **`ManifestNotFound`.** Each surface rediscovers which exceptions mean "no such manifest"
-      (`LookupError` vs `ValueError`); `resolve_tenant_manifest` should raise one type.
+      (`LookupError` vs `ValueError`); `resolve_tenant_manifest` should raise one type. Four wrappers
+      exist today: `runtime.UnknownManifest`, `workspace_files.UnknownManifest`,
+      `side_question.UnknownManifestError`, MCP's `_UnknownManifest`; define it in `manifests/resolver.py`.
 
 ### Harness
 

@@ -14,8 +14,10 @@ loses only a race to create the same id, which is `409` with the same body (412 
 precondition the caller sent). `PUT` with `If-Match` on a workflow that is gone is 412 with
 `current: null`; `DELETE` of one is 404. An editor treats both as *deleted elsewhere*.
 
-`/-/kinds` lists the step kinds the registry holds and `/-/check` checks a definition without
-saving it. The `-/` prefix cannot collide with a workflow, whose id starts with a letter or digit.
+`/-/kinds` lists the step kinds the registry holds, `/-/check` checks a definition without
+saving it, and `/-/tools?manifest=` lists the tools a `tool_call` step naming that manifest can
+call, compiled as the caller. The `-/` prefix cannot collide with a workflow, whose id starts
+with a letter or digit.
 """
 
 from __future__ import annotations
@@ -31,11 +33,15 @@ from felix.auth.mgmt import (
     subject_from_request,
     tenant_id_from_request,
 )
+from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
+from felix.logging_setup import loggable
+from felix.tools.types import tool_input_schema
 from felix.workflows import store as workflow_store
 from felix.workflows.check import Problem, ProblemCode, check
 from felix.workflows.kinds import get_step_kind, list_step_kinds
 from felix.workflows.ports import Port, StepPorts, describe
 from felix.workflows.schema import WORKFLOW_ID_PATTERN, WorkflowSpec
+from felix.workflows.tool_step import step_ports, step_tools
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger("felix_api.routes.workflows")
@@ -112,6 +118,34 @@ class StepKindOut(BaseModel):
 
 class StepKindList(BaseModel):
     items: list[StepKindOut]
+
+
+class StepToolOut(BaseModel):
+    name: str
+    description: str
+    # What a `tool_call` step stores as its `input_schema` when it is wired to this tool.
+    input_schema: dict[str, Any]
+    # The step's input ports with no `args` fixed; `null` when the schema cannot become ports.
+    inputs: list[PortOut] | None
+    # Why `inputs` is `null`: the tool cannot be wired as a step.
+    problem: str | None = None
+    read_only: bool
+    # Whether a run whose worker died mid-call may call it again (`replay_safe`).
+    replay_safe: bool
+
+
+class StepToolList(BaseModel):
+    manifest: str
+    items: list[StepToolOut]
+
+
+class ManifestRefusedDetail(BaseModel):
+    error: Literal["unknown_manifest", "not_permitted", "manifest_unavailable"]
+    manifest: str
+
+
+class ManifestRefused(BaseModel):
+    detail: ManifestRefusedDetail
 
 
 class WorkflowChanged(BaseModel):
@@ -265,6 +299,67 @@ async def list_kinds(request: Request) -> dict[str, Any]:
             config_schema = {}
         items.append({"name": name, "label": kind.label, "config_schema": config_schema})
     return {"items": items}
+
+
+def _step_tool(manifest: str, tool: Any) -> dict[str, Any]:
+    inputs, problem = step_ports(manifest, tool)
+    return {
+        "name": tool.name,
+        "description": str(tool.description or ""),
+        "input_schema": tool_input_schema(tool),
+        "inputs": None if inputs is None else [_port(p) for p in inputs],
+        "problem": problem,
+        "read_only": bool(getattr(tool, "read_only", False)),
+        "replay_safe": bool(getattr(tool, "replay_safe", False)),
+    }
+
+
+@router.get(
+    "/-/tools",
+    response_model=StepToolList,
+    responses={
+        401: {"model": ManifestRefused, "description": "The manifest refuses anonymous callers"},
+        403: {"model": ManifestRefused, "description": "The manifest's inbound rules refuse the caller"},
+        404: {"model": ManifestRefused, "description": "No such manifest"},
+        503: {"model": ManifestRefused, "description": "The manifest did not compile"},
+    },
+)
+async def list_step_tools(
+    request: Request, manifest: str = Query(min_length=1, max_length=200)
+) -> dict[str, Any]:
+    """The tools a `tool_call` step naming `manifest` can call, with their input schemas.
+
+    The manifest is admitted for the caller and compiled, so this is its governed tool set as a
+    run started by the caller resolves it — less client tools, which a workflow cannot answer.
+    """
+    require_mgmt_scopes(request, SCOPE_WORKFLOWS_READ)
+    from felix.manifests.inbound_auth import InboundAuthError
+    from felix.runtime import UnknownManifest
+
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+    ctx = try_get_context()
+    auth = ctx.auth if ctx is not None else AuthContext(tenant_id=tenant_id)
+    try:
+        async with async_run_with_context(RequestContext(settings=settings, auth=auth, manifest_id=manifest)):
+            tools = await step_tools(settings, tenant_id, manifest, auth)
+    except UnknownManifest:
+        raise HTTPException(
+            status_code=404, detail={"error": "unknown_manifest", "manifest": manifest}
+        ) from None
+    except InboundAuthError as refused:
+        raise HTTPException(
+            status_code=int(getattr(refused, "status_code", 403) or 403),
+            detail={"error": "not_permitted", "manifest": manifest},
+        ) from None
+    except Exception:
+        logger.warning(
+            "workflow tools: manifest %s did not compile", loggable(manifest, limit=200), exc_info=True
+        )
+        raise HTTPException(
+            status_code=503, detail={"error": "manifest_unavailable", "manifest": manifest}
+        ) from None
+    return {"manifest": manifest, "items": [_step_tool(manifest, t) for t in tools]}
 
 
 @router.post("/-/check", response_model=CheckOut)
