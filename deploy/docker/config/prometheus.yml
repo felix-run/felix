@@ -3,7 +3,8 @@
 # The Felix API scrape carries a credential. `/metrics` is deliberately not public — its
 # label values include tenant-supplied manifest ids and remote MCP tool names, so an
 # anonymous scrape would disclose every tenant's manifests and tools. scripts/metrics-token.sh
-# mints a zero-scope API key and writes it to the file referenced below.
+# mints an API key holding only `metrics:read` (the scope /metrics requires), in its own
+# `metrics` tenant, and writes it to the file referenced below.
 
 global:
   scrape_interval: 15s

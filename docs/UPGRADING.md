@@ -31,6 +31,26 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## `/metrics` needs `metrics:read`, and `deployment` scope is opt-in
+
+**Two configuration edits, before the roll, if either applies.**
+
+`GET /metrics` now requires the `metrics:read` scope (or `admin` / `*`): its label values span every
+tenant, and any valid key used to read them. A scrape key minted by `scripts/metrics-token.sh` with an
+empty `scopes` array gets 403 after the upgrade. Run the script again (`make up-observability` does)
+and it rewrites that key's entry to `"tenant_id": "metrics"`, `"scopes": ["metrics:read"]`; in
+Kubernetes, give the key in `serviceMonitor.bearerTokenSecret` that entry in `FELIX_AUTH_API_KEYS`.
+The `metrics` tenant is deliberate: `/metrics` is not tenant-scoped, and in `default` the key
+could run that tenant's anonymous-allowed agents.
+
+`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` now defaults to empty, where it was `default`. A manifest declaring
+`spec.workspace.scope: deployment` is refused for every tenant the setting does not name.
+`compose.self.yml` sets `default`, so `make up-self` is unchanged; any other deployment running
+`contributor`, `triage` or its own `deployment`-scope manifest sets
+`FELIX_WORKSPACE_DEPLOYMENT_TENANTS=default` (or its operator tenant) explicitly.
+
+---
+
 ## Thread previews for threads from before the session index listed them
 
 **One command after the roll, optional, and safe to repeat.** `GET /chat/sessions` lists each thread
@@ -101,7 +121,8 @@ every tenant and thread on the host. Each call now works in its manifest's scope
 | `deployment` | `<root>` itself | `contributor`, `triage` |
 
 `deployment` holds every other scope, so it is honoured only for the tenants in
-`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` (default `default`); any other tenant running a manifest that
+`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` (empty by default since the deployment-scope opt-in change
+above, `default` on the self-build overlay); any other tenant running a manifest that
 asks for it is refused. A call with no thread under `scope: thread` (an MCP or A2A call that names
 none) is refused too, rather than given a shared directory.
 

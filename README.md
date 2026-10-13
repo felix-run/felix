@@ -216,9 +216,11 @@ them as generations with token usage and cost rather than anonymous timing bars.
 
 `/metrics` is deliberately **not** public: its label values include tenant-supplied manifest
 ids and remote MCP tool names, so an anonymous scrape would disclose every tenant's manifests
-and tools. `scripts/metrics-token.sh` mints a scrape key with no scopes — `/metrics` has no
-scope gate, so it reads metrics and is refused everywhere else. In Kubernetes, set
-`serviceMonitor.enabled=true` and point it at a Secret holding the same kind of key.
+and tools — and since those span every tenant, it also needs the `metrics:read` scope (or
+`admin` / `*`). `scripts/metrics-token.sh` mints a scrape key holding `metrics:read` and nothing
+else, in a `metrics` tenant of its own, so it reads metrics and reaches no tenant's agents; run it
+again to upgrade a key it minted before the scope existed. In Kubernetes, set `serviceMonitor.enabled=true` and point it at a
+Secret holding the same kind of key.
 
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) is the metric catalog and span schema.
 

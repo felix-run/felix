@@ -153,13 +153,19 @@ not belong on the same host as `make up-lite`.
 
 `/metrics` requires authentication, and Compose defaults to `FELIX_AUTH_MODE=api_key`.
 `scripts/metrics-token.sh` (run automatically by `make up-observability`) mints a
-**second** API key with an empty `scopes` array, merges it into `FELIX_AUTH_API_KEYS`
+**second** API key whose only scope is `metrics:read`, in a `metrics` tenant of its own (`/metrics`
+is not tenant-scoped, and in `default` the key could run that tenant's anonymous-allowed agents),
+merges it into `FELIX_AUTH_API_KEYS`
 alongside your operator key, and writes the bare token to `deploy/docker/.metrics-token`
 (gitignored, mode 600) because Prometheus has no env expansion in scrape configs.
 
-`/metrics` has no scope gate — any valid key is accepted — so the unscoped key reads
-metrics and is refused everywhere else. It is not the operator key, so leaking it does not
-leak write access to `PUT /manifests`.
+`/metrics` requires `metrics:read` (its labels span every tenant), and no other route accepts
+that scope, so the key reads metrics and is refused everywhere else. It is not the operator key,
+so leaking it does not leak write access to `PUT /manifests`. A key the script minted before the
+scope existed carries an empty `scopes` array and now gets 403; the script upgrades that entry
+(and only that shape: `sub` `metrics-scrape`, empty `scopes`) on its next run, so
+`make up-observability` fixes it. It refuses a pre-set `FELIX_METRICS_SCRAPE_TOKEN` without its
+`sk-felix-scrape-` prefix rather than adopting some other key.
 
 ### What is deliberately not here
 

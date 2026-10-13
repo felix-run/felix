@@ -10,6 +10,7 @@ stopped under an already-sent 200 OK with no error event and no `[DONE]`.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -199,6 +200,28 @@ async def test_probe_paths_need_no_credential_under_a_real_auth_mode() -> None:
             resp = await client.get(path)
             assert resp.status_code == 200, (path, resp.text)
         assert (await client.get("/metrics")).status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("scopes", "status"),
+    [([], 403), (["usage:read"], 403), (["metrics:read"], 200), (["admin"], 200)],
+    ids=["none", "other", "metrics", "admin"],
+)
+async def test_metrics_needs_the_metrics_scope(scopes: list[str], status: int) -> None:
+    """Its labels span every tenant, so a tenant's own valid key must not read them."""
+    from felix_api.app import create_app
+    from httpx import ASGITransport, AsyncClient
+
+    settings = _settings(
+        auth_mode="api_key",
+        auth_api_keys=json.dumps({"k-scrape": {"tenant_id": "t", "sub": "s", "scopes": scopes}}),
+    )
+    app = create_app(settings=settings, plugins=[])
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/metrics", headers={"authorization": "Bearer k-scrape"})
+    assert resp.status_code == status, resp.text
+    if status == 403:
+        assert resp.json() == {"detail": "missing scopes: metrics:read"}
 
 
 def _deployed_probe_paths() -> set[str]:

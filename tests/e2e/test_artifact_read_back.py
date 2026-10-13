@@ -54,7 +54,8 @@ def workspace(tmp_path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     monkeypatch.setattr(
         "felix.artifacts.uuid", types.SimpleNamespace(uuid4=lambda: types.SimpleNamespace(hex=ARTIFACT_ID))
     )
-    return {"FELIX_WORKSPACE_ROOT": str(tmp_path)}
+    # `deployment` scope is refused for every tenant the operator has not named.
+    return {"FELIX_WORKSPACE_ROOT": str(tmp_path), "FELIX_WORKSPACE_DEPLOYMENT_TENANTS": "default"}
 
 
 async def _chat(app: Any, name: str) -> Any:

@@ -330,14 +330,38 @@ compiled into it and apply whichever way it was reached.
 **A credential can be pinned to manifests.** A token or api-key entry carrying a `felix_manifests`
 claim (a list of names) may invoke those manifests and no other: refused with 403 on chat, `/v1`,
 A2A, MCP, side questions, `/chat/compact`, a rewind's summary, and each child `delegation`
-compiles. The pin is stored with a durable run and enforced again when it resumes. A claim
+compiles. The routes that reach a manifest without a turn of it are held to the same check, and
+to its `auth.inbound`: the file pane (`/chat/workspace/*`, against the manifest whose
+`spec.workspace.scope` decides the directory — the thread's last, else the one named, else the
+default), `POST /chat/style` naming a style, and A2A `tasks/get`, `tasks/cancel` and
+`tasks/resubscribe` (against the task's manifest; a task whose manifest no longer resolves is
+refused). An A2A `message/send` whose `taskId` names an existing task is admitted against that
+task's manifest before anything is written, and one naming a different `manifest` is refused; a
+refused send writes no task record at all. Threads and tasks are otherwise shared across the tenant. The pin is stored with a
+durable run and enforced again when it resumes. A claim
 that is not a list of strings is refused rather than ignored. Google sign-in mints one for an
 account with `manifests` on `FELIX_GOOGLE_ACCOUNTS` (the bundled `kids` agent is what it is for).
 Boot refuses a pinned account that carries anything but `<area>:read` scopes, since a write scope
-reaches around the pin (rewrite the manifest, schedule a job, run an eval). It also refuses one
-that shares a tenant with an unpinned account, since threads are shared within a tenant. Like
+reaches around the pin (rewrite the manifest, schedule a job, run an eval), and any scope with
+whitespace in it (the token's `scope` claim is split on whitespace, so `"admin memory:read"` would
+arrive as `admin`). Since threads are shared within a tenant, it also refuses a pinned account whose
+tenant is shared with an unpinned account, with an account pinned to different manifests, with any
+entry in `FELIX_AUTH_API_KEYS` (one without a `tenant_id` is in `default`), a
+`FELIX_GITHUB_ORG_TENANTS` grant, a `FELIX_TRIGGERS` trigger or a `FELIX_JWT_VERIFIERS` issuer with
+`;tenant=fixed:`, or that is
+`default` itself or a GitHub signup's personal tenant. A claim- or issuer-mode verifier's tenants
+cannot be known at boot and are not checked. Like
 `auth.inbound`, the pin is checked on the manifest a request names, so a pinned manifest's
 `spec.sub_agents` are the operator's choice and are not checked again.
+
+**A pin limits which agents a credential runs, not what it can read in its tenant.** Threads are
+shared across a tenant, so a turn of a manifest the credential may invoke, sent on another
+credential's thread, replays that thread's history to the agent — whatever manifest wrote it. Two
+API keys or two JWT principals in one tenant, one pinned and one not, are therefore not isolated
+from each other's conversations; the pin is not a confidentiality boundary inside a tenant. The
+boundary is the tenant: give a credential that must not read others' threads a tenant of its own.
+Only Google sign-in enforces that at boot (above); for `FELIX_AUTH_API_KEYS` and external JWTs it
+is the operator's configuration to get right.
 
 **`pin_compile` covers sub-agents**, recursively: the pin records a digest of every child a
 router compiles, and an edited, added or removed one is drift — 409 on a turn, a failed fiber on
@@ -2354,8 +2378,9 @@ not an IP address, is not trusted at all: the key falls back to the socket peer,
 address a client cannot choose. A single-valued header (`cf-connecting-ip`) is the
 one-entry case of the same rule.
 
-`/metrics` requires authentication: its label values include tenant-supplied manifest ids
-and remote MCP tool names.
+`/metrics` requires authentication and the `metrics:read` scope: its label values include
+tenant-supplied manifest ids and remote MCP tool names, across every tenant, so a tenant's own
+credential must not read it.
 
 `PUT /manifests/{name}` and `felix validate-manifest` run the same write-time validator.
 Always refused: an outbound `auth` or `env` value that looks like a credential, a URL
@@ -2590,6 +2615,7 @@ implies the matching `*:read`.
 | `workflows:read` / `workflows:write` | `/workflows` — authored workflow definitions. Its own grant rather than part of `manifests:write` or `jobs:write`: a workflow names the manifests and tools its runs will call. `/-/check` (check a definition without saving) is a read. A tenant keeps at most 500 workflows (409 `workflow_limit` past it; replacing one never counts), a definition is capped at 256 KiB however it is built, and a check lists at most 200 problems (then `too_many_problems` with the count left out), each quoting an author's names cut short — so a definition cannot make its own error report large. Every save and delete is audited (`workflow_saved`, `workflow_deleted`) to the caller. Starting and cancelling a run (`POST /workflows/{id}/runs`, `.../cancel`) need `workflows:write`: each agent step runs as a child durable run **as the person who started the workflow, with their scopes** — recorded once at start like a durable chat's, never widened, and dead with the run, whose deadline is 24 hours clamped to the starter's token `exp`. A run started with no caller in context runs its steps with no scopes. **Each manifest a step names is checked against the starter's inbound rules and pinned when the run starts** (401/403 `not_permitted` otherwise): a step that starts hours later refuses a version published since, as a durable chat does, so the starter's scopes never run code nobody checked. Each child is also held to its manifest's own `execution` TTL. A tenant may have 50 runs going and a run 8 agent steps in flight. Approval steps open ordinary `/approvals` rows; one nobody decides fails the step rather than counting as a denial, and cancelling closes them. Two things to know: anyone with `workflows:read` sees every step's inputs and outputs, which were produced with the starter's scopes; and one step's output becomes the next step's prompt, so text an earlier step read (a web page, an issue body) reaches a later step's tools — turn on `spec.inbound` screening on manifests that take workflow input from untrusted sources. Audited as `workflow_run_started` and `workflow_run_cancelled` |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
+| `metrics:read` | `GET /metrics`. Its label values (manifest ids, remote MCP tool names) span every tenant, so it is an operator grant: give it to the scrape credential (`scripts/metrics-token.sh`, the Helm `serviceMonitor.bearerTokenSecret`), in a tenant of its own (`metrics`), and to nothing a tenant holds |
 | `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
 | `documents:read` / `documents:write` | `/documents` — ingest, search, inspect and remove the corpus an agent retrieves from |
 | `skills:read` | `/skills`, and the read routes of `/skill-library` (the library, the review queue at `/-/review`, each version's review record, digest-checked and redacted files, a read-only gate preview, the policy at `/-/policy`, feedback at `/{name}/feedback` and the `/-/feedback` inbox, evaluations at `/{name}/evals`). `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: `activate_skill` hands it to the model as instructions, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Where the manifest sets `spec.personal_skills: read`, the listing includes the caller's own skills, as the caller's turn would, and its `active` field — like what `activate_skill` reports back — names only skills in the caller's own catalog. Activation *history* (`/activations/recent`) is the audit trail and shows every caller's activations, personal skill names included, each with a `library` field (`org`, or a personal library's digest — never the subject) so an investigator can tell whose instructions ran. Personal is not private: an `activate_skill` result, body and all, is in the thread's session log like any tool result, readable by whoever can read the thread. `pin_compile` covers neither the tenant's library nor a caller's. Worth setting on any manifest that has to be reviewable: a skill body reaches the model as instructions, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |

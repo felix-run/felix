@@ -55,7 +55,9 @@ x-felix-env: &felix-env
   # workers_ai, typesafe, groq. Values may be `secret:NAME`.
   FELIX_MODEL_PROVIDER_OPTIONS: ${FELIX_MODEL_PROVIDER_OPTIONS:-}
   FELIX_WORKSPACE_ROOT: ${FELIX_WORKSPACE_ROOT:-/workspace}
-  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-default}
+  # Empty: no tenant gets `spec.workspace.scope: deployment` (the whole root) unless named here.
+  # compose.self.yml names `default`, which its `contributor` and `triage` agents need.
+  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-}
   # `hosted`: each scope's files in its own sandbox, through the gateway Worker
   # (deploy/cloudflare/workspace-gateway). The API and the worker both run the tools.
   FELIX_WORKSPACE_BACKEND: ${FELIX_WORKSPACE_BACKEND:-local}

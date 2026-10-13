@@ -171,9 +171,10 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 10s
   # /metrics is authenticated on purpose: its labels carry tenant-supplied manifest ids
-  # and remote MCP tool names. Point this at a Secret holding a Felix API key with an
-  # empty `scopes` array — /metrics has no scope gate, so an unscoped key reads metrics
-  # and can do nothing else.
+  # and remote MCP tool names. Point this at a Secret holding a Felix API key whose
+  # `scopes` are `["metrics:read"]`, in a tenant of its own (`"tenant_id": "metrics"`) —
+  # /metrics requires that scope and is not tenant-scoped, so the key reads metrics and
+  # reaches no tenant's manifests or workspace.
   bearerTokenSecret:
     name: ""
     key: token

@@ -1662,11 +1662,13 @@ def _workspace_refusal(exc: Exception, *, missing_dir_is_404: bool = True) -> HT
 async def _thread_workspace(
     request: Request, thread_id: str, manifest: str | None
 ) -> tuple[AuthContext, Any]:
-    """The caller's tenant and the workspace `thread_id` works in (`felix.workspace_files`).
+    """The caller's tenant and the workspace `thread_id` works in (`felix.workspace_files`), for a
+    caller the deciding manifest admits.
 
     403 when that is a repository checkout someone else opened: the thread is the tenant's, the
     clone of a person's (possibly private) repository in it is theirs (`repos.checkouts`).
     """
+    from felix.manifests.inbound_auth import InboundAuthError
     from felix.repos.checkouts import may_reach_checkout
     from felix.workspace_files import UnknownManifest, resolve_thread_workspace
 
@@ -1681,9 +1683,13 @@ async def _thread_workspace(
             settings, auth.tenant_id, thread, principal=auth.principal_sub, scopes=auth.scopes
         ):
             raise HTTPException(status_code=403, detail="not_checkout_opener")
-        workspace = await resolve_thread_workspace(settings, auth.tenant_id, thread, manifest)
+        workspace = await resolve_thread_workspace(
+            settings, auth.tenant_id, thread, requested_manifest=manifest, auth=auth
+        )
     except UnknownManifest:
         raise HTTPException(status_code=404, detail="unknown_manifest") from None
+    except InboundAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=client_safe_message(exc)) from exc
     except ValueError as exc:
         refusal = _workspace_refusal(exc)
         assert refusal is not None
@@ -3065,6 +3071,9 @@ async def chat_output_style(
             resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=None)
         except (LookupError, ValueError) as exc:
             raise HTTPException(status_code=404, detail="unknown_manifest") from exc
+        # A manifest's styles are its author's text: one the caller may not invoke is not theirs
+        # to read by probing names, nor to set on a thread.
+        _require_inbound_auth(resolved.manifest, auth)
         found = resolved.manifest.spec.output_styles.find(body.style)
         if found is None:
             raise HTTPException(status_code=422, detail="unknown_output_style")

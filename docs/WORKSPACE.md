@@ -211,7 +211,8 @@ same answers, and every refusal `read_file` shares to `read_file`'s wording.
 
 A tool called outside a thread (no `thread_id`) under `scope: thread` is refused, not quietly given a
 shared directory. `deployment` holds every other scope, so it is honoured only for the tenants in
-`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` (default `default`) and refused for any other.
+`FELIX_WORKSPACE_DEPLOYMENT_TENANTS` (empty by default, so refused for every tenant; the self-build
+overlay sets `default`) and refused for any other.
 
 **As built (phase 2a, `felix/tools/workspace_scope.py`).** The `local` layout is
 `<root>/.felix-scopes/<tenant>/<key>/`, not `<root>/<tenant>/<key>/` as first proposed: files written

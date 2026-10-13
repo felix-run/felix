@@ -172,7 +172,7 @@ async def test_a_call_with_no_thread_is_refused_before_the_gateway_is_asked(
 
 
 async def test_the_deployment_scope_stays_on_the_host(tmp_path: Path, gateway: FakeGateway) -> None:
-    settings = _settings(tmp_path, "hosted")
+    settings = _settings(tmp_path, "hosted", workspace_deployment_tenants="default")
     (tmp_path / "workspace" / "README.md").write_text("the checkout")
     async with _request(settings, tenant="default", thread=None):
         with bound_scope("deployment"):
@@ -243,7 +243,7 @@ async def test_a_consumer_that_needs_a_host_directory_is_refused_under_hosted(
 ) -> None:
     from felix.tools.workspace import workspace_root
 
-    settings = _settings(tmp_path, "hosted")
+    settings = _settings(tmp_path, "hosted", workspace_deployment_tenants="default")
     async with _request(settings):
         with pytest.raises(ValueError, match="needs a directory on the host"):
             workspace_root()

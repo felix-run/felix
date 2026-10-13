@@ -3,9 +3,10 @@
   The production analogue of scripts/metrics-token.sh. /metrics is authenticated — its
   label values include tenant-supplied manifest ids and remote MCP tool names — so the
   scrape needs a credential, and Prometheus Operator reads it from a Secret rather than
-  from the chart's values. Create it with a key whose value is a Felix API key that has
-  an empty `scopes` array: /metrics has no scope gate, so an unscoped key can read
-  metrics and nothing else.
+  from the chart's values. Create it with a key whose value is a Felix API key whose
+  `scopes` are `["metrics:read"]` and nothing else, in a tenant of its own
+  (`"tenant_id": "metrics"`): /metrics requires that scope and is not tenant-scoped, and in a
+  real tenant the key could still run that tenant's anonymous-allowed manifests.
 
     kubectl create secret generic felix-metrics-scrape --from-literal=token=<api-key>
 */}}

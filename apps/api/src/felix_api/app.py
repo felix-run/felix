@@ -9,10 +9,11 @@ import re
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from felix import __version__ as harness_version
 from felix.auth.github import GITHUB_LOGIN_PREFIX
 from felix.auth.google import GOOGLE_LOGIN_PREFIX
+from felix.auth.mgmt import SCOPE_METRICS_READ, require_mgmt_scopes
 from felix.auth.middleware import AuthMiddleware
 from felix.config import Settings, get_settings
 from felix.idempotency import build_idempotency_store
@@ -318,7 +319,9 @@ def create_app(
         return report.as_dict(include_detail=False)
 
     @app.get("/metrics", tags=["System"])
-    async def metrics() -> Response:
+    async def metrics(request: Request) -> Response:
+        """Prometheus exposition. Needs `metrics:read`: the label values span every tenant."""
+        require_mgmt_scopes(request, SCOPE_METRICS_READ)
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

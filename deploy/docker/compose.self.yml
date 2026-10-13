@@ -53,6 +53,10 @@ x-self-env: &self-env
   # A literal, so it replaces any FELIX_SKILLS_DIR an operator set for the base stack: the
   # setting names one directory, and on this stack it must be this one.
   FELIX_SKILLS_DIR: /app/manifests/self/skills
+  # `contributor` and `triage` declare `spec.workspace.scope: deployment` -- the whole checkout --
+  # which is refused for every tenant the operator has not named. This stack's keys are in
+  # `default` (scripts/dev-key.sh), so that is the one opted in; Settings defaults to none.
+  FELIX_WORKSPACE_DEPLOYMENT_TENANTS: ${FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-default}
   # Approvals must not be anonymous: under `none` the caller could approve its own mutation.
   # The base anchor already defaults to api_key; pinned here so an overlay cannot loosen it.
   FELIX_AUTH_MODE: api_key
