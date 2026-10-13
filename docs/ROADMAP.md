@@ -680,6 +680,44 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       drifted since a `tool_call` step was wired (the step stores the snapshot it was wired
       against; the run must check against the live one).
 
+### Auth audit (2026-10-12)
+
+A read of authentication, per-route authorization and tenancy against v0.14.1, landed as four PRs.
+Threads stay shared inside a tenant by decision; the PRs close the places where that sharing let
+one member act with another's authority.
+
+- [~] **C1, manifest secret refs** (#633). `FELIX_MANIFEST_SECRETS` binds each `secret:NAME` to
+      the tenants that may name it; Felix's own, infrastructure and registry-bound secrets are
+      always refused.
+- [~] **In-tenant escalations** (#635). Opener-only GitHub publish and checkout routes; jobs on
+      behalf of their writer through inbound auth (`0041_job_creator`); approvals decided once;
+      loosening `/chat/mode` needs `approvals:write`; opt-in second-person approval.
+- [~] **Authz gaps** (#637). Off-turn admission on the pane, `/chat/style` and A2A task methods;
+      `metrics:read`; empty `FELIX_WORKSPACE_DEPLOYMENT_TENANTS` default; pinned Google isolation.
+- [~] **Hardening** (#638). Mount validation, one API-key parser, `mint-jwt` bounds, trigger TTL.
+- [!] **Per-principal thread ownership.** A `threads:*-all` scope and an owner on each thread, so
+      one member cannot read or drive another's. Deferred: it changes the sharing model and the
+      Slack shared-thread case with it. Until then a `felix_manifests` pin is not a confidentiality
+      boundary inside a tenant for API keys or JWTs (`deploy/GOVERNANCE.md`).
+- [ ] **Token revocation.** Felix-minted JWTs carry no `jti` and nothing can revoke one before
+      `exp` (8h for login tokens); Google sign-in has no logout. A deny-list keyed on `jti`, and
+      `kid` on minted tokens for key rotation.
+- [ ] **A job's standing grant.** A job written by a JWT principal keeps that writer's scopes until
+      it is re-saved; API-key writers are re-checked per firing (#635). Decide expiry or
+      re-validation for the rest. Likewise a durable run keeps a removed key's scopes until its TTL.
+- [ ] **RLS bypass as a role.** `app.rls_bypass` is a session setting the app role can set itself,
+      and `FELIX_DATABASE_RLS` defaults off; cross-tenant sweeps should use a `BYPASSRLS` role.
+- [ ] **API-key lifecycle.** Keys are plaintext config with no expiry, last-used or rotation.
+- [ ] **Device-flow phishing.** `/auth/github/device` lets anyone start a flow and redeem it; a
+      deployment that only needs browser sign-in should be able to turn it off.
+- [ ] **Trigger dedupe in Postgres.** GitHub signs no timestamp, so replay protection is the
+      dedupe record, which is per-replica without Redis and lost on restart.
+- [ ] **Checkout edits by non-openers.** Another member driving a checkout thread can have the
+      agent edit and commit there; the opener then publishes it. Show the opener the diff's
+      authorship before publish, or refuse non-opener turns on a checkout thread.
+- [ ] **`ManifestNotFound`.** Each surface rediscovers which exceptions mean "no such manifest"
+      (`LookupError` vs `ValueError`); `resolve_tenant_manifest` should raise one type.
+
 ### Harness
 
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
