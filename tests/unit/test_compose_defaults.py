@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from felix.config import Settings
@@ -64,9 +65,13 @@ def test_the_compose_default_matches_the_settings_default(env_var: str, field: s
     assert match, f"{env_var} is not passed through deploy/docker/compose.yml"
 
     written = match.group(1)
-    assert written != "", f"{env_var} defaults to an empty string; a numeric field rejects that at startup"
-
     expected = getattr(Settings(database_url="memory://x"), field)
+    # An empty string is a value only a text field accepts: a numeric or boolean one rejects it at
+    # startup. `workspace_deployment_tenants` is the text field whose default is empty.
+    if not isinstance(expected, str):
+        assert written != "", (
+            f"{env_var} defaults to an empty string; a numeric field rejects that at startup"
+        )
     # Compared as text after normalising the two shapes Compose and pydantic spell
     # differently: a bool is `true`/`false` in YAML and `True`/`False` in Python, and a
     # float may be written `1.0` or `1`. Not `float()` on everything, which is how eight
@@ -238,3 +243,37 @@ def test_verifying_and_push_settings_reach_every_felix_process(env_var: str) -> 
     for name in ("migrate", "api", "worker", "scheduler"):
         if name in env:
             assert env_var in env[name], f"{env_var} does not reach {name}"
+
+
+def _compose_yaml(path: Path) -> dict[str, Any]:
+    """A Compose file with its `!override` / `!reset` tags read as plain values."""
+    import yaml
+
+    class _Loader(yaml.SafeLoader):
+        pass
+
+    def _untagged(loader: yaml.SafeLoader, _suffix: str, node: yaml.Node) -> Any:
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node)
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node)
+        return loader.construct_scalar(node)  # type: ignore[arg-type]
+
+    _Loader.add_multi_constructor("!", _untagged)
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=_Loader)
+
+
+@pytest.mark.parametrize("service", ["api", "worker"])
+def test_the_self_build_overlay_opts_its_tenant_into_deployment_scope(service: str) -> None:
+    """`contributor` and `triage` declare `scope: deployment`, which Settings refuses for every tenant
+    by default; the overlay must name the tenant its keys are in (`scripts/dev-key.sh`)."""
+    repo = COMPOSE.parents[2]
+    dev_key = (repo / "scripts" / "dev-key.sh").read_text(encoding="utf-8")
+    tenant = re.search(r'"tenant_id":"([^"]+)"', dev_key)
+    assert tenant, "scripts/dev-key.sh no longer names a tenant"
+    env = _compose_yaml(COMPOSE.parent / "compose.self.yml")["services"][service]["environment"]
+    value = str(env.get("FELIX_WORKSPACE_DEPLOYMENT_TENANTS", ""))
+    named = re.fullmatch(r"\$\{FELIX_WORKSPACE_DEPLOYMENT_TENANTS:-([^}]*)\}", value)
+    assert named, f"compose.self.yml {service} does not set FELIX_WORKSPACE_DEPLOYMENT_TENANTS: {value!r}"
+    assert tenant.group(1) in {p.strip() for p in named.group(1).split(",")}
+    assert Settings(database_url="memory://x").workspace_deployment_tenants == ""

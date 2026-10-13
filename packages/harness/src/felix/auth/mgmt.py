@@ -159,6 +159,9 @@ SCOPE_SKILLS_WRITE = "skills:write"
 # principal, and a shared service credential is one principal for everyone holding it -- so who
 # may author instructions their turns will follow is an operator's decision per credential.
 SCOPE_SKILLS_PERSONAL = "skills:personal"
+# `GET /metrics`. Its label values span every tenant (manifest ids, remote MCP tool names), so
+# reading it is an operator grant, never something any valid credential carries by default.
+SCOPE_METRICS_READ = "metrics:read"
 
 __all__ = [
     "SCOPE_ADMIN",
@@ -178,6 +181,7 @@ __all__ = [
     "SCOPE_MANIFESTS_WRITE",
     "SCOPE_MEMORY_READ",
     "SCOPE_MEMORY_WRITE",
+    "SCOPE_METRICS_READ",
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
     "SCOPE_SKILLS_PERSONAL",

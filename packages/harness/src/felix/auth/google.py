@@ -124,6 +124,12 @@ class GoogleAccount:
 def _str_list(value: Any, what: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
         raise ValueError(f"{what} must be a list of non-empty strings")
+    # Scopes are joined with spaces into the token's `scope` claim and split on whitespace when it
+    # is verified, so `"admin memory:read"` would pass `_unpinnable` as one read scope here and
+    # arrive as `admin`. A manifest name has no whitespace either. Same rule as
+    # `felix.auth.github.scope_list`.
+    if bad := [v for v in value if v.split() != [v.strip()]]:
+        raise ValueError(f"{what} may not contain whitespace: {bad}")
     return tuple(dict.fromkeys(v.strip() for v in value))
 
 
@@ -417,9 +423,45 @@ async def exchange_code(
 # --- boot -----------------------------------------------------------------------------------
 
 
-def _check_pinned_accounts(accounts: Mapping[str, GoogleAccount]) -> None:
-    """A pin that the account's own scopes or tenant would reach around is refused at boot."""
+# Which configured tenant sources (`felix.config.configured_tenants`) a pinned account may not
+# share a tenant with -- each is a door into the tenant the pin does not hold -- and which are
+# exempt, with why. Every `TenantSourceKind` is in exactly one; a test holds the two to the type.
+PIN_ISOLATION_COUNTED: frozenset[str] = frozenset({"api_key", "github_org", "jwt_fixed", "trigger"})
+PIN_ISOLATION_EXEMPT: Mapping[str, str] = MappingProxyType(
+    {
+        # The allowlist a claimed tenant must be on; a pinned account's own tenant has to be.
+        "allowlist": "names tenants a token may claim, the pinned account's own included",
+        # Held to the rules on accounts themselves: unpinned, or pinned to other manifests.
+        "google": "Google accounts are checked against each other above",
+        # Outbound: a notification endpoint bound to the tenant, not a credential into it.
+        "webhook": "an outbound endpoint, not a way in",
+        # `verify_login_probe` refuses one that differs from the account's tenant, so it is the
+        # account's tenant; every other self-issued login then lands there, and those are
+        # GitHub org grants, counted under `github_org`.
+        "jwt_self_fixed": "the login probe requires it to equal the account's tenant",
+    }
+)
+
+
+def _check_pinned_accounts(accounts: Mapping[str, GoogleAccount], settings: Settings) -> None:
+    """A pin that the account's own scopes or tenant would reach around is refused at boot.
+
+    Threads, history and search are shared across a tenant, so a pinned account's tenant must hold
+    no credential that reaches more than the pin does: no unpinned account, no account pinned to
+    other manifests, no configured source in `PIN_ISOLATION_COUNTED` (API keys, GitHub orgs, a
+    fixed-tenant JWT issuer, triggers), and not `default` -- where every API key without a
+    `tenant_id` lands, and so the tenant any key added later most likely joins. A GitHub signup's
+    personal tenant is refused before this runs, for every configured tenant, by
+    `felix.auth.github_signup.validate_signup_config`.
+    """
+    from felix.config import configured_tenants
+
     unpinned_tenants = {a.tenant for a in accounts.values() if a.manifests is None}
+    pins_by_tenant: dict[str, set[frozenset[str]]] = {}
+    for a in accounts.values():
+        if a.manifests is not None:
+            pins_by_tenant.setdefault(a.tenant, set()).add(frozenset(a.manifests))
+    others = [found for found in configured_tenants(settings) if found.kind in PIN_ISOLATION_COUNTED]
     for account in accounts.values():
         if account.manifests is None:
             continue
@@ -435,6 +477,25 @@ def _check_pinned_accounts(accounts: Mapping[str, GoogleAccount]) -> None:
                 f"FELIX_GOOGLE_ACCOUNTS: {account.email} is pinned to manifests but shares tenant "
                 f"{account.tenant!r} with an unpinned account; give pinned accounts a tenant of their own"
             )
+        if len(pins_by_tenant[account.tenant]) > 1:
+            # One account would read the threads of an agent its own pin does not name.
+            raise RuntimeError(
+                f"FELIX_GOOGLE_ACCOUNTS: {account.email} is pinned to manifests but shares tenant "
+                f"{account.tenant!r} with an account pinned to different ones; give each pin a tenant "
+                "of its own, or pin the accounts that share one to the same manifests"
+            )
+        if account.tenant == "default":
+            raise RuntimeError(
+                f"FELIX_GOOGLE_ACCOUNTS: {account.email} is pinned to manifests, so it may not be in "
+                "tenant 'default', where every API key without a `tenant_id` lands; give it a tenant "
+                "of its own"
+            )
+        for found in others:
+            if found.tenant == account.tenant:
+                raise RuntimeError(
+                    f"FELIX_GOOGLE_ACCOUNTS: {account.email} is pinned to manifests but shares tenant "
+                    f"{account.tenant!r} with {found.label}; give pinned accounts a tenant of their own"
+                )
 
 
 def validate_google_config(settings: Settings) -> None:
@@ -461,7 +522,7 @@ def validate_google_config(settings: Settings) -> None:
         raise RuntimeError("FELIX_GOOGLE_CALLBACK_PATH must start with '/'")
     if not accounts:
         raise RuntimeError("Google sign-in is on, so FELIX_GOOGLE_ACCOUNTS must list at least one account.")
-    _check_pinned_accounts(accounts)
+    _check_pinned_accounts(accounts, settings)
     if not uses_jwt_verifiers(settings) or self_verifier(settings) is None:
         raise RuntimeError(
             "Google sign-in is on, so a minted token must be verifiable: set FELIX_AUTH_MODE=jwt and "

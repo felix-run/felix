@@ -41,7 +41,10 @@ Two properties of `/metrics` are deliberate and easy to undo by accident:
 
 - **It requires authentication.** Label values include tenant-supplied manifest ids and
   remote MCP tool names, so an anonymous scrape discloses every tenant's manifest and tool
-  names. It is not in `_PUBLIC_EXACT` (`felix/auth/middleware.py`).
+  names. It is not in `_PUBLIC_EXACT` (`felix/auth/middleware.py`), and it needs the
+  `metrics:read` scope, since the labels span every tenant. The scrape key
+  `scripts/metrics-token.sh` mints is in a `metrics` tenant of its own, so it reaches no
+  tenant's agents.
 - **It is rate-limited.** It is a scrape target with unbounded label cardinality, so it is
   not in the rate limiter's `SKIP_EXACT` either.
 

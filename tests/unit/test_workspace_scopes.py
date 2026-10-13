@@ -147,13 +147,25 @@ async def test_a_tenant_scope_is_shared_by_its_threads_and_no_one_else(ws: Path)
 
 async def test_the_deployment_scope_is_the_root_for_the_operators_tenant(ws: Path) -> None:
     (ws / "README.md").write_text("the checkout")
-    settings = _settings(ws)
+    settings = _settings(ws, workspace_deployment_tenants="default")
     assert "the checkout" in await _read(settings, "default", None, "README.md", scope="deployment")
+
+
+async def test_no_tenant_gets_the_deployment_scope_unless_the_operator_names_it(ws: Path) -> None:
+    """`default` is where an API key with no `tenant_id` lands, so it is not opted in by default."""
+    (ws / "README.md").write_text("the checkout")
+    settings = _settings(ws)
+    assert settings.workspace_deployment_tenants == ""
+    out = await _read(settings, "default", None, "README.md", scope="deployment")
+    assert "the checkout" not in out
+    assert out.startswith("[tool error/transport_unavailable]")
+    assert "FELIX_WORKSPACE_DEPLOYMENT_TENANTS" in out
 
 
 async def test_the_deployment_scope_is_refused_for_any_other_tenant(ws: Path) -> None:
     (ws / "README.md").write_text("the checkout")
-    out = await _read(_settings(ws), "gh-4242", "gh-4242:t1", "README.md", scope="deployment")
+    settings = _settings(ws, workspace_deployment_tenants="default")
+    out = await _read(settings, "gh-4242", "gh-4242:t1", "README.md", scope="deployment")
     assert "the checkout" not in out
     assert out.startswith("[tool error/transport_unavailable]")
     assert "FELIX_WORKSPACE_DEPLOYMENT_TENANTS" in out

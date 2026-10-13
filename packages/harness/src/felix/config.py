@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import socket
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -705,7 +706,9 @@ class Settings(BaseSettings):
     # Tenants whose manifests may ask for `spec.workspace.scope: deployment` -- the whole of
     # FELIX_WORKSPACE_ROOT, every other scope's files included. Comma-separated; the operator's own
     # tenants only. Any other tenant asking for it is refused (`felix.tools.workspace_scope`).
-    workspace_deployment_tenants: str = "default"
+    # Empty by default: `default` is where an API key without a `tenant_id` lands, so defaulting
+    # to it handed the whole root to every such key. The self-build overlay opts `default` in.
+    workspace_deployment_tenants: str = ""
     # Where a thread's or a tenant's workspace lives. `local`: under FELIX_WORKSPACE_ROOT, on this
     # host. `hosted`: in its own sandbox, through the workspace gateway Worker
     # (deploy/cloudflare/workspace-gateway), so a model's file operations never touch this host.
@@ -1041,7 +1044,8 @@ class Settings(BaseSettings):
         """
         from felix.auth.context import assert_valid_tenant_id
 
-        for label, value in configured_tenant_ids(self):
+        for found in configured_tenants(self):
+            label, value = found.label, found.tenant
             try:
                 assert_valid_tenant_id(value)
             except ValueError as exc:
@@ -1283,55 +1287,98 @@ DEFAULT_DECISION_ROUTES: dict[str, dict[str, str]] = {
 }
 
 
-def configured_tenant_ids(settings: Settings) -> list[tuple[str, str]]:
-    """(setting name, tenant id) for every tenant an operator pins in configuration.
+# Where in configuration a tenant id comes from. A boot check that cares which doors lead into a
+# tenant filters on this (`felix.auth.google._check_pinned_accounts`), and a test holds that check
+# to every kind, so a new source cannot be added without someone deciding whether it counts.
+TenantSourceKind = Literal[
+    "jwt_fixed",  # a verifier's `;tenant=fixed:` (not the self verifier's)
+    "jwt_self_fixed",  # the self verifier's `;tenant=fixed:`, which every login token lands in
+    "allowlist",  # FELIX_ALLOWED_TENANTS, the tenants a claim may name
+    "api_key",  # FELIX_AUTH_API_KEYS; an entry with no `tenant_id` is `default`
+    "github_org",  # FELIX_GITHUB_ORG_TENANTS
+    "google",  # FELIX_GOOGLE_ACCOUNTS
+    "webhook",  # FELIX_SKILL_UPDATE_WEBHOOKS, an outbound endpoint bound to a tenant
+    "trigger",  # FELIX_TRIGGERS, a signed event that starts a run in a tenant
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredTenant:
+    kind: TenantSourceKind
+    # Names the setting and entry, never a credential: an API key is labelled by its tenant.
+    label: str
+    tenant: str
+
+
+def configured_tenants(settings: Settings) -> list[ConfiguredTenant]:
+    """Every tenant an operator names in configuration, with where it was named.
 
     The claim path checks itself; these do not, and each one fails in a different and
-    unhelpful place if it is malformed — see `_validate_jwt_tenant_posture`.
+    unhelpful place if it is malformed — see `_validate_jwt_tenant_posture`. Shape errors are each
+    setting's own validator's to report, so a setting that does not parse contributes nothing here.
     """
     import json
 
+    from felix.auth.context import api_key_tenant
     from felix.auth.jwt import parse_verifiers
 
-    found: list[tuple[str, str]] = []
+    found: list[ConfiguredTenant] = []
     for verifier in parse_verifiers(settings.jwt_verifiers):
         if verifier.tenant_mode == "fixed" and verifier.fixed_tenant:
             label = f"FELIX_JWT_VERIFIERS (;tenant=fixed:{verifier.fixed_tenant})"
-            found.append((label, verifier.fixed_tenant))
+            kind: TenantSourceKind = "jwt_self_fixed" if verifier.scheme == "self" else "jwt_fixed"
+            found.append(ConfiguredTenant(kind, label, verifier.fixed_tenant))
     found.extend(
-        (f"FELIX_ALLOWED_TENANTS ({name})", name)
+        ConfiguredTenant("allowlist", f"FELIX_ALLOWED_TENANTS ({name})", name)
         for name in (p.strip() for p in (settings.allowed_tenants or "").split(","))
         if name
     )
     try:
         keys = json.loads(settings.auth_api_keys) if settings.auth_api_keys.strip() else {}
     except ValueError, TypeError:
-        keys = {}  # shape errors are reported by the api-key parser, not here
+        keys = {}
     if isinstance(keys, dict):
         found.extend(
-            (f"FELIX_AUTH_API_KEYS ({tenant})", tenant)
+            ConfiguredTenant("api_key", f"FELIX_AUTH_API_KEYS ({tenant})", tenant)
             for entry in keys.values()
-            if isinstance(entry, dict) and isinstance(tenant := entry.get("tenant_id"), str) and tenant
+            if isinstance(entry, dict)
+            for tenant in (api_key_tenant(entry),)
         )
     from felix.auth.github import parse_org_tenants
 
     try:
         grants = parse_org_tenants(settings.github_org_tenants)
     except ValueError:
-        grants = {}  # shape errors are reported by `validate_login_config`, not here
-    found.extend((f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant) for g in grants.values())
+        grants = {}
+    found.extend(
+        ConfiguredTenant("github_org", f"FELIX_GITHUB_ORG_TENANTS ({g.org})", g.tenant)
+        for g in grants.values()
+    )
     from felix.auth.google import parse_accounts
 
     try:
         accounts = parse_accounts(settings.google_accounts)
     except ValueError:
-        accounts = {}  # shape errors are reported by `validate_google_config`, not here
-    found.extend((f"FELIX_GOOGLE_ACCOUNTS ({a.email})", a.tenant) for a in accounts.values())
+        accounts = {}
+    found.extend(
+        ConfiguredTenant("google", f"FELIX_GOOGLE_ACCOUNTS ({a.email})", a.tenant) for a in accounts.values()
+    )
     from felix.durability.webhooks import parse_tenant_endpoint_bindings
 
     try:
         bindings = parse_tenant_endpoint_bindings(settings.skill_update_webhooks)
     except ValueError:
-        bindings = {}  # shape errors are reported by `_validate_skill_update_webhooks`, not here
-    found.extend((f"FELIX_SKILL_UPDATE_WEBHOOKS ({tenant})", tenant) for tenant in bindings)
+        bindings = {}
+    found.extend(
+        ConfiguredTenant("webhook", f"FELIX_SKILL_UPDATE_WEBHOOKS ({tenant})", tenant) for tenant in bindings
+    )
+    from felix.triggers import parse_triggers
+
+    try:
+        triggers = parse_triggers(settings)
+    except ValueError:
+        triggers = {}
+    found.extend(
+        ConfiguredTenant("trigger", f"FELIX_TRIGGERS ({name})", t.tenant) for name, t in triggers.items()
+    )
     return found

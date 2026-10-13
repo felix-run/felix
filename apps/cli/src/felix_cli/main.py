@@ -829,11 +829,11 @@ def _manifest_secret_notes(settings: Settings) -> list[str]:
     `secret:` ref that `FELIX_MANIFEST_SECRETS` does not permit for a tenant it would run under: the
     tenants this configuration pins, or `default` when it pins none. Such a manifest fails every
     compile for that tenant with a 422, which reads like a broken manifest rather than a setting."""
-    from felix.config import configured_tenant_ids
+    from felix.config import configured_tenants
     from felix.manifests.loader import list_bundled, load_bundled
     from felix.manifests.secret_refs import manifest_secret_names
 
-    tenants = sorted({tenant for _, tenant in configured_tenant_ids(settings)}) or ["default"]
+    tenants = sorted({found.tenant for found in configured_tenants(settings)}) or ["default"]
     notes: list[str] = []
     for name in list_bundled():
         try:

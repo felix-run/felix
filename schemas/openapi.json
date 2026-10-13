@@ -15396,6 +15396,7 @@
     },
     "/metrics": {
       "get": {
+        "description": "Prometheus exposition. Needs `metrics:read`: the label values span every tenant.",
         "operationId": "metrics_metrics_get",
         "responses": {
           "200": {

@@ -17,6 +17,7 @@ from felix.auth.context import (
     BUILTIN_AUTH_MODES,
     AuthContext,
     Principal,
+    api_key_tenant,
     assert_valid_tenant_id,
     require_scope,
 )
@@ -189,7 +190,7 @@ async def authenticate_request(
             )
         scopes_raw = matched.get("scopes") or []
         scopes = frozenset(str(s) for s in scopes_raw)
-        claimed_tenant = str(matched.get("tenant_id") or "default")
+        claimed_tenant = api_key_tenant(matched)
         try:
             # The key's tenant_id is operator-supplied config, but it is still the ownership
             # boundary — refuse it at the door so it is a 401 rather than a later failure on

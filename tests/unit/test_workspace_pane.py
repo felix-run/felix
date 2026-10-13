@@ -679,6 +679,7 @@ async def test_a_manifest_that_no_longer_resolves_is_not_written_to_the_log(
     """py/log-injection: the recorded name came from a request once, so it stays out of the line."""
     import logging
 
+    from felix.context import AuthContext
     from felix.session.thread_state import LAST_MANIFEST_KEY, update_thread_meta
     from felix.workspace_files import resolve_thread_workspace
 
@@ -689,7 +690,7 @@ async def test_a_manifest_that_no_longer_resolves_is_not_written_to_the_log(
         settings=settings, tenant_id=TENANT, thread_id=thread, **{LAST_MANIFEST_KEY: forged}
     )
     with caplog.at_level(logging.INFO, logger="felix.workspace_files"):
-        workspace = await resolve_thread_workspace(settings, TENANT, thread)
+        workspace = await resolve_thread_workspace(settings, TENANT, thread, auth=AuthContext())
     assert (workspace.scope.scope, workspace.manifest) == ("thread", None)
     assert caplog.records, "the fallback was not logged at all"
     assert all("forged" not in r.getMessage() and "gone" not in r.getMessage() for r in caplog.records)

@@ -53,7 +53,8 @@ def root(tmp_path: Path) -> Path:
 
 
 def _env(root: Path, **extra: str) -> dict[str, str]:
-    return {"FELIX_WORKSPACE_ROOT": str(root), **extra}
+    # `deployment` scope is refused for every tenant the operator has not named.
+    return {"FELIX_WORKSPACE_ROOT": str(root), "FELIX_WORKSPACE_DEPLOYMENT_TENANTS": TENANT, **extra}
 
 
 async def _run(app: Any, thread: str, manifest: str = "quick") -> None:
