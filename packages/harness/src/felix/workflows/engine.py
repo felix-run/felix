@@ -14,7 +14,10 @@ orchestrator never blocks on a step. What a step *does* is its kind's executor (
 **When a step runs.** Once every step it reads from — through data edges or `when` — is finished.
 It is *skipped* instead when a data input's source was skipped or did not produce that port, or
 when it has `when` edges and none of their control ports fired. A failed step fails the run:
-whatever is in flight is stopped and nothing else starts. At most `MAX_CHILD_STEPS_IN_FLIGHT`
+whatever is in flight is stopped and nothing else starts. A step whose outputs pass
+`MAX_STEP_OUTPUT_BYTES`, or whose inputs or outputs would take the run's record past
+`MAX_RUN_RECORD_BYTES`, fails with nothing of them kept.
+At most `MAX_CHILD_STEPS_IN_FLIGHT`
 steps of one run that start a child run (agent and tool steps) are in flight at once; the rest
 wait their turn.
 
@@ -64,6 +67,13 @@ RUN_TTL_SECONDS = 24 * 3600
 # has steps (200), each holding a worker slot — a tool waiting on an approval holds it for the ttl.
 MAX_CHILD_STEPS_IN_FLIGHT = 8
 MAX_ACTIVE_RUNS_PER_TENANT = 50
+# What a step may hand on, serialised, and what one run's record may hold in all: its inputs, and
+# every step's inputs (copies of what fed them) and outputs. The record is the run row, which every
+# look reads and writes whole; a fan-out of one large value would otherwise copy it per edge.
+MAX_STEP_OUTPUT_BYTES = 128 * 1024
+MAX_RUN_RECORD_BYTES = 4 * 1024 * 1024
+# A step's error as kept: a tool's failure code or a child's message is not the place for a book.
+MAX_STEP_ERROR_CHARS = 500
 ORCHESTRATOR_KIND = "workflow_run"
 # The kinds whose config names a manifest the step runs as the starter, each in a child run.
 _MANIFEST_KINDS = frozenset({"agent_turn", "tool_call"})
@@ -367,12 +377,20 @@ async def advance(settings: Settings, tenant_id: str, run_id: str) -> Outcome:
         # stopped now: the run that won will never look again.
         current = await run_store.get_run(settings, tenant_id, run_id)
         if current is not None and current["status"] in run_store.RUN_TERMINAL:
-            await _Advance(settings, current).stop_everything()
+            # This look's own copy: it holds the children this look started, which the winner,
+            # having stopped what it knew of, never saw.
+            await _Advance(settings, run).stop_everything()
             return _finished(current)
         return Outcome(finished=False, delay_ms=0)
     if run["status"] in run_store.RUN_TERMINAL:
         return _finished(run)
     return Outcome(finished=False)
+
+
+def _size(outputs: Any) -> int:
+    if not outputs:
+        return 0
+    return len(json.dumps(outputs, ensure_ascii=False, default=str).encode())
 
 
 def _finished(run: dict[str, Any]) -> Outcome:
@@ -403,6 +421,7 @@ class _Advance:
         for step_id, state in self.steps.items():
             if state["status"] in STEP_IN_FLIGHT:
                 await EXECUTORS[self.by_id[step_id].kind].poll(self, self.by_id[step_id], state)
+                self._bound(state)
         await self._start_ready()
         if self._failed() is not None:
             # Fail fast: whatever is in flight is stopped and nothing else starts.
@@ -427,12 +446,46 @@ class _Advance:
 
     async def _start_step(self, step: Step, state: StepState) -> None:
         inputs = self._inputs(step)
+        if self._record_bytes(exclude=state) + _size(inputs) > MAX_RUN_RECORD_BYTES:
+            state.update(
+                status="failed",
+                error=f"the step's inputs would take the run's record past {MAX_RUN_RECORD_BYTES} bytes",
+                finished_at=_now(),
+            )
+            return
         state.update(inputs=inputs, started_at=_now())
         try:
             await EXECUTORS[step.kind].start(self, step, inputs, state)
         except Exception:
             logger.exception("workflow run %s: step %s did not start", self.run["id"], step.id)
             state.update(status="failed", error="the step could not be started", finished_at=_now())
+        # Only `branch` completes in `start` today, with no outputs; a kind that hands on at once
+        # is held to the same bound as one that is polled.
+        self._bound(state)
+
+    def _record_bytes(self, *, exclude: StepState | None = None) -> int:
+        """What the run's record holds: its inputs, and each step's inputs and outputs."""
+        steps = (s for s in self.steps.values() if s is not exclude)
+        held = sum(_size(s.get("inputs")) + _size(s.get("outputs")) for s in steps)
+        return _size(self.run["inputs"]) + held
+
+    def _bound(self, state: StepState) -> None:
+        """Hold a step that just changed to what a run keeps: its error cut short, and a step that
+        completed with more output than a step, or the record, may hold failed with none of it."""
+        if len(state.get("error") or "") > MAX_STEP_ERROR_CHARS:
+            state["error"] = state["error"][:MAX_STEP_ERROR_CHARS] + "…"
+        if state["status"] != "completed" or not state.get("outputs"):
+            return
+        size = _size(state["outputs"])
+        if size > MAX_STEP_OUTPUT_BYTES:
+            error = f"the step's output is {size} bytes; a step may hand on {MAX_STEP_OUTPUT_BYTES}"
+        elif self._record_bytes(exclude=state) + _size(state.get("inputs")) + size > MAX_RUN_RECORD_BYTES:
+            error = f"the step's output would take the run's record past {MAX_RUN_RECORD_BYTES} bytes"
+        else:
+            return
+        state.update(status="failed", error=error)
+        state.pop("outputs", None)
+        state.pop("fired", None)
 
     def _at_child_limit(self, step: Step) -> bool:
         if step.kind not in _CHILD_RUN_KINDS:

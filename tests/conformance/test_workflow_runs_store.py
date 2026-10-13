@@ -56,6 +56,22 @@ async def test_a_runs_untrusted_inputs_round_trip_and_default_to_empty(store_set
 
 
 @parametrized
+async def test_ending_a_run_clears_its_recorded_starter_and_pins(store_settings: Any) -> None:
+    run = await runs.create_run(store_settings, TENANT, _new())
+    run["status"] = "running"
+    assert await runs.save_run(store_settings, run)
+    running = await runs.get_run(store_settings, TENANT, run["id"])
+    assert running is not None and running["auth"]["principal_sub"] == "alice", "kept while it runs"
+    assert running["pins"]
+
+    running["status"] = "completed"
+    assert await runs.save_run(store_settings, running)
+    ended = await runs.get_run(store_settings, TENANT, run["id"])
+    assert ended is not None and (ended["auth"], ended["pins"]) == ({}, {})
+    assert ended["inputs"] == {"issue": "x"}, "the record itself stays"
+
+
+@parametrized
 async def test_a_save_over_a_stale_version_writes_nothing(store_settings: Any) -> None:
     created = await runs.create_run(store_settings, TENANT, _new())
     first = await runs.get_run(store_settings, TENANT, created["id"])

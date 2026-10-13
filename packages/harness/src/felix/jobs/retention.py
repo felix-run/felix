@@ -38,6 +38,8 @@ it as `denied`/`timeout`, which also makes it sweepable here like any other sett
   consumed grant still authorizes a tool whose rule is not one-shot. Off by default,
   because the row is the record of a human decision and the `soc2` / `eu_ai_act` profiles
   lean on it.
+* `workflow_runs` — finished (`runs.RUN_TERMINAL`) longer ago than the run TTL. A run in flight
+  is never swept; a finished one has already had its recorded starter and pins cleared.
 * `plans` — past their own `expires_at`; `memory_vectors` — superseded past a grace period.
 
 The memory:// path is the CI twin, not a mock: it deletes the same rows by the same rules
@@ -65,6 +67,7 @@ from felix.db.models import (
     SessionEventRow,
     ThreadState,
     UsageEvent,
+    WorkflowRun,
 )
 from felix.db.session import _use_memory, get_session_factory
 from felix.durability.fibers import FIBER_TERMINAL_STATUSES
@@ -91,6 +94,7 @@ TABLES = (
     "a2a_tasks",
     "session_events",
     "approvals",
+    "workflow_runs",
 )
 
 now_ms = lambda: int(time.time() * 1000)
@@ -121,6 +125,7 @@ class Cutoffs:
     audit: int | None
     usage: int | None
     fiber: int | None  # terminal fibers and finished A2A tasks share it
+    workflow_run: int | None
     # Epoch ms like the rest. `session_events.ts` is epoch *seconds* as a float on both
     # arms, so both divide by 1000 at that comparison; `thread_state.updated_at` is seconds
     # on the Postgres row and milliseconds on the memory twin, and each arm compares in its
@@ -149,6 +154,7 @@ class Cutoffs:
             audit=days(settings.audit_retention_days),
             usage=days(settings.usage_retention_days),
             fiber=days(settings.fiber_retention_days),
+            workflow_run=days(settings.workflow_run_retention_days),
             session=days(settings.session_retention_days),
             approval=days(settings.approval_retention_days),
             attachment=days(settings.attachment_retention_days),
@@ -420,6 +426,17 @@ def _sweep_memory(cutoffs: Cutoffs, per_manifest: ManifestCutoffs) -> dict[str, 
                 and int(t.get("updated_at") or 0) < fiber_cutoff
             ),
         )
+    if (run_cutoff := cutoffs.workflow_run) is not None:
+        from felix.workflows import runs as run_store
+
+        counts["workflow_runs"] = _pop_where(
+            run_store._memory_runs,
+            lambda r: (
+                r.get("status") in run_store.RUN_TERMINAL
+                and r.get("finished_at") is not None
+                and int(r["finished_at"]) < run_cutoff
+            ),
+        )
     if cutoffs.usage is not None:
         usage = usage_store._memory_events
         fresh = [e for e in usage if int(e.get("ts") or 0) >= cutoffs.usage]
@@ -525,6 +542,21 @@ async def _sweep_postgres(
                     "a2a_tasks",
                     lambda: _batched(
                         db, A2ATask, state.not_in(sorted(LIVE_A2A_STATES)), A2ATask.updated_at < fiber_cutoff
+                    ),
+                )
+            if (run_cutoff := cutoffs.workflow_run) is not None:
+                from felix.workflows.runs import RUN_TERMINAL
+
+                await _table(
+                    db,
+                    counts,
+                    "workflow_runs",
+                    lambda: _batched(
+                        db,
+                        WorkflowRun,
+                        WorkflowRun.status.in_(sorted(RUN_TERMINAL)),
+                        WorkflowRun.finished_at.is_not(None),
+                        WorkflowRun.finished_at < run_cutoff,
                     ),
                 )
             if (usage_cutoff := cutoffs.usage) is not None:

@@ -290,7 +290,7 @@ zero cloud SDKs.
 - Production JWT and api_key deploys need `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`
 - Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers`
   and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
-  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_SESSION_RETENTION_DAYS`
+  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30; finished workflow runs), `FELIX_SESSION_RETENTION_DAYS`
   (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
   that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
   sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix

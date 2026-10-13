@@ -605,3 +605,25 @@ async def test_tool_steps_count_against_the_in_flight_cap() -> None:
     after = await run_store.get_run(settings, TENANT, run["id"])
     assert after is not None
     assert [s["status"] for s in after["steps"].values()].count("running") == engine.MAX_CHILD_STEPS_IN_FLIGHT
+
+
+def test_a_steps_error_is_kept_short_and_a_capped_step_keeps_nothing() -> None:
+    from felix.workflows import engine
+
+    run: dict[str, Any] = {
+        "tenant_id": "default",
+        "id": "r",
+        "inputs": {},
+        "definition": {"name": "W", "steps": [{"id": "s", "kind": "branch"}]},
+        "steps": {"s": {"status": "failed", "error": "[tool error/" + "a" * 5000 + "]"}},
+    }
+    look = engine._Advance(make_settings(), run)
+    look._bound(run["steps"]["s"])
+    assert len(run["steps"]["s"]["error"]) == engine.MAX_STEP_ERROR_CHARS + 1
+
+    big = {"status": "completed", "outputs": {"x": "y" * engine.MAX_STEP_OUTPUT_BYTES}, "fired": ["true"]}
+    run["steps"]["s"] = big
+    look._bound(big)
+    assert big["status"] == "failed" and "outputs" not in big and "fired" not in big, (
+        "the same shape as any failed step"
+    )

@@ -27,6 +27,7 @@ from felix.session import thread_state
 from felix.session.store import get_session_store
 from felix.session.types import AppendableEvent
 from felix.usage import store as usage_store
+from felix.workflows import runs as run_store
 
 from tests.support.session_listing import every_listed
 
@@ -50,6 +51,7 @@ class Clock:
             approvals_store,
             attachments,
             artifacts,
+            run_store,
         ):
             monkeypatch.setattr(module, "now_ms", lambda: self.ms)
         # `persist_leaf` stamps `thread_state.updated_at` from the wall clock.
@@ -62,6 +64,7 @@ def _retention(settings: Any, **days: int) -> Any:
             "audit_retention_days": days.get("audit", 1),
             "usage_retention_days": days.get("usage", 1),
             "fiber_retention_days": days.get("fiber", 1),
+            "workflow_run_retention_days": days.get("workflow_run", 1),
             "session_retention_days": days.get("session", 1),
             # 0 unless a test asks, so the existing sweeps keep their expected counts and
             # the approval rule is only exercised where it is the subject.
@@ -151,6 +154,30 @@ async def _thread_meta_ids(settings: Any) -> set[str]:
     return {str(m["id"]) for m in await every_listed(settings, TENANT)}
 
 
+async def _seed_run(settings: Any, *, status: str) -> str:
+    """A workflow run, saved into `status` -- through `save_run`, which stamps `finished_at`."""
+    run = await run_store.create_run(
+        settings,
+        TENANT,
+        run_store.NewRun(
+            workflow_id="w",
+            revision="g.1",
+            definition={"name": "W"},
+            inputs={},
+            steps={},
+            auth={"principal_sub": "alice", "scopes": ["chat"]},
+            pins={},
+            expires_at=2_000_000_000_000,
+            trigger="manual",
+            started_by="alice",
+        ),
+    )
+    if status != "pending":
+        run["status"] = status
+        assert await run_store.save_run(settings, run)
+    return str(run["id"])
+
+
 async def _seed_memory(settings: Any, *, superseded: bool) -> str:
     row = await memory_store.put_memory(settings, TENANT, content=uuid.uuid4().hex, origin_seq=1)
     if superseded:
@@ -183,6 +210,9 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
     old_working_task = await _seed_task(settings, state="working")
     old_waiting_task = await _seed_task(settings, state="input-required")
     old_thread = await _seed_thread(settings, clock)
+    old_done_run = await _seed_run(settings, status="completed")
+    old_failed_run = await _seed_run(settings, status="failed")
+    old_running_run = await _seed_run(settings, status="running")
     await plans_store.put_plan(settings, TENANT, "expired", plan={}, expires_at=clock.ms + DAY)
 
     clock.ms += 2 * DAY
@@ -192,6 +222,7 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
     new_done_fiber = await _seed_fiber(settings, status="completed")
     new_done_task = await _seed_task(settings, state="completed")
     new_thread = await _seed_thread(settings, clock)
+    new_done_run = await _seed_run(settings, status="completed")
     await plans_store.put_plan(settings, TENANT, "live", plan={}, expires_at=clock.ms + DAY)
 
     counts = await retention.run_retention_sweep(settings)
@@ -209,6 +240,7 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         # `TABLES`, so a table that stops being swept shows up here as a silent 0 rather
         # than as a missing key -- which is the point of asserting the dict exactly.
         "approvals": 0,
+        "workflow_runs": 2,
         # Same, for the same reason, and not from `TABLES`: an upload is bytes plus a
         # ledger row, so it is swept by its own step. `FELIX_ATTACHMENT_RETENTION_DAYS`
         # defaults to 0 and keeps everything.
@@ -221,6 +253,10 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"
+    for run_id in (old_done_run, old_failed_run):
+        assert await run_store.get_run(settings, TENANT, run_id) is None
+    for run_id in (old_running_run, new_done_run):
+        assert await run_store.get_run(settings, TENANT, run_id) is not None, "live or fresh run swept"
     for fiber_id in (old_done_fiber, old_failed_fiber, old_expired_fiber):
         assert await fiber_store.get_fiber(settings, TENANT, fiber_id) is None
     for fiber_id in (old_pending_fiber, old_sleeping_fiber, new_done_fiber):

@@ -88,6 +88,8 @@ _JSON = {
 }
 # What `save_run` may change; everything else is fixed when the run is created.
 _MUTABLE = ("status", "steps", "fiber_id", "error", "finished_at", "version", "updated_at")
+# What a save that ends the run also clears.
+_ENDED = ("auth", "pins")
 
 
 def reset_workflow_runs_for_tests() -> None:
@@ -204,8 +206,13 @@ async def save_run(settings: Settings, row: dict[str, Any]) -> bool:
     """
     tenant_id, run_id, read_at = row["tenant_id"], row["id"], int(row["version"])
     ts = max(now_ms(), int(row["updated_at"]) + 1)
-    if row["status"] in RUN_TERMINAL and row.get("finished_at") is None:
+    ended = row["status"] in RUN_TERMINAL
+    if ended and row.get("finished_at") is None:
         row["finished_at"] = ts
+    if ended:
+        # The starter's authority and the pins it was checked against start no more steps once
+        # the run is over; they are not kept for as long as the run's record is.
+        row["auth"], row["pins"] = {}, {}
 
     if _use_memory(settings):
         current = _memory_runs.get((tenant_id, run_id))
@@ -213,7 +220,7 @@ async def save_run(settings: Settings, row: dict[str, Any]) -> bool:
             return False
         row["version"], row["updated_at"] = read_at + 1, ts
         # Only what Postgres writes: the twin must not persist an edit the real store drops.
-        current.update(deepcopy({k: row.get(k) for k in _MUTABLE}))
+        current.update(deepcopy({k: row.get(k) for k in (*_MUTABLE, *(_ENDED if ended else ()))}))
         return True
 
     async with tenant_session(settings, tenant_id) as db:
@@ -232,6 +239,7 @@ async def save_run(settings: Settings, row: dict[str, Any]) -> bool:
                 finished_at=row.get("finished_at"),
                 version=read_at + 1,
                 updated_at=ts,
+                **({"auth_json": {}, "pins_json": {}} if ended else {}),
             )
         )
         await db.commit()
