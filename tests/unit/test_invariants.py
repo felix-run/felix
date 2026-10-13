@@ -1895,7 +1895,7 @@ def test_every_build_after_a_pin_check_compiles_the_children_it_checked() -> Non
                 sites += 1
                 if kw.get("sub_agents") != "resolved.sub_agents":
                     offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
-    assert sites >= 8, f"only {sites} build_tenant_agent(manifest=resolved.manifest) calls matched (10 today)"
+    assert sites >= 8, f"only {sites} build_tenant_agent(manifest=resolved.manifest) calls matched (9 today)"
     assert offenders == [], f"these compile children the pin did not check: {offenders}"
 
 

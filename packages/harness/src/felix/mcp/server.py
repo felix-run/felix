@@ -45,25 +45,16 @@ async def _compiled_tools(
     tools: ToolProvider,
     auth: AuthContext,
     manifest_name: str,
-) -> tuple[Any, list[Any], Any]:
-    """Resolve + compile the tenant manifest; return (agent, governed tools, manifest)."""
-    from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+) -> tuple[list[Any], Any]:
+    """Resolve + compile the tenant manifest; return (governed tools, manifest)."""
+    from felix.runtime import governed_tools, resolve_tenant_manifest
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, manifest_name, thread_id=None)
     except LookupError as exc:
         raise _UnknownManifest(f"Unknown manifest: {manifest_name}") from exc
-    await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=None)
-    agent = await build_tenant_agent(
-        settings,
-        manifest=resolved.manifest,
-        sub_agents=resolved.sub_agents,
-        tools=tools,
-        tenant_id=auth.tenant_id,
-        skill_owner=auth.skill_owner,
-    )
-    agent_tools = list(getattr(agent, "tools", None) or [])
-    return agent, agent_tools, resolved.manifest
+    agent_tools = await governed_tools(settings, resolved=resolved, auth=auth, tools=tools)
+    return agent_tools, resolved.manifest
 
 
 async def _image_blocks(out: ToolOutput) -> list[dict[str, Any]]:
@@ -118,7 +109,7 @@ async def handle_rpc(
                 manifest_id=manifest_name,
             )
             async with async_run_with_context(req_ctx):
-                _agent, agent_tools, manifest = await _compiled_tools(
+                agent_tools, manifest = await _compiled_tools(
                     settings=settings,
                     tools=tools,
                     auth=call_auth,

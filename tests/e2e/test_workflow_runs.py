@@ -486,3 +486,100 @@ async def test_a_tool_step_refuses_a_manifest_republished_after_the_start(boot: 
         done = await _tick(app, run_url, {"completed", "failed"})
     assert done["steps"]["calc"]["status"] == "failed"
     assert done["steps"]["calc"]["error"] == "manifest e2e-calc changed since the run started"
+
+
+# --- the editor's tool listing ----------------------------------------------------------------
+
+PICK = {"type": "object", "properties": {"choice": {"type": "string"}}, "required": ["choice"]}
+
+
+async def test_a_step_wired_from_the_tool_listing_runs(boot: Any) -> None:
+    calc = _calc_manifest(client_tools=[{"name": "pick_colour", "args_schema": PICK}])
+    async with boot([ScriptedTurn(content="Noted.")], manifests={**MANIFESTS, "e2e-calc": calc}) as app:
+        listed = await app.client.get("/workflows/-/tools", params={"manifest": "e2e-calc"})
+        assert listed.status_code == 200, listed.text
+        tools = {t["name"]: t for t in listed.json()["items"]}
+        assert "pick_colour" not in tools, "a client tool has no client to answer it in a workflow"
+        calculator = tools["calculator"]
+        assert calculator["problem"] is None
+        assert [(p["name"], p["type"], p["required"]) for p in calculator["inputs"]] == [
+            ("expression", "string", True)
+        ]
+        # Carried through every governance wrapper's clone, not defaulted on the way.
+        assert (calculator["read_only"], calculator["replay_safe"]) == (True, True)
+        # The step stores what the listing gave it, and the run's drift check accepts it.
+        run_url = await _run_sums(app, _sums(schema=calculator["input_schema"]))
+        done = await _tick(app, run_url, {"completed", "failed"})
+    assert done["status"] == "completed", done
+    assert done["steps"]["calc"]["outputs"] == {"result": 4}
+
+
+async def test_a_step_naming_a_client_tool_fails_without_waiting_on_it(boot: Any) -> None:
+    calc = _calc_manifest(client_tools=[{"name": "pick_colour", "args_schema": PICK}])
+    definition = {
+        "name": "Pick",
+        "steps": [
+            {
+                "id": "pick",
+                "kind": "tool_call",
+                "config": {
+                    "manifest": "e2e-calc",
+                    "tool": "pick_colour",
+                    "input_schema": PICK,
+                    "args": {"choice": "red"},
+                },
+            }
+        ],
+    }
+    async with boot([], manifests={**MANIFESTS, "e2e-calc": calc}) as app:
+        assert (await app.client.put("/workflows/pick", json=definition)).status_code == 201
+        started = await app.client.post("/workflows/pick/runs", json={"inputs": {}})
+        assert started.status_code == 202, started.text
+        done = await _tick(app, f"/workflows/pick/runs/{started.json()['id']}", {"completed", "failed"})
+    assert done["steps"]["pick"]["status"] == "failed"
+    assert done["steps"]["pick"]["error"] == (
+        "tool pick_colour runs in the chat client, which a workflow does not have"
+    )
+
+
+async def test_the_tool_listing_answers_for_the_manifest_as_the_caller_may_use_it(boot: Any) -> None:
+    import json
+
+    keys = {
+        "reader-token": {"tenant_id": "default", "sub": "ops", "scopes": ["workflows:read"]},
+        "other-token": {"tenant_id": "default", "sub": "ops", "scopes": ["jobs:read"]},
+    }
+    env = {"FELIX_AUTH_MODE": "api_key", "FELIX_AUTH_API_KEYS": json.dumps(keys)}
+    reader, other = ({"Authorization": f"Bearer {k}"} for k in keys)
+    guarded = _calc_manifest(auth={"inbound": {"required_scopes": ["calc:use"]}})
+    async with boot([], env=env, manifests={**MANIFESTS, "e2e-guarded": guarded}) as app:
+
+        async def listing(manifest: str, headers: dict[str, str]) -> Any:
+            return await app.client.get("/workflows/-/tools", params={"manifest": manifest}, headers=headers)
+
+        assert (await listing("e2e-calc", other)).status_code == 403, "needs workflows:read"
+        assert (await listing("e2e-calc", reader)).status_code == 200
+        refused = await listing("e2e-guarded", reader)
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == {"error": "not_permitted", "manifest": "e2e-guarded"}
+        missing = await listing("no-such-manifest", reader)
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == {"error": "unknown_manifest", "manifest": "no-such-manifest"}
+        malformed = await listing("Bad Name", reader)
+        assert malformed.status_code == 404, "a name no manifest can have is not found, not unavailable"
+
+
+async def test_the_tool_listing_names_a_manifest_that_refuses_anonymous_or_does_not_compile(
+    boot: Any,
+) -> None:
+    closed = _calc_manifest(auth={"inbound": {"allow_anonymous": False}})
+    broken = _calc_manifest(memory={"checkpointer": "no-such-checkpointer"})
+    manifests = {**MANIFESTS, "e2e-closed": closed, "e2e-broken": broken}
+    async with boot([], manifests=manifests) as app:
+        refused = await app.client.get("/workflows/-/tools", params={"manifest": "e2e-closed"})
+        assert refused.status_code == 401, "an anonymous caller is told to authenticate, not forbidden"
+        assert refused.json()["detail"] == {"error": "not_permitted", "manifest": "e2e-closed"}
+        unavailable = await app.client.get("/workflows/-/tools", params={"manifest": "e2e-broken"})
+        assert unavailable.status_code == 503
+        assert unavailable.json()["detail"] == {"error": "manifest_unavailable", "manifest": "e2e-broken"}
+        assert "checkpointer" not in unavailable.text, "the compile's own error stays in the log"

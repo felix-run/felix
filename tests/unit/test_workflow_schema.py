@@ -337,6 +337,17 @@ def test_an_optional_tool_input_is_a_port_nothing_has_to_feed() -> None:
     assert [(p.name, p.required) for p in inputs] == [("q", True), ("limit", False)]
 
 
+def test_a_tool_input_keeps_the_tool_s_own_name() -> None:
+    # MCP tools name arguments their own way; the step has to take them as they are.
+    config = kinds.ToolCallConfig(
+        manifest="quick",
+        tool="github__get_pull_request",
+        input_schema={"properties": {"pullNumber": {"type": "integer"}, "repo-name": {}, "x" * 64: {}}},
+    )
+    inputs, _ = kinds.get_step_kind("tool_call").ports(config)  # type: ignore[union-attr]
+    assert [p.name for p in inputs] == ["pullNumber", "repo-name", "x" * 64]
+
+
 @pytest.mark.parametrize(
     ("make", "needle"),
     [
@@ -349,9 +360,15 @@ def test_an_optional_tool_input_is_a_port_nothing_has_to_feed() -> None:
         ),
         (
             lambda: kinds.ToolCallConfig(
-                manifest="quick", tool="t", input_schema={"properties": {"a-b": {}}}
+                manifest="quick", tool="t", input_schema={"properties": {"x" * 65: {}}}
             ),
-            "tool input",
+            "1 to 64",
+        ),
+        (
+            lambda: kinds.ToolCallConfig(
+                manifest="quick", tool="t", input_schema={"properties": {"a\nb": {}}}
+            ),
+            "control character",
         ),
         (lambda: kinds.BranchConfig(cases=["bug", "bug"]), "distinct"),
         (

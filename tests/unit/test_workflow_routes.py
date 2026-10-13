@@ -333,3 +333,28 @@ async def test_a_kind_with_no_json_schema_is_listed_without_a_form(monkeypatch: 
     by_name = {k["name"]: k for k in listed.json()["items"]}
     assert by_name["opaque"]["config_schema"] == {}
     assert by_name["approval"]["config_schema"]
+
+
+def test_a_listed_tool_whose_schema_cannot_become_ports_says_so() -> None:
+    from felix.tools.executor import local_executor
+    from felix.tools.types import Tool
+    from felix_api.routes.workflows import _step_tool
+
+    async def run(_args: Any, _ctx: Any = None) -> str:
+        return ""
+
+    def tool(schema: dict[str, Any]) -> Tool:
+        return Tool(
+            name="t", description="d", args_schema=None, executor=local_executor(run), raw_input_schema=schema
+        )
+
+    fine = _step_tool("quick", tool({"type": "object", "properties": {"pullNumber": {"type": "integer"}}}))
+    assert (fine["problem"], [p["name"] for p in fine["inputs"]]) == (None, ["pullNumber"])
+    for schema in (
+        {"type": "object", "properties": {"when": {}}},
+        {"type": "object", "properties": {"q": {}}, "required": "q"},
+    ):
+        listed = _step_tool("quick", tool(schema))
+        assert listed["inputs"] is None
+        assert listed["problem"] == "this tool's input schema cannot become step ports"
+        assert listed["input_schema"] == schema, "the schema is still shown, so the author can see why"

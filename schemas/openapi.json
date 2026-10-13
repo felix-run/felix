@@ -1899,6 +1899,41 @@
         "title": "MakeLiveIn",
         "type": "object"
       },
+      "ManifestRefused": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ManifestRefusedDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ManifestRefused",
+        "type": "object"
+      },
+      "ManifestRefusedDetail": {
+        "properties": {
+          "error": {
+            "enum": [
+              "unknown_manifest",
+              "not_permitted",
+              "manifest_unavailable"
+            ],
+            "title": "Error",
+            "type": "string"
+          },
+          "manifest": {
+            "title": "Manifest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "manifest"
+        ],
+        "title": "ManifestRefusedDetail",
+        "type": "object"
+      },
       "ManifestUpsert": {
         "additionalProperties": false,
         "properties": {
@@ -6550,6 +6585,87 @@
           "status"
         ],
         "title": "StepRunOut",
+        "type": "object"
+      },
+      "StepToolList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StepToolOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "manifest": {
+            "title": "Manifest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "items"
+        ],
+        "title": "StepToolList",
+        "type": "object"
+      },
+      "StepToolOut": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "title": "Input Schema",
+            "type": "object"
+          },
+          "inputs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PortOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Problem"
+          },
+          "read_only": {
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "replay_safe": {
+            "title": "Replay Safe",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "input_schema",
+          "inputs",
+          "read_only",
+          "replay_safe"
+        ],
+        "title": "StepToolOut",
         "type": "object"
       },
       "SubscribeRequest": {
@@ -20889,6 +21005,91 @@
           }
         },
         "summary": "List Kinds",
+        "tags": [
+          "Workflows"
+        ]
+      }
+    },
+    "/workflows/-/tools": {
+      "get": {
+        "description": "The tools a `tool_call` step naming `manifest` can call, with their input schemas.\n\nThe manifest is admitted for the caller and compiled, so this is its governed tool set as a\nrun started by the caller resolves it \u2014 less client tools, which a workflow cannot answer.",
+        "operationId": "list_step_tools_workflows___tools_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "manifest",
+            "required": true,
+            "schema": {
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Manifest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepToolList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestRefused"
+                }
+              }
+            },
+            "description": "The manifest refuses anonymous callers"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestRefused"
+                }
+              }
+            },
+            "description": "The manifest's inbound rules refuse the caller"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestRefused"
+                }
+              }
+            },
+            "description": "No such manifest"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManifestRefused"
+                }
+              }
+            },
+            "description": "The manifest did not compile"
+          }
+        },
+        "summary": "List Step Tools",
         "tags": [
           "Workflows"
         ]

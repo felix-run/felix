@@ -153,8 +153,23 @@ class ToolCallConfig(_Config):
         if not isinstance(required, list) or not all(isinstance(r, str) for r in required):
             raise ValueError('"required" must be a list of property names')
         for name in properties:
-            _check_port_name(name, "tool input")
+            _check_tool_input(name)
         return v
+
+
+# A tool input is named by the tool, not the author — `pullNumber`, `per_page`, `repo-name` — so
+# it keeps the tool's own name rather than the port-name alphabet. An edge names a port as free
+# text (`PortRef.port`), so any name within its length wires.
+_TOOL_INPUT_MAX = 64
+
+
+def _check_tool_input(name: str) -> None:
+    if not name or len(name) > _TOOL_INPUT_MAX:
+        raise ValueError(f"tool input {name[:80]!r} must be 1 to {_TOOL_INPUT_MAX} characters")
+    if not name.isprintable():
+        raise ValueError(f"tool input {name!r} has a control character")
+    if name == WHEN:
+        raise ValueError(f"tool input {WHEN!r} is reserved for the step's control input")
 
 
 def _tool_call_ports(config: ToolCallConfig) -> tuple[list[Port], list[Port]]:
