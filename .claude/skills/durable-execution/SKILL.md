@@ -186,7 +186,10 @@ keeps the tool's own argument name (`pullNumber`), not the port-name alphabet. A
 `create_pending`; a lapsed or swept one fails the step. Stopping (cancel, expiry, fail-fast) calls
 every unfinished step's `stop`: `fibers.stop_fiber` by derived id plus `steer.request_abort`, and
 `close_interrupted` for approvals. A buried orchestrator fails its run (`_after_terminal` →
-`orchestrator_ended`). Contracts: `tests/conformance/test_workflow_runs_store.py`,
+`orchestrator_ended`). `_start_step` and `_bound` fail a step whose outputs pass `MAX_STEP_OUTPUT_BYTES`
+(128 KiB) or whose inputs or outputs would take the run's record past `MAX_RUN_RECORD_BYTES` (4 MiB),
+and cut a step's error to `MAX_STEP_ERROR_CHARS`. `save_run` clears `auth`/`pins` on the save that
+ends a run, and `retention_sweep` deletes finished runs after `FELIX_WORKFLOW_RUN_RETENTION_DAYS`. Contracts: `tests/conformance/test_workflow_runs_store.py`,
 `tests/unit/test_workflow_engine.py`, `tests/e2e/test_workflow_runs.py`.
 
 ## memory:// and tests

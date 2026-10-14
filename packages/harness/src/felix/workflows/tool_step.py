@@ -251,7 +251,7 @@ async def _call(
     return _outcome(str(message.content or ""), denied)
 
 
-_FAILURE_TAG = re.compile(r"^\[(tool error|error|fatal)/([a-z_]+)\]")
+_FAILURE_TAG = re.compile(r"^\[(tool error|error|fatal)/([a-z_]{1,64})\]")
 
 
 def _outcome(text: str, denied: bool) -> dict[str, Any]:

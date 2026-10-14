@@ -666,9 +666,11 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       governed tool set, after checking the tool is still bound and its live schema still takes
       what the step sends; replay only for `replay_safe` tools. `tool_call.manifest` is now
       required (an older stored step reads as `invalid_config`).
-      *Next:* run and step SSE frames (polling until then); `workflow_runs` in the retention
-      sweep, and `auth_json` / `pins_json` cleared once a run ends; a cap on stored output size;
-      four-eyes approval steps; a run scope; whether `workflows:read` sees step outputs.
+      *Next:* run and step SSE frames (polling until then); four-eyes approval steps; a run
+      scope; whether `workflows:read` sees step outputs.
+- [x] **Run hygiene.** Finished runs swept after `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30); the
+      recorded starter and pins cleared when a run ends; a step's output capped at 128 KiB and a
+      run's record (inputs, each step's inputs and outputs) at 4 MiB; errors cut short.
 - [x] **Editor tool listing.** `GET /workflows/-/tools?manifest=` lists the tools a `tool_call`
       step can name — the manifest compiled as the caller (`runtime.governed_tools`, shared with
       the MCP server and the step), each with its input schema and the step's input ports; client

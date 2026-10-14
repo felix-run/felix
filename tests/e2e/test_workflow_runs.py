@@ -422,6 +422,57 @@ async def test_a_tool_step_calls_the_governed_tool_and_feeds_the_next_step(boot:
     assert asked == ["The answer is 4"], "the tool's result became the next step's input"
 
 
+async def test_a_finished_run_keeps_its_record_but_not_its_starters_authority(boot: Any) -> None:
+    from felix.workflows import runs as run_store
+
+    async with boot([ScriptedTurn(content="Noted.")], manifests=MANIFESTS) as app:
+        run_url = await _run_sums(app, _sums())
+        started = await run_store.get_run(app.settings, "default", run_url.rsplit("/", 1)[1])
+        assert started is not None and started["pins"], "pinned while it runs"
+        done = await _tick(app, run_url, {"completed", "failed"})
+        ended = await run_store.get_run(app.settings, "default", done["id"])
+    assert done["status"] == "completed", done
+    assert ended is not None and (ended["auth"], ended["pins"]) == ({}, {})
+    assert ended["steps"]["calc"]["outputs"] == {"result": 4}
+
+
+async def test_a_step_that_hands_on_too_much_fails_with_none_of_it_kept(boot: Any) -> None:
+    from felix.workflows import engine
+
+    huge = "x" * (engine.MAX_STEP_OUTPUT_BYTES + 1)
+    async with boot([ScriptedTurn(content=huge)], manifests=MANIFESTS) as app:
+        done = await _tick(app, await _run_sums(app, _sums()), {"completed", "failed"})
+    report = done["steps"]["report"]
+    assert (done["status"], report["status"], report["outputs"]) == ("failed", "failed", None)
+    assert report["error"].startswith(f"the step's output is {len(huge) + 12} bytes")
+
+
+# Serialised, the run's inputs `{"sum": "2+2"}` are 14 bytes, the calc step's inputs
+# `{"expression": "2+2"}` 21, its output `{"result": 4}` 13, and the report step's inputs `{"n": 4}` 8.
+@pytest.mark.parametrize(
+    ("limit", "failed", "error", "kept_inputs"),
+    [
+        (40, "calc", "the step's output would take the run's record past 40 bytes", True),
+        (30, "calc", "the step's inputs would take the run's record past 30 bytes", False),
+        # 14 + 21 + 13 + 8 = 56: the calc step's own copy of its inputs is part of the record too.
+        (50, "report", "the step's inputs would take the run's record past 50 bytes", False),
+    ],
+    ids=["outputs", "inputs", "earlier-inputs-count"],
+)
+async def test_a_step_that_would_take_the_runs_record_past_its_limit_fails(
+    boot: Any, monkeypatch: pytest.MonkeyPatch, limit: int, failed: str, error: str, kept_inputs: bool
+) -> None:
+    from felix.workflows import engine
+
+    monkeypatch.setattr(engine, "MAX_RUN_RECORD_BYTES", limit)
+    async with boot([], manifests=MANIFESTS) as app:
+        done = await _tick(app, await _run_sums(app, _sums()), {"completed", "failed"})
+    step = done["steps"][failed]
+    assert (step["status"], step["error"], step["outputs"]) == ("failed", error, None)
+    assert (step["inputs"] is not None) is kept_inputs, "inputs past the limit are not copied in"
+    assert done["status"] == "failed"
+
+
 async def test_a_tool_the_manifest_does_not_bind_fails_the_step(boot: Any) -> None:
     async with boot([], manifests=MANIFESTS) as app:
         run_url = await _run_sums(app, _sums(manifest="e2e-wf"))

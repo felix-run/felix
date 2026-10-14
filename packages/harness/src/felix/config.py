@@ -380,6 +380,9 @@ class Settings(BaseSettings):
     # Terminal fibers carry the caller's principal and scopes in `state_json`; finished
     # A2A tasks share this TTL. Live rows are never swept.
     fiber_retention_days: int = Field(default=7, ge=0)
+    # Finished workflow runs: each step's inputs and outputs, kept for the run view; 0 keeps every
+    # run. The run's record of its starter is cleared the moment it ends; this bounds the rest.
+    workflow_run_retention_days: int = Field(default=30, ge=0)
     # The session event log is the chat record, so the default keeps it. When set, a
     # thread is dropped whole once its last event is this old.
     session_retention_days: int = Field(default=0, ge=0)
