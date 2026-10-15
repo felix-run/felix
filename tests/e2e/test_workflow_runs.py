@@ -154,6 +154,27 @@ async def test_a_denied_approval_ends_the_run_with_its_path_skipped(boot: Any) -
     assert done["steps"]["fix"]["status"] == "skipped"
 
 
+async def test_a_steps_transcript_is_read_under_its_run(boot: Any) -> None:
+    async with boot([CLASSIFIED, ScriptedTurn(content="Patched.")], manifests={"e2e-wf": _manifest()}) as app:
+        run_url = await _start(app)
+        await _decide(app, await _tick(app, run_url, {"waiting"}), "approved")
+        done = await _tick(app, run_url, {"completed", "failed"})
+        fix = await app.client.get(f"{run_url}/steps/fix/thread")
+        # A step with no child run (the gate), one the run never reached, one that does not exist.
+        missing = [
+            (await app.client.get(f"{run_url}/steps/{step}/thread")).status_code
+            for step in ("approve", "note", "nope")
+        ]
+        # The thread is the harness's own: no chat route can address it.
+        suffix = done["steps"]["fix"]["thread_id"].split(":", 1)[1]
+        by_chat = await app.client.get(f"/chat/sessions/{suffix}")
+    assert done["status"] == "completed"
+    assert fix.status_code == 200, fix.text
+    assert "Patched." in fix.text and "Fix: crash on save" in fix.text
+    assert missing == [404, 404, 404]
+    assert by_chat.status_code == 400
+
+
 @pytest.mark.parametrize(
     "answer",
     ["It's a bug, I think.", '{"summary": "crash on save"}'],
@@ -333,9 +354,10 @@ async def test_run_routes_need_their_scopes(boot: Any) -> None:
     keys = {
         "reader-token": {"tenant_id": "default", "sub": "ops", "scopes": ["workflows:read"]},
         "writer-token": {"tenant_id": "default", "sub": "ops", "scopes": ["workflows:write"]},
+        "chat-token": {"tenant_id": "default", "sub": "ops", "scopes": []},
     }
     env = {"FELIX_AUTH_MODE": "api_key", "FELIX_AUTH_API_KEYS": json.dumps(keys)}
-    reader, writer = ({"Authorization": f"Bearer {k}"} for k in keys)
+    reader, writer, chat = ({"Authorization": f"Bearer {k}"} for k in keys)
     async with boot([], env=env, manifests={"e2e-wf": _manifest()}) as app:
         assert (await app.client.put("/workflows/triage", json=_triage(), headers=writer)).status_code == 201
         body = {"inputs": {"issue": "x"}}
@@ -346,6 +368,10 @@ async def test_run_routes_need_their_scopes(boot: Any) -> None:
         assert started.json()["started_by"] == "ops"
         assert (await app.client.get(run_url, headers=reader)).status_code == 200
         assert (await app.client.get("/workflows/triage/runs", headers=reader)).status_code == 200
+        transcript = f"{run_url}/steps/classify/thread"
+        assert (await app.client.get(transcript, headers=chat)).status_code == 403
+        # Past the scope check: the step has not started, so it has no thread yet.
+        assert (await app.client.get(transcript, headers=reader)).status_code == 404
         assert (await app.client.post(f"{run_url}/cancel", headers=reader)).status_code == 403
         assert (await app.client.post(f"{run_url}/cancel", headers=writer)).status_code == 200
 
