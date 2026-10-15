@@ -221,6 +221,7 @@ async def save_run(settings: Settings, row: dict[str, Any]) -> bool:
         row["version"], row["updated_at"] = read_at + 1, ts
         # Only what Postgres writes: the twin must not persist an edit the real store drops.
         current.update(deepcopy({k: row.get(k) for k in (*_MUTABLE, *(_ENDED if ended else ()))}))
+        await _announce(tenant_id, run_id)
         return True
 
     async with tenant_session(settings, tenant_id) as db:
@@ -246,7 +247,23 @@ async def save_run(settings: Settings, row: dict[str, Any]) -> bool:
         if not result.rowcount:
             return False
     row["version"], row["updated_at"] = read_at + 1, ts
+    await _announce(tenant_id, run_id)
     return True
+
+
+async def _announce(tenant_id: str, run_id: str) -> None:
+    """Wake whoever watches this run (`GET /workflows/{id}/runs/{run}/stream`).
+
+    On the run's key (`thread_ids.workflow_run_key`), the channel its approval rows already wake,
+    so a gate opening or a step moving reaches a watcher on another replica as it lands. Best
+    effort, as every notification is: a watcher polls behind it.
+    """
+    from felix.session.notify import notify_appended
+    from felix.thread_ids import workflow_run_key
+
+    key = workflow_run_key(tenant_id, run_id)
+    if key:
+        await notify_appended(tenant_id, key)
 
 
 async def count_active(settings: Settings, tenant_id: str) -> int:
