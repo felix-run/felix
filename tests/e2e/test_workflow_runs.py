@@ -7,6 +7,7 @@ each agent step's child run are real fibers in the memory store; the model is sc
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -173,6 +174,57 @@ async def test_a_steps_transcript_is_read_under_its_run(boot: Any) -> None:
     assert "Patched." in fix.text and "Fix: crash on save" in fix.text
     assert missing == [404, 404, 404]
     assert by_chat.status_code == 400
+
+
+def _run_frames(body: str) -> list[tuple[int, dict[str, Any]]]:
+    """The `workflow_run` frames of a stream body, with their `id:`; asserts it ends in `[DONE]`."""
+    import json
+
+    assert body.rstrip().endswith("data: [DONE]"), body[-200:]
+    out = []
+    for block in body.split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+        if "data" in lines and lines["data"] != "[DONE]":
+            payload = json.loads(lines["data"])
+            assert payload["event"] == "workflow_run", payload
+            out.append((int(lines["id"]), payload["data"]))
+    return out
+
+
+async def test_a_run_is_watched_as_it_moves_until_it_is_over(boot: Any) -> None:
+    async with boot([CLASSIFIED, ScriptedTurn(content="Patched.")], manifests={"e2e-wf": _manifest()}) as app:
+        run_url = await _start(app)
+        # Opened before anything has run: every change after this arrives as a frame.
+        watching = asyncio.create_task(app.client.get(f"{run_url}/stream"))
+        await _decide(app, await _tick(app, run_url, {"waiting"}), "approved")
+        done = await _tick(app, run_url, {"completed", "failed"})
+        streamed = await asyncio.wait_for(watching, timeout=10)
+    assert streamed.status_code == 200
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    frames = _run_frames(streamed.text)
+    versions = [v for v, _ in frames]
+    assert versions == sorted(set(versions)), "one frame per version, in order"
+    assert all(v == run["version"] for v, run in frames), "each id is its record's version"
+    statuses = [run["status"] for _, run in frames]
+    assert "waiting" in statuses
+    assert frames[-1][1] == done, "the last frame is the finished run as GET answers it"
+
+
+async def test_a_finished_runs_stream_is_one_frame_and_resumes_past_it(boot: Any) -> None:
+    async with boot([CLASSIFIED], manifests={"e2e-wf": _manifest()}) as app:
+        run_url = await _start(app)
+        await _decide(app, await _tick(app, run_url, {"waiting"}), "denied")
+        done = await _tick(app, run_url, {"completed", "failed"})
+        # Bounded: a finished run's stream that did not end would otherwise hang the test.
+        whole = await asyncio.wait_for(app.client.get(f"{run_url}/stream"), timeout=5)
+        caught_up = await asyncio.wait_for(
+            app.client.get(f"{run_url}/stream", headers={"Last-Event-ID": str(done["version"])}),
+            timeout=5,
+        )
+        missing = await app.client.get(f"/workflows/triage/runs/{'0' * 32}/stream")
+    assert _run_frames(whole.text) == [(done["version"], done)]
+    assert _run_frames(caught_up.text) == [], "nothing newer than the version it names"
+    assert missing.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -368,6 +420,9 @@ async def test_run_routes_need_their_scopes(boot: Any) -> None:
         assert started.json()["started_by"] == "ops"
         assert (await app.client.get(run_url, headers=reader)).status_code == 200
         assert (await app.client.get("/workflows/triage/runs", headers=reader)).status_code == 200
+        # Bounded: a stream let through would hold the request open for the run's whole life.
+        refused = await asyncio.wait_for(app.client.get(f"{run_url}/stream", headers=chat), timeout=5)
+        assert refused.status_code == 403
         transcript = f"{run_url}/steps/classify/thread"
         assert (await app.client.get(transcript, headers=chat)).status_code == 403
         # Past the scope check: the step has not started, so it has no thread yet.

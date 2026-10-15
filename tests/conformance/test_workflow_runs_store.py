@@ -147,3 +147,25 @@ async def test_active_runs_are_counted_per_tenant(store_settings: Any) -> None:
     await runs.create_run(store_settings, TENANT, _new())
     await runs.create_run(store_settings, "other-tenant", _new())
     assert await runs.count_active(store_settings, TENANT) == 1
+
+
+@parametrized
+async def test_a_save_wakes_whoever_watches_the_run_and_a_refused_one_does_not(
+    store_settings: Any,
+) -> None:
+    from felix.session.notify import thread_watch
+    from felix.thread_ids import workflow_run_key
+
+    created = await runs.create_run(store_settings, TENANT, _new())
+    first = await runs.get_run(store_settings, TENANT, created["id"])
+    stale = await runs.get_run(store_settings, TENANT, created["id"])
+    assert first is not None and stale is not None
+    key = workflow_run_key(TENANT, created["id"])
+    assert key is not None
+    async with thread_watch(TENANT, key) as watch:
+        first["status"] = "running"
+        assert await runs.save_run(store_settings, first)
+        assert (await watch.wait(timeout=1.0)).woken, "a save announces the run on its key"
+        stale["status"] = "cancelling"
+        assert not await runs.save_run(store_settings, stale)
+        assert not (await watch.wait(timeout=0.05)).woken, "a save that wrote nothing announces nothing"

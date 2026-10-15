@@ -5,8 +5,9 @@ and keeps that definition for its life (`felix/workflows/runs.py`), so editing t
 mid-run changes nothing it does. `POST /workflows/{id}/runs` answers `202` with the run; the
 orchestrator fiber in the worker does the rest (`felix/workflows/engine.py`), and a client polls
 `GET /workflows/{id}/runs/{run_id}` for every step's state — an agent step names the thread its
-transcript is on, an approval step the approval it is waiting on — and reads a step's transcript
-at `GET /workflows/{id}/runs/{run_id}/steps/{step_id}/thread`.
+transcript is on, an approval step the approval it is waiting on — or watches
+`GET /workflows/{id}/runs/{run_id}/stream` for the same record as it changes, and reads a step's
+transcript at `GET /workflows/{id}/runs/{run_id}/steps/{step_id}/thread`.
 
 Starting and cancelling need `workflows:write`: a run executes the manifests its steps name, as
 the person who started it and with their scopes, recorded the way a durable chat records them.
@@ -14,9 +15,12 @@ the person who started it and with their scopes, recorded the way a durable chat
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi.responses import StreamingResponse
 from felix.auth.mgmt import (
     SCOPE_WORKFLOWS_READ,
     SCOPE_WORKFLOWS_WRITE,
@@ -32,7 +36,17 @@ from felix.workflows.runs import RunStatus, StepStatus
 from felix.workflows.schema import STEP_ID_PATTERN, WORKFLOW_ID_PATTERN
 from pydantic import BaseModel, Field
 
+from felix_api.routes._sse import DONE, KEEP_ALIVE, error_frame, frame, sse_response
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["Workflows"])
+
+# How long the stream waits for a run to move before reading it anyway: short when nothing can wake
+# it (no Redis, so a save in the worker is announced only in the worker's own process), long when
+# saves are announced and the read is a safety net.
+STREAM_POLL_SECONDS = 2.0
+STREAM_NOTIFIED_POLL_SECONDS = 30.0
 
 _WORKFLOW_ID = Path(pattern=WORKFLOW_ID_PATTERN, max_length=64)
 _RUN_ID = Path(pattern=r"^[0-9a-f]{32}$")
@@ -286,6 +300,78 @@ async def get_step_thread(
     return await gather_thread_snapshot(
         settings=request.app.state.settings, tenant_id=tenant_id, thread=thread
     )
+
+
+def _run_out(run: dict[str, Any]) -> dict[str, Any]:
+    """A run as `GET /workflows/{id}/runs/{run_id}` answers it, through the same model."""
+    return RunOut.model_validate(run_store.workflow_run_view(run)).model_dump(mode="json")
+
+
+async def _run_frames(settings: Any, tenant_id: str, run: dict[str, Any], seen: int | None) -> Any:
+    """`workflow_run` frames, one per version of the run's record, until the run is over.
+
+    Each frame is the record `GET /workflows/{id}/runs/{run_id}` answers, its `id:` the record's
+    version: a client that reconnects with that as `Last-Event-ID` gets the next change, not the
+    one it has. Every save of the run announces itself (`runs._announce`), so a step moving reaches
+    the stream as it is written; the read between waits is what keeps a missed announcement from
+    costing more than a poll.
+    """
+    from felix.errors import client_safe_message
+    from felix.logging_setup import loggable
+    from felix.session.notify import thread_watch
+    from felix.thread_ids import workflow_run_key
+
+    key = workflow_run_key(tenant_id, run["id"]) or ""
+    try:
+        async with thread_watch(tenant_id, key) as watch:
+            while True:
+                if run["version"] != seen:
+                    seen = int(run["version"])
+                    yield frame({"event": "workflow_run", "data": _run_out(run)}, cursor=seen)
+                if run["status"] in run_store.RUN_TERMINAL:
+                    break
+                wait = STREAM_NOTIFIED_POLL_SECONDS if watch.delivering else STREAM_POLL_SECONDS
+                if not (await watch.wait(timeout=wait)).woken:
+                    yield KEEP_ALIVE
+                fresh = await run_store.get_run(settings, tenant_id, run["id"])
+                if fresh is None:
+                    # Swept: retention removed a finished run's record while it was watched.
+                    yield error_frame("run_not_found", kind="run_error")
+                    break
+                run = fresh
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("workflow run stream failed run=%s", loggable(run["id"], limit=64))
+        yield error_frame(client_safe_message(exc), kind="run_error")
+    yield DONE
+
+
+@router.get(
+    "/{workflow_id}/runs/{run_id}/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {"content": {"text/event-stream": {}}, "description": "`workflow_run` frames"},
+        404: _NOT_FOUND,
+    },
+)
+async def stream_run(
+    request: Request, workflow_id: str = _WORKFLOW_ID, run_id: str = _RUN_ID
+) -> StreamingResponse:
+    """The run as it changes: a `workflow_run` frame for each new version, then `[DONE]` once over.
+
+    The first frame is the run as it stands, unless `Last-Event-ID` (or `last_event_id`) already
+    names that version. A finished run is one frame and `[DONE]`. Under `workflows:read`, as the
+    record itself is.
+    """
+    require_mgmt_scopes(request, SCOPE_WORKFLOWS_READ)
+    run = await _run_of(request, workflow_id, run_id)
+    header = request.headers.get("last-event-id") or request.query_params.get("last_event_id")
+    try:
+        seen = int(header) if header not in (None, "") else None
+    except ValueError:
+        seen = None
+    return sse_response(_run_frames(request.app.state.settings, tenant_id_from_request(request), run, seen))
 
 
 @router.post("/{workflow_id}/runs/{run_id}/cancel", response_model=RunOut, responses={404: _NOT_FOUND})

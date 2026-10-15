@@ -21728,6 +21728,67 @@
           "Workflows"
         ]
       }
+    },
+    "/workflows/{workflow_id}/runs/{run_id}/stream": {
+      "get": {
+        "description": "The run as it changes: a `workflow_run` frame for each new version, then `[DONE]` once over.\n\nThe first frame is the run as it stands, unless `Last-Event-ID` (or `last_event_id`) already\nnames that version. A finished run is one frame and `[DONE]`. Under `workflows:read`, as the\nrecord itself is.",
+        "operationId": "stream_run_workflows__workflow_id__runs__run_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "`workflow_run` frames"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            },
+            "description": "No such workflow or run"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Run",
+        "tags": [
+          "Workflows"
+        ]
+      }
     }
   }
 }
