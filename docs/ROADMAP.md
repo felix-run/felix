@@ -675,9 +675,9 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       step can name — the manifest compiled as the caller (`runtime.governed_tools`, shared with
       the MCP server and the step), each with its input schema and the step's input ports; client
       tools are left out and refused at run. Tool inputs keep the tool's own argument names.
-      *Found on the way:* MCP `tools/call` executes the governed executor directly, so the
-      plugin and manifest tool hooks and the `tool_call` audit row do not apply to it — the gap the
-      tool step closed by dispatching through `ToolRunner`.
+      *Found on the way, since closed:* MCP `tools/call` executed the governed executor directly,
+      so the plugin and manifest tool hooks and the `tool_call` audit row did not apply to it. It
+      now dispatches through `ToolRunner` too (`for_client`), as the tool step does.
 - [x] **Entry points.** Manual run with inputs (#639). *Landed:* a job naming a workflow
       (`workflow_id`, `0043_job_workflow`) starts a run on each firing with `payload.inputs`, as
       `cron` for the job's writer, who needs `workflows:write`; the run's trigger is `job:<name>`.

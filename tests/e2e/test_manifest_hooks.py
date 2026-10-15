@@ -477,3 +477,34 @@ async def test_a_deny_reason_is_screened(boot: Any) -> None:
             shown = _text(app.spy.prompts[1])
     assert "[hook denied] h1" in shown and "[quarantined]" in shown
     assert INJECTION not in shown
+
+
+async def test_pre_tool_use_blocks_a_call_made_over_mcp(boot: Any) -> None:
+    """An MCP client's `tools/call` is the manifest's tool too: its hooks see it, as a model's."""
+    async with (
+        hook_receiver(lambda req: (200, {"decision": "block", "reason": "not over MCP"})) as (
+            url,
+            seen,
+        ),
+        boot([], env=_env(url), manifests={"e2e-hooked": _agent([_hook("pre_tool_use")])}) as app,
+    ):
+        resp = await app.client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "manifest": "e2e-hooked",
+                    "name": "calculator",
+                    "arguments": {"expression": "6*7"},
+                },
+            },
+        )
+    result = resp.json()["result"]
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "[hook denied] h1" in text and "not over MCP" in text
+    assert "42" not in text, "the tool never ran"
+    [request] = seen
+    assert request["json"]["data"]["args"] == {"expression": "6*7"}
