@@ -5,7 +5,8 @@ and keeps that definition for its life (`felix/workflows/runs.py`), so editing t
 mid-run changes nothing it does. `POST /workflows/{id}/runs` answers `202` with the run; the
 orchestrator fiber in the worker does the rest (`felix/workflows/engine.py`), and a client polls
 `GET /workflows/{id}/runs/{run_id}` for every step's state — an agent step names the thread its
-transcript is on, an approval step the approval it is waiting on.
+transcript is on, an approval step the approval it is waiting on — and reads a step's transcript
+at `GET /workflows/{id}/runs/{run_id}/steps/{step_id}/thread`.
 
 Starting and cancelling need `workflows:write`: a run executes the manifests its steps name, as
 the person who started it and with their scopes, recorded the way a durable chat records them.
@@ -28,13 +29,14 @@ from felix.workflows import runs as run_store
 from felix.workflows import store as workflow_store
 from felix.workflows.check import ProblemCode
 from felix.workflows.runs import RunStatus, StepStatus
-from felix.workflows.schema import WORKFLOW_ID_PATTERN
+from felix.workflows.schema import STEP_ID_PATTERN, WORKFLOW_ID_PATTERN
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["Workflows"])
 
 _WORKFLOW_ID = Path(pattern=WORKFLOW_ID_PATTERN, max_length=64)
 _RUN_ID = Path(pattern=r"^[0-9a-f]{32}$")
+_STEP_ID = Path(pattern=STEP_ID_PATTERN)
 
 
 class RunStart(BaseModel):
@@ -157,6 +159,10 @@ class NotFound(BaseModel):
 
 
 _NOT_FOUND = {"model": NotFound, "description": "No such workflow or run"}
+_NO_THREAD = {
+    "model": NotFound,
+    "description": "No such workflow, run or step, or the step has no thread yet",
+}
 
 
 def _summary(run: dict[str, Any]) -> dict[str, Any]:
@@ -255,6 +261,31 @@ async def list_runs(
 async def get_run(request: Request, workflow_id: str = _WORKFLOW_ID, run_id: str = _RUN_ID) -> dict[str, Any]:
     require_mgmt_scopes(request, SCOPE_WORKFLOWS_READ)
     return run_store.workflow_run_view(await _run_of(request, workflow_id, run_id))
+
+
+@router.get("/{workflow_id}/runs/{run_id}/steps/{step_id}/thread", responses={404: _NO_THREAD})
+async def get_step_thread(
+    request: Request, workflow_id: str = _WORKFLOW_ID, run_id: str = _RUN_ID, step_id: str = _STEP_ID
+) -> dict[str, Any]:
+    """The transcript of one step's child run: the snapshot `GET /chat/sessions/{id}` answers.
+
+    Read here, under `workflows:read`, because no chat route can address the thread: it is in the
+    harness's own namespace (`thread_ids.workflow_thread_id`), which is what keeps a chat client
+    from writing into a step's history — a steer, a custom entry — and having the step's agent read
+    it as its own, under the starter's authority. This route only reads.
+    """
+    from felix.session.snapshot import gather_thread_snapshot
+    from felix.thread_ids import thread_belongs_to_tenant
+
+    require_mgmt_scopes(request, SCOPE_WORKFLOWS_READ)
+    run = await _run_of(request, workflow_id, run_id)
+    tenant_id = tenant_id_from_request(request)
+    thread = str((run["steps"].get(step_id) or {}).get("thread_id") or "")
+    if not thread_belongs_to_tenant(tenant_id, thread):
+        raise HTTPException(status_code=404, detail="not_found")
+    return await gather_thread_snapshot(
+        settings=request.app.state.settings, tenant_id=tenant_id, thread=thread
+    )
 
 
 @router.post("/{workflow_id}/runs/{run_id}/cancel", response_model=RunOut, responses={404: _NOT_FOUND})

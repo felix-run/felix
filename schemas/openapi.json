@@ -21651,6 +21651,83 @@
           "Workflows"
         ]
       }
+    },
+    "/workflows/{workflow_id}/runs/{run_id}/steps/{step_id}/thread": {
+      "get": {
+        "description": "The transcript of one step's child run: the snapshot `GET /chat/sessions/{id}` answers.\n\nRead here, under `workflows:read`, because no chat route can address the thread: it is in the\nharness's own namespace (`thread_ids.workflow_thread_id`), which is what keeps a chat client\nfrom writing into a step's history \u2014 a steer, a custom entry \u2014 and having the step's agent read\nit as its own, under the starter's authority. This route only reads.",
+        "operationId": "get_step_thread_workflows__workflow_id__runs__run_id__steps__step_id__thread_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "step_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z][a-z0-9_]{0,63}$",
+              "title": "Step Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Step Thread Workflows  Workflow Id  Runs  Run Id  Steps  Step Id  Thread Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFound"
+                }
+              }
+            },
+            "description": "No such workflow, run or step, or the step has no thread yet"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Step Thread",
+        "tags": [
+          "Workflows"
+        ]
+      }
     }
   }
 }
