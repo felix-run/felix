@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [make.felix.run](https://make.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-10-10 (completed items folded into HISTORY.md); before that 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
+**Last reviewed:** 2026-10-15 (cutting 0.15.0: the workflows console and #647 marked done, the open workflow decisions listed); before that 2026-10-10 (completed items folded into HISTORY.md); before that 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
 2026-09-29, after 0.5.0)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
@@ -687,11 +687,31 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       sender's text is recorded as `untrusted_inputs` and fenced as data in every agent prompt of
       the run. Open: per-value taint instead of per-run fencing; `revision` pinning in config is
       manual.
-- [ ] **Console.** chat-ui Workflows page (list, editor, run view) and the instrument's compact
-      graph — felix-web.
-- [ ] Open: whether a workflow can call another; per-step retry and timeout; a tool schema that
-      drifted since a `tool_call` step was wired (the step stores the snapshot it was wired
-      against; the run must check against the live one).
+- [x] **Console.** felix-web's Workflows page: the list, the graph with a definition and a run
+      view, the editor (web#519–#525), each step's transcript read under its run (#645) and the run
+      watched over `GET /workflows/{id}/runs/{run_id}/stream` (#646). The instrument's compact graph
+      is dropped: a step's thread is not a chat thread, by design (#645), so it had nowhere to sit.
+- [x] **MCP `tools/call` through the runner** (#647): the plugin and manifest tool hooks and the
+      `tool_call` audit row now see an MCP client's call, as they see a model's and a tool step's.
+- [ ] **Decisions for the maintainer.** Raised while building the above; nothing is done about any
+      of them until one is made.
+      - **A trigger's `revision` pin.** A trigger naming a workflow runs its current revision unless
+        the operator pins one in config, so an edit changes what an inbound sender can start.
+        Require the pin, or keep it optional?
+      - **A JWT writer's job grant.** A job a JWT writer saved keeps that writer's grant with no
+        expiry, and each firing lends it for 24 hours. Bound it by the token's own `exp`, as a
+        durable chat run's life is, or by a fixed ceiling?
+      - **Runs that ended before #644.** Those still hold their starter's recorded authority and the
+        manifest pins; #644 clears them only at a run's end from then on. Backfill-clear them in a
+        migration?
+      - **Two people on one gate.** `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` already refuses a
+        decision by the run's own starter; nothing lets an approval step require two decisions.
+        Wanted?
+      - **What `workflows:read` sees.** It reads every step's inputs and outputs and, since #645,
+        each step's transcript, which can carry a trigger's payload. Keep that, or gate outputs and
+        transcripts behind a stronger scope?
+- [ ] Open: whether a workflow can call another; per-step retry and timeout. (A tool schema that
+      drifted since a `tool_call` step was wired fails the step at run, #640.)
 
 ### Auth audit (2026-10-12)
 

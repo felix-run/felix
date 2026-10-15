@@ -10,6 +10,108 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-15
+
+### Added
+
+- Authored workflow definitions (`felix/workflows/`): a typed-port step graph with an open step-kind registry (`agent_turn`, `tool_call`, `approval`, `branch`), graph checks that report problems without blocking a save, and a per-tenant store with revision-checked conditional writes (migration `0040_workflows`). (#634)
+
+- `/workflows` management API: create, read, replace and delete authored workflow definitions, each response carrying the definition's ports and problems; saves conditional on `If-Match` / `If-None-Match: *` (412 with the current revision); `/workflows/-/kinds` and `/workflows/-/check`; scopes `workflows:read` / `workflows:write`; at most 500 workflows per tenant. (#636)
+
+- Workflow runs: `POST /workflows/{id}/runs` starts a durable run of a workflow's current revision, with each agent step a child durable run (as the starter, against manifests pinned at start), approval steps through `/approvals`, and branches; `GET /workflows/{id}/runs` and `GET /workflows/{id}/runs/{run}` show every step; `POST /workflows/{id}/runs/{run}/cancel` stops one. At most 50 active runs per tenant and 8 agent steps in flight per run. (#639)
+
+- `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` refuses an approval decided by the person whose run asked for it, unless the decider is an operator. (#635)
+
+- `GET /jobs` shows each job's `created_by` and `recorded_at`. (#635)
+
+- Workflow `tool_call` steps run: each calls one tool from its step's `manifest` through that manifest's governed tool set and the agent loop's dispatch (wrappers, tool hooks and the audit row apply), as the person who started the run, after checking the tool is still bound and its input schema still matches. (#640)
+
+- `GET /workflows/-/tools?manifest=` lists the tools a workflow `tool_call` step can call, with their input schemas and step ports, compiled as the caller. (#641)
+
+- A scheduled job may name a `workflow_id` instead of a `manifest_id`. Each firing starts a run of that workflow with `payload.inputs` as the job's writer, held to the workflow revision the job was written against. (#642)
+
+- A `FELIX_TRIGGERS` entry may name a `workflow`, mapping payload fields to its inputs by JSON Pointer (`inputs`), each checked against the input's declared type. The sender's text is recorded as `untrusted_inputs`, and every agent step of a triggered run reads what it is given inside a per-prompt fence. (#643)
+
+- `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (default 30; 0 keeps every run). The retention sweep deletes workflow runs that finished longer ago than that. (#644)
+
+- `GET /workflows/{id}/runs/{run_id}/steps/{step_id}/thread` reads the transcript of a workflow
+  step's child run under `workflows:read`; a step's thread stays out of reach of the chat routes. (#645)
+
+- `GET /workflows/{id}/runs/{run_id}/stream` streams a workflow run as it changes: a `workflow_run`
+  frame for each new version of the run's record (its `id:` the version, for `Last-Event-ID`), then
+  `[DONE]` once the run is over. (#646)
+
+### Changed
+
+- A stored or bundled manifest that names a `secret:` ref no longer compiles until the operator lists that name in `FELIX_MANIFEST_SECRETS`. (#633)
+
+- `felix doctor` notes bundled manifests affected by this. (#633)
+
+- Plugin patterns receive `PatternBuildContext["manifest_secrets"]`. (#633)
+
+- `POST /jobs/{name}/run` on a job someone else wrote needs `admin` (403 `not_job_writer`). (#635)
+
+- Manifests may not use the tool name `exit_plan_mode` or the approval rule id `plan-approval`. (#635)
+
+- `/metrics` needs the `metrics:read` scope. `scripts/metrics-token.sh` mints the scrape key in a separate `metrics` tenant. (#637)
+
+- `FELIX_WORKSPACE_DEPLOYMENT_TENANTS` defaults to empty, so no tenant gets the deployment workspace unless named. (#637)
+
+- `felix mint-jwt` defaults to no scopes and takes `--ttl` from 1 to 86400 seconds (up to a year with `--allow-long-ttl`). It also gains `--aud`. (#638)
+
+- `auth_mode=none` logs a warning at every boot. (#638)
+
+- `tool_call` steps now require a `manifest`; a stored step without one reports an `invalid_config` problem. (#640)
+
+- A workflow `tool_call` step accepts the tool's own argument names (for example `pullNumber`) as input ports, and refuses a client tool instead of waiting on it. (#641)
+
+- Every workflow run start, not only one over HTTP, is audited as `workflow_run_started` with its trigger. (#642)
+
+- On upgrade, the retention sweep deletes workflow runs that finished more than 30 days ago. Set `FELIX_WORKFLOW_RUN_RETENTION_DAYS=0` to keep them. (#644)
+
+- A workflow run clears its recorded starter and manifest pins when it ends. (#644)
+
+- A step may hand on 128 KiB of output and a run's record (inputs, each step's inputs and outputs) at most 4 MiB. A step past either fails, and step errors are cut to 500 characters. (#644)
+
+- A tool that raises during an MCP `tools/call` is reported as `[error/<code>] internal error …`
+  rather than `error: internal error …`. (#647)
+
+### Fixed
+
+- A signed trigger body nested past the JSON decoder's stack is refused as `invalid_payload` instead of failing with a 500. (#643)
+
+- A workflow look that lost its save to one ending the run now stops the child runs it had started, which the winning look never saw. (#644)
+
+### Security
+
+- A manifest's `secret:NAME` refs now resolve only names that `FELIX_MANIFEST_SECRETS` lists for the manifest's tenant. Felix's own credentials, infrastructure credentials, and secrets already bound by an operator registry are always refused. `PUT /manifests`, canary and rollback answer 422 for a refused name. (#633)
+
+- `publish_commits` publishes only from the checkout opener's own run. A thread's checkout routes, `/chat/workspace/*` over a checkout and `/chat/rewind` `restore_files` answer 403 `not_checkout_opener` to anyone else. (#635)
+
+- Scheduled jobs run as `cron` on behalf of their last writer, with that writer's recorded authority, and pass the manifest's inbound auth and compile pin. An API-key writer's scopes are re-checked against the key's current config at each firing. Migration `0042_job_creator`. (#635)
+
+- `POST /approvals/{id}/decide` acts only on pending, unexpired rows: 409 `approval_already_decided` or `approval_expired`. (#635)
+
+- `POST /chat/mode` needs `approvals:write` to loosen a thread's mode. (#635)
+
+- The workspace pane, `/chat/style` and the A2A `tasks/get`, `tasks/cancel` and `tasks/resubscribe` methods admit the caller to the manifest's inbound auth and the caller's `felix_manifests` pin. An A2A `message/send` naming an existing task is checked against that task's manifest before anything is written. (#637)
+
+- A pinned Google account may not share a tenant with another pin, an API key, a GitHub org grant, a fixed-tenant JWT verifier, a trigger, or `default`. A scope containing whitespace is refused. (#637)
+
+- MCP server failures relay only the error types the HTTP API relays; anything else returns a generic message with the request id instead of exception text. (#637)
+
+- A plugin's self-authenticating mounts are validated at boot, and path rules match the `root_path`-stripped path. (#638)
+
+- `FELIX_AUTH_API_KEYS` with malformed JSON, non-list scopes or non-string `tenant_id` or `sub` refuses to boot. Outside development, a key shorter than 32 characters refuses to boot. (#638)
+
+- With triggers configured, `FELIX_IDEMPOTENCY_TTL_SECONDS` must be at least 600 seconds, so a signed delivery cannot be replayed after its claim expires. (#638)
+
+- A failed A2A task stores a fixed message instead of the exception text. (#638)
+
+- An MCP `tools/call` now runs through the agent loop's own tool dispatch: the plugin `before_tool` /
+  `after_tool` hooks and the manifest's `pre_tool_use` / `post_tool_use` hooks apply to it, and it
+  writes the `tool_call` (or `policy_deny`) audit row, as a model's tool call does. (#647)
+
 ## [0.14.1] — 2026-10-12
 
 ### Changed
@@ -4831,3 +4933,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.13.1]: https://github.com/felix-run/felix/releases/tag/v0.13.1
 [0.14.0]: https://github.com/felix-run/felix/releases/tag/v0.14.0
 [0.14.1]: https://github.com/felix-run/felix/releases/tag/v0.14.1
+[0.15.0]: https://github.com/felix-run/felix/releases/tag/v0.15.0
