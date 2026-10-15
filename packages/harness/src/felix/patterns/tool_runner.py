@@ -94,6 +94,11 @@ class ToolRunner:
     manifest_hooks: ManifestHooks | None = None
     # How many more tool images this run may keep; see `felix.tools.tool_images`.
     image_budget: ImageBudget = field(default_factory=ImageBudget)
+    # The call's message answers an API caller (Felix's MCP server), not a model: a raised
+    # exception's text is the operator's, so it goes through `client_safe_message` and the log
+    # gets the traceback; and the tool's images come back as it returned them, unstored, for the
+    # caller to apply its own outgoing rules (`outgoing_tool_images`).
+    for_client: bool = False
 
     def batch_mode(self, calls: list[ToolCall]) -> str:
         mode = self.tool_execution or "sequential"
@@ -266,10 +271,17 @@ class ToolRunner:
                     manifest_id=self.manifest_id,
                     payload=_call_row(call, thread_id, error_code=code.value),
                 )
-                if tool.fatal:
-                    text = f"[fatal/{code.value}] {exc}"
+                if self.for_client:
+                    from felix.errors import client_safe_message
+
+                    logger.exception("tool %s raised", loggable(call.name, limit=128))
+                    told: object = client_safe_message(exc)
                 else:
-                    text = f"[error/{code.value}] {exc}"
+                    told = exc
+                if tool.fatal:
+                    text = f"[fatal/{code.value}] {told}"
+                else:
+                    text = f"[error/{code.value}] {told}"
                 # The hook is handed the text the model would see and may replace it, as on
                 # success: an exception's message is where a secret or an internal path is most
                 # likely to surface, so a redacting hook that skipped failures would miss it.
@@ -296,7 +308,11 @@ class ToolRunner:
             # A hook that rewrote the text rewrote the output: a redacting or blocking hook means
             # all of it, so the images go too rather than slipping past beside the new text.
             images: list[ImageAttachment] | None = None
-            if not rewritten:
+            if rewritten:
+                pass
+            elif self.for_client:
+                images = list(tool_output_images(result)) or None
+            else:
                 content, images = await self._stored_images(call.name, result, content)
 
             return (

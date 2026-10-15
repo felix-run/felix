@@ -215,9 +215,10 @@ async def stored_image(file_id: str) -> tuple[bytes, str] | None:
 async def outgoing_tool_images(images: Sequence[ImageAttachment]) -> list[tuple[str, bytes]]:
     """`(media type, bytes)` for each of a tool's images that may leave the harness.
 
-    For Felix's own MCP server, which answers `tools/call` without the runner: the per-call cap,
-    the upload rules on inline bytes, and only references this request stored itself
-    (`store_image_bytes`). A reference a tool merely names may be any upload in the tenant.
+    For Felix's own MCP server, whose runner hands a tool's images back unstored
+    (`ToolRunner.for_client`): the per-call cap, the upload rules on inline bytes, and only
+    references this request stored itself (`store_image_bytes`). A reference a tool merely names
+    may be any upload in the tenant.
     """
     paid = request_budget().paid
     out: list[tuple[str, bytes]] = []

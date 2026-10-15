@@ -54,7 +54,9 @@ async def test_a_raising_tool_is_not_relayed(
         async def execute(self, args: Any, ctx: Any) -> Any:
             raise OSError(f"/srv/felix/{LEAK}")
 
-    tool = SimpleNamespace(name="leaky", description="", executor=_Raises(), args_schema=None)
+        transport = "builtin"
+
+    tool = SimpleNamespace(name="leaky", description="", executor=_Raises(), args_schema=None, fatal=False)
 
     async def compiled(**_: Any) -> Any:
         return [tool], object()
@@ -64,11 +66,12 @@ async def test_a_raising_tool_is_not_relayed(
 
     monkeypatch.setattr(server, "_compiled_tools", compiled)
     monkeypatch.setattr("felix.governance.tool_screening.screen_tool_arguments", passthrough)
-    with caplog.at_level(logging.ERROR, logger="felix.mcp.server"):
+    with caplog.at_level(logging.ERROR):
         out = await _call(make_settings(), "tools/call", name="leaky", arguments={})
     assert out["result"]["isError"] is True
     text = out["result"]["content"][0]["text"]
-    assert text.startswith("error: internal error"), text
+    # Named by its code, then the fixed message with the request id: `ToolRunner.for_client`.
+    assert text.startswith("[error/") and "internal error" in text, text
     assert LEAK not in str(out)
     logged = [r.exc_info for r in caplog.records if r.exc_info]
     assert logged and logged[0][0] is OSError, "the tool's raise was not logged"
