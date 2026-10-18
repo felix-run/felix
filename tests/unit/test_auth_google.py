@@ -488,3 +488,36 @@ async def test_the_client_secret_and_cookie_key_can_come_from_the_secrets_backen
     assert (settings.google_client_secret, settings.google_cookie_key) == ("GOCSPX-from-the-backend", cookie)
     assert google.redirect_enabled(settings)
     assert "GOCSPX-from-the-backend" in secrets.collected_secret_values(settings)
+
+
+def test_an_entry_without_a_sub_is_warned_of_at_boot_without_its_whole_address(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="felix.auth.google"):
+        google.validate_google_config(_settings({"parent@example.com": PARENT}))
+    said = [r.getMessage() for r in caplog.records if "has no `sub`" in r.getMessage()]
+    assert said and "pa***@example.com" in said[0]
+    assert "parent@example.com" not in said[0]
+
+
+def test_an_entry_with_a_sub_is_not_warned_of(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="felix.auth.google"):
+        google.validate_google_config(_settings({"parent@example.com": {**PARENT, "sub": "123"}}))
+    assert not [r for r in caplog.records if "has no `sub`" in r.getMessage()]
+
+
+def test_the_second_person_rule_refuses_to_boot_where_one_person_can_be_two() -> None:
+    """GitHub and Google mint two subjects for one person; in one tenant they could approve their
+    own run by switching sign-in, so the rule would look present and allow it."""
+    org = json.dumps({"acme": {"id": 1, "tenant": "family", "scopes": []}})
+    settings = _settings({"parent@example.com": PARENT}, github_org_tenants=org)
+    google.validate_google_config(settings)  # the rule off: nothing to refuse
+    object.__setattr__(settings, "approvals_require_second_person", True)
+    with pytest.raises(RuntimeError, match="FELIX_APPROVALS_REQUIRE_SECOND_PERSON cannot hold in family"):
+        google.validate_google_config(settings)
+    # Separate tenants for the two ways in: the rule can hold.
+    object.__setattr__(
+        settings, "github_org_tenants", json.dumps({"acme": {"id": 1, "tenant": "ops", "scopes": []}})
+    )
+    object.__setattr__(settings, "allowed_tenants", "kids,family,ops")
+    google.validate_google_config(settings)

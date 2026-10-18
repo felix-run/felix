@@ -250,3 +250,9 @@ async def test_a_principal_that_is_not_a_github_sign_in_has_no_connection_to_see
         seen = await app.client.get("/github/connection", headers={"Authorization": f"Bearer {operator}"})
         assert seen.status_code == 403
         assert seen.json()["detail"] == "not_a_github_sign_in"
+        # A token an operator minted for a GitHub user's subject is not that user's sign-in: it
+        # would otherwise read, spend and revoke their stored GitHub token.
+        posing = mint_token(app.settings, sub="github:4242", tenant_id="acme", scopes=[], ttl_seconds=60)
+        posed = await app.client.get("/github/connection", headers={"Authorization": f"Bearer {posing}"})
+        assert posed.status_code == 403
+        assert posed.json()["detail"] == "not_a_github_sign_in"

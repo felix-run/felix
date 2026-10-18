@@ -56,8 +56,12 @@ def _job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthCo
     what that key holds *now* (`_current_api_key_scopes`): a job outlives the request that wrote
     it, and a key an operator has removed or cut down must stop granting through it.
 
-    A writer who authenticated with a JWT keeps the grant recorded at the write. Felix keeps no
-    record of a token beyond its claims, so there is nothing to re-check it against.
+    A writer who signed in through Felix (GitHub, Google, GitHub Actions) is narrowed the same way,
+    to what that sign-in grants in today's configuration (`_current_signin_scopes`): removing a
+    person's Google entry or an org's grant stops their scheduled work, not only their next
+    sign-in. A writer whose token came from another issuer keeps the grant recorded at the write:
+    Felix keeps no record of that token beyond its claims, so there is nothing to re-check it
+    against.
 
     A job written before writers were recorded has no `created_by`, and runs as what it always
     ran as -- a principal holding no scopes -- except that its manifest's inbound rules now apply,
@@ -76,8 +80,11 @@ def _job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthCo
                 loggable(key[1], limit=200),
             )
         return replay_caller(None, tenant_id=tenant_id, actor="cron")
-    if str(recorded.get("scheme") or "") in {"api_key", "apikey"}:
+    scheme = str(recorded.get("scheme") or "")
+    if scheme in {"api_key", "apikey"}:
         recorded = _current_api_key_scopes(settings, tenant_id, creator, recorded)
+    elif scheme == "self":
+        recorded = _current_signin_scopes(settings, tenant_id, creator, recorded)
     return replay_caller(recorded, tenant_id=tenant_id, actor="cron", on_behalf_of=creator)
 
 
@@ -117,6 +124,86 @@ def _current_api_key_scopes(
     scopes = recorded.get("scopes")
     kept = sorted(str(x) for x in scopes if str(x) in held) if isinstance(scopes, list) else []
     return {**recorded, "scopes": kept}
+
+
+def _current_signin_scopes(
+    settings: Settings, tenant_id: str, subject: str, recorded: dict[str, Any]
+) -> dict[str, Any]:
+    """`recorded`, with its scopes cut to what the writer's Felix sign-in grants in this tenant today.
+
+    By the sign-in that minted the writer's token (`idp`, recorded since; else the subject's
+    prefix):
+
+    - **Google:** the account's `FELIX_GOOGLE_ACCOUNTS` entry, found by the recorded email (or, for
+      a job recorded before emails were, by a `sub` pin), must still exist, name this tenant, and
+      match the account's `sub` where it pins one.
+    - **GitHub:** an org grant in `FELIX_GITHUB_ORG_TENANTS` must still map an org to this tenant.
+      Whether the writer is still a member of it is GitHub's to say and is not asked at 3am; the
+      grant being gone is what this catches. A personal signup tenant (`gh-<id>`) is the writer's
+      own, and keeps what was recorded.
+    - **GitHub Actions:** an org grant for this tenant must still let the workflow's repository in.
+
+    None left refuses the run with an `InboundAuthError`, as a removed API key does.
+    """
+    from felix.manifests.inbound_auth import InboundAuthError
+
+    idp = str(recorded.get("idp") or subject.split(":", 1)[0])
+    held = _signin_grant(settings, tenant_id, subject, idp, str(recorded.get("email") or ""))
+    if held is None:
+        return recorded
+    if not held:
+        raise InboundAuthError(
+            "the sign-in this job's writer used no longer grants this tenant; re-save the job as "
+            "someone who may run it",
+            status_code=403,
+        )
+    scopes = recorded.get("scopes")
+    kept = sorted(str(x) for x in scopes if str(x) in held[1]) if isinstance(scopes, list) else []
+    return {**recorded, "scopes": kept}
+
+
+def _signin_grant(
+    settings: Settings, tenant_id: str, subject: str, idp: str, email: str
+) -> tuple[bool, frozenset[str]] | tuple[()] | None:
+    """`(True, scopes)` when the writer's sign-in still grants this tenant; `()` when it no longer
+    does; None when there is nothing to check it against (a personal tenant, an idp this does not
+    know) and the record stands."""
+    from felix.auth.github import parse_org_tenants
+    from felix.auth.github_actions import ACTIONS_SUBJECT_PREFIX
+    from felix.auth.github_signup import personal_tenant_owner
+    from felix.auth.google import parse_accounts
+
+    if idp == "google":
+        try:
+            accounts = parse_accounts(getattr(settings, "google_accounts", "") or "")
+        except ValueError:
+            accounts = {}
+        google_sub = subject.removeprefix("google:")
+        entry = accounts.get(email.strip().lower()) if email else None
+        if entry is None:
+            entry = next((a for a in accounts.values() if a.sub and a.sub == google_sub), None)
+        if entry is None or entry.tenant != tenant_id or (entry.sub and entry.sub != google_sub):
+            return ()
+        return True, frozenset(entry.scopes)
+    if idp in {"github", "github-actions"}:
+        if idp == "github" and personal_tenant_owner(tenant_id) is not None:
+            return None
+        try:
+            grants = parse_org_tenants(getattr(settings, "github_org_tenants", "") or "").values()
+        except ValueError:
+            grants = []
+        mine = [g for g in grants if g.tenant == tenant_id]
+        if idp == "github":
+            held = frozenset(s for g in mine for s in g.scopes)
+            return (True, held) if mine else ()
+        repo = subject.removeprefix(ACTIONS_SUBJECT_PREFIX).split(":", 1)[0]
+        allowed = [
+            g.actions
+            for g in mine
+            if g.actions is not None and repo in {str(i) for i in g.actions.repositories.values()}
+        ]
+        return (True, frozenset(s for a in allowed for s in a.scopes)) if allowed else ()
+    return None
 
 
 async def _invoke_job_manifest(

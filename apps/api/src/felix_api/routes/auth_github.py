@@ -502,12 +502,22 @@ class GitHubConnectionList(BaseModel):
 def _github_user_id(request: Request) -> tuple[str, int, str]:
     """The caller's tenant, GitHub user id and subject; 403 for a principal that is not a person
     who signed in with GitHub (an API key, a workflow, an operator's minted token)."""
+    from felix.auth.jwt import SELF_ISSUER
     from felix.auth.mgmt import auth_from_request
 
-    principal = auth_from_request(request).principal
+    auth = auth_from_request(request)
+    principal = auth.principal
     subject = principal.subject or ""
     prefix, _, raw = subject.partition(":")
-    if prefix != "github" or not raw.isdigit():
+    # The subject's shape alone was the check, and an API key whose `sub` is `github:<id>`, or a
+    # token `felix mint-jwt` signed for that subject, would read, spend and revoke that person's
+    # stored GitHub token. Only Felix's own GitHub sign-in sets `idp: github` on a token it signs.
+    signed_in = (
+        principal.scheme == "self"
+        and principal.issuer == SELF_ISSUER
+        and auth.raw_claims.get("idp") == "github"
+    )
+    if prefix != "github" or not raw.isdigit() or not signed_in:
         raise HTTPException(status_code=403, detail="not_a_github_sign_in")
     return principal.tenant_id, int(raw), subject
 

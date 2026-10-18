@@ -698,9 +698,11 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       - **A trigger's `revision` pin.** A trigger naming a workflow runs its current revision unless
         the operator pins one in config, so an edit changes what an inbound sender can start.
         Require the pin, or keep it optional?
-      - **A JWT writer's job grant.** A job a JWT writer saved keeps that writer's grant with no
-        expiry, and each firing lends it for 24 hours. Bound it by the token's own `exp`, as a
-        durable chat run's life is, or by a fixed ceiling?
+      - **An outside IdP's job grant.** A job written with a GitHub, Google or Actions sign-in is
+        now re-checked at each firing against the account entry or org grant that admitted its
+        writer (the sign-in audit, 2026-10-17). One written with a token another issuer signed still
+        keeps that writer's grant with no expiry, and each firing lends it for 24 hours. Bound it by
+        the token's own `exp`, as a durable chat run's life is, or by a fixed ceiling?
       - **Runs that ended before #644.** Those still hold their starter's recorded authority and the
         manifest pins; #644 clears them only at a run's end from then on. Backfill-clear them in a
         migration?
