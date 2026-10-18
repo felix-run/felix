@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from felix.auth.context import MANIFESTS_CLAIM
+from felix.auth.jwt import SELF_ISSUER
 from felix.context import AuthContext
 
 
@@ -43,6 +44,14 @@ def record_caller(auth: AuthContext, *, skill_owner: bool = False) -> dict[str, 
     }
     if skill_owner:
         recorded["skill_owner"] = auth.skill_owner
+    if auth.scheme == "self" and auth.raw_claims.get("iss") == SELF_ISSUER:
+        # Which sign-in minted the token, and for a Google one the address its account entry is
+        # keyed by: what a job's firing re-checks against today's configuration
+        # (`jobs/scheduler.py`), since a sign-in token has no other record to check.
+        for claim in ("idp", "email"):
+            value = auth.raw_claims.get(claim)
+            if isinstance(value, str) and value:
+                recorded[claim] = value
     if MANIFESTS_CLAIM in auth.raw_claims:
         # A credential pinned to some manifests stays pinned when its work runs later. Kept as
         # written, so a malformed pin is refused then exactly as it was at the door.

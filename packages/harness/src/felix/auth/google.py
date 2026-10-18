@@ -498,6 +498,38 @@ def _check_pinned_accounts(accounts: Mapping[str, GoogleAccount], settings: Sett
                 )
 
 
+def _masked(email: str) -> str:
+    """An address as a boot warning names it: enough to find the entry, not the whole address."""
+    local, _, domain = email.partition("@")
+    return f"{local[:2]}***@{domain}"
+
+
+def _check_second_person(accounts: Mapping[str, GoogleAccount], settings: Settings) -> None:
+    """Refuse `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` where one person can be two.
+
+    The rule compares subjects, and one person signed in by GitHub (`github:<id>`) and by Google
+    (`google:<sub>`) holds two; with both ways into one tenant they could approve their own run by
+    switching sign-in, and the rule would look on and allow it. Felix cannot tell the two subjects
+    are one person, so it refuses to start rather than offer a separation of duties it cannot keep.
+    """
+    if not getattr(settings, "approvals_require_second_person", False):
+        return
+    from felix.auth.github import parse_org_tenants
+
+    try:
+        github_tenants = {g.tenant for g in parse_org_tenants(settings.github_org_tenants).values()}
+    except ValueError:
+        return  # malformed: refused at boot by the GitHub check itself
+    shared = sorted({a.tenant for a in accounts.values()} & github_tenants)
+    if shared:
+        raise RuntimeError(
+            "FELIX_APPROVALS_REQUIRE_SECOND_PERSON cannot hold in "
+            f"{', '.join(shared)}: a person there may sign in by GitHub and by Google, which are two "
+            "subjects, and approve their own run. Give Google accounts and GitHub org grants "
+            "separate tenants, or turn the rule off."
+        )
+
+
 def validate_google_config(settings: Settings) -> None:
     """Refuse to start a sign-in that would fail on first use, or mint a token every request 401s."""
     from felix.auth.jwt import SELF_ISSUER, uses_jwt_verifiers
@@ -523,6 +555,17 @@ def validate_google_config(settings: Settings) -> None:
     if not accounts:
         raise RuntimeError("Google sign-in is on, so FELIX_GOOGLE_ACCOUNTS must list at least one account.")
     _check_pinned_accounts(accounts, settings)
+    _check_second_person(accounts, settings)
+    for account in accounts.values():
+        if not account.sub:
+            # Matched on the address alone. A Gmail address is not reissued, but a custom domain's
+            # can be: whoever controls it next creates a Google account for it and inherits this
+            # entry. `sub` pins the entry to one account; it is in the log of each sign-in.
+            logger.warning(
+                "FELIX_GOOGLE_ACCOUNTS: %s has no `sub`, so any Google account with that address "
+                "signs in as it; add the account's id (logged at its next sign-in) to pin it",
+                _masked(account.email),
+            )
     if not uses_jwt_verifiers(settings) or self_verifier(settings) is None:
         raise RuntimeError(
             "Google sign-in is on, so a minted token must be verifiable: set FELIX_AUTH_MODE=jwt and "
