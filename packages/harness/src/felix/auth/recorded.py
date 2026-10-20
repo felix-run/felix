@@ -44,6 +44,9 @@ def record_caller(auth: AuthContext, *, skill_owner: bool = False) -> dict[str, 
     }
     if skill_owner:
         recorded["skill_owner"] = auth.skill_owner
+    if auth.scheduled:
+        # Work a scheduled firing starts stays scheduled work (`AuthContext.scheduled`).
+        recorded["scheduled"] = True
     if auth.scheme == "self" and auth.raw_claims.get("iss") == SELF_ISSUER:
         # Which sign-in minted the token, and for a Google one the address its account entry is
         # keyed by: what a job's firing re-checks against today's configuration
@@ -77,12 +80,14 @@ def replay_caller(
     actor: str,
     on_behalf_of: str | None = None,
     skill_owner: str | None = None,
+    scheduled: bool = False,
 ) -> AuthContext:
     """The caller later work runs as: `actor` (`fiber`, `cron`), on behalf of the recorded person.
 
     `on_behalf_of` overrides the recorded person where the work keeps its own column for it (a
     job's `created_by`). `skill_owner` is the caller's to validate and pass; nothing here trusts a
-    stored owner string.
+    stored owner string. `scheduled` marks a job's own firing; a recorded caller that was scheduled
+    work stays it.
     """
     record = recorded if isinstance(recorded, Mapping) else {}
     scopes = record.get("scopes")
@@ -95,6 +100,8 @@ def replay_caller(
         anonymous=bool(record.get("anonymous", False)),
         scheme=str(record.get("scheme") or "anonymous"),
         skill_owner=skill_owner,
+        # Never cleared by a replay: `scheduled` here only adds it, for a job's own firing.
+        scheduled=scheduled or record.get("scheduled") is True,
         raw_claims={MANIFESTS_CLAIM: record[MANIFESTS_CLAIM]} if MANIFESTS_CLAIM in record else {},
     )
 

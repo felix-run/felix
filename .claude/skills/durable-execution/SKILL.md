@@ -136,9 +136,31 @@ strings, objects, arrays and `$delivery` as the run's `untrusted_inputs`
 (`0044_workflow_run_untrusted`). `runs.fences_prompts` (any untrusted input, or a `trigger:` run)
 makes `kinds.render_prompt(fenced=)` wrap every value an agent step is given in a per-prompt
 `data-<hex>` tag and append `FENCE_NOTE`.
-`next_run_at_ms` reads the grammar in `jobs/schedule.py` — seconds, `every:30s` / `@every 5m`, the
-`@daily`-style macros and five-field cron in UTC — and a schedule outside it is refused, never
-guessed. An empty schedule is manual only: the sweep skips it and only `POST /jobs/{name}/run` fires it.
+`jobs/schedule.py:parse_schedule` reads the grammar — seconds, `every:30s` / `@every 5m`, the
+`@daily`-style macros, five-field cron in UTC, and a one-shot `at:<ISO-8601 with offset>` — and a
+schedule outside it is refused, never guessed. An empty schedule is manual only: the sweep skips it and
+only `POST /jobs/{name}/run` fires it. A one-shot's `next_run_at` is set by the write that sets its
+schedule (`put_job`, refused if past) and its claim clears it, so it fires once; one with no due time
+is never swept.
+
+`spec.scheduling` binds `jobs/agent_tools.py`: `schedule_task` writes a job named `task-<hex>` on the
+compiling manifest as the caller (`created_by` = `acting_for`, `created_auth` = `creator_auth`), with
+`payload.scheduled_by` marking it a task; `list_scheduled` / `cancel_scheduled` see only tasks whose
+`scheduled_by` names this manifest and whose writer is the caller. Refused: no named caller, no
+`jobs:write`, a shared subject (a sub-less API key's `api_key`, a trigger run's `trigger:<id>`, a
+machine actor acting for no one; a plugin authenticator handing out a shared subject is the operator's
+problem, since the list cannot know it),
+scheduled work (`AuthContext.scheduled`: set by `_job_auth`, recorded by `auth/recorded.py`, so a
+workflow a job starts carries it into its agent steps), the `max_tasks` cap, a recurring
+gap under `min_interval_minutes` (a cron's next 200 firings walked), an `at:` over 366 days out. The
+same checks (`_AgentTasks.admit`) run in `schedule_task`'s approval preview, so a refused call is denied
+with no approval row and no wait. `permission_mode.UNWAIVABLE_TOOLS` holds `schedule_task`, so
+no mode waives an approval on it, whichever rule asked. A task records its writer's token expiry in `created_auth.expires_at`;
+`fire_job` refuses and disables a job past it (`CREDENTIAL_EXPIRED`). Retention
+(`retention._sweep_fired_tasks`, `FELIX_SCHEDULED_TASK_RETENTION_DAYS`) deletes agent tasks that will not run again (a fired one-shot, or disabled on expiry), per tenant,
+re-reading each before the delete; a disabled task holds no place under `max_tasks`. With
+`approval: true` the builder adds `scheduling_approval_rule` unless a manifest rule without `when_args`
+names `schedule_task` literally (a glob does not count).
 
 ## Workflows
 

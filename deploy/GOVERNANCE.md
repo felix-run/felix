@@ -2212,7 +2212,7 @@ approved plan (`exit_plan_mode`), which needs whoever answers it to hold `approv
 | `default` | Every control runs as the manifest says. |
 | `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
 | `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
-| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's and any on `schedule_task`. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
 
 `allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
 wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
@@ -2224,6 +2224,18 @@ plan text, so an approved plan is never a standing key out of plan mode for anot
 or later turn. No mode waives it. Approval returns the thread to `default_mode`. The approval
 constrains the **model**, not the person driving the thread: a lease-holding driver can leave plan
 mode with `POST /chat/mode` at any time, without approving anything.
+
+**The scheduling approval.** With `spec.scheduling` (and `approval: true`, the default) the
+`schedule_task` tool is gated by the built-in `scheduling.schedule_task` rule — `one_shot`,
+`bind_principal` — unless one of the manifest's own rules names `schedule_task` literally and gates
+every call to it; a glob such as `*` does not displace it, since the built-in literal is the rule
+selected. No mode waives an approval on `schedule_task`, whichever rule asked for it
+(`permission_mode.UNWAIVABLE_TOOLS`): a task's prompt runs later on its writer's authority with no
+one watching, which `bypass` — a person present now — does not answer for. `approval: false` adds no
+rule. A task belongs to its writer's subject, so a subject that names no person is refused: a
+sub-less API key's `api_key`, an inbound trigger's `trigger:<id>`, a machine actor acting for no
+one. A plugin authenticator that gives many people one subject is not detectable here; avoiding
+that is the operator's responsibility.
 
 **Enforcement.** The `permission mode` wrapper sits just outside approvals, so plan mode refuses
 before anyone is asked; approvals asks `waives_approval` itself. A run caches only the stored mode

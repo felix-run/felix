@@ -41,6 +41,9 @@ it as `denied`/`timeout`, which also makes it sweepable here like any other sett
 * `workflow_runs` — finished (`runs.RUN_TERMINAL`) longer ago than the run TTL. A run in flight
   is never swept; a finished one has already had its recorded starter and pins cleared.
 * `plans` — past their own `expires_at`; `memory_vectors` — superseded past a grace period.
+* `jobs` (+ their `job_runs`) — only one-shot tasks an agent scheduled (`schedule_task`) that have
+  fired, once that run is older than the scheduled-task TTL. A job an operator wrote is the
+  operator's to delete, and a recurring task is still doing its work.
 
 The memory:// path is the CI twin, not a mock: it deletes the same rows by the same rules
 from the module-level stores, so a rule that regresses fails here before it reaches Postgres.
@@ -226,6 +229,7 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
     counts["artifacts"] = await _sweep_artifacts(settings, cutoffs.artifact)
     counts["file_checkpoints"] = await _sweep_file_checkpoints(settings, cutoffs.file_checkpoint)
     counts["skill_import_sighting"] = await _sweep_sightings(settings, cutoffs.now)
+    counts["scheduled_tasks"] = await _sweep_fired_tasks(settings, cutoffs.now)
     logger.info("retention_sweep %s", counts)
     return counts
 
@@ -241,6 +245,55 @@ async def _sweep_sightings(settings: Settings, now: int) -> int:
     except Exception:
         logger.warning("retention: skill_import_sighting sweep failed", exc_info=True)
         return 0
+
+
+async def _sweep_fired_tasks(settings: Settings, now: int) -> int:
+    """Agent tasks that will not run again (`jobs/agent_tools.py:is_fired_task`) whose last run is
+    older than `FELIX_SCHEDULED_TASK_RETENTION_DAYS`, every tenant's, through the jobs store -- so
+    both backends share one rule, and `delete_job` takes the runs with the job. Each tenant is bound
+    as the scheduler's sweep binds it (`rls_tenant`), and one tenant's failure is logged and leaves
+    the rest to be swept."""
+    from felix.db.session import rls_tenant
+    from felix.jobs import store as jobs_store
+    from felix.logging_setup import loggable
+
+    days = settings.scheduled_task_retention_days
+    if days <= 0:
+        return 0
+    cutoff = now - days * DAY_MS
+    try:
+        tenants = await jobs_store.list_tenants_with_jobs(settings)
+    except Exception:
+        logger.warning("retention: scheduled task sweep could not list tenants", exc_info=True)
+        return 0
+    deleted = 0
+    for tenant_id in tenants:
+        try:
+            with rls_tenant(tenant_id):
+                deleted += await _sweep_tenant_tasks(settings, tenant_id, cutoff)
+        except Exception:
+            logger.warning(
+                "retention: scheduled task sweep failed tenant=%s",
+                loggable(tenant_id, limit=64),
+                exc_info=True,
+            )
+    return deleted
+
+
+async def _sweep_tenant_tasks(settings: Settings, tenant_id: str, cutoff: int) -> int:
+    from felix.jobs import store as jobs_store
+    from felix.jobs.agent_tools import is_fired_task
+
+    def expired(job: dict[str, Any] | None) -> bool:
+        return job is not None and is_fired_task(job) and int(job["last_run_at"]) < cutoff
+
+    deleted = 0
+    for job in await jobs_store.list_jobs(settings, tenant_id):
+        # Read again just before deleting: a task rewritten since the listing -- re-armed, or no
+        # longer an agent's -- is not what was judged expired, and stays.
+        if expired(job) and expired(await jobs_store.get_job(settings, tenant_id, job["name"])):
+            deleted += int(await jobs_store.delete_job(settings, tenant_id, job["name"]))
+    return deleted
 
 
 #: How many expired rows one ledger read returns, and how many such reads one sweep makes,

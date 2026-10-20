@@ -19,6 +19,10 @@ Accepted:
   ``A-B``, a ``/step`` on either, or a comma list of those. Day-of-week is 0-6 with Sunday as 0
   (7 also means Sunday). When both day fields are restricted -- neither starts with ``*`` -- a
   day matching *either* fires, as in every cron since Vixie's.
+* once -- ``at:2026-10-21T09:00:00Z``, an ISO-8601 timestamp with its offset (``Z`` or
+  ``+hh:mm``). It fires once, at that moment, and never again (`Schedule.at_ms`). A timestamp
+  with no offset is refused rather than read as UTC or as the server's zone: the writer is often
+  a model, and a guessed zone is a task that fires hours early or late with nothing saying so.
 """
 
 from __future__ import annotations
@@ -47,8 +51,9 @@ _SEARCH_DAYS = 366 * 9
 
 SCHEDULE_GRAMMAR = (
     "expected seconds, every:<n><s|m|h>, @hourly/@daily/@weekly/@monthly/@yearly, "
-    "or a five-field cron expression"
+    "a five-field cron expression, or at:<ISO-8601 timestamp with offset>"
 )
+_AT_PREFIX = "at:"
 
 
 class ScheduleError(ValueError):
@@ -140,15 +145,40 @@ def _parse_cron(text: str) -> _Cron:
     return cron
 
 
+def _parse_at(text: str) -> int:
+    # Upper-cased, because `parse_schedule` lowercases its input and `fromisoformat` reads `T`
+    # and `Z` but not `t` and `z`. Nothing else in an ISO-8601 timestamp has a case.
+    try:
+        when = datetime.fromisoformat(text.upper())
+    except ValueError:
+        raise ScheduleError(
+            "schedule: at: needs an ISO-8601 timestamp with an offset, e.g. at:2026-10-21T09:00:00Z"
+        ) from None
+    if when.tzinfo is None or when.utcoffset() is None:
+        raise ScheduleError(
+            "schedule: at: needs an offset (Z or +hh:mm); a timestamp without one names no moment"
+        )
+    return int(when.timestamp() * 1000)
+
+
 @dataclass(frozen=True, slots=True)
 class Schedule:
-    """A parsed schedule. Build one with `parse_schedule`; with neither field set it is manual only."""
+    """A parsed schedule. Build one with `parse_schedule`; with no field set it is manual only."""
 
     interval_ms: int | None = None
     cron: _Cron | None = None
+    # A one-shot (`at:`): the epoch-ms moment it fires, once.
+    at_ms: int | None = None
+
+    @property
+    def one_shot(self) -> bool:
+        return self.at_ms is not None
 
     def next_after(self, from_ms: int) -> int | None:
-        """The next firing after `from_ms`, or None for a manual-only schedule, which never fires."""
+        """The next firing after `from_ms`, or None for a manual-only schedule, which never fires,
+        and for a one-shot whose moment is not after `from_ms`."""
+        if self.at_ms is not None:
+            return self.at_ms if self.at_ms > from_ms else None
         if self.cron is not None:
             nxt = self.cron.next_after(from_ms)
             if nxt is None:  # unreachable for a cron that passed `_parse_cron`
@@ -164,6 +194,8 @@ def parse_schedule(schedule: str) -> Schedule:
     s = (schedule or "").strip().lower()
     if not s:
         return Schedule()
+    if s.startswith(_AT_PREFIX):
+        return Schedule(at_ms=_parse_at(s.removeprefix(_AT_PREFIX).strip()))
     if s.isdigit():
         return Schedule(interval_ms=max(int(s), 1) * 1000)
     m = _INTERVAL.match(s)

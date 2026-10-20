@@ -250,6 +250,7 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         "file_checkpoints": 0,
         # Skill-import sightings go through their store on both backends; none here.
         "skill_import_sighting": 0,
+        "scheduled_tasks": 0,
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"
@@ -797,3 +798,56 @@ async def test_zero_artifact_days_keeps_every_spill(
 
     assert counts["artifacts"] == 0
     assert await store.get(f"artifacts/{TENANT}/m/{artifact_id}.txt") is not None
+
+
+async def _seed_job(settings: Any, name: str, *, schedule: str, task: bool, last_run_at: int | None) -> None:
+    from felix.jobs import store as jobs_store
+
+    payload: dict[str, Any] = {"prompt": "x"}
+    if task:
+        payload["scheduled_by"] = {"tool": "schedule_task", "manifest": "m", "thread_id": None}
+    await jobs_store.put_job(settings, TENANT, name, schedule=schedule, manifest_id="m", payload=payload)
+    if last_run_at is not None:
+        # What a one-shot's claim leaves: run, and no due time.
+        await jobs_store.touch_run(settings, TENANT, name, last_run_at=last_run_at, next_run_at=None)
+        await jobs_store.record_run(settings, TENANT, name, started_at=last_run_at, finished_at=last_run_at)
+
+
+@parametrized
+async def test_only_fired_one_shot_tasks_past_their_ttl_are_swept(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task an agent scheduled and that has run its once is litter after a while; a job an
+    operator wrote, a recurring task and a one-shot still waiting are never retention's."""
+    from felix.jobs import store as jobs_store
+
+    settings = _retention(retention_settings).model_copy(update={"scheduled_task_retention_days": 30})
+    clock = Clock(ms=1_800_000_000_000)
+    clock.install(monkeypatch)
+    later = "at:2999-01-01T00:00:00Z"
+    old, recent = clock.ms - 31 * DAY, clock.ms - 29 * DAY
+    await _seed_job(settings, "fired-old", schedule=later, task=True, last_run_at=old)
+    await _seed_job(settings, "fired-recent", schedule=later, task=True, last_run_at=recent)
+    await _seed_job(settings, "waiting", schedule=later, task=True, last_run_at=None)
+    await _seed_job(settings, "recurring", schedule="@daily", task=True, last_run_at=old)
+    await _seed_job(settings, "operator", schedule=later, task=False, last_run_at=old)
+    # Disabled when its writer's credential expired: it will not run again either.
+    await _seed_job(settings, "expired", schedule="@daily", task=True, last_run_at=old)
+    await jobs_store.disable_job(settings, TENANT, "expired")
+    await _seed_job(settings, "expired-recent", schedule="@daily", task=True, last_run_at=recent)
+    await jobs_store.disable_job(settings, TENANT, "expired-recent")
+    await _seed_job(settings, "operator-off", schedule="@daily", task=False, last_run_at=old)
+    await jobs_store.disable_job(settings, TENANT, "operator-off")
+
+    counts = await retention.run_retention_sweep(settings)
+
+    assert counts["scheduled_tasks"] == 2
+    names = {j["name"] for j in await jobs_store.list_jobs(settings, TENANT)}
+    assert names == {"fired-recent", "waiting", "recurring", "operator", "expired-recent", "operator-off"}
+    assert await jobs_store.list_runs(settings, TENANT, "fired-old") == []
+    assert len(await jobs_store.list_runs(settings, TENANT, "operator")) == 1
+
+    kept = settings.model_copy(update={"scheduled_task_retention_days": 0})
+    clock.ms += 400 * DAY
+    assert (await retention.run_retention_sweep(kept))["scheduled_tasks"] == 0
+    assert len(await jobs_store.list_jobs(settings, TENANT)) == 6

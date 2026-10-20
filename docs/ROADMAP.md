@@ -640,7 +640,24 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       `webhook_state`), so a Slack outage does not lose a reply; one core `start_run_as(...)` for
       the start-a-run-as-a-principal flow triggers and channels each copy; the worker running
       plugin startup hooks (channel secrets masked there before the first reply); a `felix doctor`
-      warning for `FELIX_CHANNELS` set with no plugin installed. *Next:* `schedule_task`, heartbeat jobs and a `notify` tool; memory scoped per
+      warning for `FELIX_CHANNELS` set with no plugin installed. *Landed (this PR):* agent
+      self-scheduling: `spec.scheduling` binds `schedule_task`, `list_scheduled` and
+      `cancel_scheduled`, which write ordinary jobs on the manifest as the caller
+      (`jobs/agent_tools.py`) -- `jobs:write` required, a per-caller cap, a minimum recurring
+      interval, a one-shot `at:<ISO-8601>` schedule in the jobs grammar, and a default approval rule
+      on `schedule_task` that no permission mode waives (`permission_mode.UNWAIVABLE_RULE_IDS`). A
+      refused call is denied in the approval preview, before any row is written; a credential shared
+      by every holder (a sub-less API key's `api_key`) owns no tasks; a task records its writer's
+      token `exp` and is refused and disabled once past it (a one-shot set after it is refused at
+      write); scheduled work -- a firing and anything it starts, a workflow's agent steps included
+      (`AuthContext.scheduled`, carried in the recorded caller) -- cannot schedule more; and fired
+      one-shot tasks are swept after `FELIX_SCHEDULED_TASK_RETENTION_DAYS`. *Follow-ups:*
+      `cancel_scheduled` runs without an approval (a cancel only removes work, but a model can
+      cancel a person's task unasked); the per-caller cap is read then written, so two concurrent
+      `schedule_task` calls can both pass it; a task does not yet report back into the thread that
+      scheduled it (`scheduled_by.thread_id` is recorded for that); a durable or workflow run a task
+      starts just before its writer's token expires is not clamped to that expiry, so it may run
+      on past it by up to the run's own TTL. *Next:* heartbeat jobs and a `notify` tool; memory scoped per
       user, plus an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,
