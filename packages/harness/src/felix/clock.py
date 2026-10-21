@@ -16,28 +16,29 @@ The zone is `FELIX_TIMEZONE`: an install's notion of "today", not each caller's.
 
 from __future__ import annotations
 
-from datetime import datetime, tzinfo
+from collections.abc import Callable
+from datetime import datetime
+from functools import partial
 from zoneinfo import ZoneInfo
 
+#: What a pattern is handed as `ctx["now"]`: the current moment, aware, in the install's zone.
+Now = Callable[[], datetime]
+
 DATE_TAG = "current_date"
+TIME_NOTE_PREFIX = "The current time is"
 
 
-def zone(name: str) -> tzinfo:
-    """The IANA zone `name`; raises `ZoneInfoNotFoundError` (a `KeyError`) for an unknown one."""
-    return ZoneInfo(name)
+def wall_clock(zone_name: str) -> Now:
+    """`datetime.now` in the IANA zone `zone_name`; raises `ZoneInfoNotFoundError` for an unknown one."""
+    return partial(datetime.now, ZoneInfo(zone_name))
 
 
-def _local(tz: tzinfo, now: datetime | None) -> datetime:
-    return (now or datetime.now(tz)).astimezone(tz)
-
-
-def date_block(tz: tzinfo, now: datetime | None = None) -> str:
+def date_block(moment: datetime) -> str:
     """The date for the end of the system prompt, tagged so the model reads it as one fact."""
-    local = _local(tz, now)
-    today = f"{local:%A}, {local:%B} {local.day}, {local.year} ({local:%Y-%m-%d}, {tz})"
+    today = f"{moment:%A}, {moment:%B} {moment.day}, {moment.year} ({moment:%Y-%m-%d}, {moment.tzinfo})"
     return f"<{DATE_TAG}>Today is {today}.</{DATE_TAG}>"
 
 
-def time_note(tz: tzinfo, now: datetime | None = None) -> str:
+def time_note(moment: datetime) -> str:
     """The time for the run's first call. The offset is in it so the model need not know the zone."""
-    return f"The current time is {_local(tz, now).isoformat(timespec='minutes')} ({tz})."
+    return f"{TIME_NOTE_PREFIX} {moment.isoformat(timespec='minutes')} ({moment.tzinfo})."

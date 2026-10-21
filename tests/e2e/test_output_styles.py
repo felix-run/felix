@@ -7,6 +7,8 @@ from typing import Any
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
+from tests.support.e2e import without_date
+
 THREAD = "styled-thread"
 
 
@@ -35,10 +37,7 @@ async def _turn(app: Any) -> str:
     )
     assert resp.status_code == 200, resp.text
     [system] = [m.content for m in app.spy.prompts[-1] if m.role == "system"]
-    # The style ends what the manifest composes; today's date follows it (`felix/clock.py`).
-    composed, _, date = system.rpartition("\n\n<current_date>")
-    assert composed and date, system
-    return composed
+    return without_date(system)
 
 
 async def _set(app: Any, style: str | None) -> Any:

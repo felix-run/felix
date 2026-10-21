@@ -15,7 +15,7 @@ from typing import Any
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.support.e2e import DEFAULT_ROUTE, WIRE_MODEL, scripted_model_routes
+from tests.support.e2e import DEFAULT_ROUTE, WIRE_MODEL, scripted_model_routes, sent_turns
 
 PNG = "data:image/png;base64,iVBORw0KGgo="
 
@@ -80,9 +80,7 @@ async def test_a_text_turn_to_a_text_only_route_is_untouched(boot: Any) -> None:
         )
         assert resp.status_code == 200, resp.text
         assert [c.model_id for c in app.spy.clients if c.calls] == [DEFAULT_ROUTE]
-        assert [
-            m.content for call in app.spy.prompts for m in call if m.role == "user" and not m.transient
-        ] == ["hello"]
+        assert [m.content for call in app.spy.prompts for m in sent_turns(call)] == ["hello"]
 
 
 async def test_the_default_vision_route_answers_the_image(boot: Any) -> None:

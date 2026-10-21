@@ -11,6 +11,7 @@ from felix.manifests.loader import ManifestParseError, parse_manifest
 from felix.output_styles import chosen_style
 from felix.session.thread_state import update_thread_meta
 
+from tests.support.e2e import without_date
 from tests.support.factories import make_settings
 
 TERSE = {"name": "terse", "description": "Short answers", "prompt": "Answer in one sentence."}
@@ -108,20 +109,13 @@ async def test_the_style_reaches_only_the_top_level_agents_prompt() -> None:
 
     deps.sub_agent_builder = build_child
     agent = await build_agent(parent, deps=deps)
-    assert _composed(agent.system_prompt).endswith("# Output style: terse\n\nAnswer in one sentence.")
+    assert without_date(agent.system_prompt).endswith("# Output style: terse\n\nAnswer in one sentence.")
     assert "Output style" not in (deps.compiled["helper"].system_prompt or "")
 
 
 async def test_a_background_task_child_keeps_its_own_prompt() -> None:
     """It compiles in the worker as a run of its own, so only the run can say it is a child."""
     assert await _chosen_on_thread("teach", default="terse", extras={BACKGROUND_CHILD_EXTRA: True}) is None
-
-
-def _composed(system_prompt: str) -> str:
-    """The prompt as the manifest composes it: today's date follows the style (`felix/clock.py`)."""
-    composed, _, date = system_prompt.rpartition("\n\n<current_date>")
-    assert composed and date, system_prompt
-    return composed
 
 
 async def _build(manifest: Any, children: dict[str, Any] | None = None) -> Any:
@@ -153,11 +147,11 @@ async def test_a_pattern_whose_own_prompt_does_not_answer_refuses_styles() -> No
         await _build(router, {"helper": child})
 
 
-async def test_the_style_ends_the_prompt_and_the_notice_still_opens_it() -> None:
+async def test_the_style_ends_the_composed_prompt_and_the_notice_still_opens_it() -> None:
     from felix.manifests.governance import transparency_notice_text
 
     prompt = (
         await _build(_manifest(default="terse", governance={"transparency_notice": True}))
     ).system_prompt
     assert prompt.startswith(transparency_notice_text("styled"))
-    assert _composed(prompt).endswith("# Output style: terse\n\nAnswer in one sentence.")
+    assert without_date(prompt).endswith("# Output style: terse\n\nAnswer in one sentence.")

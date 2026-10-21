@@ -14,9 +14,12 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from felix.clock import DATE_TAG, TIME_NOTE_PREFIX
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
+
+from tests.support.e2e import sent_turns, without_date
 
 # UTC+14 all year, so the offset proves the setting was read rather than the host's zone.
 ZONE = "Pacific/Kiritimati"
@@ -57,22 +60,22 @@ async def test_every_call_carries_the_date_and_the_first_the_time(boot: Any) -> 
 
     for prompt in (first, second):
         system = str(prompt[0].content)
-        assert prompt[0].role == "system" and system.startswith("Be brief.")
-        date = system.rsplit("\n\n", 1)[-1]
-        assert date.startswith("<current_date>Today is "), "the date ends the system prompt"
-        assert ZONE in date and any(day in date for day in days), date
-        assert not any("current_date" in str(m.content) for m in prompt[1:]), "nowhere but `system`"
+        assert prompt[0].role == "system"
+        assert without_date(system) == "Be brief.", "the date ends the system prompt"
+        assert ZONE in system and any(day in system for day in days), system
+        assert not any(DATE_TAG in str(m.content) for m in prompt[1:]), "nowhere but `system`"
 
-    [note] = [m for m in first if "The current time is" in str(m.content)]
-    assert first[-1] is note, "the time is the tail of the first call"
+    [note] = [m for m in first if str(m.content).startswith(TIME_NOTE_PREFIX)]
+    assert first[-1] is note and note.transient, "the time is the tail of the first call"
     assert "+14:00" in str(note.content) and any(day in str(note.content) for day in days)
-    assert not any("The current time is" in str(m.content) for m in second), "first call only"
+    assert not any(TIME_NOTE_PREFIX in str(m.content) for m in second), "first call only"
 
 
 async def test_a_manifest_can_opt_out(boot: Any) -> None:
-    for prompt in await _prompts(boot, _manifest(include_datetime=False)):
-        text = " ".join(str(m.content) for m in prompt)
-        assert "current_date" not in text and "The current time is" not in text
+    first, second = await _prompts(boot, _manifest(include_datetime=False))
+    for prompt in (first, second):
+        assert str(prompt[0].content) == "Be brief."
+        assert not any(TIME_NOTE_PREFIX in str(m.content) for m in prompt)
 
 
 async def test_neither_reaches_the_session_log(boot: Any) -> None:
@@ -86,6 +89,5 @@ async def test_neither_reaches_the_session_log(boot: Any) -> None:
             )
             assert resp.status_code == 200, resp.text
         _, second = app.spy.prompts
-    history = [m for m in second[1:] if not m.transient]
-    assert [str(m.content) for m in history] == ["one", "first", "two"]
-    assert sum("The current time is" in str(m.content) for m in second) == 1
+    assert [str(m.content) for m in sent_turns(second, ("user", "assistant"))] == ["one", "first", "two"]
+    assert sum(TIME_NOTE_PREFIX in str(m.content) for m in second) == 1

@@ -26,6 +26,8 @@ from felix.triggers import MAX_PAYLOAD_BYTES, QUARANTINED
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
+from tests.support.e2e import sent_turns
+
 KEY = "k" * 24
 WHSEC = "whsec_" + base64.b64encode(b"w" * 24).decode()
 GUID = "72d3162e-cc78-11e3-81ab-4c9367dc0958"
@@ -135,7 +137,7 @@ async def test_a_verified_event_starts_a_run_that_reads_the_payload_through_the_
         done = await _finish(app, run["id"])
         first, second = app.spy.prompts[0], app.spy.prompts[1]
     assert done["status"] == "completed" and done["final"]["content"] == "Triaged."
-    [user] = [m for m in first if m.role == "user" and not m.transient]
+    [user] = sent_turns(first)
     assert f"A push event arrived ({GUID}). Triage it." in str(user.content)
     assert "Fix the build" not in "\n".join(_texts(first)), "the payload is not in the instruction"
     [tool] = [m for m in second if m.role == "tool"]
@@ -469,7 +471,7 @@ async def _workflow_runs(app: Any) -> list[dict[str, Any]]:
 
 
 def _user_turn(prompt: list[Any]) -> str:
-    return [str(m.content) for m in prompt if m.role == "user" and not m.transient][-1]
+    return [str(m.content) for m in sent_turns(prompt)][-1]
 
 
 def _fence(text: str) -> str:

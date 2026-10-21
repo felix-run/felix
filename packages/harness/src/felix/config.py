@@ -10,9 +10,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from felix.clock import wall_clock
 
 logger = logging.getLogger("felix.config")
 
@@ -747,12 +750,8 @@ class Settings(BaseSettings):
     @classmethod
     def _timezone_is_known(cls, v: str) -> str:
         # At load rather than at compile, where an unknown zone would fail every chat instead of boot.
-        from zoneinfo import ZoneInfoNotFoundError
-
-        from felix.clock import zone
-
         try:
-            zone(v)
+            wall_clock(v)
         except ZoneInfoNotFoundError, ValueError:
             raise ValueError(
                 f"FELIX_TIMEZONE={v!r} is not an IANA zone name, e.g. America/New_York"

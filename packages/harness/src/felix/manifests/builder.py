@@ -7,10 +7,10 @@ import logging
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import tzinfo
 from typing import Any, Literal
 
 from felix.auth.context import AuthContext
+from felix.clock import Now, date_block, wall_clock
 from felix.context import try_get_context
 from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
@@ -1358,6 +1358,20 @@ def apply_approvals(
     return _wrap_tools(tools, wrap_one)
 
 
+def _wall_clock(m: Manifest, deps: BuildDeps) -> Now | None:
+    """The install's clock, or None when `spec.system_prompt.include_datetime` is off.
+
+    Its date ends `system`, last so the cached prefix ahead of it survives the day changing, and
+    not in the user-role prelude: tool selection and procedural recall read every user message as
+    the person's request. The time changes every run, so the pattern sends it as a transient note.
+    """
+    if not m.spec.system_prompt.include_datetime:
+        return None
+    from felix.config import get_settings
+
+    return wall_clock((deps.settings if deps.settings is not None else get_settings()).timezone)
+
+
 async def _resolve_system_prompt(manifest: Manifest, deps: BuildDeps) -> str:
     sp = manifest.spec.system_prompt
     from felix.context_files import (
@@ -2333,16 +2347,9 @@ async def build_agent(
             guidance = tool_guidance_section(resolved, m.spec.tool_guidance)
             if guidance:
                 final_prompt = f"{final_prompt}\n\n{guidance}"
-        # Today's date, last in `system` so the cached prefix ahead of it survives the day changing.
-        # Not in the user-role prelude: tool selection and procedural recall read every user
-        # message as the person's request. The time changes every run, so it is a transient note.
-        clock: tzinfo | None = None
-        if m.spec.system_prompt.include_datetime:
-            from felix.clock import date_block, zone
-            from felix.config import get_settings
-
-            clock = zone((deps.settings if deps.settings is not None else get_settings()).timezone)
-            final_prompt = f"{final_prompt}\n\n{date_block(clock)}"
+        now = _wall_clock(m, deps)
+        if now is not None:
+            final_prompt = f"{final_prompt}\n\n{date_block(now())}"
 
         pattern_builder = get_pattern(m.spec.pattern)
         if pattern_builder is None:
@@ -2388,8 +2395,8 @@ async def build_agent(
                 # Volatile, per-run reference material. Kept out of `system` so the
                 # cached prefix stays stable across turns.
                 "context_prelude": context_prelude,
-                # The zone the run's first call is told the time in; None when the manifest opts out.
-                "clock": clock,
+                # `felix.clock.Now`: the run's first call is told the time it reads. None = opted out.
+                "now": now,
                 "manifest_id": m.metadata.name,
                 "manifest_version": m.metadata.version,
                 # Plugin-owned config, namespaced by plugin name. Core never reads
