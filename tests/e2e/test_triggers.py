@@ -135,7 +135,7 @@ async def test_a_verified_event_starts_a_run_that_reads_the_payload_through_the_
         done = await _finish(app, run["id"])
         first, second = app.spy.prompts[0], app.spy.prompts[1]
     assert done["status"] == "completed" and done["final"]["content"] == "Triaged."
-    [user] = [m for m in first if m.role == "user"]
+    [user] = [m for m in first if m.role == "user" and not m.transient]
     assert f"A push event arrived ({GUID}). Triage it." in str(user.content)
     assert "Fix the build" not in "\n".join(_texts(first)), "the payload is not in the instruction"
     [tool] = [m for m in second if m.role == "tool"]
@@ -469,7 +469,7 @@ async def _workflow_runs(app: Any) -> list[dict[str, Any]]:
 
 
 def _user_turn(prompt: list[Any]) -> str:
-    return [str(m.content) for m in prompt if m.role == "user"][-1]
+    return [str(m.content) for m in prompt if m.role == "user" and not m.transient][-1]
 
 
 def _fence(text: str) -> str:

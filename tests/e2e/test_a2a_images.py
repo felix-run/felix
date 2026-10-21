@@ -50,7 +50,7 @@ async def test_an_a2a_image_reaches_the_model(boot: Any) -> None:
         assert resp.status_code == 200, resp.text
         assert resp.json()["result"]["status"]["state"] == "completed", resp.text
 
-        (user,) = [m for m in app.spy.prompts[0] if m.role == "user"]
+        (user,) = [m for m in app.spy.prompts[0] if m.role == "user" and not m.transient]
         assert user.content == "what is this?"
         assert [a.url for a in user.attachments or []] == [f"data:image/png;base64,{PNG_B64}"]
 
@@ -69,7 +69,7 @@ async def test_an_image_alone_is_a_message(boot: Any) -> None:
     async with boot([ScriptedTurn(content="a tiny png")], manifests={"seer": _manifest()}) as app:
         resp = await app.client.post("/a2a", json=_send(IMAGE))
         assert resp.json()["result"]["status"]["state"] == "completed", resp.text
-        (user,) = [m for m in app.spy.prompts[0] if m.role == "user"]
+        (user,) = [m for m in app.spy.prompts[0] if m.role == "user" and not m.transient]
         assert len(user.attachments or []) == 1, "and the image reached the model"
 
 
@@ -121,7 +121,7 @@ async def test_a_hostile_a2a_image_is_screened_before_the_model(boot: Any) -> No
         resp = await app.client.post("/a2a", json=_send({"kind": "text", "text": "what is this?"}, IMAGE))
         assert resp.json()["result"]["status"]["state"] == "completed", resp.text
 
-        (user,) = [m for m in app.spy.prompts[-1] if m.role == "user"]
+        (user,) = [m for m in app.spy.prompts[-1] if m.role == "user" and not m.transient]
         assert not user.attachments, "the flagged image must not reach the model"
         assert "[quarantined] image flagged" in user.content
 

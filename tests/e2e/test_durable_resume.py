@@ -66,7 +66,7 @@ async def _thread(token: str) -> str:
 
 
 def _users(prompt: list[Any]) -> list[str]:
-    return [str(m.content) for m in prompt if m.role == "user"]
+    return [str(m.content) for m in prompt if m.role == "user" and not m.transient]
 
 
 async def test_a_run_killed_after_its_tool_call_continues_without_repeating_it(boot: Any) -> None:

@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from datetime import tzinfo
 from typing import Any, Literal
 
 from felix.auth.context import AuthContext
@@ -2332,6 +2333,16 @@ async def build_agent(
             guidance = tool_guidance_section(resolved, m.spec.tool_guidance)
             if guidance:
                 final_prompt = f"{final_prompt}\n\n{guidance}"
+        # Today's date, last in `system` so the cached prefix ahead of it survives the day changing.
+        # Not in the user-role prelude: tool selection and procedural recall read every user
+        # message as the person's request. The time changes every run, so it is a transient note.
+        clock: tzinfo | None = None
+        if m.spec.system_prompt.include_datetime:
+            from felix.clock import date_block, zone
+            from felix.config import get_settings
+
+            clock = zone((deps.settings if deps.settings is not None else get_settings()).timezone)
+            final_prompt = f"{final_prompt}\n\n{date_block(clock)}"
 
         pattern_builder = get_pattern(m.spec.pattern)
         if pattern_builder is None:
@@ -2377,6 +2388,8 @@ async def build_agent(
                 # Volatile, per-run reference material. Kept out of `system` so the
                 # cached prefix stays stable across turns.
                 "context_prelude": context_prelude,
+                # The zone the run's first call is told the time in; None when the manifest opts out.
+                "clock": clock,
                 "manifest_id": m.metadata.name,
                 "manifest_version": m.metadata.version,
                 # Plugin-owned config, namespaced by plugin name. Core never reads

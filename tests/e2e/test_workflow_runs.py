@@ -137,7 +137,7 @@ async def test_a_run_follows_its_branch_waits_on_a_person_and_finishes(boot: Any
     assert done["steps"]["fix"]["outputs"] == {"text": "Patched."}
     assert done["steps"]["fix"]["thread_id"].startswith("default:workflow:")
     # What each agent step was asked: the template filled from the trigger and from classify.
-    users = [[str(m.content) for m in p if m.role == "user"][-1] for p in prompts]
+    users = [[str(m.content) for m in p if m.role == "user" and not m.transient][-1] for p in prompts]
     assert users == ["Classify: App crashes", "Fix: crash on save"]
     # The step's own output_schema reached the model call that classified; the fix had none.
     assert options[0] is not None and options[0].output_schema == CLASSIFY_SCHEMA
@@ -269,7 +269,9 @@ async def test_editing_the_workflow_mid_run_changes_nothing_the_run_does(boot: A
         done = await _tick(app, run_url, {"completed", "failed"})
         listed = (await app.client.get("/workflows/triage/runs")).json()["items"]
         current = (await app.client.get("/workflows/triage")).json()["revision"]
-        asked = [[str(m.content) for m in p if m.role == "user"][-1] for p in app.spy.prompts]
+        asked = [
+            [str(m.content) for m in p if m.role == "user" and not m.transient][-1] for p in app.spy.prompts
+        ]
     assert done["status"] == "completed"
     assert asked[-1] == "Fix: crash on save", "the step ran as the revision the run started on"
     assert done["revision"] == waiting["revision"] != current
@@ -496,7 +498,9 @@ async def test_a_tool_step_calls_the_governed_tool_and_feeds_the_next_step(boot:
     async with boot([ScriptedTurn(content="Noted.")], manifests=MANIFESTS) as app:
         run_url = await _run_sums(app, _sums())
         done = await _tick(app, run_url, {"completed", "failed"})
-        asked = [[str(m.content) for m in p if m.role == "user"][-1] for p in app.spy.prompts]
+        asked = [
+            [str(m.content) for m in p if m.role == "user" and not m.transient][-1] for p in app.spy.prompts
+        ]
     assert done["status"] == "completed", done
     assert done["steps"]["calc"]["outputs"] == {"result": 4}
     assert done["steps"]["calc"]["thread_id"].startswith("default:workflow:")

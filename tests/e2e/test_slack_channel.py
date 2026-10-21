@@ -120,7 +120,9 @@ async def test_a_mention_starts_a_run_as_its_sender_and_the_answer_is_posted_in_
         assert slack.posts == [], "nothing is posted until the run ends"
         await _drain(app)
         [prompt] = app.spy.prompts
-    assert [m.content for m in prompt if m.role == "user"] == ["what's up?"], "the bot mention is stripped"
+    assert [m.content for m in prompt if m.role == "user" and not m.transient] == ["what's up?"], (
+        "the bot mention is stripped"
+    )
     assert slack.urls == [POST_MESSAGE_URL]
     assert slack.posts == [
         {"channel": CHANNEL, "text": "All good.", "thread_ts": "1700000000.000100", **NO_UNFURL}
@@ -156,7 +158,11 @@ async def test_a_reply_in_the_thread_continues_the_same_conversation(boot: Any, 
         await _drain(app)
         second = app.spy.prompts[1]
     assert {r["thread_id"] for r in await _runs()} == {f"default:channel:acme:{CHANNEL}:1700000000.000100"}
-    assert [m.content for m in second if m.role in ("user", "assistant")] == ["one", "First.", "two"]
+    assert [m.content for m in second if m.role in ("user", "assistant") and not m.transient] == [
+        "one",
+        "First.",
+        "two",
+    ]
     assert [p["thread_ts"] for p in slack.posts] == ["1700000000.000100"] * 2
 
 

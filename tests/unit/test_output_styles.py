@@ -108,13 +108,20 @@ async def test_the_style_reaches_only_the_top_level_agents_prompt() -> None:
 
     deps.sub_agent_builder = build_child
     agent = await build_agent(parent, deps=deps)
-    assert agent.system_prompt.endswith("# Output style: terse\n\nAnswer in one sentence.")
+    assert _composed(agent.system_prompt).endswith("# Output style: terse\n\nAnswer in one sentence.")
     assert "Output style" not in (deps.compiled["helper"].system_prompt or "")
 
 
 async def test_a_background_task_child_keeps_its_own_prompt() -> None:
     """It compiles in the worker as a run of its own, so only the run can say it is a child."""
     assert await _chosen_on_thread("teach", default="terse", extras={BACKGROUND_CHILD_EXTRA: True}) is None
+
+
+def _composed(system_prompt: str) -> str:
+    """The prompt as the manifest composes it: today's date follows the style (`felix/clock.py`)."""
+    composed, _, date = system_prompt.rpartition("\n\n<current_date>")
+    assert composed and date, system_prompt
+    return composed
 
 
 async def _build(manifest: Any, children: dict[str, Any] | None = None) -> Any:
@@ -153,4 +160,4 @@ async def test_the_style_ends_the_prompt_and_the_notice_still_opens_it() -> None
         await _build(_manifest(default="terse", governance={"transparency_notice": True}))
     ).system_prompt
     assert prompt.startswith(transparency_notice_text("styled"))
-    assert prompt.endswith("# Output style: terse\n\nAnswer in one sentence.")
+    assert _composed(prompt).endswith("# Output style: terse\n\nAnswer in one sentence.")

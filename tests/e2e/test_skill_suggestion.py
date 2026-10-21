@@ -96,7 +96,9 @@ async def test_the_hint_rides_the_first_call_of_each_turn_and_no_transcript(boot
         for prompt in (first_step, next_turn):
             tail = prompt[-1]
             assert tail.transient and "`calculator-help`" in tail.content, "last, on a turn's first call"
-            assert sum(m.transient for m in prompt) == 1, "one hint — this turn's, not an earlier one"
+            notes = [str(m.content) for m in prompt if m.transient]
+            assert len(notes) == 2, "the time, then one hint — this turn's, not an earlier one"
+            assert notes[0].startswith("The current time is") and "`calculator-help`" in notes[1]
         # Read once: the step after the tool call does not repeat "load the skill".
         assert not any(m.transient for m in second_step)
         assert second_step[-1].role == "tool"

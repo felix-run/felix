@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from datetime import tzinfo
 from typing import TYPE_CHECKING, Any
 
 from felix_ai.types import split_file_ref
@@ -223,6 +224,8 @@ class _ReactAgent:
     recursion_limit: int
     limits: Any = None
     context_prelude: str = ""
+    # The zone the run's first call is told the current time in (`felix/clock.py`); None = not told.
+    clock: tzinfo | None = None
     session_store: Any | None = None
     session_strategy: Any | None = None
     tenant_id: str = "default"
@@ -960,7 +963,14 @@ class _ReactAgent:
             return None
 
         hint = self.skill_suggester.hint(messages) if self.skill_suggester is not None else _none()
-        notes = await asyncio.gather(self._procedures(messages, tenant_id), hint)
+        notes: list[str | None] = []
+        if self.clock is not None:
+            from felix.clock import time_note
+
+            # Read now, not at compile: a durable run resumed hours later is told when it is.
+            # First, so the skill hint keeps the last word.
+            notes.append(time_note(self.clock))
+        notes.extend(await asyncio.gather(self._procedures(messages, tenant_id), hint))
         return [ChatMessage(role="user", content=note, transient=True) for note in notes if note]
 
     def _prelude_messages(self) -> list[ChatMessage]:
@@ -1644,6 +1654,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         recursion_limit=limit,
         limits=ctx.get("limits"),
         context_prelude=str(ctx.get("context_prelude") or ""),
+        clock=ctx.get("clock"),
         session_store=ctx.get("session_store"),
         session_strategy=ctx.get("session_strategy"),
         tenant_id=str(ctx.get("tenant_id") or "default"),
