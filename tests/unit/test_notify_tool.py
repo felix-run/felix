@@ -113,8 +113,13 @@ async def _subscribe(settings: Settings, endpoint: str, subject: str, tenant: st
 
 
 def _undelivered(out: dict[str, Any]) -> bool:
-    """A written zero: nothing delivered, a note for the model, and not an error."""
-    return out.get("delivered") == 0 and "error" not in out and bool(out.get("note"))
+    """A written zero: nothing delivered on any channel, a note for the model, and not an error."""
+    return (
+        out.get("delivered") == 0
+        and out.get("channels") == []
+        and "error" not in out
+        and bool(out.get("note"))
+    )
 
 
 @pytest.fixture
@@ -132,7 +137,7 @@ async def test_a_notice_reaches_only_the_person_the_run_is_for(sent: Sent) -> No
 
     out = await _call(_tool(settings), _run(settings))
 
-    assert out == {"delivered": 1, "channels": ["push"]}
+    assert out == {"delivered": 1, "channels": ["push"], "thread": "not_eligible"}
     assert [p["endpoint"] for p in sent] == [ALICE_PHONE]
     assert alice.decrypt(sent[0]["body"]) == {
         "kind": "notice",
@@ -416,6 +421,7 @@ async def test_the_audit_row_names_the_delivery_and_never_the_text(sent: Sent) -
     assert rows[0]["payload_json"] == {
         "channels": ["push"],
         "delivered": 1,
+        "thread": "not_eligible",
         "thread_id": f"{TENANT}:call-thread",
         "recipient": "alice",
     }
@@ -464,6 +470,299 @@ async def test_a_send_that_raises_is_a_written_zero_without_its_text(
     out = await _call(_tool(settings), _run(settings))
     assert _undelivered(out), out
     assert "proxy" not in json.dumps(out) and "10.1.2.3" not in json.dumps(out)
+
+
+# --- the conversation it links to ---------------------------------------------------------------
+
+ORIGIN = f"{TENANT}:where-alice-asked"
+
+
+def _session(settings: Settings, thread: str = ORIGIN, tenant: str = TENANT) -> Any:
+    from felix.session.store import get_session_store
+
+    return get_session_store(settings, tenant_id=tenant).open(thread)
+
+
+async def _seed(settings: Settings, thread: str = ORIGIN, tenant: str = TENANT) -> list[str]:
+    """A conversation with a turn in it, appended the way a turn appends."""
+    from felix.session.tree import annotate_and_append
+    from felix.session.types import AppendableEvent
+
+    return await annotate_and_append(
+        _session(settings, thread, tenant),
+        [
+            AppendableEvent(kind="message", role="user", content="Tell me when 1.4 ships."),
+            AppendableEvent(kind="message", role="assistant", content="Scheduled."),
+        ],
+        sync=True,
+    )
+
+
+async def _events(settings: Settings, thread: str = ORIGIN, tenant: str = TENANT) -> list[Any]:
+    return await _session(settings, thread, tenant).get_events()
+
+
+def _fired(settings: Settings, thread: Any = ORIGIN, created_by: str = "alice") -> RequestContext:
+    """A task's firing for alice, recording where the task was scheduled from."""
+    return _run(settings, _firing("alice"), scheduled_from={"thread_id": thread, "created_by": created_by})
+
+
+async def test_a_scheduled_notice_is_left_in_the_conversation_for_the_person(
+    sent: Sent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one place the entry's shape is pinned; the rest read the result's `thread`."""
+    from felix.audit import store as audit_store
+    from felix.session.tree import active_branch_events, stored_leaf
+    from felix.session.types import include_in_llm_context
+
+    monkeypatch.setattr("felix.secrets._resolved_secret_values", [SECRET])
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    seeded = await _seed(settings)
+    out = await _call(_tool(settings), _fired(settings), message=f"Out now, key {SECRET}.")
+    assert out == {"delivered": 1, "channels": ["push", "thread"], "thread": "appended"}, out
+
+    events = await _events(settings)
+    notice = events[-1]
+    # For the person, never the model: an entry no prompt is built from.
+    assert (notice.kind, notice.role) == ("custom", "assistant")
+    assert not include_in_llm_context(notice)
+    # One cleaning, both channels: the thread holds what the push carried.
+    assert notice.content == "Release shipped\n\nOut now, key [REDACTED]."
+    assert {k: notice.metadata[k] for k in ("type", "title", "in_context")} == {
+        "type": "notice",
+        "title": "Release shipped",
+        "in_context": False,
+    }
+    # Linked onto the conversation's leaf, and now its leaf: on the active branch.
+    assert notice.metadata["parent_id"] == seeded[-1]
+    leaf = await stored_leaf(_session(settings))
+    assert leaf == notice.metadata["event_id"]
+    assert active_branch_events(events, leaf_id=leaf) == events
+
+    await audit_store.flush_pending(settings)
+    rows, _ = await audit_store.list_events(settings, TENANT, event_type="notify.sent")
+    assert rows[0]["payload_json"]["thread"] == "appended"
+    assert rows[0]["payload_json"]["channels"] == ["push", "thread"]
+    assert SECRET not in json.dumps(rows[0]) and "Out now" not in json.dumps(rows[0])
+
+
+class _ReplicaSession:
+    """A session as another replica sees it: the store holds `stored`, this process's index an
+    older leaf. Postgres's `resolve_leaf` is what reads the store's; `memory://` has none, its
+    index *is* the store."""
+
+    def __init__(self, inner: Any, stored: str) -> None:
+        self._inner, self._stored = inner, stored
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def resolve_leaf(self) -> str:
+        return self._stored
+
+
+async def test_the_notice_parents_on_the_stored_leaf_not_a_stale_one(
+    sent: Sent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.session import store as session_store
+    from felix.session.tree import set_leaf
+
+    settings = _settings()
+    seeded = await _seed(settings)
+    set_leaf(ORIGIN, seeded[0])  # this replica last saw the user turn, not the reply
+    real = session_store.get_session_store
+
+    class _Store:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def open(self, thread_id: str) -> Any:
+            return _ReplicaSession(self._inner.open(thread_id), seeded[-1])
+
+    monkeypatch.setattr(
+        session_store, "get_session_store", lambda s, *, tenant_id: _Store(real(s, tenant_id=tenant_id))
+    )
+    out = await _call(_tool(settings), _fired(settings))
+    assert out["thread"] == "appended", out
+    assert (await _events(settings))[-1].metadata["parent_id"] == seeded[-1]
+
+
+@pytest.mark.parametrize("origin", [None, f"{TENANT}:call-thread"], ids=["no-origin", "origin-is-own"])
+async def test_the_runs_own_conversation_gets_nothing_appended(sent: Sent, origin: str | None) -> None:
+    """A live conversation already shows the call and the answer, and its turn owns the leaf."""
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    own = f"{TENANT}:call-thread"
+    await _seed(settings, own)
+    req = _run(settings) if origin is None else _fired(settings, origin)
+    out = await _call(_tool(settings), req)
+    assert out == {"delivered": 1, "channels": ["push"], "thread": "not_eligible"}, out
+    assert len(await _events(settings, own)) == 2
+
+
+@pytest.mark.parametrize("suffix", ["job:digest", "channel:slack:C1", "a2a:t1", "workflow:w:1", "fiber:f1"])
+async def test_a_harness_thread_is_neither_linked_nor_written_to(sent: Sent, suffix: str) -> None:
+    """Every thread the harness mints has a `:` in its suffix; no chat client can make one."""
+    settings = _settings()
+    alice = await _subscribe(settings, ALICE_PHONE, "alice")
+    target = f"{TENANT}:{suffix}"
+    await _seed(settings, target)
+    out = await _call(_tool(settings), _fired(settings, target))
+    assert out["thread"] == "not_eligible", out
+    assert len(await _events(settings, target)) == 2
+    assert alice.decrypt(sent[0]["body"])["thread_id"] == f"{TENANT}:call-thread"
+
+
+async def test_a_run_going_on_in_the_conversation_skips_it_and_still_pushes(sent: Sent) -> None:
+    from felix.workspace_notes import mark_run_active, mark_run_idle
+
+    settings = _settings()
+    alice = await _subscribe(settings, ALICE_PHONE, "alice")
+    await _seed(settings)
+    await mark_run_active(TENANT, ORIGIN)
+    try:
+        out = await _call(_tool(settings), _fired(settings))
+    finally:
+        await mark_run_idle(TENANT, ORIGIN)
+    assert (out["delivered"], out["channels"], out["thread"]) == (1, ["push"], "run_live"), out
+    assert len(await _events(settings)) == 2
+    assert alice.decrypt(sent[0]["body"])["thread_id"] == ORIGIN
+
+
+async def test_a_durable_run_in_flight_on_the_conversation_skips_it(sent: Sent) -> None:
+    """Between its steps a durable run marks no turn."""
+    from felix.durability.fibers import create_fiber
+
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    await _seed(settings)
+    await create_fiber(settings, TENANT, kind="durable_chat", thread_id=ORIGIN, exclusive_on_thread=True)
+    out = await _call(_tool(settings), _fired(settings))
+    assert out["thread"] == "run_live", out
+    assert len(await _events(settings)) == 2
+
+
+async def test_a_turn_between_its_user_message_and_its_reply_is_a_run(
+    sent: Sent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mark goes up before the turn's first append: a notice cannot land between a person's
+    message and the reply to it."""
+    from felix.patterns.model import ModelChatResult, TokenUsage
+    from felix.patterns.react import _ReactAgent
+    from felix.patterns.types import ChatMessage, InvokeInput
+    from felix.session.store import get_session_store
+    from felix.session.strategies import FullReplaySessionStrategy
+
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    await _seed(settings)
+    paused, resume = asyncio.Event(), asyncio.Event()
+
+    async def held(**_kw: Any) -> bool:
+        # The turn's first step after appending the user's message.
+        paused.set()
+        await resume.wait()
+        return False
+
+    monkeypatch.setattr("felix.session.thread_state.note_first_message", held)
+
+    class _Model:
+        model_id = "claude-sonnet-4-5"
+
+        async def chat(self, messages: Any, tools: Any, opts: Any = None) -> ModelChatResult:
+            return ModelChatResult(
+                message=ChatMessage(role="assistant", content="1.4 is out."),
+                stop_reason="end_turn",
+                usage=TokenUsage(input=1, output=1),
+            )
+
+    agent = _ReactAgent(
+        tools=[],
+        pattern="react",
+        manifest_id=MANIFEST,
+        manifest_version="1",
+        system_prompt="s",
+        model_spec=None,
+        settings=settings,
+        recursion_limit=3,
+        session_store=get_session_store(settings, tenant_id=TENANT),
+        session_strategy=FullReplaySessionStrategy(),
+        tenant_id=TENANT,
+    )
+    agent._resolve_model = lambda _i: _Model()  # type: ignore[method-assign]
+    turn = asyncio.create_task(
+        agent.invoke(
+            InvokeInput(
+                messages=[ChatMessage(role="user", content="Shipped?")], thread_id=ORIGIN, tenant_id=TENANT
+            )
+        )
+    )
+    try:
+        await asyncio.wait_for(paused.wait(), 5)
+        assert (await _events(settings))[-1].content == "Shipped?"
+        out = await _call(_tool(settings), _fired(settings))
+    finally:
+        resume.set()
+        await turn
+    assert out["thread"] == "run_live", out
+    assert [e.content for e in await _events(settings)][-2:] == ["Shipped?", "1.4 is out."]
+
+
+async def test_a_client_holding_the_conversation_open_still_gets_the_notice(sent: Sent) -> None:
+    """An exclusive lease is a client attached to the thread, idle or not -- the person this is
+    for, watching -- not a run."""
+    from felix.session.lease import acquire_lease
+
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    await _seed(settings)
+    await acquire_lease(ORIGIN, holder_id="alice-tab")
+    out = await _call(_tool(settings), _fired(settings))
+    assert out["thread"] == "appended", out
+
+
+async def test_a_conversation_that_does_not_exist_is_not_created(sent: Sent) -> None:
+    from felix.session.thread_state import thread_exists
+
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    out = await _call(_tool(settings), _fired(settings))
+    assert (out["channels"], out["thread"]) == (["push"], "missing"), out
+    assert not await thread_exists(_session(settings), settings=settings, tenant_id=TENANT)
+
+
+async def test_a_task_another_person_wrote_cannot_reach_a_conversation(sent: Sent) -> None:
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    await _seed(settings)
+    out = await _call(_tool(settings), _fired(settings, created_by="mallory"))
+    assert out["thread"] == "not_eligible", out
+    assert len(await _events(settings)) == 2
+
+
+async def test_another_tenants_conversation_is_never_written_to(sent: Sent) -> None:
+    settings = _settings()
+    await _subscribe(settings, ALICE_PHONE, "alice")
+    foreign = "globex:alice-thread"
+    await _seed(settings, foreign, tenant="globex")
+    out = await _call(_tool(settings), _fired(settings, foreign))
+    assert out["thread"] == "not_eligible", out
+    assert len(await _events(settings, foreign, tenant="globex")) == 2
+
+
+async def test_with_no_device_subscribed_the_conversation_still_gets_it(sent: Sent) -> None:
+    settings = _settings()
+    await _seed(settings)
+    out = await _call(_tool(settings), _fired(settings))
+    assert (out["delivered"], out["channels"], out["thread"]) == (0, ["thread"], "appended"), out
+    assert sent == []
+
+
+async def test_both_channels_failing_is_a_written_zero(sent: Sent) -> None:
+    settings = make_settings()  # no VAPID key, and the linked conversation does not exist
+    out = await _call(_tool(settings), _fired(settings))
+    assert _undelivered(out) and out["thread"] == "missing", out
 
 
 # --- limits -------------------------------------------------------------------------------------

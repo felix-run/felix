@@ -109,9 +109,23 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
   `RequestContext.extras`, so it restarts per fiber resume, background child or workflow step; the
   hourly cap is the bound. A task's firing gets `extras[scheduler.SCHEDULED_FROM_EXTRA]`
   (`ScheduledFrom`), used only when `created_by == acting_for` and the id is the tenant's own in plain
-  id characters. `notify` is in `permission_mode.UNWAIVABLE_TOOLS`. Push off, no subscription, a
-  410, or a send that raises is `{"delivered": 0, "note": ...}`, never an error; `notify.sent` audits
-  without the text.
+  id characters with no `:` (`_openable_thread`: a chat thread, never a harness-minted `job:`,
+  `channel:`, `a2a:`, `workflow:` or `fiber:` one). `scheduled_by` is trusted because only
+  `schedule_task` writes it: `routes/jobs.py:_payload_to_store` drops it from a caller's payload and
+  carries the stored one forward only when the writer is the job's `created_by`. When that
+  link is not the run's own thread (`_Notices.own_thread`), `_Notices.append` leaves
+  `notice_entry(title, body)` there first -- a `custom` entry (`metadata.type: notice`,
+  `in_context: false`), so `include_in_llm_context` keeps it out of every prompt -- through
+  `tree.annotate_and_append(sync=True, lock_held=True)` inside `leaf_lock` (never
+  `store.append_event`, which skips the tree linkage), and only if `thread_state.thread_exists` and
+  no run is live (`workspace_notes.run_active` -- react marks it before `_sync_leaf`, refreshes it
+  after `_assemble_messages`, and unmarks it, releasing the run queue too, on every exit; per
+  process without Redis -- or `durability.runs.active_durable_run`); an exclusive
+  lease alone does not skip it. `notify` is in `permission_mode.UNWAIVABLE_TOOLS`. The result
+  (`_outcome`) is `{"delivered", "channels", "thread", "note"?}`: `channels` are those that delivered
+  (`push` only when `delivered > 0`), `thread` is `appended | run_live | missing | failed |
+  not_eligible`. Push off, no subscription, a 410, or a send that raises is a written zero, never an
+  error; `notify.sent` audits the same fields and never the text.
 
 ## Idempotency-Key
 
@@ -162,7 +176,7 @@ is never swept.
 
 `spec.scheduling` binds `jobs/agent_tools.py`: `schedule_task` writes a job named `task-<hex>` on the
 compiling manifest as the caller (`created_by` = `acting_for`, `created_auth` = `creator_auth`), with
-`payload.scheduled_by` marking it a task; `list_scheduled` / `cancel_scheduled` see only tasks whose
+`payload.scheduled_by` marking it a task (only this tool writes it; `PUT /jobs` ignores a caller's, keeping the stored one for the same writer); `list_scheduled` / `cancel_scheduled` see only tasks whose
 `scheduled_by` names this manifest and whose writer is the caller. Refused: no named caller, no
 `jobs:write`, a shared subject (a sub-less API key's `api_key`, a trigger run's `trigger:<id>`, a
 machine actor acting for no one; a plugin authenticator handing out a shared subject is the operator's
