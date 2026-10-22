@@ -177,6 +177,11 @@ class SystemPrompt(_Strict):
     # `spec.tool_guidance` and from tools that carry their own. Off for a prompt that must be
     # exactly what was written.
     include_tool_guidance: bool = True
+    # Tell the model today's date and the current time in `FELIX_TIMEZONE` (`felix/clock.py`).
+    # The date ends the system prompt; the time, which changes every run, is a note on the first
+    # call of a react-loop run (`ctx["clock"]`, which a pattern reads or not). Off for a run that
+    # must be reproducible, an eval replay among them.
+    include_datetime: bool = True
 
 
 class PromptTemplateSpec(_Strict):
@@ -884,6 +889,30 @@ class SkillAuthoringSpec(_Strict):
     auto_eval: bool = False
 
 
+class SchedulingSpec(_Strict):
+    """Let the agent schedule its own follow-up work: binds `schedule_task`, `list_scheduled` and
+    `cancel_scheduled` (`felix/jobs/agent_tools.py`).
+
+    A task is a scheduled job on this manifest, written as the caller: it fires as `cron` on
+    their behalf with the scopes they hold, so it reaches nothing they could not reach by asking.
+    The caller needs `jobs:write`, sees and cancels only their own tasks from this manifest, and
+    a scheduled run cannot schedule more. Unset binds nothing.
+    """
+
+    #: Tasks one caller may hold on this manifest at once (a one-shot that has fired no longer
+    #: counts), so a looping agent cannot fill the scheduler.
+    max_tasks: int = Field(default=10, ge=1, le=100)
+    #: The shortest gap a recurring task may fire at. A one-shot (`at:`) is exempt.
+    min_interval_minutes: int = Field(default=60, ge=1)
+    #: Hold every `schedule_task` call for a person's approval -- one-shot, bound to the caller --
+    #: unless `spec.approvals` has a rule naming `schedule_task` literally that gates every call,
+    #: which then applies as written (a glob does not displace this rule). A task's prompt runs later
+    #: with the caller's authority and nobody watching, so the default is to have someone read it
+    #: first; no permission mode (`bypass` included) waives an approval on `schedule_task`, whichever
+    #: rule asked. `false` adds no rule.
+    approval: bool = True
+
+
 class DeciderSpec(_Strict):
     """A decision model — one that answers typed questions (choose one, score, true/false)
     with calibrated probabilities instead of generating text. Off unless `id` is set.
@@ -1390,6 +1419,8 @@ class Spec(_Strict):
     sub_agents: list[str] = Field(default_factory=list)
     # Binds the `task` tool. Unset binds nothing.
     delegation: DelegationSpec | None = None
+    # Binds `schedule_task`, `list_scheduled` and `cancel_scheduled`. Unset binds nothing.
+    scheduling: SchedulingSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
     output_styles: OutputStylesSpec = Field(default_factory=OutputStylesSpec)
     network: NetworkSpec = Field(default_factory=NetworkSpec)

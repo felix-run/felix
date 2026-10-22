@@ -47,6 +47,16 @@ logger = logging.getLogger("felix.governance.permission_mode")
 BYPASS_SCOPE = "approvals:bypass"
 EXIT_PLAN_TOOL_NAME = "exit_plan_mode"
 PLAN_APPROVAL_RULE_ID = "plan-approval"
+# The rule `spec.scheduling` adds over `schedule_task` (`jobs/agent_tools.py`).
+SCHEDULING_APPROVAL_RULE_ID = "scheduling.schedule_task"
+# Approvals no permission mode waives, by the id of the rule that asks for them. The plan's is how
+# plan mode ends.
+UNWAIVABLE_RULE_IDS = frozenset({PLAN_APPROVAL_RULE_ID, SCHEDULING_APPROVAL_RULE_ID})
+# Tools whose approval no permission mode waives, whichever rule asked for it -- the built-in one or
+# a manifest's own, a glob included. A scheduled task's prompt runs later on its writer's authority
+# with nobody watching, so a thread in `bypass` (a person present now) does not answer for it.
+SCHEDULE_TASK_TOOL_NAME = "schedule_task"
+UNWAIVABLE_TOOLS = frozenset({SCHEDULE_TASK_TOOL_NAME})
 # How long a person has to approve a plan before the request expires.
 PLAN_APPROVAL_TTL_SECONDS = 1800
 
@@ -156,11 +166,14 @@ def _is_edit(tool_name: str, spec: PermissionsSpec) -> bool:
 
 
 async def waives_approval(
-    tool_name: str, spec: PermissionsSpec | None, req: RequestContext | None
+    tool_name: str, spec: PermissionsSpec | None, req: RequestContext | None, *, rule_id: str
 ) -> str | None:
-    """The mode that waives the approval `tool_name` would otherwise ask for, or None."""
-    if spec is None or req is None or tool_name == EXIT_PLAN_TOOL_NAME:
-        # The plan approval is the one no mode waives: it is how plan mode ends.
+    """The mode that waives the approval `rule_id` would otherwise ask for on `tool_name`, or None.
+
+    Never for a rule in `UNWAIVABLE_RULE_IDS` (the plan's id is reserved,
+    `schema.RESERVED_PLAN_RULE_ID`), and never for a tool in `UNWAIVABLE_TOOLS`, whichever rule
+    selected it: a manifest's own rule over `schedule_task` would otherwise be waivable."""
+    if spec is None or req is None or rule_id in UNWAIVABLE_RULE_IDS or tool_name in UNWAIVABLE_TOOLS:
         return None
     mode = await current_mode(spec, req)
     if mode == "bypass" or (mode == "accept_edits" and _is_edit(tool_name, spec)):
@@ -317,6 +330,10 @@ __all__ = [
     "BYPASS_SCOPE",
     "EXIT_PLAN_TOOL_NAME",
     "PLAN_APPROVAL_RULE_ID",
+    "SCHEDULE_TASK_TOOL_NAME",
+    "SCHEDULING_APPROVAL_RULE_ID",
+    "UNWAIVABLE_RULE_IDS",
+    "UNWAIVABLE_TOOLS",
     "WORKSPACE_EDIT_TOOLS",
     "apply_permission_mode",
     "current_mode",

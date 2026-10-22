@@ -48,6 +48,7 @@ PASSED_THROUGH = {
     "FELIX_REPO_CLONE_MAX_MB": "repo_clone_max_mb",
     "FELIX_REPO_CHECKOUT_TTL_DAYS": "repo_checkout_ttl_days",
     "FELIX_REPO_CLONE_TIMEOUT_SECONDS": "repo_clone_timeout_seconds",
+    "FELIX_TIMEZONE": "timezone",
 }
 
 # A tracing backend is something Felix sends to, so pointing at one must not require
@@ -203,6 +204,8 @@ EVERY_PROCESS = (
     "FELIX_WORKSPACE_BACKEND",
     "FELIX_WORKSPACE_GATEWAY_URL",
     "FELIX_WORKSPACE_GATEWAY_TOKEN",
+    # Set in `.env` for felix#652 and never delivered: Compose has no `env_file`.
+    "FELIX_TIMEZONE",
 )
 
 

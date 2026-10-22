@@ -175,3 +175,115 @@ async def test_making_a_job_manual_only_clears_its_due_time(
 
     await jobs_store.put_job(settings, "default", "j", schedule="")
     assert (await jobs_store.get_job(settings, "default", "j"))["next_run_at"] is None
+
+
+# --- one-shot (`at:`) -------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("schedule", "expected"),
+    [
+        ("at:2026-10-21T09:00:00Z", _ms(2026, 10, 21, 9, 0)),
+        ("at:2026-10-21T11:00:00+02:00", _ms(2026, 10, 21, 9, 0)),
+        ("  AT:2026-10-21t09:00:00z  ", _ms(2026, 10, 21, 9, 0)),
+        ("at: 2026-10-21 09:00Z", _ms(2026, 10, 21, 9, 0)),
+    ],
+)
+def test_a_one_shot_reads_its_moment_whatever_the_case(schedule: str, expected: int) -> None:
+    """`parse_schedule` lowercases its input, and `fromisoformat` refuses a lowercase `t` or `z`."""
+    parsed = parse_schedule(schedule)
+    assert parsed.one_shot and parsed.at_ms == expected
+    assert parsed.next_after(SAT_1030) == expected
+
+
+def test_a_one_shot_fires_only_before_its_moment_has_passed() -> None:
+    at = _ms(2026, 10, 21, 9, 0)
+    parsed = parse_schedule("at:2026-10-21T09:00:00Z")
+    assert parsed.next_after(at - 1) == at
+    assert parsed.next_after(at) is None
+    assert parsed.next_after(at + 60_000) is None
+
+
+@pytest.mark.parametrize("schedule", ["at:2026-10-21T09:00:00", "at:2026-10-21", "at:tomorrow", "at:"])
+def test_a_one_shot_without_an_offset_is_refused(schedule: str) -> None:
+    with pytest.raises(ScheduleError, match="offset"):
+        parse_schedule(schedule)
+
+
+AT = _ms(2026, 10, 21, 9, 0)
+ONE_SHOT = "at:2026-10-21T09:00:00Z"
+
+
+async def test_a_one_shot_job_is_due_at_its_moment_from_the_write(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: SAT_1030)
+    created = await jobs_store.put_job(settings, "default", "once", schedule=ONE_SHOT)
+    assert created["next_run_at"] == AT
+    # A recurring job written the same way is still due on the next sweep, as before.
+    assert (await jobs_store.put_job(settings, "default", "cron", schedule="@daily"))["next_run_at"] is None
+
+
+async def test_a_one_shot_in_the_past_is_refused_and_nothing_is_written(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: AT)
+    with pytest.raises(ScheduleError, match="in the past"):
+        await jobs_store.put_job(settings, "default", "once", schedule=ONE_SHOT)
+    assert await jobs_store.get_job(settings, "default", "once") is None
+
+    # Nor may an existing job be moved onto a passed moment.
+    await jobs_store.put_job(settings, "default", "moved", schedule="@daily")
+    with pytest.raises(ScheduleError, match="in the past"):
+        await jobs_store.put_job(settings, "default", "moved", schedule=ONE_SHOT)
+    assert (await jobs_store.get_job(settings, "default", "moved"))["schedule"] == "@daily"
+
+
+async def test_rewriting_a_fired_one_shot_keeps_it_fired(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Toggling or editing a one-shot after it fired must not re-arm it, nor be refused for its
+    moment having passed -- the write is not setting that moment."""
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: SAT_1030)
+    await jobs_store.put_job(settings, "default", "once", schedule=ONE_SHOT)
+    jobs_store._memory_jobs[("default", "once")]["next_run_at"] = None  # what its claim leaves
+
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: AT + 3_600_000)
+    rewritten = await jobs_store.put_job(
+        settings, "default", "once", schedule=ONE_SHOT, payload={"prompt": "edited"}, enabled=False
+    )
+    assert rewritten["next_run_at"] is None
+    assert rewritten["payload"] == {"prompt": "edited"}
+
+
+async def test_a_one_shot_fires_once_and_not_before_its_moment(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.jobs import scheduler
+
+    monkeypatch.setattr(jobs_store, "now_ms", lambda: SAT_1030)
+    await jobs_store.put_job(settings, "default", "once", schedule=ONE_SHOT)
+
+    monkeypatch.setattr(scheduler, "now_ms", lambda: AT - 60_000)
+    assert await run_due_jobs(settings) == 0
+
+    monkeypatch.setattr(scheduler, "now_ms", lambda: AT + 30_000)
+    assert await run_due_jobs(settings) == 1
+    monkeypatch.setattr(scheduler, "now_ms", lambda: AT + 90_000)
+    assert await run_due_jobs(settings) == 0
+    monkeypatch.setattr(scheduler, "now_ms", lambda: AT + 86_400_000)
+    assert await run_due_jobs(settings) == 0
+
+    assert len(await jobs_store.list_runs(settings, "default", "once")) == 1
+    job = await jobs_store.get_job(settings, "default", "once")
+    assert (job["next_run_at"], job["last_run_at"]) == (None, AT + 30_000)
+
+
+async def test_a_one_shot_with_no_due_time_is_never_swept(settings: Settings) -> None:
+    """A recurring job with no due time is due now; a one-shot with none has fired, or was stored
+    without one. Read the first way, it fired on every sweep."""
+    await jobs_store.put_job(settings, "default", "once", schedule="at:2999-01-01T00:00:00Z")
+    jobs_store._memory_jobs[("default", "once")]["next_run_at"] = None
+
+    assert await run_due_jobs(settings) == 0
+    assert await jobs_store.list_runs(settings, "default", "once") == []

@@ -2093,6 +2093,32 @@
       "title": "SandboxRef",
       "type": "object"
     },
+    "SchedulingSpec": {
+      "additionalProperties": false,
+      "description": "Let the agent schedule its own follow-up work: binds `schedule_task`, `list_scheduled` and\n`cancel_scheduled` (`felix/jobs/agent_tools.py`).\n\nA task is a scheduled job on this manifest, written as the caller: it fires as `cron` on\ntheir behalf with the scopes they hold, so it reaches nothing they could not reach by asking.\nThe caller needs `jobs:write`, sees and cancels only their own tasks from this manifest, and\na scheduled run cannot schedule more. Unset binds nothing.",
+      "properties": {
+        "max_tasks": {
+          "default": 10,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Tasks",
+          "type": "integer"
+        },
+        "min_interval_minutes": {
+          "default": 60,
+          "minimum": 1,
+          "title": "Min Interval Minutes",
+          "type": "integer"
+        },
+        "approval": {
+          "default": true,
+          "title": "Approval",
+          "type": "boolean"
+        }
+      },
+      "title": "SchedulingSpec",
+      "type": "object"
+    },
     "SearchToolRef": {
       "additionalProperties": false,
       "description": "Search the web through the operator's configured backend.\n\nUnlike `HttpFetchToolRef` there is no confinement field, and that is deliberate rather\nthan an omission: the model supplies a query, not a destination, so the only address this\nreaches is the one an operator put in `FELIX_SEARCH_BACKEND`/`FELIX_SEARCH_URL`. What it\nreturns is still untrusted \u2014 a snippet is written by whoever ranked for the query.",
@@ -2559,6 +2585,17 @@
           ],
           "default": null
         },
+        "scheduling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SchedulingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "permissions": {
           "$ref": "#/$defs/PermissionsSpec"
         },
@@ -2779,6 +2816,11 @@
         "include_tool_guidance": {
           "default": true,
           "title": "Include Tool Guidance",
+          "type": "boolean"
+        },
+        "include_datetime": {
+          "default": true,
+          "title": "Include Datetime",
           "type": "boolean"
         }
       },

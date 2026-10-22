@@ -15,6 +15,8 @@ from typing import Any
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
+from tests.support.e2e import sent_turns
+
 PNG = "data:image/png;base64,iVBORw0KGgo="
 
 
@@ -92,7 +94,7 @@ async def test_a_message_with_no_content_is_still_accepted(boot: Any) -> None:
             },
         )
         assert resp.status_code == 200, resp.text
-        user_turns = [m for call in app.spy.prompts for m in call if m.role == "user"]
+        user_turns = [m for call in app.spy.prompts for m in sent_turns(call)]
         assert [m.content for m in user_turns] == ["", "", "hi"]
         assert not [b for m in user_turns for b in (getattr(m, "content_blocks", None) or [])]
 

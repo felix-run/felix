@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from felix_ai.types import split_file_ref
 
 from felix.audit.emit import emit_agent_audit
+from felix.clock import Now, time_note
 from felix.config import get_settings
 from felix.hooks import (
     model_hook_context,
@@ -223,6 +224,8 @@ class _ReactAgent:
     recursion_limit: int
     limits: Any = None
     context_prelude: str = ""
+    # The install's clock (`felix/clock.py`): the run's first call is told the time. None = not told.
+    now: Now | None = None
     session_store: Any | None = None
     session_strategy: Any | None = None
     tenant_id: str = "default"
@@ -951,8 +954,8 @@ class _ReactAgent:
     async def _transient_guidance(self, messages: list[ChatMessage], tenant_id: str) -> list[ChatMessage]:
         """Messages for this run's first model call only — see `ChatMessage.transient`.
 
-        Procedures and the skill hint are independent lookups, gathered so the first token
-        waits for the slower of them rather than their sum.
+        The current time, then recalled procedures and the skill hint. Those two are independent
+        lookups, gathered so the first token waits for the slower of them rather than their sum.
         """
         import asyncio
 
@@ -960,7 +963,12 @@ class _ReactAgent:
             return None
 
         hint = self.skill_suggester.hint(messages) if self.skill_suggester is not None else _none()
-        notes = await asyncio.gather(self._procedures(messages, tenant_id), hint)
+        notes: list[str | None] = []
+        if self.now is not None:
+            # Read per run, not at compile: a durable run resumed hours later is told when it is.
+            # First, so the skill hint keeps the last word.
+            notes.append(time_note(self.now()))
+        notes.extend(await asyncio.gather(self._procedures(messages, tenant_id), hint))
         return [ChatMessage(role="user", content=note, transient=True) for note in notes if note]
 
     def _prelude_messages(self) -> list[ChatMessage]:
@@ -1644,6 +1652,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         recursion_limit=limit,
         limits=ctx.get("limits"),
         context_prelude=str(ctx.get("context_prelude") or ""),
+        now=ctx.get("now"),
         session_store=ctx.get("session_store"),
         session_strategy=ctx.get("session_strategy"),
         tenant_id=str(ctx.get("tenant_id") or "default"),

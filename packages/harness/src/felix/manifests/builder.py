@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from felix.auth.context import AuthContext
+from felix.clock import Now, date_block, wall_clock
 from felix.context import try_get_context
 from felix.decisions import MeteredDecider
 from felix.governance.content_screening import _INJECTION
@@ -1166,7 +1167,7 @@ def apply_approvals(
             req = try_get_context()
             # The thread's permission mode may waive this approval (`accept_edits` for an edit
             # tool, `bypass` for any) -- resolved by the permission-mode wrapper outside this one.
-            waived_by = await waives_approval(tool.name, permissions, req)
+            waived_by = await waives_approval(tool.name, permissions, req, rule_id=rule.id)
             if waived_by is not None and req is not None:
                 record_waiver(req, tool.name, waived_by, manifest_id)
             granted = waived_by is not None
@@ -1355,6 +1356,20 @@ def apply_approvals(
         return _clone_tool(tool, wrap_executor(inner, execute))
 
     return _wrap_tools(tools, wrap_one)
+
+
+def _wall_clock(m: Manifest, deps: BuildDeps) -> Now | None:
+    """The install's clock, or None when `spec.system_prompt.include_datetime` is off.
+
+    Its date ends `system`, last so the cached prefix ahead of it survives the day changing, and
+    not in the user-role prelude: tool selection and procedural recall read every user message as
+    the person's request. The time changes every run, so the pattern sends it as a transient note.
+    """
+    if not m.spec.system_prompt.include_datetime:
+        return None
+    from felix.config import get_settings
+
+    return wall_clock((deps.settings if deps.settings is not None else get_settings()).timezone)
 
 
 async def _resolve_system_prompt(manifest: Manifest, deps: BuildDeps) -> str:
@@ -1700,6 +1715,26 @@ def _bind_skill_authoring(
                 max_pending=spec.max_pending,
             ),
         ],
+    )
+
+
+def _bind_scheduling(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """The self-scheduling tools for `spec.scheduling`. Refused, like `spec.delegation`, when a tool
+    of one of their names is already bound: `_append_unique_tools` keeps the first of a name, so a
+    provider's `schedule_task` would silently stand in for the one the block asks for."""
+    if m.spec.scheduling is None or deps.settings is None:
+        return
+    from felix.jobs.agent_tools import SCHEDULING_TOOL_NAMES, make_scheduling_tools
+
+    for taken in sorted(t.name for t in resolved if t.name in SCHEDULING_TOOL_NAMES):
+        raise ValueError(
+            f"spec.scheduling binds a tool named '{taken}', and '{m.metadata.name}' already has one. "
+            f"Remove the other tool or the scheduling block."
+        )
+    resolved.extend(
+        make_scheduling_tools(
+            deps.settings, tenant_id=tenant_id, manifest_id=m.metadata.name, spec=m.spec.scheduling
+        )
     )
 
 
@@ -2093,6 +2128,10 @@ async def build_agent(
             except Exception:
                 logger.warning("memory tool binding failed", exc_info=True)
 
+        # `spec.scheduling` -> `schedule_task` / `list_scheduled` / `cancel_scheduled`, before the
+        # governance block, so every wrapper applies and the approval rule added there gates them.
+        _bind_scheduling(resolved, m, deps, tenant_id)
+
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
@@ -2301,6 +2340,14 @@ async def build_agent(
             # The plan is approved through the same flow as any gated call -- the row, the
             # `approval_required` frame, `GET /approvals` -- and no mode waives it.
             approval_rules.append(plan_approval_rule())
+        if m.spec.scheduling is not None and m.spec.scheduling.approval:
+            # A task's prompt runs later on the caller's authority with no one watching, so by
+            # default a person reads it first -- unless the manifest's own rule already gates it.
+            from felix.jobs.agent_tools import default_scheduling_rule
+
+            scheduling_rule = default_scheduling_rule(m.spec.scheduling, list(m.spec.approvals))
+            if scheduling_rule is not None:
+                approval_rules.append(scheduling_rule)
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions
@@ -2332,6 +2379,9 @@ async def build_agent(
             guidance = tool_guidance_section(resolved, m.spec.tool_guidance)
             if guidance:
                 final_prompt = f"{final_prompt}\n\n{guidance}"
+        now = _wall_clock(m, deps)
+        if now is not None:
+            final_prompt = f"{final_prompt}\n\n{date_block(now())}"
 
         pattern_builder = get_pattern(m.spec.pattern)
         if pattern_builder is None:
@@ -2377,6 +2427,8 @@ async def build_agent(
                 # Volatile, per-run reference material. Kept out of `system` so the
                 # cached prefix stays stable across turns.
                 "context_prelude": context_prelude,
+                # `felix.clock.Now`: the run's first call is told the time it reads. None = opted out.
+                "now": now,
                 "manifest_id": m.metadata.name,
                 "manifest_version": m.metadata.version,
                 # Plugin-owned config, namespaced by plugin name. Core never reads

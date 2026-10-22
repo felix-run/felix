@@ -8,6 +8,7 @@ import pytest
 from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 
+from tests.support.e2e import sent_turns
 from tests.support.screening import EMAIL
 
 CHAT_ROUTES = ("/chat", "/chat/stream")
@@ -34,7 +35,7 @@ def _agent(**spec: Any) -> Any:
 
 
 def _user_turns(prompt: list[Any]) -> list[str]:
-    return [m.content for m in prompt if m.role == "user"]
+    return [m.content for m in sent_turns(prompt)]
 
 
 async def _chat(app: Any, route: str, text: str | None, **extra: Any) -> Any:

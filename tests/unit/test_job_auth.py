@@ -40,6 +40,8 @@ def test_a_jwt_writer_s_job_runs_as_cron_for_them_with_their_recorded_grant() ->
         scheme="access",
         raw_claims={"felix_manifests": ["quick"]},
         skill_owner=None,
+        # Scheduled work: what refuses `schedule_task` to it and to everything it starts.
+        scheduled=True,
     )
 
 
@@ -53,7 +55,7 @@ def test_a_scope_string_is_not_read_as_its_letters() -> None:
 )
 def test_a_job_with_no_recorded_writer_runs_holding_nothing(created_by: Any, created_auth: Any) -> None:
     assert _job_auth(make_settings(), "acme", _job(created_by, created_auth)) == AuthContext(
-        tenant_id="acme", principal_sub="cron", anonymous=False
+        tenant_id="acme", principal_sub="cron", anonymous=False, scheduled=True
     )
 
 

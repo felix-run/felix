@@ -16,6 +16,10 @@ from felix.patterns.types import ChatMessage, InvokeInput
 
 logger = logging.getLogger("felix.jobs.scheduler")
 
+# The machine actor a firing runs as, on behalf of the job's writer (`_job_auth`), which also
+# marks it `scheduled` -- what `jobs/agent_tools.py` reads to refuse scheduled work scheduling more.
+CRON_ACTOR = "cron"
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -79,13 +83,15 @@ def _job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthCo
                 "job_has_no_recorded_writer name=%s: running with no scopes; re-save it to run as its writer",
                 loggable(key[1], limit=200),
             )
-        return replay_caller(None, tenant_id=tenant_id, actor="cron")
+        return replay_caller(None, tenant_id=tenant_id, actor=CRON_ACTOR, scheduled=True)
     scheme = str(recorded.get("scheme") or "")
     if scheme in {"api_key", "apikey"}:
         recorded = _current_api_key_scopes(settings, tenant_id, creator, recorded)
     elif scheme == "self":
         recorded = _current_signin_scopes(settings, tenant_id, creator, recorded)
-    return replay_caller(recorded, tenant_id=tenant_id, actor="cron", on_behalf_of=creator)
+    return replay_caller(
+        recorded, tenant_id=tenant_id, actor=CRON_ACTOR, on_behalf_of=creator, scheduled=True
+    )
 
 
 def _current_api_key_scopes(
@@ -324,6 +330,43 @@ def _job_error_message(exc: BaseException) -> str:
     return client_safe_message(exc)
 
 
+CREDENTIAL_EXPIRED = "the credential that scheduled this task has expired; schedule it again"
+
+
+def _credential_expired(job: dict[str, Any], at: int) -> bool:
+    """Whether the token that wrote this job had expired by `at`. Only a task records one
+    (`created_auth.expires_at`, `jobs/agent_tools.py`); a job written any other way never has."""
+    recorded = job.get("created_auth")
+    expires_at = recorded.get("expires_at") if isinstance(recorded, dict) else None
+    return isinstance(expires_at, int) and at >= expires_at
+
+
+async def _record_expired(
+    settings: Settings, tenant_id: str, job: dict[str, Any], started_at: int, trigger: str
+) -> dict[str, Any]:
+    """The run record of a firing refused because its writer's credential has expired."""
+    run = await jobs_store.record_run(
+        settings,
+        tenant_id,
+        job["name"],
+        status="error",
+        started_at=started_at,
+        finished_at=now_ms(),
+        error=CREDENTIAL_EXPIRED,
+        result={"status": "error", "error": CREDENTIAL_EXPIRED, "trigger": trigger},
+    )
+    await jobs_store.touch_run(
+        settings,
+        tenant_id,
+        job["name"],
+        last_run_at=started_at,
+        next_run_at=jobs_store.KEEP_SCHEDULE,
+        last_status="error",
+        last_error=CREDENTIAL_EXPIRED,
+    )
+    return run
+
+
 async def fire_job(
     settings: Settings,
     tenant_id: str,
@@ -343,6 +386,10 @@ async def fire_job(
     """
     try:
         result: dict[str, Any] = {"status": "ok"}
+        if _credential_expired(job, started_at):
+            # Disabled first, so a sweep overlapping this one does not fire it again meanwhile.
+            await jobs_store.disable_job(settings, tenant_id, job["name"])
+            return await _record_expired(settings, tenant_id, job, started_at, trigger)
         work = (
             _start_job_workflow
             if job.get("workflow_id")
@@ -414,7 +461,7 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
         if next_run is not None and next_run > ts:
             continue
         try:
-            following = next_run_at_ms(str(job.get("schedule") or ""), ts)
+            parsed = parse_schedule(str(job.get("schedule") or ""))
         except ScheduleError as exc:
             # Stored before the schedule was validated on write. It used to fire every minute
             # whatever it said; now it does not fire, and says why where the operator looks.
@@ -430,9 +477,18 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
                     last_error=str(exc),
                 )
             continue
-        if following is None:
-            # Manual only: it runs through `POST /jobs/{name}/run` and never from here.
-            continue
+        if parsed.one_shot:
+            # Due at the time its write set, and claimed with none, so it fires once. With no due
+            # time it has fired already (or was stored without one), and is never read as "due
+            # now" the way a new recurring job is.
+            if next_run is None:
+                continue
+            following = None
+        else:
+            following = parsed.next_after(ts)
+            if following is None:
+                # Manual only: it runs through `POST /jobs/{name}/run` and never from here.
+                continue
         # Claim the job *before* invoking it. touch_run used to run only after the
         # invocation finished, so the every-minute cron re-fired the same job on every
         # tick until the first run completed. And the claim is conditional on the due time
@@ -483,4 +539,11 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
     return total
 
 
-__all__ = ["creator_auth", "fire_job", "next_run_at_ms", "run_due_jobs", "run_due_jobs_all_tenants"]
+__all__ = [
+    "CRON_ACTOR",
+    "creator_auth",
+    "fire_job",
+    "next_run_at_ms",
+    "run_due_jobs",
+    "run_due_jobs_all_tenants",
+]

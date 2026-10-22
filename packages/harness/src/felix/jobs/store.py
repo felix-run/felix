@@ -164,6 +164,7 @@ async def put_job(
     enabled: bool = True,
     created_by: str | None = None,
     created_auth: dict[str, Any] | None = None,
+    first_run_at: int | None = None,
 ) -> dict[str, Any]:
     """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar, and
     `BothTargets` for a job naming a manifest and a workflow.
@@ -172,15 +173,34 @@ async def put_job(
     carry (`felix.jobs.scheduler.creator_auth`) -- replaced on every write, because whoever
     rewrites the prompt is who the job now runs for. None records no one: such a job runs with no
     scopes, as every job did before they were recorded.
+
+    A one-shot schedule (`at:`) is due at its moment from the write that sets it, and refused if
+    that moment has passed. Rewriting a job with the one-shot schedule it already has keeps its
+    due time -- None once it has fired, so a rewrite never fires it again.
+
+    `first_run_at` is when a recurring job this write *creates* is first due, for a writer that
+    wants it to wait for its schedule (`jobs/agent_tools.py`); by default a new job is due on the
+    next sweep. A rewrite ignores it, and so does a one-shot, which is due at its own moment.
     """
-    from felix.jobs.schedule import parse_schedule
+    from felix.jobs.schedule import ScheduleError, parse_schedule
 
     if manifest_id and workflow_id:
         raise BothTargets()
     parsed = parse_schedule(schedule)
     ts = now_ms()
 
+    def _due_on_new_schedule() -> int | None:
+        """The due time of a job created, or given a new schedule, by this write: a one-shot's moment,
+        else `first_run_at` -- None unless asked, so a new recurring job is due on the next sweep."""
+        if parsed.at_ms is None:
+            return first_run_at
+        if parsed.at_ms <= ts:
+            raise ScheduleError("schedule: at: is in the past")
+        return parsed.at_ms
+
     def _next_run_at(existing_schedule: str | None, existing_next: int | None) -> int | None:
+        if parsed.at_ms is not None:
+            return existing_next if existing_schedule == schedule else _due_on_new_schedule()
         # A changed schedule fires at whichever comes first: the due time already held, or
         # the new schedule's next slot. Keeping only the old one left a job moved from
         # `@daily` to `*/5` waiting until tomorrow; taking only the new one would hide a run
@@ -203,7 +223,7 @@ async def put_job(
             "last_run_at": existing.get("last_run_at") if existing else None,
             "next_run_at": _next_run_at(existing["schedule"], existing.get("next_run_at"))
             if existing
-            else None,
+            else _due_on_new_schedule(),
             "last_status": existing.get("last_status", "") if existing else "",
             "last_error": existing.get("last_error", "") if existing else "",
             "created_at": existing["created_at"] if existing else ts,
@@ -223,6 +243,7 @@ async def put_job(
                 tenant_id=tenant_id,
                 name=name,
                 schedule=schedule,
+                next_run_at=_due_on_new_schedule(),
                 manifest_id=manifest_id,
                 workflow_id=workflow_id,
                 workflow_revision=workflow_revision,
@@ -326,6 +347,24 @@ async def claim_run(
         )
         await db.commit()
         return bool(getattr(result, "rowcount", 0))
+
+
+async def disable_job(settings: Settings, tenant_id: str, name: str) -> None:
+    """Stop a job being swept, leaving everything else about it -- its writer, its history -- as
+    it was. A no-op for a job that is gone."""
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is not None:
+            row["enabled"] = False
+        return
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        row = await db.get(Job, (tenant_id, name))
+        if row is None:
+            return
+        row.enabled = False
+        await db.commit()
 
 
 async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
@@ -432,6 +471,7 @@ async def record_run(
 __all__ = [
     "BothTargets",
     "delete_job",
+    "disable_job",
     "get_job",
     "list_jobs",
     "list_runs",

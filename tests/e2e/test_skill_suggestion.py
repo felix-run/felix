@@ -65,6 +65,8 @@ def _manifest() -> Any:
         "auth": {"inbound": {"allow_anonymous": True}},
         "decider": {"id": "e2e-decider"},
         "skill_suggestion": {"enabled": True},
+        # The hint is this file's only transient note, so the assertions below count it exactly.
+        "system_prompt": {"include_datetime": False},
     }
     return parse_manifest(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "e2e-skilled"}, "spec": spec}
