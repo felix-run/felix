@@ -133,8 +133,9 @@ def _isolate_process_global_stores():
     from felix.memory.store import reset_memory_for_tests
     from felix.push.notify import reset_push_keys_for_tests
     from felix.push.store import reset_push_for_tests
+    from felix.session.heads import reset_known_heads_for_tests
     from felix.session.search import reset_search_index_for_tests
-    from felix.session.store import _memory_session_stores, reset_known_heads_for_tests
+    from felix.session.store import _memory_session_stores
     from felix.session.thread_state import reset_thread_meta_for_tests
     from felix.session.tree import _epoch_by_thread, _leaf_by_thread
     from felix.skills import library_store as skill_library_store

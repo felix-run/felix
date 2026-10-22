@@ -31,8 +31,9 @@ postgres_only = pytest.mark.parametrize("store_settings", ["postgres"], indirect
 # A plain turn on the `quick` manifest, one transaction each: the in-flight run check, the pin's
 # `thread_state` read, the skill library, memory facts, the leaf, the render, and the user's and
 # the reply's appends (`append_batch` and `store_leaf` apiece). `store_leaf` is its own on
-# purpose (a failed leaf write must not lose the events), so this is the floor for now.
-TURN_TRANSACTIONS = 10
+# purpose (a failed leaf write must not lose the events). Exact, per path: a saving updates the
+# number here in the same diff, so a later regression cannot hide inside the slack it left.
+TURN_TRANSACTIONS = {"/chat": 10, "/chat/stream": 10}
 
 
 def _thread() -> str:
@@ -41,19 +42,20 @@ def _thread() -> str:
 
 @contextmanager
 def _counted_transactions() -> Iterator[list[str]]:
+    """Every transaction any engine in the process begins: ORM sessions and Core connections alike."""
     from sqlalchemy import event
-    from sqlalchemy.orm import Session
+    from sqlalchemy.engine import Engine
 
     begun: list[str] = []
 
-    def record(_session: Any, _transaction: Any, _connection: Any) -> None:
+    def record(_connection: Any) -> None:
         begun.append("begin")
 
-    event.listen(Session, "after_begin", record)
+    event.listen(Engine, "begin", record)
     try:
         yield begun
     finally:
-        event.remove(Session, "after_begin", record)
+        event.remove(Engine, "begin", record)
 
 
 @contextmanager
@@ -70,13 +72,20 @@ def _memoized_request(settings: Any) -> Iterator[Any]:
 
 @parametrized
 async def test_a_memoized_request_sees_its_own_writes(store_settings: Any) -> None:
-    from felix.session.thread_state import get_thread_meta, note_first_message, update_thread_meta
+    """Read-your-writes inside a memoized request. On `memory://` there is no memo to consult --
+    `get_thread_meta` answers from the twin's dict before reaching it -- so that arm is the
+    behaviour the Postgres arm, which goes through the memo, has to match."""
+    from felix.session.thread_state import (
+        _default_meta,
+        get_thread_meta,
+        note_first_message,
+        update_thread_meta,
+    )
 
     thread = _thread()
     with _memoized_request(store_settings):
-        assert (await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread))[
-            "thinking_level"
-        ] in (None, "off")
+        meta = await get_thread_meta(settings=store_settings, tenant_id=TENANT, thread_id=thread)
+        assert meta["thinking_level"] == _default_meta()["thinking_level"]
         await update_thread_meta(
             settings=store_settings, tenant_id=TENANT, thread_id=thread, thinking_level="high"
         )
@@ -115,7 +124,9 @@ async def test_a_memoized_request_reads_the_row_once(store_settings: Any) -> Non
 
     with _memoized_request(store_settings), _counted_transactions() as begun:
         await three_reads()
-    assert len(begun) == 1, begun
+        # The same thread id under another tenant is another row: the memo must not answer it.
+        await get_thread_meta(settings=store_settings, tenant_id="another", thread_id=thread)
+    assert len(begun) == 2, begun
 
 
 # --- the live stream's cursor ----------------------------------------------------------------
@@ -123,7 +134,8 @@ async def test_a_memoized_request_reads_the_row_once(store_settings: Any) -> Non
 
 @parametrized
 async def test_the_known_head_is_the_stores_head(store_settings: Any) -> None:
-    from felix.session.store import get_session_store, known_head
+    from felix.session.heads import known_head
+    from felix.session.store import get_session_store
 
     thread = _thread()
     session = get_session_store(store_settings, tenant_id=TENANT).open(thread)
@@ -136,6 +148,7 @@ async def test_the_known_head_is_the_stores_head(store_settings: Any) -> None:
         ]
     )
     assert known_head(TENANT, thread) == (await session.head())["seq"] == 3
+    assert known_head("another", thread) is None, "a head is per tenant, as the log is"
     await session.reset()
     # After a reset the store's head is zero again; a remembered 3 would skip the next events.
     assert known_head(TENANT, thread) is None
@@ -252,7 +265,9 @@ async def test_a_plain_turn_stays_inside_its_transaction_budget(
         await turn("one")
         with _counted_transactions() as begun:
             await turn("two")
-    assert len(begun) <= TURN_TRANSACTIONS, (
-        f"{path} took {len(begun)} transactions on a plain turn, over the budget of "
-        f"{TURN_TRANSACTIONS}; each costs a ping, BEGIN, set_config and COMMIT in round trips"
+    expected = TURN_TRANSACTIONS[path]
+    assert len(begun) == expected, (
+        f"{path} took {len(begun)} transactions on a plain turn, not {expected}. More is a "
+        "regression: each costs a ping, BEGIN, set_config and COMMIT in round trips. Fewer is a "
+        "saving: lower TURN_TRANSACTIONS in this diff, so the slack cannot hide the next regression."
     )

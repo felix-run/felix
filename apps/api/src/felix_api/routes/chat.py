@@ -32,9 +32,10 @@ from felix.manifests.schema import PermissionModeName
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+from felix.session.heads import known_head
 from felix.session.meta_memo import THREAD_META_MEMO_EXTRA, memoize_thread_meta
 from felix.session.snapshot import gather_thread_snapshot
-from felix.session.store import get_session_store, known_head
+from felix.session.store import get_session_store
 from felix.session.tree import APPEND_ORIGIN_EXTRA, get_leaf, stored_leaf, sync_leaf
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue

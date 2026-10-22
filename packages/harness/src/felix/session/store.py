@@ -11,8 +11,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
-from felix.bounded_cache import BoundedCache
 from felix.config import Settings
+from felix.session import heads
 from felix.session.types import (
     SKELETON_METADATA_KEYS,
     AppendableEvent,
@@ -59,7 +59,7 @@ class _MemorySession:
             self._events = canonical._events
 
     async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
-        resets_seen = _resets
+        resets_seen = heads.resets()
         if events:
             self._register()
         now = time.time()
@@ -132,7 +132,7 @@ class _MemorySession:
 
     async def reset(self) -> None:
         self._events.clear()
-        _forget_head(self.tenant_id, self.id)
+        heads.note_reset(self.tenant_id, self.id)
         # The search index is a second copy of this thread's content, so it goes too. On
         # Postgres `DELETE FROM session_events` takes the generated `content_tsv` with it;
         # without this the twin would answer a search with text the caller had just deleted,
@@ -213,45 +213,6 @@ def _index_for_search(
         logger.debug("in-memory search indexing failed", exc_info=True)
 
 
-# The next `seq` after the newest append this process made to each thread, for a live stream's
-# `id:` cursor (`known_head`). Bounded: a thread that falls out is read from the store again.
-_known_heads = BoundedCache(4096)
-# Resets this process has made, of any thread. An append records it as it starts, and its head is
-# kept only if no reset landed meanwhile: an append that committed just before a `reset` can
-# announce just after it, and its head would then name events the reset deleted. Process-wide
-# rather than per thread because resets are rare and the miss costs one `head()` read.
-_resets = 0
-
-
-def _head_key(tenant_id: str, thread_id: str) -> str:
-    return f"{tenant_id}\x00{thread_id}"
-
-
-def _forget_head(tenant_id: str, thread_id: str) -> None:
-    global _resets
-    _resets += 1
-    _known_heads.pop(_head_key(tenant_id, thread_id))
-
-
-def reset_known_heads_for_tests() -> None:
-    _known_heads.clear()
-
-
-def known_head(tenant_id: str, thread_id: str) -> int | None:
-    """The `head()` this process's last append to the thread left, or None if it has none.
-
-    A live stream stamps its structural frames with the thread's head. Reading `head()` for each
-    one cost a transaction per frame -- two a plain turn, four more per tool call -- to learn
-    what the turn's own appends had just been told. Another replica's append since then is not
-    in this number, so it falls behind the store, and a client resuming from it is sent an event
-    it already had rather than missing one. `reset` here drops the entry, since after it the
-    store's head goes back to zero, and an append in flight across it records nothing
-    (`_resets`); a reset on another replica mid-turn is the one way it can run ahead, until
-    this turn's next append.
-    """
-    return _known_heads.get(_head_key(tenant_id, thread_id))
-
-
 async def _announce(thread_id: str, *, tenant_id: str, next_seq: int, resets_seen: int) -> None:
     """Tell any waiting reader this thread moved. Best effort by construction.
 
@@ -269,8 +230,7 @@ async def _announce(thread_id: str, *, tenant_id: str, next_seq: int, resets_see
     """
     if not thread_id:
         return
-    if resets_seen == _resets:
-        _known_heads[_head_key(tenant_id, thread_id)] = next_seq
+    heads.record_head(tenant_id, thread_id, next_seq, resets_seen=resets_seen)
     try:
         from felix.session.notify import notify_appended
 
@@ -355,7 +315,7 @@ class _PostgresSession:
     async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
         if not self.id or not events:
             return []
-        resets_seen = _resets
+        resets_seen = heads.resets()
         from sqlalchemy import func, select
 
         from felix.db.models import SessionEventRow
@@ -406,6 +366,11 @@ class _PostgresSession:
         # After the commit, so a rolled-back append reports nothing allocated.
         return allocated
 
+    # `store_leaf` and `adopt_leaf` write the `thread_state` row without going through
+    # `thread_state._writing`, so a request's metadata memo (`meta_memo`) is not told. That is
+    # safe only while they change nothing a metadata read answers: the leaf column and
+    # `LEAF_TRACKED_KEY`, which `thread_state._row_meta` hides. Writing any other key here means
+    # forgetting the thread in the memo too.
     async def store_leaf(self, event_id: str) -> None:
         """Move the stored leaf to an event just appended -- `tree.annotate_and_append` calls it.
 
@@ -685,7 +650,7 @@ class _PostgresSession:
                 )
             )
             await db.commit()
-        _forget_head(self.tenant_id, self.id)
+        heads.note_reset(self.tenant_id, self.id)
 
     async def wake(self) -> WakeState:
         return analyze_wake(await self.get_events())

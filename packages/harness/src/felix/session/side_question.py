@@ -69,7 +69,7 @@ class _ReadOnlySession:
     An allowlist, not a proxy of everything: a strategy that reaches for a write this does not
     know about gets an `AttributeError`, never a write that lands. `get_event_skeletons` is
     present only when the underlying store has it, because `compaction._load_branch` asks for it
-    by `getattr` and takes the slow path without it.
+    by `getattr` and takes the slow path without it; `reading` likewise.
 
     `id` is not the thread's. The branch walk reads this process's leaf index by session id,
     and the only way to fill that index for the thread is `sync_leaf`, which moves the leaf and
@@ -85,6 +85,11 @@ class _ReadOnlySession:
         skeletons = getattr(session, "get_event_skeletons", None)
         if skeletons is not None:
             self.get_event_skeletons = skeletons
+        # The same for `reading`, which `compaction.render` asks for the same way: the reads it
+        # shares a transaction across are the underlying session's, which this forwards.
+        reading = getattr(session, "reading", None)
+        if reading is not None:
+            self.reading = reading
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
         return await self._session.get_events(opts)
