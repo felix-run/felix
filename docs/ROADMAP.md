@@ -848,6 +848,68 @@ one member act with another's authority.
             where the id breaks the tie. A client that never sends `cursor` now sees its 100 most
             recent threads rather than all of them.
 
+- [ ] **Performance audit (2026-10-21): the cost is round trips, not CPU.** Measured, then read.
+      A plain `quick` turn through `create_application()` with the scripted model costs 2.6 ms
+      (`/chat`) and 4.8 ms (`/chat/stream`) of Python on `memory://`, compile included; the rest
+      is I/O. Against Postgres the same turn opened 13 and 15 transactions -- each a pool ping,
+      `BEGIN`, the RLS `set_config` and `COMMIT` around its queries, ~70 round trips before the
+      model on a managed database. Redis was 4 commands a turn. In landing order:
+      - [x] *Chat round trips.* 13 / 15 → 10 transactions a turn, pinned by
+            `tests/conformance/test_turn_round_trips.py` (budget 10): the `thread_state` row is
+            read once per chat request (`memoize_thread_meta`; every write in the module forgets
+            it), a live stream's `id:` cursor comes from the head the turn's appends recorded
+            (`store.known_head`) instead of a `head()` per structural frame -- four a tool call --
+            and the compacting render's two reads share one transaction (`Session.reading`).
+            `tenant_session` no longer sets the RLS tenant twice. Declined: binding the RLS bypass
+            once per connection rather than per transaction. A libpq startup option is refused by
+            PgBouncer (the statement-timeout note at `db_connect_timeout_seconds`), and a session `SET`
+            lands on whichever server connection a transaction pooler picked -- under FORCE'd RLS
+            a missing bypass empties every query. Still separate on purpose: `store_leaf`, so a
+            failed leaf write cannot lose the events (the 2026-10-08 entry).
+      - [ ] *`model_change` on every turn.* `_persist_model_change` appends an event and writes
+            the row whenever the request names a model, and `felix_client` names one on every
+            request after `set_model` -- three transactions and one log event per turn. Skipping
+            it when the stored `model_id` matches is wrong after a rewind past the change: the
+            snapshot reads the model from the newest `model_change` *on the branch*. Compare
+            against the branch's own, which the render already walks.
+      - [ ] *Workflow orchestrator polling.* `POLL_MS = 2000` for a run's whole life, and every
+            look rewrites the fiber row (`fibers.py`, op `workflow`) and reads each step in flight
+            in a transaction of its own -- ~15-25 round trips a look, ~40k looks for an approval
+            waiting a day. Back off when a look changed nothing (2 s doubling to 60 s), wake the
+            orchestrator when a child fiber ends or an approval is answered, read steps in one
+            `= ANY(:ids)` query, fold `_release_fiber` into the last save. The claim scan filters
+            `lease_until`/`wake_at` from the heap behind every leased or sleeping fiber: partial
+            indexes on `wake_at WHERE sleeping` and the runnable arm. `count_active` reads a
+            tenant's whole run history per start: a partial index on the live statuses. Pairs
+            with the fiber loop's idle backoff above.
+      - [ ] *Outbound clients.* `safe_async_client` builds a transport -- an `SSLContext` on the
+            loop and a TLS handshake -- for every MCP call, `http_fetch`, search, A2A peer and hook
+            webhook; the hosted workspace gateway does the same per operation (`gateway_client`),
+            times checkpoint reads and up to 400 sequential `tree()` calls. One module `SSLContext`
+            first (no risk), then guarded transports pooled per loop by `(allow_http, egress,
+            credentials)` -- the pin check runs per request, so reuse keeps the guard -- and one
+            gateway client per URL. `manifest_hooks._post` re-parses `FELIX_WEBHOOK_ENDPOINTS` and
+            rebuilds secrets per fire.
+      - [ ] *The loop and memory on a 2 GiB VM.* Background-shell waits (up to 20 s) run in the
+            default executor, six threads on 2 vCPUs, which fs reads and `getaddrinfo` share: an
+            async wait loop or an executor of their own. Maps that only grow: `steer._queues`
+            (`peek_steer_count` and `request_abort` create one), `tree._leaf_by_thread` /
+            `_epoch_by_thread`, the per-path write locks in `workspace_local` and
+            `workspace_hosted`. Uncapped Chromium launches; 32 background supervisors at ~20 MB.
+            `orphan_worktrees` and a failed clone's `rmtree` block the loop.
+      - [ ] *Checkpoint ledger.* `kept_bytes` aggregates a tenant's 7-day history on nearly every
+            write (a write's "before" is the last one's unstored "after"): cache it ~30 s -- the
+            ceiling is documented soft -- and index `(tenant_id, before_sha) WHERE
+            before_state='stored'`. `expired_paths` groups the whole table per batch: drive it from
+            the age index with an anti-join. `glob` walks the whole scope whatever `path` says,
+            and can spend its 20k entries before reaching it.
+      - [ ] *Smaller.* Each token is two frames (`text_delta` and `session_progress`) carrying its
+            text four times -- a wire-contract change. Pipeline the run's start and end Redis
+            calls; `LPOP key count` for workspace notes; `list_runs` and the run stream read
+            `definition_json` and `steps_json` they drop; scheduled manifest jobs run one after
+            another inside the cron tick; `read_artifact` downloads the whole object per window;
+            context-file discovery is uncached (up to six object-store misses a compile).
+
 - [ ] **Tamper-evident audit chain** — `seq` + `prev_hash` + keyed HMAC per row, per tenant,
       with `verify_chain` reporting the first break. Allocate the chain at write time inside the
       insert transaction under a per-tenant advisory lock (`_lock_thread` in `session/store.py` is

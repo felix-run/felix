@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -661,7 +662,10 @@ class CompactingSessionStrategy:
         opts: SessionRenderOpts | dict[str, Any],
     ) -> list[ChatMessage]:
         request = _RenderRequest.read(opts, incoming)
-        branch, latest = await _load_branch(session)
+        # Optional: a plugin checkpointer's `Session` need not grow a method to keep working.
+        reading = getattr(session, "reading", None)
+        async with reading() if reading is not None else contextlib.nullcontext():
+            branch, latest = await _load_branch(session)
         replayed = self._replay(request, latest, branch)
         if replayed is not None:
             return replayed

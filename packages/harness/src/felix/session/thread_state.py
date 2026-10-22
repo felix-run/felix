@@ -13,14 +13,21 @@ IntegrityError. A primary-key read costs less than any of those.
 The tree module's in-process leaf is still what new events parent on and what the active
 branch is drawn from, so on Postgres it is set from the row at the start of every turn
 (`tree.sync_leaf` -> `_PostgresSession.resolve_leaf`) and moved by the turn's own appends.
+
+One exception to "read on every read", and it is scoped to a request rather than a process: a
+route that calls `meta_memo.memoize_thread_meta` has `get_thread_meta` answer repeat reads of a thread from
+the first one, until a write through this module forgets it (see that function).
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
+from felix.session.meta_memo import current_memo as _memo
 from felix.session.tree import get_leaf as _mem_get_leaf
 from felix.session.tree import set_label as _mem_set_label
 from felix.session.tree import set_leaf as _mem_set_leaf
@@ -255,6 +262,37 @@ async def _locked_row(
     return (await db.execute(stmt)).scalar_one()
 
 
+async def _read_meta(settings: Settings, tenant_id: str, thread_id: str) -> dict[str, Any]:
+    """`_row_meta` of the stored row, through the request memo when there is one."""
+
+    async def load() -> dict[str, Any]:
+        row = await _read_row(settings, tenant_id, thread_id)
+        return _row_meta(row.labels_json if row is not None else None)
+
+    memo = _memo()
+    return await load() if memo is None else await memo.read((tenant_id, thread_id), load)
+
+
+@asynccontextmanager
+async def _writing(settings: Settings, tenant_id: str, thread_id: str) -> AsyncIterator[AsyncSession]:
+    """`tenant_session` for a write to the thread's row: every writer here goes through this.
+
+    It forgets the thread in the request memo (`meta_memo`) once the session closes, whether or not
+    the write committed. After, not before: a read that begins during the write stores the row as
+    it was, and only a forget once the write is done drops that. A read during the write answering
+    the row as it was is right -- the write has not committed.
+    """
+    from felix.db.session import tenant_session
+
+    try:
+        async with tenant_session(settings, tenant_id) as db:
+            yield db
+    finally:
+        memo = _memo()
+        if memo is not None:
+            memo.forget((tenant_id, thread_id))
+
+
 async def _read_row(settings: Settings, tenant_id: str, thread_id: str) -> ThreadState | None:
     from felix.db.models import ThreadState
     from felix.db.session import tenant_session
@@ -285,9 +323,7 @@ async def persist_leaf(
         _bump(_mem_meta(thread_id))
         return
     assert settings is not None
-    from felix.db.session import tenant_session
-
-    async with tenant_session(settings, tenant_id) as db:
+    async with _writing(settings, tenant_id, thread_id) as db:
         row = await _locked_row(db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=leaf_event_id)
         stored = dict(row.labels_json or {})
         _bump(stored)
@@ -329,9 +365,7 @@ async def update_thread_meta(
         return dict(meta)
 
     assert settings is not None
-    from felix.db.session import tenant_session
-
-    async with tenant_session(settings, tenant_id) as db:
+    async with _writing(settings, tenant_id, thread_id) as db:
         # A new row starts at this process's leaf: no replica has stored one for the thread,
         # so the one this process holds is all there is. It is not marked tracked -- this
         # process may not have served the thread's latest append -- so the next turn's
@@ -360,8 +394,7 @@ async def get_thread_meta(
         meta = _meta_by_thread.get(thread_id)
         return dict(meta) if meta is not None else _default_meta()
     assert settings is not None
-    row = await _read_row(settings, tenant_id, thread_id)
-    return _row_meta(row.labels_json if row is not None else None)
+    return await _read_meta(settings, tenant_id, thread_id)
 
 
 async def thread_exists(
@@ -408,11 +441,10 @@ async def claim_thread(
     from sqlalchemy.dialects.postgresql import insert
 
     from felix.db.models import ThreadState
-    from felix.db.session import tenant_session
 
     meta = _default_meta()
     _merge_fields(meta, fields)
-    async with tenant_session(settings, tenant_id) as db:
+    async with _writing(settings, tenant_id, thread_id) as db:
         inserted = await db.scalar(
             insert(ThreadState)
             .values(
@@ -533,12 +565,9 @@ async def note_first_message(
         return True
 
     assert settings is not None
-    row = await _read_row(settings, tenant_id, thread_id)
-    if row is not None and (row.labels_json or {}).get(PREVIEW_KEY):
+    if (await _read_meta(settings, tenant_id, thread_id)).get(PREVIEW_KEY):
         return False
-    from felix.db.session import tenant_session
-
-    async with tenant_session(settings, tenant_id) as db:
+    async with _writing(settings, tenant_id, thread_id) as db:
         # The same new-row leaf as `update_thread_meta`, for the same reason.
         row = await _locked_row(
             db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=_mem_get_leaf(thread_id)
@@ -652,9 +681,8 @@ async def backfill_preview(
     from sqlalchemy import select
 
     from felix.db.models import ThreadState
-    from felix.db.session import tenant_session
 
-    async with tenant_session(settings, tenant_id) as db:
+    async with _writing(settings, tenant_id, thread_id) as db:
         row = (
             await db.execute(
                 select(ThreadState)
