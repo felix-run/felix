@@ -655,9 +655,10 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       `cancel_scheduled` runs without an approval (a cancel only removes work, but a model can
       cancel a person's task unasked); the per-caller cap is read then written, so two concurrent
       `schedule_task` calls can both pass it; a task does not yet report back into the thread that
-      scheduled it (`scheduled_by.thread_id` is recorded for that); a durable or workflow run a task
+      scheduled it (`scheduled_by.thread_id` is recorded for that), except through a `notify` it
+      sends (`notify` PR 2 below); a durable or workflow run a task
       starts just before its writer's token expires is not clamped to that expiry, so it may run
-      on past it by up to the run's own TTL. *Landed (this PR):* `notify`, PR 1 of 3:
+      on past it by up to the run's own TTL. *Landed:* `notify`, PR 1 of 3:
       `spec.notify` binds a tool that sends a title and short message as a Web Push to the person
       the run acts for and to no one else (`push/agent_tool.py`, `push/notify.py:send_to_person`,
       `push/store.py:list_for_principal`) -- refused for no named caller or a shared subject; known
@@ -667,10 +668,24 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       for a task the person wrote, and only the tenant's own thread id). With it, the machine
       actors moved to `auth/actors.py` and the person check to `tools/refusal.py`, shared with
       `schedule_task`. *Follow-up:* the per-run count is per request context, so a durable run's
-      resume starts it again; carrying it in the fiber state would make it per run. *Next for
-      notify:* PR 2 appends the notice to that thread, so it is there when the person opens it;
-      PR 3 makes delivery a channel seam
-      (`register_notifier`, push the first channel, Slack and email to follow). *Next:* heartbeat
+      resume starts it again; carrying it in the fiber state would make it per run. *Landed (this
+      PR):* `notify` PR 2: the notice is also left in the chat thread it links to, when that is
+      not the run's own, as an entry for the person that no model prompt carries (`custom`,
+      `metadata.type: notice`) on the active branch, so it is there when the person opens it --
+      even when no browser took the push. Not into a thread that does not exist, nor while a run
+      is live in it (react now marks itself before its first append, or a durable run); an
+      exclusive lease alone does not count, since chat clients hold one while a thread is open.
+      The origin is now trusted: `PUT /jobs` ignores a caller's `scheduled_by` and keeps the
+      stored one only when the task's own writer re-saves it, and a link or entry needs a chat
+      thread (no `:` in the suffix). The result says what happened in the thread
+      (`thread`) and lists only the channels that delivered. *Follow-up:* chat-ui draws the entry
+      as a generic note ("Note · assistant · not sent to the model"); a notice-specific rendering
+      is a felix-web change. Without Redis the run mark is per process. *Follow-up:* the session index's `updatedAt` moves only on metadata writes, never on an
+      append, so a thread a notice lands in does not rise in `GET /chat/sessions` -- nor does one a
+      turn lands in; the live-run mark (`workspace_notes.mark_run_active`) is set only by the `react`
+      loop, so a third-party pattern that writes a thread without running it leaves none. *Next
+      for notify:* PR 3 makes delivery a channel seam (`register_notifier`, push the first
+      channel, Slack and email to follow). *Next:* heartbeat
       jobs, which `notify` exists for; memory scoped per user, plus an agent-editable `USER.md` and
       `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP

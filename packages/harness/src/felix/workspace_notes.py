@@ -242,7 +242,9 @@ async def mark_run_idle(tenant_id: str, thread_id: str) -> None:
             await _conn.fallback("workspace note idle mark")
 
 
-async def _refresh_active(tenant_id: str, thread_id: str) -> None:
+async def refresh_run_active(tenant_id: str, thread_id: str) -> None:
+    """Push back the run's Redis mark's expiry (`ACTIVE_TTL_SECONDS`), for a run between model
+    calls -- whose `drain` refreshes it -- that may outlast it."""
     client = await _conn.get()
     if client is not None:
         try:
@@ -310,7 +312,7 @@ async def drain(tenant_id: str, thread_id: str) -> list[WorkspaceNote]:
         )
     out.extend(_pending.pop(_key(tenant_id, thread_id), []))
     if _active.get(_key(tenant_id, thread_id), 0) > 0:
-        await _refresh_active(tenant_id, thread_id)
+        await refresh_run_active(tenant_id, thread_id)
     return coalesce(out)
 
 
@@ -325,5 +327,6 @@ __all__ = [
     "enqueue_if_running",
     "mark_run_active",
     "mark_run_idle",
+    "refresh_run_active",
     "run_active",
 ]

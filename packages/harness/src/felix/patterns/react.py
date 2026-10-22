@@ -60,7 +60,7 @@ from felix.steer import (
 )
 from felix.tools.retrieval import select_tools_from_ctx_async
 from felix.tools.types import Tool
-from felix.workspace_notes import WorkspaceNote, mark_run_active, mark_run_idle
+from felix.workspace_notes import WorkspaceNote, mark_run_active, mark_run_idle, refresh_run_active
 from felix.workspace_notes import drain as drain_workspace_notes
 
 if TYPE_CHECKING:
@@ -517,6 +517,13 @@ class _ReactAgent:
                 logger.info("closed %d approval(s) left by interrupted calls (thread=%s)", closed, thread_id)
         except Exception:
             logger.warning("closing interrupted approvals failed", exc_info=True)
+
+    async def _settle_notes(self, tenant_id: str, notes_thread: str) -> None:
+        """Unmark the run, then flush its notes: a note that saw the mark and was queued after the
+        run's last model call reaches the log here rather than waiting for a next run. One queued
+        after this flush is delivered at the thread's next run."""
+        await mark_run_idle(tenant_id, notes_thread)
+        await self._record_workspace_notes(notes_thread, await drain_workspace_notes(tenant_id, notes_thread))
 
     async def _append_produced(
         self,
@@ -1182,108 +1189,126 @@ class _ReactAgent:
         tenant_id = input.tenant_id or "default"
         # Before anything is written: a refused prompt must leave the thread as it was.
         hook_guidance = await self._entry_hooks(input)
-        # First: `_persist_model_change` below is already an append.
-        await self._sync_leaf(input.thread_id)
-        if not getattr(input, "thinking_level", None) and input.thread_id:
-            level = await self._load_thinking_level(input.thread_id)
-            if level:
-                input.thinking_level = level  # type: ignore[attr-defined]
-        model = self._resolve_model(input)
-        await self._persist_model_change(input)
-        if input.thread_id:
-            await ensure_run_queue(tenant_id, input.thread_id)
-            await clear_abort(tenant_id, input.thread_id)
-            if emit_events:
-                yield Event(event="session_progress", data={"phase": "turn"})
-
-        messages = await self._assemble_messages(input, model, tenant_id)
-        # Per-request guidance, attached at the tail of the run's first model call (and its
-        # overflow retry) and never added to `messages` — which is what gets persisted and what
-        # the cache prefix is.
-        transient = [*await self._transient_guidance(messages, tenant_id), *hook_guidance]
-
-        interrupted = _interrupted_tool_results(messages, self._tool_map)
-        if interrupted:
-            logger.info(
-                "closing %d interrupted tool call(s) before resuming (manifest=%s thread=%s)",
-                len(interrupted),
-                self.manifest_id,
-                input.thread_id,
-            )
-            record_counter(
-                "felix_interrupted_tool_calls",
-                {"manifest_id": self.manifest_id},
-            )
-            messages.extend(interrupted)
-            await self._append_produced(input.thread_id, interrupted)
-            await self._close_interrupted_gates(input.thread_id, tenant_id, interrupted)
-
-        produced: list[ChatMessage] = list(input.messages)
-        await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
-        await self._note_preview(input)
-        if input.thread_id:
-            # A steer sent while the thread was idle is held for the next run and delivered
-            # here, after that run's own turn. The loop below only drains steers between tool
-            # rounds, so a run that called no tool never read one, and the queue was released
-            # with it still inside — accepted, counted on the snapshot, and gone. All of them,
-            # whatever `steering_mode` says: they have waited for a run, not for a tool round.
-            for steermsg in await drain_steer(tenant_id, input.thread_id, mode="all"):
-                steer_chat = ChatMessage(role="user", content=steermsg.text)
-                messages.append(steer_chat)
-                produced.append(steer_chat)
-                if emit_events:
-                    yield Event(event="steer", data={"content": steermsg.text})
-                await self._append_produced(input.thread_id, [steer_chat])
-            # A steer also raises "cancel the remaining tools", meant for a round in flight. One
-            # held since the thread was idle has nothing to cancel — left set, it would cancel
-            # this run's first tool round instead.
-            await clear_cancel_flag(tenant_id, input.thread_id)
-        final = ChatMessage(role="assistant", content="")
-        fatal: FatalCall | None = None
-        any_denied = False
-        # Every refusal in the run, across rounds. `any_denied` is the *last* batch's: #311 made
-        # `final_response.status` say whether the run ended on a refusal, so a run that recovered
-        # after one still reads `ok`. The count is what tells that run apart from one with none.
-        denied_calls = 0
-        last_stop: StopReason = "end_turn"
-        # The newest model call's usage block, for `done`. The last call's prompt is the
-        # whole branch as the model saw it, so this is also how full the context is.
-        last_usage: dict[str, Any] | None = None
-        opts = self._chat_options(input)
-        # The tool list is chosen once, on the run's first model call, and held. Re-ranking it
-        # per step changed the set as the conversation grew, and any change to the tool list
-        # — the front of the provider's cache prefix — re-billed the whole conversation at
-        # full input price on that step. A tool used in an earlier run of the thread stays
-        # in the selection (`used_tool_names`), so freezing costs only a tool that becomes
-        # relevant mid-run, which the next run picks up.
-        run_tools: list[Tool] | None = None
-
-        async def _tools_for_run() -> list[Tool]:
-            nonlocal run_tools
-            if run_tools is None:
-                run_tools = await self._active_tools(messages)
-            return run_tools
-
-        user_preview = next(
-            (m.content for m in input.messages if m.role == "user" and m.content),
-            "",
-        )
-        emit_agent_audit(
-            "user_input",
-            status="ok",
-            manifest_id=self.manifest_id,
-            payload={
-                "user_input": (user_preview or "")[:2000],
-                "thread_id": input.thread_id,
-            },
-        )
-
-        # A run that can deliver workspace notes says so, so `/chat/workspace/edited` queues for
-        # it rather than writing straight to the log. Marked here, immediately before the `try`
-        # whose `finally` unmarks it.
+        # A run going on in a thread says so (`workspace_notes.run_active`), from before its first
+        # append to after its last: `/chat/workspace/edited` queues a note for it rather than
+        # writing straight to the log, and `notify` leaves the thread alone rather than land a
+        # notice between the run's user turn and its reply. Unmarked by the turn loop's `finally`,
+        # or by the guard below if the run fails before reaching it.
         notes_thread = input.thread_id if input.thread_id and self.session_store is not None else None
         if notes_thread:
             await mark_run_active(tenant_id, notes_thread)
+        queued = False
+        try:
+            # First: `_persist_model_change` below is already an append.
+            await self._sync_leaf(input.thread_id)
+            if not getattr(input, "thinking_level", None) and input.thread_id:
+                level = await self._load_thinking_level(input.thread_id)
+                if level:
+                    input.thinking_level = level  # type: ignore[attr-defined]
+            model = self._resolve_model(input)
+            await self._persist_model_change(input)
+            if input.thread_id:
+                await ensure_run_queue(tenant_id, input.thread_id)
+                queued = True
+                await clear_abort(tenant_id, input.thread_id)
+                if emit_events:
+                    yield Event(event="session_progress", data={"phase": "turn"})
+
+            messages = await self._assemble_messages(input, model, tenant_id)
+            if notes_thread:
+                # Assembly can summarise a long thread with a model call; the mark's Redis TTL
+                # must not lapse under it before the loop's first drain refreshes it.
+                await refresh_run_active(tenant_id, notes_thread)
+            # Per-request guidance, attached at the tail of the run's first model call (and its
+            # overflow retry) and never added to `messages` — which is what gets persisted and what
+            # the cache prefix is.
+            transient = [*await self._transient_guidance(messages, tenant_id), *hook_guidance]
+
+            interrupted = _interrupted_tool_results(messages, self._tool_map)
+            if interrupted:
+                logger.info(
+                    "closing %d interrupted tool call(s) before resuming (manifest=%s thread=%s)",
+                    len(interrupted),
+                    self.manifest_id,
+                    input.thread_id,
+                )
+                record_counter(
+                    "felix_interrupted_tool_calls",
+                    {"manifest_id": self.manifest_id},
+                )
+                messages.extend(interrupted)
+                await self._append_produced(input.thread_id, interrupted)
+                await self._close_interrupted_gates(input.thread_id, tenant_id, interrupted)
+
+            produced: list[ChatMessage] = list(input.messages)
+            await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
+            await self._note_preview(input)
+            if input.thread_id:
+                # A steer sent while the thread was idle is held for the next run and delivered
+                # here, after that run's own turn. The loop below only drains steers between tool
+                # rounds, so a run that called no tool never read one, and the queue was released
+                # with it still inside — accepted, counted on the snapshot, and gone. All of them,
+                # whatever `steering_mode` says: they have waited for a run, not for a tool round.
+                for steermsg in await drain_steer(tenant_id, input.thread_id, mode="all"):
+                    steer_chat = ChatMessage(role="user", content=steermsg.text)
+                    messages.append(steer_chat)
+                    produced.append(steer_chat)
+                    if emit_events:
+                        yield Event(event="steer", data={"content": steermsg.text})
+                    await self._append_produced(input.thread_id, [steer_chat])
+                # A steer also raises "cancel the remaining tools", meant for a round in flight. One
+                # held since the thread was idle has nothing to cancel — left set, it would cancel
+                # this run's first tool round instead.
+                await clear_cancel_flag(tenant_id, input.thread_id)
+            final = ChatMessage(role="assistant", content="")
+            fatal: FatalCall | None = None
+            any_denied = False
+            # Every refusal in the run, across rounds. `any_denied` is the *last* batch's: #311 made
+            # `final_response.status` say whether the run ended on a refusal, so a run that recovered
+            # after one still reads `ok`. The count is what tells that run apart from one with none.
+            denied_calls = 0
+            last_stop: StopReason = "end_turn"
+            # The newest model call's usage block, for `done`. The last call's prompt is the
+            # whole branch as the model saw it, so this is also how full the context is.
+            last_usage: dict[str, Any] | None = None
+            opts = self._chat_options(input)
+            # The tool list is chosen once, on the run's first model call, and held. Re-ranking it
+            # per step changed the set as the conversation grew, and any change to the tool list
+            # — the front of the provider's cache prefix — re-billed the whole conversation at
+            # full input price on that step. A tool used in an earlier run of the thread stays
+            # in the selection (`used_tool_names`), so freezing costs only a tool that becomes
+            # relevant mid-run, which the next run picks up.
+            run_tools: list[Tool] | None = None
+
+            async def _tools_for_run() -> list[Tool]:
+                nonlocal run_tools
+                if run_tools is None:
+                    run_tools = await self._active_tools(messages)
+                return run_tools
+
+            user_preview = next(
+                (m.content for m in input.messages if m.role == "user" and m.content),
+                "",
+            )
+            emit_agent_audit(
+                "user_input",
+                status="ok",
+                manifest_id=self.manifest_id,
+                payload={
+                    "user_input": (user_preview or "")[:2000],
+                    "thread_id": input.thread_id,
+                },
+            )
+
+        except BaseException:
+            # What the turn loop's `finally` releases, for a run that failed before reaching it --
+            # so each run releases once, whichever way it ends.
+            if notes_thread:
+                await self._settle_notes(tenant_id, notes_thread)
+            if queued and input.thread_id:
+                await release_run_queue(tenant_id, input.thread_id)
+                await release_side_events(input.thread_id)
+            raise
         try:
             stop_continuations = 0
             for _step in range(self.recursion_limit):
@@ -1592,13 +1617,7 @@ class _ReactAgent:
             )
         finally:
             if notes_thread:
-                # Unmarked first, then flushed: a note that saw the mark and was queued after the
-                # run's last model call reaches the log here rather than waiting for a next run.
-                # One queued after this flush is delivered at the thread's next run.
-                await mark_run_idle(tenant_id, notes_thread)
-                await self._record_workspace_notes(
-                    notes_thread, await drain_workspace_notes(tenant_id, notes_thread)
-                )
+                await self._settle_notes(tenant_id, notes_thread)
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
                 await release_side_events(input.thread_id)
