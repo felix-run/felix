@@ -74,11 +74,12 @@ async def test_mcp_deny_sets_is_error(none_settings: Settings, tmp_path) -> None
     from felix.context import AuthContext
     from felix.manifests.builder import BuildDeps, build_agent
     from felix.manifests.schema import Manifest
-    from felix.mcp.server import handle_rpc
     from felix.tools.builtins import default_tool_provider
     from felix.tools.executor import local_executor
     from felix.tools.provider import InMemoryToolProvider
     from felix.tools.types import Tool
+
+    from tests.support.mcp_server import mcp_rpc
 
     async def _always_deny(_args: dict, _ctx=None):
         return deny_output("[policy denied] blocked", "policy")
@@ -129,7 +130,7 @@ async def test_mcp_deny_sets_is_error(none_settings: Settings, tmp_path) -> None
     assert "denied" in tool_output_content(out).lower()
 
     # Also ensure inbound MCP lists only compiled tools for bundled quick.
-    listed = await handle_rpc(
+    listed = await mcp_rpc(
         settings=none_settings,
         tools=default_tool_provider(),
         method="tools/list",

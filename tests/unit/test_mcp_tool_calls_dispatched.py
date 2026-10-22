@@ -11,14 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from felix.context import AuthContext
-from felix.mcp import server
 from felix_api.composition import compose
 
 from tests.support.factories import make_settings
+from tests.support.mcp_server import mcp_rpc
 
 
 async def _calc(settings: Any, expression: str = "6*7") -> dict[str, Any]:
-    out = await server.handle_rpc(
+    out = await mcp_rpc(
         settings=settings,
         tools=compose(settings),
         method="tools/call",

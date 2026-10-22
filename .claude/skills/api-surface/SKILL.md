@@ -38,7 +38,7 @@ pinning — that is a security bug, not a shortcut.
 | `chat.py` | `/chat`, `/chat/stream`, runs, steer, abort/continue, thinking, sessions, fork/rewind, compact, export |
 | `openai_compat.py` | `/v1/chat/completions`, `/v1/models` (`model` = manifest name) |
 | `a2a.py` | `/a2a` JSON-RPC; `well_known.py` serves `/.well-known/agent-card.json` |
-| `mcp.py` | `/mcp` server surface |
+| `mcp.py` | `/mcp` and `/mcp/{manifest}`: each hands its raw ASGI exchange to the `mcp` SDK (`felix/mcp/server.py:serve_mcp`), which owns both protocol eras; no body model, GET is 405 |
 | `triggers.py` | `POST /triggers/{id}`: a signed inbound event starts a durable run (`felix/triggers.py`); no bearer, the sender's signature instead |
 | `audit.py`, `approvals.py`, `plans.py`, `jobs.py`, `manifests.py`, `eval.py`, `usage.py` | management APIs |
 | `workflows.py` | `/workflows`: authored workflow definitions (`felix/workflows/`), each response carrying its ports and problems; saves conditional on `If-Match` / `If-None-Match: *` (412 with the current row), `/-/kinds`, `/-/check`, and `/-/tools` (a manifest's governed tools, compiled as the caller, for wiring a `tool_call` step); runs in `workflow_runs.py`; `workflows:read` / `workflows:write` |

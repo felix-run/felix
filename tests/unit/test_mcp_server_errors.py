@@ -17,15 +17,14 @@ from felix.mcp import server
 from felix_api.composition import compose
 
 from tests.support.factories import make_settings
+from tests.support.mcp_server import mcp_rpc
 
 # Internal detail a client must not see; not credential-shaped, so the secret scan stays quiet.
 LEAK = "relation felix_internal_events on db-internal.svc"
 
 
 async def _call(settings: Any, method: str, **params: Any) -> dict[str, Any]:
-    return await server.handle_rpc(
-        settings=settings, tools=compose(settings), method=method, params=params, rpc_id=1
-    )
+    return await mcp_rpc(settings=settings, tools=compose(settings), method=method, params=params, rpc_id=1)
 
 
 @pytest.mark.parametrize("method", ["tools/list", "tools/call"])
@@ -40,7 +39,7 @@ async def test_a_compile_failure_is_not_relayed(
     monkeypatch.setattr(server, "_compiled_tools", boom)
     with caplog.at_level(logging.ERROR, logger="felix.mcp.server"):
         out = await _call(make_settings(), method, name="calculator")
-    assert out["error"]["code"] == -32000
+    assert out["error"]["code"] == -32603
     assert out["error"]["message"].startswith("internal error")
     assert LEAK not in str(out)
     logged = [r.exc_info for r in caplog.records if r.exc_info]
@@ -97,4 +96,30 @@ async def test_a_refusal_written_for_the_caller_is_relayed(
 
     monkeypatch.setattr(server, "_compiled_tools", refused)
     out = await _call(make_settings(), method, name="calculator")
-    assert out["error"] == {"code": -32000, "message": detail}
+    assert out["error"] == {"code": -32603, "message": detail}
+
+
+@pytest.mark.parametrize("method", ["tools/list", "tools/call"])
+async def test_a_request_without_a_caller_is_refused_not_served_anonymously(
+    monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """The caller crosses into the SDK's tasks through a context var. Were it lost, answering as an
+    anonymous caller on the default tenant would serve an `allow_anonymous` manifest to whoever it
+    was; the server refuses instead, before compiling anything."""
+    compiled: list[str] = []
+
+    async def spy(**kwargs: Any) -> Any:
+        compiled.append(kwargs["manifest_name"])
+        raise AssertionError("compiled without a caller")
+
+    monkeypatch.setattr(server, "_compiled_tools", spy)
+    settings = make_settings()
+    out = await mcp_rpc(
+        settings=settings,
+        tools=compose(settings),
+        method=method,
+        params={"name": "calculator"},
+        with_context=False,
+    )
+    assert out["error"]["code"] == -32603
+    assert compiled == []

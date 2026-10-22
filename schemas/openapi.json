@@ -1972,43 +1972,6 @@
         "title": "ManifestUpsert",
         "type": "object"
       },
-      "McpJsonRpc": {
-        "properties": {
-          "id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Id"
-          },
-          "jsonrpc": {
-            "default": "2.0",
-            "title": "Jsonrpc",
-            "type": "string"
-          },
-          "method": {
-            "title": "Method",
-            "type": "string"
-          },
-          "params": {
-            "additionalProperties": true,
-            "title": "Params",
-            "type": "object"
-          }
-        },
-        "required": [
-          "method"
-        ],
-        "title": "McpJsonRpc",
-        "type": "object"
-      },
       "MemoryWriteRequest": {
         "additionalProperties": false,
         "properties": {
@@ -14832,39 +14795,18 @@
       }
     },
     "/mcp": {
-      "get": {
-        "operationId": "mcp_info_mcp_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Mcp Info Mcp Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Mcp Info",
-        "tags": [
-          "MCP"
-        ]
-      },
       "post": {
-        "operationId": "mcp_rpc_mcp_post",
+        "description": "MCP for the default manifest (`FELIX_DEFAULT_MANIFEST`); a legacy client may name another\nin `params.manifest`.",
+        "operationId": "mcp_default_mcp_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/McpJsonRpc"
+                "type": "object"
               }
             }
           },
+          "description": "One JSON-RPC 2.0 request or notification (Model Context Protocol, Streamable HTTP).",
           "required": true
         },
         "responses": {
@@ -14872,65 +14814,46 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Mcp Rpc Mcp Post",
                   "type": "object"
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The JSON-RPC response."
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+          "202": {
+            "description": "A notification, accepted."
           }
         },
-        "summary": "Mcp Rpc",
+        "summary": "Mcp Default",
         "tags": [
           "MCP"
         ]
       }
     },
-    "/mcp/": {
-      "get": {
-        "operationId": "mcp_info_mcp__get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Mcp Info Mcp  Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Mcp Info",
-        "tags": [
-          "MCP"
-        ]
-      },
+    "/mcp/{manifest_name}": {
       "post": {
-        "operationId": "mcp_rpc_mcp__post",
+        "description": "MCP for one manifest: its governed tools, compiled as the caller.",
+        "operationId": "mcp_manifest_mcp__manifest_name__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "manifest_name",
+            "required": true,
+            "schema": {
+              "title": "Manifest Name",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/McpJsonRpc"
+                "type": "object"
               }
             }
           },
+          "description": "One JSON-RPC 2.0 request or notification (Model Context Protocol, Streamable HTTP).",
           "required": true
         },
         "responses": {
@@ -14938,13 +14861,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Mcp Rpc Mcp  Post",
                   "type": "object"
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The JSON-RPC response."
+          },
+          "202": {
+            "description": "A notification, accepted."
           },
           "422": {
             "content": {
@@ -14957,7 +14881,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Mcp Rpc",
+        "summary": "Mcp Manifest",
         "tags": [
           "MCP"
         ]

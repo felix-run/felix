@@ -32,6 +32,8 @@ dependencies = [
     "anthropic>=1.0.0",
     "sse-starlette>=3.4.8",
     "python-multipart>=0.0.22",
+    # The MCP server (`/mcp`) and client are the official SDK, not hand-rolled JSON-RPC.
+    "mcp>=2.3.0",
 ]
 
 [project.urls]
@@ -49,7 +51,6 @@ sandbox = ["docker>=7.1"]
 browser = ["playwright>=1.57"]
 # Image tools (`spec.image_tools`): resize, crop, rotate, convert, thumbnail.
 image = ["pillow>=11"]
-mcp = ["mcp>=1.26"]
 a2a = ["httpx>=0.28.1"]
 otel = [
     "opentelemetry-api>=1.39.0",
