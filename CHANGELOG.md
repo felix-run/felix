@@ -10,7 +10,7 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
-## [0.15.1] — 2026-10-20
+## [0.15.1] — 2026-10-22
 
 ### Changed
 
@@ -28,6 +28,11 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 - `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` refuses to start while a tenant has both a Google account
   and a GitHub org grant, where one person could approve their own run as a second subject. (#649)
+
+- Dependencies upgraded past advisories published on 2026-10-20: certifi 2026.10.19 (critical
+  GHSA-6q48-6c7w-9gw2: an emSign root CA with compromised intermediate keys, which could let an
+  on-path attacker intercept outbound HTTPS), aiohttp 3.14.5 and pillow 13.0.0. Deployments that
+  build their own images should rebuild. (#650)
 
 ## [0.15.0] — 2026-10-15
 
