@@ -13,14 +13,20 @@ IntegrityError. A primary-key read costs less than any of those.
 The tree module's in-process leaf is still what new events parent on and what the active
 branch is drawn from, so on Postgres it is set from the row at the start of every turn
 (`tree.sync_leaf` -> `_PostgresSession.resolve_leaf`) and moved by the turn's own appends.
+
+One exception to "read on every read", and it is scoped to a request rather than a process: a
+route that calls `meta_memo.memoize_thread_meta` has `get_thread_meta` answer repeat reads of a thread from
+the first one, until a write through this module forgets it (see that function).
 """
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import TYPE_CHECKING, Any
 
 from felix.config import Settings
+from felix.session.meta_memo import current_memo as _memo
 from felix.session.tree import get_leaf as _mem_get_leaf
 from felix.session.tree import set_label as _mem_set_label
 from felix.session.tree import set_leaf as _mem_set_leaf
@@ -255,6 +261,27 @@ async def _locked_row(
     return (await db.execute(stmt)).scalar_one()
 
 
+def _forget(tenant_id: str, thread_id: str) -> None:
+    memo = _memo()
+    if memo is not None:
+        memo.forget((tenant_id, thread_id))
+
+
+async def _read_meta(settings: Settings, tenant_id: str, thread_id: str) -> dict[str, Any]:
+    """`_row_meta` of the stored row, from the request memo when there is one."""
+    memo = _memo()
+    key = (tenant_id, thread_id)
+    if memo is not None and key in memo.values:
+        # A copy each time: callers merge into what they are handed.
+        return copy.deepcopy(memo.values[key])
+    forgotten = memo.forgotten.get(key, 0) if memo is not None else 0
+    row = await _read_row(settings, tenant_id, thread_id)
+    meta = _row_meta(row.labels_json if row is not None else None)
+    if memo is not None and memo.forgotten.get(key, 0) == forgotten:
+        memo.values[key] = copy.deepcopy(meta)
+    return meta
+
+
 async def _read_row(settings: Settings, tenant_id: str, thread_id: str) -> ThreadState | None:
     from felix.db.models import ThreadState
     from felix.db.session import tenant_session
@@ -285,6 +312,7 @@ async def persist_leaf(
         _bump(_mem_meta(thread_id))
         return
     assert settings is not None
+    _forget(tenant_id, thread_id)
     from felix.db.session import tenant_session
 
     async with tenant_session(settings, tenant_id) as db:
@@ -299,6 +327,8 @@ async def persist_leaf(
         row.updated_at = _column_seconds(stored)
         await db.commit()
     _set_leaf_epoch(thread_id, epoch)
+    # Again after the commit: a read that began during the write may have stored the old row.
+    _forget(tenant_id, thread_id)
 
 
 async def load_leaf(
@@ -329,6 +359,7 @@ async def update_thread_meta(
         return dict(meta)
 
     assert settings is not None
+    _forget(tenant_id, thread_id)
     from felix.db.session import tenant_session
 
     async with tenant_session(settings, tenant_id) as db:
@@ -345,6 +376,7 @@ async def update_thread_meta(
         row.labels_json = stored
         row.updated_at = _column_seconds(stored)
         await db.commit()
+    _forget(tenant_id, thread_id)
     return _row_meta(stored)
 
 
@@ -360,8 +392,7 @@ async def get_thread_meta(
         meta = _meta_by_thread.get(thread_id)
         return dict(meta) if meta is not None else _default_meta()
     assert settings is not None
-    row = await _read_row(settings, tenant_id, thread_id)
-    return _row_meta(row.labels_json if row is not None else None)
+    return await _read_meta(settings, tenant_id, thread_id)
 
 
 async def thread_exists(
@@ -412,6 +443,7 @@ async def claim_thread(
 
     meta = _default_meta()
     _merge_fields(meta, fields)
+    _forget(tenant_id, thread_id)
     async with tenant_session(settings, tenant_id) as db:
         inserted = await db.scalar(
             insert(ThreadState)
@@ -426,6 +458,7 @@ async def claim_thread(
             .returning(ThreadState.thread_id)
         )
         await db.commit()
+    _forget(tenant_id, thread_id)
     return inserted is not None
 
 
@@ -533,9 +566,9 @@ async def note_first_message(
         return True
 
     assert settings is not None
-    row = await _read_row(settings, tenant_id, thread_id)
-    if row is not None and (row.labels_json or {}).get(PREVIEW_KEY):
+    if (await _read_meta(settings, tenant_id, thread_id)).get(PREVIEW_KEY):
         return False
+    _forget(tenant_id, thread_id)
     from felix.db.session import tenant_session
 
     async with tenant_session(settings, tenant_id) as db:
@@ -552,6 +585,7 @@ async def note_first_message(
         row.labels_json = stored
         row.updated_at = _column_seconds(stored)
         await db.commit()
+    _forget(tenant_id, thread_id)
     return True
 
 
@@ -654,6 +688,7 @@ async def backfill_preview(
     from felix.db.models import ThreadState
     from felix.db.session import tenant_session
 
+    _forget(tenant_id, thread_id)
     async with tenant_session(settings, tenant_id) as db:
         row = (
             await db.execute(
@@ -671,6 +706,7 @@ async def backfill_preview(
         stored["revision"] = int(stored.get("revision") or 0) + 1
         row.labels_json = stored
         await db.commit()
+    _forget(tenant_id, thread_id)
     return True
 
 

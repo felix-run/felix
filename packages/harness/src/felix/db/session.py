@@ -260,11 +260,17 @@ async def tenant_session(
     settings: Settings,
     tenant_id: str,
 ) -> AsyncIterator[AsyncSession]:
-    """Open a session with RLS tenant GUC bound (no auto-commit)."""
+    """Open a session with RLS tenant GUC bound (no auto-commit).
+
+    Bound by `_rls_after_begin` as each transaction begins, from `session.info`. This also
+    called `apply_tenant_rls`, whose own statement began the transaction -- so the hook had
+    already set the GUC, and the call set it again: one more round trip on every
+    `tenant_session` under `FELIX_DATABASE_RLS`.
+    """
     factory = get_session_factory(settings=settings)
     with rls_tenant(tenant_id):
         async with factory() as session:
-            await apply_tenant_rls(session, settings, tenant_id)
+            session.info["tenant_id"] = tenant_id
             yield session
 
 

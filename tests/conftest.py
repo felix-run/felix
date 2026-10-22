@@ -134,7 +134,7 @@ def _isolate_process_global_stores():
     from felix.push.notify import reset_push_keys_for_tests
     from felix.push.store import reset_push_for_tests
     from felix.session.search import reset_search_index_for_tests
-    from felix.session.store import _memory_session_stores
+    from felix.session.store import _memory_session_stores, reset_known_heads_for_tests
     from felix.session.thread_state import reset_thread_meta_for_tests
     from felix.session.tree import _epoch_by_thread, _leaf_by_thread
     from felix.skills import library_store as skill_library_store
@@ -190,6 +190,9 @@ def _isolate_process_global_stores():
         reset_thread_meta_for_tests()
         _leaf_by_thread.clear()
         _epoch_by_thread.clear()
+        # The head each thread's last append recorded, which a live stream stamps on its frames:
+        # a test reusing a thread id would otherwise start from the last test's number.
+        reset_known_heads_for_tests()
         # The management stores are the same shape of process global, and the same hazard: a
         # dataset named `smoke` written by one test was counted by another test's assertion on
         # the bundled `smoke` fixture, and it failed as an off-by-one in a file that had not

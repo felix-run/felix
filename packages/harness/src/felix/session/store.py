@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 import time
 import weakref
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
+from felix.bounded_cache import BoundedCache
 from felix.config import Settings
 from felix.session.types import (
     SKELETON_METADATA_KEYS,
@@ -56,6 +59,7 @@ class _MemorySession:
             self._events = canonical._events
 
     async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
+        resets_seen = _resets
         if events:
             self._register()
         now = time.time()
@@ -95,7 +99,9 @@ class _MemorySession:
                 # in both fields rather than only in the one that obviously matters.
                 event_id=(stored.metadata or {}).get("event_id"),
             )
-        await _announce(self.id, tenant_id=self.tenant_id)
+        await _announce(
+            self.id, tenant_id=self.tenant_id, next_seq=len(self._events), resets_seen=resets_seen
+        )
         return allocated
 
     async def get_events(self, opts: GetEventsOpts | None = None) -> list[SessionEvent]:
@@ -116,11 +122,17 @@ class _MemorySession:
         """Every event, projected as Postgres projects it -- see `event_skeleton`."""
         return [event_skeleton(e) for e in self._events]
 
+    @asynccontextmanager
+    async def reading(self) -> AsyncIterator[None]:
+        """Postgres shares one transaction across the reads inside; here there is none to share."""
+        yield
+
     async def head(self) -> dict[str, int]:
         return {"seq": len(self._events)}
 
     async def reset(self) -> None:
         self._events.clear()
+        _forget_head(self.tenant_id, self.id)
         # The search index is a second copy of this thread's content, so it goes too. On
         # Postgres `DELETE FROM session_events` takes the generated `content_tsv` with it;
         # without this the twin would answer a search with text the caller had just deleted,
@@ -201,7 +213,46 @@ def _index_for_search(
         logger.debug("in-memory search indexing failed", exc_info=True)
 
 
-async def _announce(thread_id: str, *, tenant_id: str) -> None:
+# The next `seq` after the newest append this process made to each thread, for a live stream's
+# `id:` cursor (`known_head`). Bounded: a thread that falls out is read from the store again.
+_known_heads = BoundedCache(4096)
+# Resets this process has made, of any thread. An append records it as it starts, and its head is
+# kept only if no reset landed meanwhile: an append that committed just before a `reset` can
+# announce just after it, and its head would then name events the reset deleted. Process-wide
+# rather than per thread because resets are rare and the miss costs one `head()` read.
+_resets = 0
+
+
+def _head_key(tenant_id: str, thread_id: str) -> str:
+    return f"{tenant_id}\x00{thread_id}"
+
+
+def _forget_head(tenant_id: str, thread_id: str) -> None:
+    global _resets
+    _resets += 1
+    _known_heads.pop(_head_key(tenant_id, thread_id))
+
+
+def reset_known_heads_for_tests() -> None:
+    _known_heads.clear()
+
+
+def known_head(tenant_id: str, thread_id: str) -> int | None:
+    """The `head()` this process's last append to the thread left, or None if it has none.
+
+    A live stream stamps its structural frames with the thread's head. Reading `head()` for each
+    one cost a transaction per frame -- two a plain turn, four more per tool call -- to learn
+    what the turn's own appends had just been told. Another replica's append since then is not
+    in this number, so it falls behind the store, and a client resuming from it is sent an event
+    it already had rather than missing one. `reset` here drops the entry, since after it the
+    store's head goes back to zero, and an append in flight across it records nothing
+    (`_resets`); a reset on another replica mid-turn is the one way it can run ahead, until
+    this turn's next append.
+    """
+    return _known_heads.get(_head_key(tenant_id, thread_id))
+
+
+async def _announce(thread_id: str, *, tenant_id: str, next_seq: int, resets_seen: int) -> None:
     """Tell any waiting reader this thread moved. Best effort by construction.
 
     Called from the store rather than a route, so it covers every writer -- the agent
@@ -218,6 +269,8 @@ async def _announce(thread_id: str, *, tenant_id: str) -> None:
     """
     if not thread_id:
         return
+    if resets_seen == _resets:
+        _known_heads[_head_key(tenant_id, thread_id)] = next_seq
     try:
         from felix.session.notify import notify_appended
 
@@ -253,6 +306,10 @@ async def _lock_thread(db: Any, tenant_id: str, thread_id: str) -> None:
         logger.debug("advisory lock unavailable for thread=%s", thread_id, exc_info=True)
 
 
+# The transaction `_PostgresSession.reading` opened, for this task and the thread it names.
+_read_scope: ContextVar[tuple[str, str, Any] | None] = ContextVar("felix_session_read_scope", default=None)
+
+
 @dataclass
 class _PostgresSession:
     id: str
@@ -262,6 +319,35 @@ class _PostgresSession:
     # beside the leaf it sets; read-only resolvers leave it here, where no append looks.
     resolved_epoch: int | None = field(default=None, init=False, compare=False)
 
+    @asynccontextmanager
+    async def reading(self) -> AsyncIterator[None]:
+        """Serve this thread's `get_events` and `get_event_skeletons` inside from one transaction.
+
+        A render reads the log's shape and then the rows it needs, and each read was a session
+        of its own: a pool checkout, `BEGIN`, the RLS `set_config` and a `COMMIT` around one
+        query. In a contextvar rather than on this object, which callers share, so a read on
+        another task never lands in this transaction. Each statement still takes its own
+        snapshot under `READ COMMITTED`; what is shared is the round trips, not a view.
+
+        Await the reads inside one after another. A task started inside copies the contextvar,
+        and an `AsyncSession` used from two tasks at once, or after this closes it, raises.
+        """
+        async with self.session_factory() as db:
+            token = _read_scope.set((self.tenant_id, self.id, db))
+            try:
+                yield
+            finally:
+                _read_scope.reset(token)
+
+    @asynccontextmanager
+    async def _reader(self) -> AsyncIterator[Any]:
+        scope = _read_scope.get()
+        if scope is not None and scope[:2] == (self.tenant_id, self.id):
+            yield scope[2]
+            return
+        async with self.session_factory() as db:
+            yield db
+
     async def append(self, event: AppendableEvent) -> int | None:
         seqs = await self.append_batch([event])
         return seqs[0] if seqs else None
@@ -269,6 +355,7 @@ class _PostgresSession:
     async def append_batch(self, events: list[AppendableEvent]) -> list[int]:
         if not self.id or not events:
             return []
+        resets_seen = _resets
         from sqlalchemy import func, select
 
         from felix.db.models import SessionEventRow
@@ -313,7 +400,9 @@ class _PostgresSession:
             await db.commit()
         # Outside the transaction. A reader woken before the commit lands would query,
         # find nothing, and wait again on a notification already spent.
-        await _announce(self.id, tenant_id=self.tenant_id)
+        await _announce(
+            self.id, tenant_id=self.tenant_id, next_seq=allocated[-1] + 1, resets_seen=resets_seen
+        )
         # After the commit, so a rolled-back append reports nothing allocated.
         return allocated
 
@@ -495,7 +584,7 @@ class _PostgresSession:
         from felix.db.models import SessionEventRow
 
         opts = opts or GetEventsOpts()
-        async with self.session_factory() as db:
+        async with self._reader() as db:
             stmt = (
                 select(SessionEventRow)
                 .where(
@@ -544,7 +633,7 @@ class _PostgresSession:
         for key in SKELETON_METADATA_KEYS:
             pairs += [literal(key), SessionEventRow.event_metadata[key]]
         shape = func.jsonb_strip_nulls(func.jsonb_build_object(*pairs))
-        async with self.session_factory() as db:
+        async with self._reader() as db:
             stmt = (
                 select(
                     SessionEventRow.seq, SessionEventRow.ts, SessionEventRow.kind, SessionEventRow.role, shape
@@ -596,6 +685,7 @@ class _PostgresSession:
                 )
             )
             await db.commit()
+        _forget_head(self.tenant_id, self.id)
 
     async def wake(self) -> WakeState:
         return analyze_wake(await self.get_events())

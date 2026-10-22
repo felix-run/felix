@@ -32,8 +32,9 @@ from felix.manifests.schema import PermissionModeName
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+from felix.session.meta_memo import THREAD_META_MEMO_EXTRA, memoize_thread_meta
 from felix.session.snapshot import gather_thread_snapshot
-from felix.session.store import get_session_store
+from felix.session.store import get_session_store, known_head
 from felix.session.tree import APPEND_ORIGIN_EXTRA, get_leaf, stored_leaf, sync_leaf
 from felix.session.types import GetEventsOpts
 from felix.steer import enqueue
@@ -926,6 +927,8 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         raise HTTPException(status_code=400, detail="manifest_required")
     # Inside the turn `once` runs, so a refusal frees the key rather than becoming its answer.
     await _refuse_if_run_in_flight(request, auth.tenant_id, thread)
+    # The pin check below, and the turn's thinking level and preview, read one row.
+    meta_memo = memoize_thread_meta()
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
@@ -994,7 +997,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         manifest_id=body.manifest,
         thread_id=thread,
         # Screened above, before the stream opened or the durable run was enqueued.
-        extras={INBOUND_SCREENED_EXTRA: True},
+        extras={INBOUND_SCREENED_EXTRA: True, THREAD_META_MEMO_EXTRA: meta_memo},
     )
     async with async_run_with_context(req_ctx):
         try:
@@ -1357,6 +1360,8 @@ async def chat_stream(
         # Before the manifest is compiled and the input screened: there is no key whose
         # resend this could be, so nothing to judge first.
         await _refuse_if_run_in_flight(request, auth.tenant_id, thread)
+    # The pin check below, and the turn's thinking level and preview, read one row.
+    meta_memo = memoize_thread_meta()
 
     try:
         resolved = await resolve_tenant_manifest(settings, auth.tenant_id, body.manifest, thread_id=thread)
@@ -1481,6 +1486,7 @@ async def chat_stream(
         extras={
             INBOUND_SCREENED_EXTRA: True,
             LIVE_STREAM_EXTRA: True,
+            THREAD_META_MEMO_EXTRA: meta_memo,
             **({APPEND_ORIGIN_EXTRA: held.origin} if held is not None else {}),
         },
     )
@@ -1525,11 +1531,13 @@ async def chat_stream(
                         # `id:` leave `lastEventId` untouched, which is exactly the
                         # semantics wanted here.
                         if thread and is_resume_point(str(payload.get("event") or "")):
-                            # Re-read rather than trust the cached value: a structural
-                            # frame is where an append may just have happened. Consecutive
-                            # structural frames with nothing appended between them return
-                            # the same number, which is correct and costs one small query.
-                            fresh = await stream_cursor(settings, auth.tenant_id, thread)
+                            # Fresh at each structural frame: it is where an append may just
+                            # have happened. This turn's appends recorded the head as they
+                            # landed (`known_head`), so the store is read only when they have
+                            # not -- a store that announces nothing, or an evicted entry.
+                            fresh = known_head(auth.tenant_id, thread)
+                            if fresh is None:
+                                fresh = await stream_cursor(settings, auth.tenant_id, thread)
                             if fresh is not None:
                                 cursor = fresh
                             yield frame(payload, cursor=cursor)
