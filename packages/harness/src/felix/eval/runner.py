@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from felix.auth.actors import EVAL
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.eval import store as eval_store
@@ -296,7 +297,7 @@ async def start_run(
 
         tools = default_tool_provider()
 
-    auth = AuthContext(tenant_id=tenant_id, principal_sub="eval", anonymous=False)
+    auth = AuthContext(tenant_id=tenant_id, principal_sub=EVAL, anonymous=False)
     scores: list[dict[str, Any]] = []
     passes = 0
     fails = 0

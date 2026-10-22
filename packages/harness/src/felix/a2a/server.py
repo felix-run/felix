@@ -105,11 +105,12 @@ async def handle_rpc(
     rpc_id: str | int | None,
     auth: AuthContext | None = None,
 ) -> dict[str, Any]:
+    from felix.auth.actors import A2A
     from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 
     # A caller that passes no auth is trusted in-process code (the eval runner, a peer hop), as the
     # route never is: it always passes the request's.
-    call_auth = auth or AuthContext(tenant_id=tenant_id, principal_sub="a2a", anonymous=False)
+    call_auth = auth or AuthContext(tenant_id=tenant_id, principal_sub=A2A, anonymous=False)
 
     if method == "agent/authenticatedExtendedCard":
         from felix.a2a.card import build_agent_card

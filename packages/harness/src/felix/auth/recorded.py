@@ -22,6 +22,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from felix.auth.actors import MACHINE_ACTORS, TRIGGER_RUN_PREFIX
+from felix.auth.api_keys import DEFAULT_API_KEY_SUBJECT
 from felix.auth.context import MANIFESTS_CLAIM
 from felix.auth.jwt import SELF_ISSUER
 from felix.context import AuthContext
@@ -106,4 +108,18 @@ def replay_caller(
     )
 
 
-__all__ = ["record_caller", "replay_caller", "token_expiry_ms"]
+def is_shared_subject(subject: str) -> bool:
+    """Whether `subject` names no person: what a sub-less API key authenticates as, an inbound
+    trigger's run (`trigger:<id>`, every sender's), and the machine actors when they act for no
+    one (`acting_for` falls back to them). What a person's own tool refuses on -- a scheduled task
+    owned by such a subject would be everyone's, and a notice addressed to one would reach every
+    holder of the credential. A plugin authenticator that hands out a shared subject is not
+    knowable from here; that is its operator's to avoid."""
+    return (
+        subject == DEFAULT_API_KEY_SUBJECT
+        or subject in MACHINE_ACTORS
+        or subject.startswith(TRIGGER_RUN_PREFIX)
+    )
+
+
+__all__ = ["is_shared_subject", "record_caller", "replay_caller", "token_expiry_ms"]

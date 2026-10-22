@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from felix.auth.actors import TRIGGER_RUN_PREFIX
 from felix.context import RequestContext, async_run_with_context
 from felix.logging_setup import loggable
 from felix.triggers import (
@@ -42,7 +43,6 @@ from felix.triggers import (
     verifier_for,
     workflow_inputs,
 )
-from felix.workflows.runs import TRIGGER_RUN_PREFIX
 from pydantic import BaseModel
 
 if TYPE_CHECKING:

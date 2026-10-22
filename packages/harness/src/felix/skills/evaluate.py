@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from felix.auth.actors import SKILL_EVAL
 from felix.config import Settings
 from felix.security.fencing import fence
 from felix.skills import library
@@ -56,7 +57,7 @@ logger = logging.getLogger("felix.skills.evaluate")
 
 now_ms = lambda: int(time.time() * 1000)
 
-EVALUATOR = "skill-eval"
+EVALUATOR = SKILL_EVAL
 MAX_BUNDLE_SCENARIOS = 10
 MAX_GENERATED_SCENARIOS = 5
 _SKILL_CHARS = 12000

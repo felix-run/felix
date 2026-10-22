@@ -2212,7 +2212,7 @@ approved plan (`exit_plan_mode`), which needs whoever answers it to hold `approv
 | `default` | Every control runs as the manifest says. |
 | `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
 | `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
-| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's and any on `schedule_task`. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's and any on `schedule_task` or `notify`. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
 
 `allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
 wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
@@ -2236,6 +2236,38 @@ rule. A task belongs to its writer's subject, so a subject that names no person 
 sub-less API key's `api_key`, an inbound trigger's `trigger:<id>`, a machine actor acting for no
 one. A plugin authenticator that gives many people one subject is not detectable here; avoiding
 that is the operator's responsibility.
+
+**Notices.** `spec.notify` binds `notify`, which sends a title (80 characters) and a message (500) as
+a Web Push to the person the run acts for (`acting_for`) — only to browsers that person subscribed
+themselves (`POST /push/subscriptions`), never the tenant's. The tool takes no recipient, so a model
+cannot be steered into telling someone else; a run for no one (anonymous, no subject) or for a
+shared subject (a sub-less API key's `api_key`, a trigger's `trigger:<id>`, a machine actor acting
+for no one — `felix/auth/actors.py`) is refused. Before anything leaves, in order: known secret
+values are redacted (the masking wrapper covers a tool's *output*, and a notice's text is its
+arguments; personal data is not redacted); links are removed — after NFKC normalization and with
+invisible format characters deleted, scheme URLs, `www.` hosts, bare `host.tld/path` in any script,
+a host with a port, IPv4 and IPv6 addresses and the usual obfuscations (`hxxp`, `[.]`, `(dot)`,
+`%2E`, lookalike dots, a host split across lines) become `[link removed]`, so an injected prompt
+cannot put a phishing target on a lock screen; and the text is screened, always by the free
+marker scan and, when the manifest's `content_screening` is enabled, by its model and decider too,
+refusing the call (`screened`) on a flag or when a screener could not run. The text is then
+encrypted end to end to the browser (RFC 8291); the push service carries ciphertext, though the
+notice may show on that person's lock screen. Unlike an approval or question push, which reach the
+whole tenant and carry metadata only, a notice carries text because it is addressed. If a task's
+firing sends it, it links to the thread the task was scheduled from — only for a task that person
+wrote, and only a thread id of the tenant's own in plain id characters.
+
+Limits: `max_per_hour` (default 10) per person, per manifest, per tenant, in the shared rate-limit
+store, is the real bound; `max_per_run` (default 3) counts per request context, so a durable run's
+resume, a background child and a workflow step each start their own count. A call takes its run
+slot before it awaits anything, so a turn's parallel calls cannot all pass the cap; it gives the slot
+back only if the hourly limit refuses it, and otherwise counts against both, delivered or not. With
+`approval: true` the approval preview does not check the hourly limit (the limiter can only count),
+so an over-limit call can open an approval row and is refused when it runs. There is no approval by default, since the
+runs a notice is for — a scheduled task's firing — have nobody watching; `approval: true` adds a
+`notify.notify` rule (`one_shot`, `bind_principal`), and no permission mode waives an approval on
+`notify`, whichever rule asked (`permission_mode.UNWAIVABLE_TOOLS`). Each call is audited as
+`notify.sent` with the delivery count, channel, thread and recipient, never the text.
 
 **Enforcement.** The `permission mode` wrapper sits just outside approvals, so plan mode refuses
 before anyone is asked; approvals asks `waives_approval` itself. A run caches only the stored mode

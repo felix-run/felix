@@ -28,6 +28,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from felix.auth.actors import CONSOLIDATION
 from felix.config import Settings
 from felix.logging_setup import loggable
 from felix.memory import store as memory_store
@@ -323,7 +324,7 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
         if totals["ran"] + totals["failed"] >= MAX_POOLS_PER_TICK:
             totals["deferred"] += 1
             continue
-        auth = AuthContext(tenant_id=tenant_id, principal_sub="consolidation", anonymous=False)
+        auth = AuthContext(tenant_id=tenant_id, principal_sub=CONSOLIDATION, anonymous=False)
         ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id)
         try:
             async with async_run_with_context(ctx):

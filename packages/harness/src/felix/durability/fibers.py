@@ -606,12 +606,13 @@ def auth_from_state(tenant_id: str, stored_auth: object) -> AuthContext:
     recorded caller gets principal "fiber" and no scopes: everything policied denies, the
     fail-closed direction.
     """
+    from felix.auth.actors import FIBER
     from felix.auth.recorded import replay_caller
 
     return replay_caller(
         stored_auth if isinstance(stored_auth, dict) else None,
         tenant_id=tenant_id,
-        actor="fiber",
+        actor=FIBER,
         skill_owner=_stored_skill_owner(stored_auth),
     )
 

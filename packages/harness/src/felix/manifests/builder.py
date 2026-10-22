@@ -1738,6 +1738,21 @@ def _bind_scheduling(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_
     )
 
 
+def _bind_notify(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """`notify` for `spec.notify`, refused like `_bind_scheduling` when a tool of that name is
+    already bound: the first of a name wins, and a provider's `notify` would stand in silently."""
+    if m.spec.notify is None or deps.settings is None:
+        return
+    from felix.push.agent_tool import NOTIFY, make_notify_tool
+
+    if any(t.name == NOTIFY for t in resolved):
+        raise ValueError(
+            f"spec.notify binds a tool named '{NOTIFY}', and '{m.metadata.name}' already has one. "
+            f"Remove the other tool or the notify block."
+        )
+    resolved.append(make_notify_tool(deps.settings, tenant_id=tenant_id, manifest=m))
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -2131,6 +2146,8 @@ async def build_agent(
         # `spec.scheduling` -> `schedule_task` / `list_scheduled` / `cancel_scheduled`, before the
         # governance block, so every wrapper applies and the approval rule added there gates them.
         _bind_scheduling(resolved, m, deps, tenant_id)
+        # `spec.notify` -> `notify`, on the same terms.
+        _bind_notify(resolved, m, deps, tenant_id)
 
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
@@ -2348,6 +2365,12 @@ async def build_agent(
             scheduling_rule = default_scheduling_rule(m.spec.scheduling, list(m.spec.approvals))
             if scheduling_rule is not None:
                 approval_rules.append(scheduling_rule)
+        if m.spec.notify is not None and m.spec.notify.approval:
+            from felix.push.agent_tool import default_notify_rule
+
+            notify_rule = default_notify_rule(m.spec.notify, list(m.spec.approvals))
+            if notify_rule is not None:
+                approval_rules.append(notify_rule)
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions

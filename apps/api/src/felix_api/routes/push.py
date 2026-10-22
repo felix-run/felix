@@ -1,4 +1,5 @@
-"""Web Push subscriptions: which browsers to wake when a run is waiting on a person.
+"""Web Push subscriptions: which browsers to wake when a run is waiting on a person, and where an
+agent's `notify` reaches the subscriber (matched on `principal_subj`, the subject recorded here).
 
 All three routes need `approvals:read`, the scope the `approval_required` frame itself is
 gated on: a subscription is a standing request to be told about approvals, and a push must not

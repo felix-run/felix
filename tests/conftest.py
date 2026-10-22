@@ -131,6 +131,7 @@ def _isolate_process_global_stores():
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
     from felix.memory.store import reset_memory_for_tests
+    from felix.push.agent_tool import reset_notify_for_tests
     from felix.push.notify import reset_push_keys_for_tests
     from felix.push.store import reset_push_for_tests
     from felix.session.heads import reset_known_heads_for_tests
@@ -206,6 +207,7 @@ def _isolate_process_global_stores():
         reset_approvals_for_tests()
         reset_push_for_tests()
         reset_push_keys_for_tests()
+        reset_notify_for_tests()
         reset_github_connections_for_tests()
         # Audit and usage are the same shape again — a process buffer plus an in-memory twin —
         # and were the two this list missed. Each has *two* globals, so a test that recorded

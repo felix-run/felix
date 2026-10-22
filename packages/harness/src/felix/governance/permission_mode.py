@@ -49,14 +49,19 @@ EXIT_PLAN_TOOL_NAME = "exit_plan_mode"
 PLAN_APPROVAL_RULE_ID = "plan-approval"
 # The rule `spec.scheduling` adds over `schedule_task` (`jobs/agent_tools.py`).
 SCHEDULING_APPROVAL_RULE_ID = "scheduling.schedule_task"
+# The rule `spec.notify.approval` adds over `notify` (`push/agent_tool.py`).
+NOTIFY_APPROVAL_RULE_ID = "notify.notify"
 # Approvals no permission mode waives, by the id of the rule that asks for them. The plan's is how
 # plan mode ends.
-UNWAIVABLE_RULE_IDS = frozenset({PLAN_APPROVAL_RULE_ID, SCHEDULING_APPROVAL_RULE_ID})
+UNWAIVABLE_RULE_IDS = frozenset({PLAN_APPROVAL_RULE_ID, SCHEDULING_APPROVAL_RULE_ID, NOTIFY_APPROVAL_RULE_ID})
 # Tools whose approval no permission mode waives, whichever rule asked for it -- the built-in one or
 # a manifest's own, a glob included. A scheduled task's prompt runs later on its writer's authority
-# with nobody watching, so a thread in `bypass` (a person present now) does not answer for it.
+# with nobody watching, so a thread in `bypass` (a person present now) does not answer for it. A
+# notice's approval is an author asking that a person read every message before it reaches a lock
+# screen; a mode chosen for the thread does not answer for that either.
 SCHEDULE_TASK_TOOL_NAME = "schedule_task"
-UNWAIVABLE_TOOLS = frozenset({SCHEDULE_TASK_TOOL_NAME})
+NOTIFY_TOOL_NAME = "notify"
+UNWAIVABLE_TOOLS = frozenset({SCHEDULE_TASK_TOOL_NAME, NOTIFY_TOOL_NAME})
 # How long a person has to approve a plan before the request expires.
 PLAN_APPROVAL_TTL_SECONDS = 1800
 
@@ -329,6 +334,8 @@ async def in_plan_mode(req: RequestContext) -> bool:
 __all__ = [
     "BYPASS_SCOPE",
     "EXIT_PLAN_TOOL_NAME",
+    "NOTIFY_APPROVAL_RULE_ID",
+    "NOTIFY_TOOL_NAME",
     "PLAN_APPROVAL_RULE_ID",
     "SCHEDULE_TASK_TOOL_NAME",
     "SCHEDULING_APPROVAL_RULE_ID",

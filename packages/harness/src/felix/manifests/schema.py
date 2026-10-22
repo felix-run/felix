@@ -913,6 +913,29 @@ class SchedulingSpec(_Strict):
     approval: bool = True
 
 
+class NotifySpec(_Strict):
+    """Let the agent tell the person it acts for something: binds `notify`
+    (`felix/push/agent_tool.py`).
+
+    A notice goes only to the browsers that person subscribed (`POST /push/subscriptions`) -- the
+    tool takes no recipient. Its text has known secrets redacted and links removed, and is screened
+    (`content_screening` when on, else the marker scan) before it is sent. It needs a signed-in
+    person who is not a shared credential, and works from a scheduled task's firing, which is what
+    it is for. Unset binds nothing.
+    """
+
+    #: Notices one run may send. A durable run's resume, a background child and a workflow step
+    #: each start their own count; `max_per_hour` is the bound across them.
+    max_per_run: int = Field(default=3, ge=1, le=20)
+    #: Notices one person may receive from this agent in any hour: per person, per manifest.
+    max_per_hour: int = Field(default=10, ge=1, le=100)
+    #: Hold every `notify` call for a person's approval -- one-shot, bound to the caller -- unless
+    #: `spec.approvals` has a rule naming `notify` literally that gates every call. No permission
+    #: mode waives it. Off by default: a notice goes only to the person the run is for, and the runs
+    #: that send one (a scheduled task, a heartbeat) have nobody watching to approve it.
+    approval: bool = False
+
+
 class DeciderSpec(_Strict):
     """A decision model — one that answers typed questions (choose one, score, true/false)
     with calibrated probabilities instead of generating text. Off unless `id` is set.
@@ -1421,6 +1444,8 @@ class Spec(_Strict):
     delegation: DelegationSpec | None = None
     # Binds `schedule_task`, `list_scheduled` and `cancel_scheduled`. Unset binds nothing.
     scheduling: SchedulingSpec | None = None
+    # Binds `notify`. Unset binds nothing.
+    notify: NotifySpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
     output_styles: OutputStylesSpec = Field(default_factory=OutputStylesSpec)
     network: NetworkSpec = Field(default_factory=NetworkSpec)
