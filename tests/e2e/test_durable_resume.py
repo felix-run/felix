@@ -20,6 +20,8 @@ from felix.manifests.loader import parse_manifest
 from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
+from tests.support.e2e import sent_turns
+
 REQUEST = "what is 2+2?"
 CALC = ToolCall(id="call-1", name="calculator", args={"expression": "2+2"})
 
@@ -66,7 +68,7 @@ async def _thread(token: str) -> str:
 
 
 def _users(prompt: list[Any]) -> list[str]:
-    return [str(m.content) for m in prompt if m.role == "user"]
+    return [str(m.content) for m in sent_turns(prompt)]
 
 
 async def test_a_run_killed_after_its_tool_call_continues_without_repeating_it(boot: Any) -> None:

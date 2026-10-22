@@ -35,6 +35,9 @@ Extend the file for the surface you are testing before creating a new one.
   - `optional_deps.py:require_optional`: the only way to gate on an optional extra. A bare
     `importorskip` vanishes from the run, and an invariant forbids it.
   - `git_fixture.py:git`: the only way a test runs git.
+  - `e2e.py`: `sent_turns(prompt)` is what the person said in a prompt the model was sent,
+    without the harness's transient notes; `without_date(system)` checks today's date ends a
+    system prompt and returns what came before it.
 - **`fixtures/`** holds data only the tests read, such as the skill bundles in
   `fixtures/skills/`. The eval datasets live in the repo-root `fixtures/eval/`, because
   `felix eval` and CI read them too.

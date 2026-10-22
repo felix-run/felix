@@ -10,9 +10,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from felix.clock import wall_clock
 
 logger = logging.getLogger("felix.config")
 
@@ -81,6 +84,9 @@ class Settings(BaseSettings):
     # `auto` renders JSON in production and readable text elsewhere; set it explicitly
     # when a staging stack ships to a log store, or a production one is read by a person.
     log_format: Literal["auto", "json", "text"] = "auto"
+    # IANA zone the model is told today's date and time in (`felix/clock.py`). An install-wide
+    # "today": set it to where the people using the install are, or a late evening reads as tomorrow.
+    timezone: str = "UTC"
     allow_insecure: bool = False  # required if auth_mode=none and host binds public
 
     # --- auth ---
@@ -741,6 +747,18 @@ class Settings(BaseSettings):
                 "Temporal's. Unset FELIX_DURABILITY and stop felix-temporal-worker; the fiber "
                 "scheduler in felix-worker runs durable chats, including ones Temporal had started."
             )
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_is_known(cls, v: str) -> str:
+        # At load rather than at compile, where an unknown zone would fail every chat instead of boot.
+        try:
+            wall_clock(v)
+        except ZoneInfoNotFoundError, ValueError:
+            raise ValueError(
+                f"FELIX_TIMEZONE={v!r} is not an IANA zone name, e.g. America/New_York"
+            ) from None
         return v
 
     @field_validator("auth_api_keys", mode="before")

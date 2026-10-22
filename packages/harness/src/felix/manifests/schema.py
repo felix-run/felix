@@ -177,6 +177,11 @@ class SystemPrompt(_Strict):
     # `spec.tool_guidance` and from tools that carry their own. Off for a prompt that must be
     # exactly what was written.
     include_tool_guidance: bool = True
+    # Tell the model today's date and the current time in `FELIX_TIMEZONE` (`felix/clock.py`).
+    # The date ends the system prompt; the time, which changes every run, is a note on the first
+    # call of a react-loop run (`ctx["clock"]`, which a pattern reads or not). Off for a run that
+    # must be reproducible, an eval replay among them.
+    include_datetime: bool = True
 
 
 class PromptTemplateSpec(_Strict):

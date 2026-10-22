@@ -16,7 +16,7 @@ from typing import Any
 
 from felix_ai.providers.scripted import ScriptedTurn
 
-from tests.support.e2e import Booted
+from tests.support.e2e import Booted, sent_turns
 
 
 def _answer(text: str = "noted") -> ScriptedTurn:
@@ -145,7 +145,7 @@ async def test_a_steer_queued_while_idle_reaches_the_next_run(boot: Any) -> None
         prompt = app.spy.prompts[-1]
         log = (await app.client.get(f"/chat/sessions/{thread}/export")).text
 
-    users = [str(m.content) for m in prompt if m.role == "user"]
+    users = [str(m.content) for m in sent_turns(prompt)]
     assert users[-2:] == ["carry on", "prefer metric units"], "after the run's own turn"
     assert log.index("carry on") < log.index("prefer metric units"), "and in the transcript, in order"
 

@@ -30,10 +30,12 @@ Three facts about ordering and teardown are load-bearing:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from felix.clock import DATE_TAG
 from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 from httpx import AsyncClient
 
@@ -255,3 +257,26 @@ async def tick_workflow_run(
         if run.get("status") in until:
             return run
     raise AssertionError(f"run stuck at {run.get('status')}: {run}")
+
+
+def sent_turns(prompt: Sequence[Any], roles: tuple[str, ...] = ("user",)) -> list[Any]:
+    """The conversation in a prompt the model was sent: its `roles`, without the transient notes.
+
+    A run's first call also carries harness notes — the current time, a skill hint, recalled
+    procedures — as user-role messages marked `transient`. They are not what the person said.
+    """
+    return [m for m in prompt if m.role in roles and not m.transient]
+
+
+_DATE_TAIL = re.compile(rf"\n\n<{DATE_TAG}>Today is [^<\n]+</{DATE_TAG}>\Z")
+
+
+def without_date(system: str) -> str:
+    """The system prompt as the manifest composed it, after checking today's date ends it.
+
+    Exactly one date block, and nothing after it: the date is last so that the cached prefix
+    ahead of it survives the day changing (`felix/clock.py`).
+    """
+    tail = _DATE_TAIL.search(system)
+    assert tail is not None, f"the system prompt does not end with the date: {system[-200:]!r}"
+    return system[: tail.start()]

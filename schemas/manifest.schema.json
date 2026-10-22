@@ -2817,6 +2817,11 @@
           "default": true,
           "title": "Include Tool Guidance",
           "type": "boolean"
+        },
+        "include_datetime": {
+          "default": true,
+          "title": "Include Datetime",
+          "type": "boolean"
         }
       },
       "title": "SystemPrompt",
