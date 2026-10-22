@@ -1166,7 +1166,7 @@ def apply_approvals(
             req = try_get_context()
             # The thread's permission mode may waive this approval (`accept_edits` for an edit
             # tool, `bypass` for any) -- resolved by the permission-mode wrapper outside this one.
-            waived_by = await waives_approval(tool.name, permissions, req)
+            waived_by = await waives_approval(tool.name, permissions, req, rule_id=rule.id)
             if waived_by is not None and req is not None:
                 record_waiver(req, tool.name, waived_by, manifest_id)
             granted = waived_by is not None
@@ -1703,6 +1703,26 @@ def _bind_skill_authoring(
     )
 
 
+def _bind_scheduling(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """The self-scheduling tools for `spec.scheduling`. Refused, like `spec.delegation`, when a tool
+    of one of their names is already bound: `_append_unique_tools` keeps the first of a name, so a
+    provider's `schedule_task` would silently stand in for the one the block asks for."""
+    if m.spec.scheduling is None or deps.settings is None:
+        return
+    from felix.jobs.agent_tools import SCHEDULING_TOOL_NAMES, make_scheduling_tools
+
+    for taken in sorted(t.name for t in resolved if t.name in SCHEDULING_TOOL_NAMES):
+        raise ValueError(
+            f"spec.scheduling binds a tool named '{taken}', and '{m.metadata.name}' already has one. "
+            f"Remove the other tool or the scheduling block."
+        )
+    resolved.extend(
+        make_scheduling_tools(
+            deps.settings, tenant_id=tenant_id, manifest_id=m.metadata.name, spec=m.spec.scheduling
+        )
+    )
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -2093,6 +2113,10 @@ async def build_agent(
             except Exception:
                 logger.warning("memory tool binding failed", exc_info=True)
 
+        # `spec.scheduling` -> `schedule_task` / `list_scheduled` / `cancel_scheduled`, before the
+        # governance block, so every wrapper applies and the approval rule added there gates them.
+        _bind_scheduling(resolved, m, deps, tenant_id)
+
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
@@ -2301,6 +2325,14 @@ async def build_agent(
             # The plan is approved through the same flow as any gated call -- the row, the
             # `approval_required` frame, `GET /approvals` -- and no mode waives it.
             approval_rules.append(plan_approval_rule())
+        if m.spec.scheduling is not None and m.spec.scheduling.approval:
+            # A task's prompt runs later on the caller's authority with no one watching, so by
+            # default a person reads it first -- unless the manifest's own rule already gates it.
+            from felix.jobs.agent_tools import default_scheduling_rule
+
+            scheduling_rule = default_scheduling_rule(m.spec.scheduling, list(m.spec.approvals))
+            if scheduling_rule is not None:
+                approval_rules.append(scheduling_rule)
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions

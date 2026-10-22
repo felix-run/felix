@@ -34,6 +34,11 @@ class AuthContext:
     # and for every machine actor but a resumed fiber, which carries its starter's: a compile
     # with None loads the tenant's library and no one's own.
     skill_owner: str | None = None
+    # Set on a scheduled job's firing (`jobs/scheduler.py:_job_auth`) and carried, through the
+    # recorded caller (`auth/recorded.py`), into everything that firing starts -- a workflow run
+    # and its agent steps, a durable child. `schedule_task` refuses such a caller, so scheduled
+    # work never schedules more work, however many hops down.
+    scheduled: bool = False
 
     @property
     def acting_for(self) -> str:
