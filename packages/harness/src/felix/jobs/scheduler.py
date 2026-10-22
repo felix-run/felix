@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, TypedDict
 
+from felix.auth.actors import CRON
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.jobs import store as jobs_store
@@ -18,7 +19,18 @@ logger = logging.getLogger("felix.jobs.scheduler")
 
 # The machine actor a firing runs as, on behalf of the job's writer (`_job_auth`), which also
 # marks it `scheduled` -- what `jobs/agent_tools.py` reads to refuse scheduled work scheduling more.
-CRON_ACTOR = "cron"
+CRON_ACTOR = CRON
+# On a task's firing, `RequestContext.extras[SCHEDULED_FROM_EXTRA]` is `{"thread_id", "created_by"}`:
+# the conversation `schedule_task` recorded (`payload.scheduled_by.thread_id`) and the job's writer.
+# `push/agent_tool.py` points a notice at that thread only when the writer is who the run acts for.
+SCHEDULED_FROM_EXTRA = "scheduled_from"
+
+
+class ScheduledFrom(TypedDict):
+    """`extras[SCHEDULED_FROM_EXTRA]`: where a task was scheduled from, and who wrote the job."""
+
+    thread_id: str
+    created_by: str
 
 
 def now_ms() -> int:
@@ -239,6 +251,11 @@ async def _invoke_job_manifest(
         # a test — would share a thread again, which is the one thing this exists to prevent.
         thread = f"{thread}:{uuid.uuid4().hex[:16]}"
     req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
+    by = payload.get("scheduled_by")
+    if isinstance(by, dict) and isinstance(by.get("thread_id"), str) and by["thread_id"]:
+        req_ctx.extras[SCHEDULED_FROM_EXTRA] = ScheduledFrom(
+            thread_id=by["thread_id"], created_by=str(job.get("created_by") or "")
+        )
     async with async_run_with_context(req_ctx):
         # Resolved inside the context, as a fiber's is: that is what binds the tenant for RLS.
         resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
@@ -541,6 +558,8 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
 
 __all__ = [
     "CRON_ACTOR",
+    "SCHEDULED_FROM_EXTRA",
+    "ScheduledFrom",
     "creator_auth",
     "fire_job",
     "next_run_at_ms",

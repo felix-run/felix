@@ -10,32 +10,24 @@ party's push service actually carries.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
-import json
 from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from felix.config import Settings
 from felix.push import notify
 from felix.push import store as push_store
 from felix.push.webpush import b64url_decode, b64url_encode
 from httpx import ASGITransport, AsyncClient
 
+from tests.support.push_fake import ENDPOINT, Browser, Sent, capture_pushes, vapid_key
+
 KEYS = (
     '{"sk-ops":{"tenant_id":"acme","sub":"ops","scopes":["approvals:read"]},'
     '"sk-chat":{"tenant_id":"acme","sub":"ops","scopes":["chat:write"]},'
     '"sk-other":{"tenant_id":"globex","sub":"ops","scopes":["approvals:read"]}}'
 )
-ENDPOINT = "https://web.push.apple.com/QGuQyavXutnMH4/device-1"
-
-
-def _vapid_key() -> str:
-    key = ec.generate_private_key(ec.SECP256R1())
-    return b64url_encode(key.private_numbers().private_value.to_bytes(32, "big"))
 
 
 def _settings(**kw: object) -> Settings:
@@ -46,7 +38,7 @@ def _settings(**kw: object) -> Settings:
         "environment": "development",
         "object_store": "memory",
         "database_url": "memory://push",
-        "push_vapid_private_key": _vapid_key(),
+        "push_vapid_private_key": vapid_key(),
         "push_vapid_subject": "mailto:ops@example.invalid",
     }
     base.update(kw)
@@ -64,58 +56,9 @@ def _auth(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-class Browser:
-    """The receiving end: a key pair and auth secret, and RFC 8291 decryption."""
-
-    def __init__(self, endpoint: str = ENDPOINT) -> None:
-        self.endpoint = endpoint
-        self.key = ec.generate_private_key(ec.SECP256R1())
-        self.public = self.key.public_key().public_bytes(
-            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
-        )
-        self.auth = b"0123456789abcdef"
-
-    def subscription(self) -> dict[str, Any]:
-        return {
-            "endpoint": self.endpoint,
-            "expirationTime": None,
-            "keys": {"p256dh": b64url_encode(self.public), "auth": b64url_encode(self.auth)},
-        }
-
-    def decrypt(self, body: bytes) -> dict[str, Any]:
-        salt, idlen = body[:16], body[20]
-        as_public = body[21 : 21 + idlen]
-        sender = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), as_public)
-        secret = self.key.exchange(ec.ECDH(), sender)
-
-        def mac(k: bytes, d: bytes) -> bytes:
-            return hmac.new(k, d, hashlib.sha256).digest()
-
-        ikm = mac(mac(self.auth, secret), b"WebPush: info\x00" + self.public + as_public + b"\x01")
-        prk = mac(salt, ikm)
-        cek = mac(prk, b"Content-Encoding: aes128gcm\x00\x01")[:16]
-        nonce = mac(prk, b"Content-Encoding: nonce\x00\x01")[:12]
-        plain = AESGCM(cek).decrypt(nonce, body[21 + idlen :], None)
-        assert plain.endswith(b"\x02")
-        return json.loads(plain[:-1])
-
-
-class Sent(list[dict[str, Any]]):
-    """Every push the harness posted, and the status the fake push service answers with."""
-
-    status = 201
-
-
 @pytest.fixture
 def sent(monkeypatch: pytest.MonkeyPatch) -> Sent:
-    captured = Sent()
-
-    async def fake_post(settings: Settings, endpoint: str, headers: dict[str, str], body: bytes) -> int:
-        captured.append({"endpoint": endpoint, "headers": headers, "body": body})
-        return captured.status
-
-    monkeypatch.setattr(notify, "post", fake_post)
-    return captured
+    return capture_pushes(monkeypatch)
 
 
 async def _subscribe(settings: Settings, browser: Browser, tenant: str = "acme") -> None:
@@ -170,7 +113,7 @@ async def test_subscribing_needs_the_scope_the_approval_frame_needs() -> None:
 
 
 async def test_serves_the_public_half_of_the_configured_key() -> None:
-    raw = _vapid_key()
+    raw = vapid_key()
     async with await _client(push_vapid_private_key=raw) as client:
         res = await client.get("/push/vapid-public-key", headers=_auth("sk-ops"))
     assert res.status_code == 200

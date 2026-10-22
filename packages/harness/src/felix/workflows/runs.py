@@ -23,6 +23,7 @@ from typing import Any, Literal, Required, TypedDict
 
 from sqlalchemy import collate, func, select, update
 
+from felix.auth.actors import TRIGGER_RUN_PREFIX
 from felix.config import Settings
 from felix.db.models import WorkflowRun
 from felix.db.session import _use_memory, tenant_session
@@ -279,10 +280,6 @@ async def count_active(settings: Settings, tenant_id: str) -> int:
             .where(WorkflowRun.tenant_id == tenant_id, WorkflowRun.status.not_in(sorted(RUN_TERMINAL)))
         )
         return int(await db.scalar(stmt) or 0)
-
-
-# A run's `trigger` when a signed trigger started it: `trigger:<id>`.
-TRIGGER_RUN_PREFIX = "trigger:"
 
 
 def fences_prompts(run: dict[str, Any]) -> bool:

@@ -1640,6 +1640,33 @@
       "title": "NetworkSpec",
       "type": "object"
     },
+    "NotifySpec": {
+      "additionalProperties": false,
+      "description": "Let the agent tell the person it acts for something: binds `notify`\n(`felix/push/agent_tool.py`).\n\nA notice goes only to the browsers that person subscribed (`POST /push/subscriptions`) -- the\ntool takes no recipient. Its text has known secrets redacted and links removed, and is screened\n(`content_screening` when on, else the marker scan) before it is sent. It needs a signed-in\nperson who is not a shared credential, and works from a scheduled task's firing, which is what\nit is for. Unset binds nothing.",
+      "properties": {
+        "max_per_run": {
+          "default": 3,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Per Run",
+          "type": "integer"
+        },
+        "max_per_hour": {
+          "default": 10,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Per Hour",
+          "type": "integer"
+        },
+        "approval": {
+          "default": false,
+          "title": "Approval",
+          "type": "boolean"
+        }
+      },
+      "title": "NotifySpec",
+      "type": "object"
+    },
     "ObservabilitySpec": {
       "additionalProperties": false,
       "properties": {
@@ -2589,6 +2616,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/SchedulingSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "notify": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotifySpec"
             },
             {
               "type": "null"

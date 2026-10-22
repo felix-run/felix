@@ -169,6 +169,34 @@ async def list_for_tenant(settings: Settings, tenant_id: str) -> list[dict[str, 
         return [_subscription_dict(r) for r in rows]
 
 
+async def list_for_principal(settings: Settings, tenant_id: str, principal_subj: str) -> list[dict[str, Any]]:
+    """The subscriptions one person made in this tenant, oldest first: where a notice addressed to
+    them goes. An empty subject is nobody, and matches no row -- not the rows written with none."""
+    if not principal_subj:
+        return []
+    if _use_memory(settings):
+        rows = [
+            r
+            for (t, _), r in _memory_subscriptions.items()
+            if t == tenant_id and r.get("principal_subj") == principal_subj
+        ]
+        rows.sort(key=lambda r: (r["created_at"], r["id"]))
+        return [_subscription_dict(r) for r in rows[:MAX_SUBSCRIPTIONS_PER_TENANT]]
+    async with tenant_session(settings, tenant_id) as db:
+        rows = (
+            await db.scalars(
+                select(PushSubscriptionRow)
+                .where(
+                    PushSubscriptionRow.tenant_id == tenant_id,
+                    PushSubscriptionRow.principal_subj == principal_subj,
+                )
+                .order_by(PushSubscriptionRow.created_at, collate(PushSubscriptionRow.id, "C"))
+                .limit(MAX_SUBSCRIPTIONS_PER_TENANT)
+            )
+        ).all()
+        return [_subscription_dict(r) for r in rows]
+
+
 async def record_outcomes(
     settings: Settings,
     tenant_id: str,
@@ -231,6 +259,7 @@ __all__ = [
     "MAX_CONSECUTIVE_FAILURES",
     "MAX_SUBSCRIPTIONS_PER_TENANT",
     "TooManySubscriptions",
+    "list_for_principal",
     "list_for_tenant",
     "record_outcomes",
     "remove",

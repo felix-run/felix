@@ -3,7 +3,8 @@
 The properties here are the ones a dict and a `SELECT` can quietly disagree on: that a browser
 re-subscribing replaces its own row rather than adding one, that the same endpoint under two
 tenants is two rows neither can touch, and that the per-tenant cap refuses a *new* browser
-without refusing one that is already subscribed.
+without refusing one that is already subscribed -- and that one person's list holds exactly the
+browsers they subscribed in that tenant.
 """
 
 from __future__ import annotations
@@ -77,6 +78,30 @@ async def test_the_same_endpoint_under_two_tenants_is_two_rows(store_settings: A
     assert len(await push.list_for_tenant(store_settings, "acme")) == 1
     assert await push.list_for_tenant(store_settings, "globex") == []
     assert await push.remove(store_settings, "globex", ENDPOINT) is False
+
+
+@parametrized
+async def test_a_person_s_list_holds_their_own_browsers_in_their_own_tenant(store_settings: Any) -> None:
+    async def sub(tenant: str, endpoint: str, subject: str) -> str:
+        row = await push.upsert(
+            store_settings, tenant, endpoint=endpoint, p256dh="k", auth="a", principal_subj=subject
+        )
+        return row["id"]
+
+    phone = await sub("acme", "https://web.push.apple.com/alice-phone", "alice")
+    laptop = await sub("acme", "https://fcm.googleapis.com/fcm/send/alice-laptop", "alice")
+    await sub("acme", "https://fcm.googleapis.com/fcm/send/bob", "bob")
+    await sub("acme", "https://fcm.googleapis.com/fcm/send/nobody", "")
+    await sub("globex", "https://fcm.googleapis.com/fcm/send/alice-at-globex", "alice")
+
+    mine = await push.list_for_principal(store_settings, "acme", "alice")
+    assert sorted(r["id"] for r in mine) == sorted([phone, laptop])
+    # Oldest first, ties on the id: the two may be written in one millisecond here.
+    order = [(r["created_at"], r["id"]) for r in mine]
+    assert order == sorted(order)
+    # A row written with no subject belongs to no one, and an empty subject asks for no one.
+    assert await push.list_for_principal(store_settings, "acme", "") == []
+    assert await push.list_for_principal(store_settings, "acme", "carol") == []
 
 
 @parametrized

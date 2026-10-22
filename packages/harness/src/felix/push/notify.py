@@ -1,15 +1,21 @@
-"""Tell a tenant's subscribed browsers that a run is waiting on a person.
+"""Wake a person's browsers: a run waiting on someone, or an agent's notice to one person.
 
-Two moments call this, both inline in whichever process runs the agent (the API for a
-streamed run, the worker for a durable one): an approval row going pending, and an agent
-asking a question (`ui_request`). Each send is a held background task, so the frame that
-announces the same moment on a live stream is never behind a push service's round trip.
+Two moments tell a whole tenant, both inline in whichever process runs the agent (the API for a
+streamed run, the worker for a durable one): an approval row going pending, and an agent asking a
+question (`ui_request`). Each send is a held background task, so the frame that announces the same
+moment on a live stream is never behind a push service's round trip.
 
-What a push carries is deliberately thin: what kind of wait, which thread, and for an
-approval its id, tool and deadline. Never arguments, a prompt's text or a reason -- the
-message crosses a third party's servers, and the decision belongs on the surface that can
-show the call in full. Subscribing needs `approvals:read`, the scope the `approval_required`
-frame itself is gated on, so a push tells no one anything that frame would not.
+What those tenant-wide pushes carry is deliberately thin: what kind of wait, which thread, and for
+an approval its id, tool and deadline. Never arguments, a prompt's text or a reason -- every
+subscriber in the tenant receives them, and the decision belongs on the surface that can show the
+call in full. Subscribing needs `approvals:read`, the scope the `approval_required` frame itself is
+gated on, so such a push tells no one anything that frame would not.
+
+A notice (`send_to_person`, the `notify` tool in `push/agent_tool.py`) is the exception, and it is
+addressed: only to the browsers the person a run acts for subscribed themselves. It carries a title
+and a short message, with known secrets redacted before it leaves, encrypted end to end to that
+person's browser (RFC 8291) -- the push service relays ciphertext it cannot read -- and it may show
+on that person's lock screen.
 
 A push service answering 404 or 410 means that browser is gone; its row is deleted. Anything
 else is counted and dropped: a missed push is a page the person opens a little later, not a
@@ -22,7 +28,7 @@ import asyncio
 import contextvars
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
 
 from felix.config import Settings
@@ -159,11 +165,47 @@ def _finished(task: asyncio.Task[None]) -> None:
 async def send_to_tenant(settings: Settings, tenant_id: str, message: dict[str, Any], *, ttl: int) -> None:
     """Encrypt `message` to each of the tenant's browsers and post it. Never raises per browser."""
     from felix.push import store
-    from felix.push.webpush import encrypt, vapid_authorization
 
     subscriptions = await store.list_for_tenant(settings, tenant_id)
+    # A person is waiting on this; let the device wake for it.
+    await _send(settings, tenant_id, subscriptions, message, ttl=ttl, urgency="high")
+
+
+async def send_to_person(
+    settings: Settings,
+    tenant_id: str,
+    principal_subj: str,
+    message: dict[str, Any],
+    *,
+    ttl: int = DEFAULT_TTL_SECONDS,
+) -> int:
+    """Encrypt `message` to the browsers `principal_subj` subscribed in this tenant, and no one
+    else's. Returns how many push services accepted it: 0 when push is off, the person has no
+    subscription, or every send failed. Never raises per browser."""
+    from felix.push import store
+
+    if not enabled(settings) or not tenant_id or not principal_subj:
+        return 0
+    subscriptions = await store.list_for_principal(settings, tenant_id, principal_subj)
+    return await _send(settings, tenant_id, subscriptions, message, ttl=ttl, urgency="normal")
+
+
+async def _send(
+    settings: Settings,
+    tenant_id: str,
+    subscriptions: list[dict[str, Any]],
+    message: dict[str, Any],
+    *,
+    ttl: int,
+    urgency: Literal["high", "normal"],
+) -> int:
+    """Encrypt and post `message` to each subscription, record the outcomes, and return how many
+    were delivered."""
+    from felix.push import store
+    from felix.push.webpush import encrypt, vapid_authorization
+
     if not subscriptions:
-        return
+        return 0
     key = await vapid_private_key(settings)
     body = json.dumps(message, separators=(",", ":")).encode()
     ttl = max(MIN_TTL_SECONDS, min(MAX_TTL_SECONDS, ttl))
@@ -190,8 +232,7 @@ async def send_to_tenant(settings: Settings, tenant_id: str, message: dict[str, 
                 "Content-Encoding": "aes128gcm",
                 "Content-Type": "application/octet-stream",
                 "TTL": str(ttl),
-                # A person is waiting on this; let the device wake for it.
-                "Urgency": "high",
+                "Urgency": urgency,
             }
             async with slots:
                 status = await post(settings, sub["endpoint"], headers, payload)
@@ -212,6 +253,7 @@ async def send_to_tenant(settings: Settings, tenant_id: str, message: dict[str, 
 
     await asyncio.gather(*(one(sub) for sub in subscriptions))
     await store.record_outcomes(settings, tenant_id, delivered=delivered, failed=failed, gone=gone)
+    return len(delivered)
 
 
 async def post(settings: Settings, endpoint: str, headers: dict[str, str], body: bytes) -> int:
@@ -246,6 +288,7 @@ __all__ = [
     "post",
     "question_asked",
     "reset_push_keys_for_tests",
+    "send_to_person",
     "send_to_tenant",
     "vapid_private_key",
 ]

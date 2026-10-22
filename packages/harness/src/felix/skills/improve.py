@@ -29,6 +29,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from felix.auth.actors import SKILL_IMPROVER
 from felix.config import Settings
 from felix.security.fencing import fence
 from felix.skills import library
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("felix.skills.improve")
 
-IMPROVER = "skill-improver"
+IMPROVER = SKILL_IMPROVER
 _ERROR_LIMIT = 1000
 # The regions of the prompt, neutralised in every untrusted input so none can close one.
 _TAGS = ("current_skill_md", "feedback", "suggested_patch")

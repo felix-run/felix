@@ -640,8 +640,8 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       `webhook_state`), so a Slack outage does not lose a reply; one core `start_run_as(...)` for
       the start-a-run-as-a-principal flow triggers and channels each copy; the worker running
       plugin startup hooks (channel secrets masked there before the first reply); a `felix doctor`
-      warning for `FELIX_CHANNELS` set with no plugin installed. *Landed (this PR):* agent
-      self-scheduling: `spec.scheduling` binds `schedule_task`, `list_scheduled` and
+      warning for `FELIX_CHANNELS` set with no plugin installed. *Landed:* agent
+      self-scheduling (#651): `spec.scheduling` binds `schedule_task`, `list_scheduled` and
       `cancel_scheduled`, which write ordinary jobs on the manifest as the caller
       (`jobs/agent_tools.py`) -- `jobs:write` required, a per-caller cap, a minimum recurring
       interval, a one-shot `at:<ISO-8601>` schedule in the jobs grammar, and a default approval rule
@@ -657,8 +657,22 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       `schedule_task` calls can both pass it; a task does not yet report back into the thread that
       scheduled it (`scheduled_by.thread_id` is recorded for that); a durable or workflow run a task
       starts just before its writer's token expires is not clamped to that expiry, so it may run
-      on past it by up to the run's own TTL. *Next:* heartbeat jobs and a `notify` tool; memory scoped per
-      user, plus an agent-editable `USER.md` and `SOUL.md`.
+      on past it by up to the run's own TTL. *Landed (this PR):* `notify`, PR 1 of 3:
+      `spec.notify` binds a tool that sends a title and short message as a Web Push to the person
+      the run acts for and to no one else (`push/agent_tool.py`, `push/notify.py:send_to_person`,
+      `push/store.py:list_for_principal`) -- refused for no named caller or a shared subject; known
+      secrets redacted, links stripped and the text screened before it leaves; a per-person,
+      per-manifest `max_per_hour` and a `max_per_run`; approval off by default and never waivable
+      when on; and from a task's firing it points at the thread the task was scheduled from (only
+      for a task the person wrote, and only the tenant's own thread id). With it, the machine
+      actors moved to `auth/actors.py` and the person check to `tools/refusal.py`, shared with
+      `schedule_task`. *Follow-up:* the per-run count is per request context, so a durable run's
+      resume starts it again; carrying it in the fiber state would make it per run. *Next for
+      notify:* PR 2 appends the notice to that thread, so it is there when the person opens it;
+      PR 3 makes delivery a channel seam
+      (`register_notifier`, push the first channel, Slack and email to follow). *Next:* heartbeat
+      jobs, which `notify` exists for; memory scoped per user, plus an agent-editable `USER.md` and
+      `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,
       with office-document skills; installable bundles through the skill-import gate; a stock

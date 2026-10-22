@@ -93,8 +93,25 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
   with an in-process fallback; the react loop reads it, so `POST /chat/steer` and `/chat/abort`
   reach a run in the worker. It never touches the fiber row.
 - **Push.** `push/notify.py:approval_pending` / `question_asked` run in the agent's process (the
-  worker, for a durable run). Off until `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT`
-  are set; endpoints must match `FELIX_PUSH_ALLOWED_HOSTS`; 404/410 deletes the subscription.
+  worker, for a durable run) and reach the whole tenant, so they carry metadata only. Off until
+  `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints must match
+  `FELIX_PUSH_ALLOWED_HOSTS`; 404/410 deletes the subscription. `send_to_person` reaches only the
+  subscriptions whose `principal_subj` is one subject (`store.list_for_principal`; an empty subject
+  matches nothing); both go through `_send`.
+- **`notify`.** `spec.notify` binds `push/agent_tool.py:make_notify_tool` (`builder._bind_notify`, beside
+  `_bind_scheduling`). The recipient is `acting_for`, never an argument; `tools/refusal.py:require_person`
+  (shared with `schedule_task`, with `ToolRefused`) refuses no named caller or a shared subject
+  (`auth/recorded.py:is_shared_subject` over `auth/actors.py`). Order: `admit` (caller, lengths,
+  per-run cap, reserving the slot synchronously so gathered calls cannot all pass) → hourly limit (a refusal returns the slot) (`hourly_key`: sha256 of tenant, manifest, person, through
+  `build_rate_limiter_backend`, one per process) → `redact_text` → `strip_links` (NFKC, Cf deleted) →
+  screen (manifest `content_screening` via `screen_content` + `screen_tool_output`, else markers only;
+  flag or unavailable is `screened`) → `send_to_person`. The per-run count is on
+  `RequestContext.extras`, so it restarts per fiber resume, background child or workflow step; the
+  hourly cap is the bound. A task's firing gets `extras[scheduler.SCHEDULED_FROM_EXTRA]`
+  (`ScheduledFrom`), used only when `created_by == acting_for` and the id is the tenant's own in plain
+  id characters. `notify` is in `permission_mode.UNWAIVABLE_TOOLS`. Push off, no subscription, a
+  410, or a send that raises is `{"delivered": 0, "note": ...}`, never an error; `notify.sent` audits
+  without the text.
 
 ## Idempotency-Key
 

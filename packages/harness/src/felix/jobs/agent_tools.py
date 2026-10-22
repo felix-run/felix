@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from felix.auth.mgmt import SCOPE_JOBS_READ, SCOPE_JOBS_WRITE
 from felix.auth.recorded import token_expiry_ms
 from felix.governance.permission_mode import SCHEDULE_TASK_TOOL_NAME, SCHEDULING_APPROVAL_RULE_ID
+from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 if TYPE_CHECKING:
@@ -96,19 +97,6 @@ class _CancelScheduledArgs(BaseModel):
         max_length=64,
         description="The task's name, as schedule_task or list_scheduled gave it.",
     )
-
-
-class TaskRefused(Exception):
-    """A call these tools will not make. ``detail`` is written for the model; the tool wrapper turns
-    it into the result, and `schedule_task`'s approval preview raises it so a refused call is denied
-    before any approval row is written or waited on."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(f"{code}: {detail}")
-        self.code, self.detail = code, detail
-
-    def result(self) -> str:
-        return json.dumps({"error": self.code, "detail": self.detail})
 
 
 def _iso(ms: Any) -> str | None:
@@ -180,7 +168,7 @@ def _shortest_gap_ms(parsed: Schedule, now: int) -> int | None:
 
 class _AgentTasks:
     """One manifest's task calls, bound to its tenant and `spec.scheduling`. Every refusal raises
-    `TaskRefused`; the tool wrappers in `make_scheduling_tools` turn it into the result."""
+    `ToolRefused`; the tool wrappers in `make_scheduling_tools` turn it into the result."""
 
     def __init__(self, settings: Any, *, tenant_id: str, manifest_id: str, spec: SchedulingSpec) -> None:
         self.settings, self.tenant_id, self.manifest_id, self.spec = settings, tenant_id, manifest_id, spec
@@ -189,31 +177,26 @@ class _AgentTasks:
         """The caller behind this call. ``scheduling`` asks the one question only `schedule_task`
         asks: whether this is a scheduled run, which may not schedule more."""
         from felix.auth.mgmt import holds_mgmt_scopes
-        from felix.context import try_get_context
 
-        ctx = try_get_context()
-        auth = ctx.auth if ctx is not None else None
-        if auth is None or auth.anonymous or not auth.acting_for:
-            raise TaskRefused(
-                "no_caller",
+        # A task is owned by its writer's subject: list and cancel match on it. A subject every
+        # holder of a credential shares would make each one's tasks everyone's.
+        _ctx, auth = require_person(
+            no_caller=(
                 "scheduled tasks belong to a signed-in person, and this conversation has none; "
-                "nothing was scheduled or changed",
-            )
-        if _is_shared_subject(auth.acting_for):
-            # A task is owned by its writer's subject: list and cancel match on it. A subject
-            # every holder of a credential shares would make each one's tasks everyone's.
-            raise TaskRefused(
-                "shared_subject",
+                "nothing was scheduled or changed"
+            ),
+            shared_subject=(
                 "the credential this conversation uses names no person (it is shared), so a task "
-                "could not belong to anyone; nothing was scheduled or changed",
-            )
+                "could not belong to anyone; nothing was scheduled or changed"
+            ),
+        )
         if scheduling and auth.scheduled:
-            raise TaskRefused(
+            raise ToolRefused(
                 "scheduled_run",
                 "this is a scheduled task running; a scheduled run cannot schedule further work",
             )
         if not holds_mgmt_scopes(self.settings, auth.scopes, scope):
-            raise TaskRefused(
+            raise ToolRefused(
                 "missing_scope", f"managing scheduled tasks needs the {scope} scope, which this caller lacks"
             )
         return auth
@@ -242,26 +225,26 @@ class _AgentTasks:
         try:
             parsed = parse_schedule(when)
         except ScheduleError as exc:
-            raise TaskRefused(
+            raise ToolRefused(
                 "invalid_schedule", client_safe_message(exc, authored_for_clients=True)
             ) from None
         if parsed.at_ms is not None:
             if parsed.at_ms <= now:
-                raise TaskRefused("in_the_past", "that time has already passed; nothing was scheduled")
+                raise ToolRefused("in_the_past", "that time has already passed; nothing was scheduled")
             if parsed.at_ms - now > MAX_AHEAD_MS:
-                raise TaskRefused(
+                raise ToolRefused(
                     "too_far_ahead", "a task can be set at most 366 days ahead; nothing was scheduled"
                 )
             return parsed
         if parsed.next_after(now) is None:
-            raise TaskRefused(
+            raise ToolRefused(
                 "never_fires",
                 "a task must have a time to run: give at:<timestamp>, an interval, or a cron expression",
             )
         gap = _shortest_gap_ms(parsed, now)
         floor = self.spec.min_interval_minutes
         if gap is not None and gap < floor * 60_000:
-            raise TaskRefused(
+            raise ToolRefused(
                 "too_frequent",
                 f"this schedule fires every {max(gap // 60_000, 1)} minute(s) at its shortest; a "
                 f"recurring task here may fire at most once every {floor} minutes",
@@ -276,14 +259,14 @@ class _AgentTasks:
         parsed = self.check_when(args.when, now)
         expires_at = token_expiry_ms(auth)
         if parsed.at_ms is not None and expires_at is not None and parsed.at_ms > expires_at:
-            raise TaskRefused(
+            raise ToolRefused(
                 "outlives_credential",
                 f"that time is after the credential this conversation uses expires ({_iso(expires_at)}); "
                 "a task cannot run on authority that will have lapsed. Choose an earlier time",
             )
         live = [j for j in await self.mine(auth.acting_for) if _is_live(j)]
         if len(live) >= self.spec.max_tasks:
-            raise TaskRefused(
+            raise ToolRefused(
                 "too_many_tasks",
                 f"this person already has {len(live)} scheduled tasks here, the most allowed "
                 f"({self.spec.max_tasks}); cancel one with cancel_scheduled first",
@@ -313,10 +296,10 @@ class _AgentTasks:
         except ScheduleError:
             # `check_when` read the same string a moment ago; only the clock moving past an
             # `at:` between the two lands here.
-            raise TaskRefused("in_the_past", "that time has already passed; nothing was scheduled") from None
+            raise ToolRefused("in_the_past", "that time has already passed; nothing was scheduled") from None
         except Exception:
             logger.warning("schedule_task failed manifest=%s", self.manifest_id, exc_info=True)
-            raise TaskRefused(
+            raise ToolRefused(
                 "schedule_failed", "the task could not be saved; nothing was scheduled"
             ) from None
         return json.dumps(
@@ -376,14 +359,14 @@ class _AgentTasks:
         # The same answer for a name that does not exist and one that is not the caller's: a
         # different one would tell the model which job names other people hold.
         if args.name not in {j["name"] for j in await self.mine(auth.acting_for)}:
-            raise TaskRefused("no_such_task", "there is no task of that name among this person's tasks")
+            raise ToolRefused("no_such_task", "there is no task of that name among this person's tasks")
         await jobs_store.delete_job(self.settings, self.tenant_id, args.name)
         return json.dumps({"status": "cancelled", "name": args.name})
 
     async def preview(self, args: ToolInput) -> str:
         """What an approver reads: the schedule and the prompt that will run, as the call gives them.
 
-        Runs `admit` first and raises its `TaskRefused`: the approvals wrapper then denies the call
+        Runs `admit` first and raises its `ToolRefused`: the approvals wrapper then denies the call
         with no row and no wait (`builder._approval_preview`). A call the tool would refuse -- a
         scheduled run, an anonymous caller, an over-cap or too-frequent task -- must never put its
         prompt in front of an approver, nor park a cron firing on an approval nobody will give.
@@ -393,7 +376,7 @@ class _AgentTasks:
         try:
             parsed = _ScheduleTaskArgs.model_validate(args)
         except ValidationError:
-            raise TaskRefused(
+            raise ToolRefused(
                 "invalid_arguments", "the arguments do not match schedule_task's schema"
             ) from None
         await self.admit(parsed, _now_ms())
@@ -406,24 +389,11 @@ class _AgentTasks:
         return "\n".join(lines) + "\n\n--- prompt ---\n" + parsed.prompt
 
 
-def _is_shared_subject(subject: str) -> bool:
-    """Whether `subject` names no person: what a sub-less API key authenticates as, an inbound
-    trigger's run (`trigger:<id>`, every sender's), and the machine actors when they act for no
-    one (`acting_for` falls back to them). A plugin authenticator that hands out a shared subject
-    is not knowable from here; that is its operator's to avoid."""
-    from felix.auth.api_keys import DEFAULT_API_KEY_SUBJECT
-    from felix.jobs.scheduler import CRON_ACTOR
-    from felix.workflows.runs import TRIGGER_RUN_PREFIX
-
-    machines = {CRON_ACTOR, "fiber", "a2a", "eval", "consolidation", "anonymous"}
-    return subject in {DEFAULT_API_KEY_SUBJECT, *machines} or subject.startswith(TRIGGER_RUN_PREFIX)
-
-
 def _check_text(args: _ScheduleTaskArgs) -> None:
     if not args.prompt.strip() or len(args.prompt) > MAX_PROMPT_CHARS:
-        raise TaskRefused("invalid_prompt", f"the prompt must be between 1 and {MAX_PROMPT_CHARS} characters")
+        raise ToolRefused("invalid_prompt", f"the prompt must be between 1 and {MAX_PROMPT_CHARS} characters")
     if len(args.title) > MAX_TITLE_CHARS:
-        raise TaskRefused("invalid_title", f"the title must be at most {MAX_TITLE_CHARS} characters")
+        raise ToolRefused("invalid_title", f"the title must be at most {MAX_TITLE_CHARS} characters")
 
 
 def is_fired_task(job: dict[str, Any]) -> bool:
@@ -463,19 +433,19 @@ def make_scheduling_tools(
     async def _schedule(args: _ScheduleTaskArgs, ctx: ToolInvocationCtx | None = None) -> str:
         try:
             return await tasks.schedule(args, ctx)
-        except TaskRefused as refused:
+        except ToolRefused as refused:
             return refused.result()
 
     async def _list(_args: _ListScheduledArgs) -> str:
         try:
             return await tasks.list_tasks()
-        except TaskRefused as refused:
+        except ToolRefused as refused:
             return refused.result()
 
     async def _cancel(args: _CancelScheduledArgs) -> str:
         try:
             return await tasks.cancel(args)
-        except TaskRefused as refused:
+        except ToolRefused as refused:
             return refused.result()
 
     floor = spec.min_interval_minutes
@@ -516,7 +486,6 @@ __all__ = [
     "SCHEDULE_TASK",
     "SCHEDULING_APPROVAL_RULE_ID",
     "SCHEDULING_TOOL_NAMES",
-    "TaskRefused",
     "default_scheduling_rule",
     "is_fired_task",
     "make_scheduling_tools",
