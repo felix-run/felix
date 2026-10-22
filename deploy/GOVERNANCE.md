@@ -2254,8 +2254,30 @@ refusing the call (`screened`) on a flag or when a screener could not run. The t
 encrypted end to end to the browser (RFC 8291); the push service carries ciphertext, though the
 notice may show on that person's lock screen. Unlike an approval or question push, which reach the
 whole tenant and carry metadata only, a notice carries text because it is addressed. If a task's
-firing sends it, it links to the thread the task was scheduled from — only for a task that person
-wrote, and only a thread id of the tenant's own in plain id characters.
+firing sends it, it links to the chat thread the task was scheduled from, and the same cleaned text
+is left in that thread, before the push goes, so it is there when the person opens it — even when
+no browser took the push, which then is the only place the person sees it. Which thread that is
+rests on a record only `schedule_task` writes (`payload.scheduled_by`): `PUT /jobs` ignores one in
+the body, so a job written there cannot name somebody else's conversation. A task re-saved by its
+own writer (pausing or resuming it re-sends the whole job) keeps the stored record and stays a task;
+re-saved by anyone else it becomes an ordinary job (it no longer lists as a task, and its notices
+link to its own thread), since keeping the record would let them write into its writer's
+conversation. The record is used only for a task the person wrote, and only for a chat
+thread of the tenant's own — a suffix in plain id characters with no `:`, which no chat client can
+create and every thread the harness mints for itself (`job:`, `channel:`, `a2a:`, `workflow:`,
+`fiber:`) has. The entry is for the person and never the model: a `custom` entry
+(`metadata.type: notice`) that no prompt is built from, so text a model wrote in one run never
+becomes context for another run in a conversation it was not part of. Clients show it, and a client
+watching the thread's stream gets it live. It is never written into a thread that does not exist (a
+notice creates no conversation) nor while a run is going on in it — a turn that marked itself, from
+before its first append to after its last, or a durable run not yet finished — since an entry
+landing inside a run would sit between a message and its reply; the push still goes. Without Redis
+the turn's mark is per process, so a firing on the worker cannot see a turn running in the API. A
+client holding the thread's exclusive lease is not a run: it is the person, watching. The run's own
+thread gets nothing, since that conversation already shows the call and the answer. The result
+names the channels that delivered it (`["push", "thread"]`, `"push"` only when a browser took it)
+and what became of it in the thread (`thread`: `appended`, `run_live`, `missing`, `failed`, or
+`not_eligible` when there is no other chat thread to leave it in).
 
 Limits: `max_per_hour` (default 10) per person, per manifest, per tenant, in the shared rate-limit
 store, is the real bound; `max_per_run` (default 3) counts per request context, so a durable run's
@@ -2267,7 +2289,8 @@ so an over-limit call can open an approval row and is refused when it runs. Ther
 runs a notice is for — a scheduled task's firing — have nobody watching; `approval: true` adds a
 `notify.notify` rule (`one_shot`, `bind_principal`), and no permission mode waives an approval on
 `notify`, whichever rule asked (`permission_mode.UNWAIVABLE_TOOLS`). Each call is audited as
-`notify.sent` with the delivery count, channel, thread and recipient, never the text.
+`notify.sent` with the delivery count, the channels that delivered it, the `thread` outcome, the
+thread and the recipient, never the text.
 
 **Enforcement.** The `permission mode` wrapper sits just outside approvals, so plan mode refuses
 before anyone is asked; approvals asks `waives_approval` itself. A run caches only the stored mode

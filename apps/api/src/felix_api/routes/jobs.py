@@ -17,6 +17,9 @@ from felix_api.errors import client_safe_message
 
 router = APIRouter(tags=["Jobs"])
 
+# Written only by `jobs/agent_tools.py:schedule_task`; never taken from a caller's payload.
+TRUSTED_ORIGIN_KEY = "scheduled_by"
+
 
 class JobUpsert(BaseModel):
     model_config = {"extra": "forbid"}
@@ -93,6 +96,22 @@ async def _workflow_revision(request: Request, tenant_id: str, body: JobUpsert) 
     return str(found["revision"])
 
 
+async def _payload_to_store(
+    settings: Any, tenant_id: str, name: str, sent: dict[str, Any], writer: str
+) -> dict[str, Any]:
+    """`sent` without any `scheduled_by` it carries, and with the stored job's when `writer` is
+    the one who wrote that job."""
+    from felix.jobs import store as jobs_store
+
+    payload = {k: v for k, v in sent.items() if k != TRUSTED_ORIGIN_KEY}
+    existing = await jobs_store.get_job(settings, tenant_id, name)
+    if existing is not None and writer and existing.get("created_by") == writer:
+        origin = (existing.get("payload") or {}).get(TRUSTED_ORIGIN_KEY)
+        if origin is not None:
+            payload[TRUSTED_ORIGIN_KEY] = origin
+    return payload
+
+
 @router.put("/{name}")
 async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     """Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their
@@ -105,6 +124,13 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     longer current), else the current one -- and runs only that: after anyone saves the workflow
     again, the job refuses to fire until it is re-saved, so a later edit never runs on the writer's
     scopes unless the writer saves the job over it.
+
+    `payload.scheduled_by` in the body is ignored, not refused. It is the record `schedule_task`
+    alone writes -- what marks a job as an agent's task, and the conversation it was scheduled
+    from, which a firing's `notify` links to and writes into -- so a caller never supplies one.
+    The stored one is carried forward when the task's own writer re-saves it (pausing and resuming
+    it re-sends the whole job), so it stays a task. Anyone else re-saving it makes it an ordinary
+    job, since carrying the record would let them write into its writer's conversation.
     """
     from felix.context import try_get_context
     from felix.jobs import store as jobs_store
@@ -124,6 +150,7 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
         raise HTTPException(status_code=500, detail="auth_misconfigured")
     # The person, when a machine is writing for them: the same reading every recorder makes.
     writer = ctx.auth.acting_for
+    payload = await _payload_to_store(settings, tenant_id, name, body.payload, writer)
     try:
         row = await jobs_store.put_job(
             settings,
@@ -133,7 +160,7 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
             manifest_id=body.manifest_id,
             workflow_id=body.workflow_id,
             workflow_revision=revision,
-            payload=body.payload,
+            payload=payload,
             enabled=body.enabled,
             created_by=writer,
             created_auth=creator_auth(ctx.auth),

@@ -28,6 +28,16 @@ with the deployment's authority behind it. So, in order, before anything leaves:
 The text is then end-to-end encrypted to the person's browser (RFC 8291); the push service carries
 ciphertext.
 
+When the notice links to a conversation other than the run's own -- a scheduled task's firing,
+pointing at the chat thread the task was scheduled from -- the same cleaned text is also added to
+that conversation, before the push goes, so it is there when the person opens the thread whether or
+not any browser took the push. It is an entry for the person and never for the model: a `custom`
+entry (`notice_entry`), which `session.types.include_in_llm_context` leaves out of every prompt, so
+text a model wrote in one run cannot become context, still less instructions, for another run in a
+conversation it was never part of. Only into a thread that exists, and never while a run is going
+on in it (`_Notices.append`). The run's own thread gets nothing: the conversation already shows the
+call and the answer.
+
 Two limits bound a looping or prompted agent. `max_per_hour` per person, per manifest, per tenant,
 across every replica (the shared rate-limit store, Redis when configured) is the real bound.
 `max_per_run` is a counter on the request context: one context per run and the agents it
@@ -61,6 +71,7 @@ if TYPE_CHECKING:
     from felix.context import AuthContext, RequestContext
     from felix.manifests.schema import ApprovalRule, Manifest, NotifySpec
     from felix.security.rate_limit import RateLimiterBackend
+    from felix.session.types import AppendableEvent
 
 logger = logging.getLogger("felix.push.agent_tool")
 
@@ -75,6 +86,20 @@ HOUR_S = 3600
 # a day late it is still worth reading.
 NOTICE_TTL_SECONDS = 12 * 60 * 60
 LINK_REMOVED = "[link removed]"
+# The `metadata.type` of the entry a notice leaves in the conversation it links to.
+NOTICE_ENTRY_TYPE = "notice"
+# What became of the notice in the conversation it links to: the result's `thread`.
+THREAD_APPENDED = "appended"
+THREAD_RUN_LIVE = "run_live"
+THREAD_MISSING = "missing"
+THREAD_FAILED = "failed"
+# The run's own thread, or a link that is not a chat thread: nothing to add it to.
+THREAD_NOT_ELIGIBLE = "not_eligible"
+_THREAD_NOTES = {
+    THREAD_RUN_LIVE: "a run is going on in the conversation it links to, so it was not added there",
+    THREAD_MISSING: "the conversation it links to does not exist, so it was not added there",
+    THREAD_FAILED: "it could not be added to the conversation it links to",
+}
 
 # One limiter per process: an in-process one is the counter, so a fresh one per call counts nothing.
 _limiter: RateLimiterBackend | None = None
@@ -202,13 +227,16 @@ def reset_notify_for_tests() -> None:
     _limiter = None
 
 
-_THREAD_SUFFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~:-]*")
+# No `:` -- a chat client cannot make a thread with one (`thread_ids.effective_thread_id`), while
+# every thread the harness mints for itself has one (`job:`, `channel:`, `a2a:`, `workflow:`,
+# `fiber:`) -- so a recorded origin naming a harness thread is neither linked nor written to.
+_THREAD_SUFFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]*")
 
 
 def _openable_thread(tenant_id: str, thread_id: object) -> bool:
-    """Whether a recorded thread id is one this tenant's person could open: the tenant's own
-    (`thread_ids.thread_belongs_to_tenant`), with a suffix of plain id characters -- no path,
-    scheme or `..` for a client to follow."""
+    """Whether a recorded thread id is a chat thread this tenant's person could open: the tenant's
+    own (`thread_ids.thread_belongs_to_tenant`), with a suffix of plain id characters -- no path,
+    scheme or `..` for a client to follow, and no `:`, which only the harness's own threads have."""
     from felix.thread_ids import thread_belongs_to_tenant
 
     if not isinstance(thread_id, str) or not thread_belongs_to_tenant(tenant_id, thread_id):
@@ -317,12 +345,17 @@ class _Notices:
         if result.flagged:
             raise refused
 
+    @staticmethod
+    def own_thread(ctx: RequestContext, call: ToolInvocationCtx | None) -> str:
+        """The thread this run is writing to."""
+        return (call.thread_id if call is not None else None) or ctx.thread_id or ""
+
     def thread_for(self, ctx: RequestContext, auth: AuthContext, call: ToolInvocationCtx | None) -> str:
         """The conversation the person can open from the notice. A scheduled task's firing runs in
         a thread of its own; the task recorded where it was scheduled from, and that is the one --
-        but only for a task this person wrote (a job's payload is free-form under `PUT /jobs`, so
-        another writer's could name anything), and only a thread id of this tenant's, in plain id
-        characters. Otherwise the run's own."""
+        only `schedule_task` writes that record (`PUT /jobs` strips a caller's), only for a task
+        this person wrote, and only a chat thread id of this tenant's (`_openable_thread`).
+        Otherwise the run's own."""
         from felix.jobs.scheduler import SCHEDULED_FROM_EXTRA
 
         origin = ctx.extras.get(SCHEDULED_FROM_EXTRA)
@@ -330,11 +363,51 @@ class _Notices:
             thread = origin.get("thread_id")
             if _openable_thread(self.tenant_id, thread):
                 return str(thread)
-        return (call.thread_id if call is not None else None) or ctx.thread_id or ""
+        return self.own_thread(ctx, call)
+
+    async def append(self, thread_id: str, title: str, body: str) -> str:
+        """Add the notice to `thread_id` (`notice_entry`); what became of it, a `THREAD_*` value.
+
+        Never into a thread that does not exist (a notice creates no conversation), and never
+        while a run is going on in it: a turn's events are a sequence -- its user turn and its
+        reply, a tool call and its result -- and an entry landing between them would split it.
+        Checked inside the thread's `leaf_lock` and appended in the same hold, through
+        `annotate_and_append(sync=True)`, so the notice is parented on the leaf the store holds --
+        not on one this replica last saw -- and becomes it: on the active branch, where the
+        thread's next turn continues from it.
+
+        An exclusive lease is not a run. A client holds one for as long as it has the thread open,
+        idle or not, and that is the person this is for, watching the thread's stream."""
+        from felix.session.store import get_session_store
+        from felix.session.thread_state import thread_exists
+        from felix.session.tree import annotate_and_append, leaf_lock
+
+        session = get_session_store(self.settings, tenant_id=self.tenant_id).open(thread_id)
+        try:
+            if not await thread_exists(session, settings=self.settings, tenant_id=self.tenant_id):
+                return THREAD_MISSING
+            async with leaf_lock(session):
+                if await self._run_live(thread_id):
+                    return THREAD_RUN_LIVE
+                await annotate_and_append(session, [notice_entry(title, body)], sync=True, lock_held=True)
+        except Exception:
+            logger.warning("notify thread append failed manifest=%s", self.manifest_id, exc_info=True)
+            return THREAD_FAILED
+        return THREAD_APPENDED
+
+    async def _run_live(self, thread_id: str) -> bool:
+        """Whether a run is going on in `thread_id`: a turn that marked itself
+        (`workspace_notes.run_active`, here or, through Redis, on any replica), or a durable run
+        not yet finished, which may sit between steps with no turn marked."""
+        from felix.durability.runs import active_durable_run
+        from felix.workspace_notes import run_active
+
+        if await run_active(self.tenant_id, thread_id):
+            return True
+        return await active_durable_run(self.settings, self.tenant_id, thread_id) is not None
 
     async def send(self, args: _NotifyArgs, call: ToolInvocationCtx | None) -> str:
         from felix.audit.emit import emit_agent_audit
-        from felix.push.notify import enabled, send_to_person
 
         ctx, auth = self.admit(args, reserve=True)
         person = auth.acting_for
@@ -356,42 +429,48 @@ class _Notices:
         # still run out.
         title, body = await self.clean(args)
         thread_id = self.thread_for(ctx, auth, call)
-        message = {"kind": "notice", "title": title, "body": body, "thread_id": thread_id}
-        note = None
-        delivered = 0
-        if not enabled(self.settings):
-            note = "push notifications are not configured on this deployment; the person was not notified"
-        else:
-            try:
-                # A fresh context, as `notify._schedule` uses: the run's carries its manifest's metric
-                # allowlist, which would drop `felix_push_delivery`. Awaited: the count is the answer.
-                send = send_to_person(self.settings, self.tenant_id, person, message, ttl=NOTICE_TTL_SECONDS)
-                delivered = await asyncio.get_running_loop().create_task(send, context=contextvars.Context())
-            except Exception:
-                logger.warning("notify send failed manifest=%s", self.manifest_id, exc_info=True)
-                note = "the notice could not be sent; the person was not notified"
-            else:
-                if delivered == 0:
-                    note = (
-                        "the person has no device subscribed to notifications here, or none accepted "
-                        "it; the person was not notified"
-                    )
+        # The thread first, so the conversation the push links to already holds the notice when
+        # the person taps it. Not the run's own thread: a live conversation already shows the call
+        # and the model's answer, and its turn owns the leaf.
+        thread = THREAD_NOT_ELIGIBLE
+        if thread_id and thread_id != self.own_thread(ctx, call):
+            thread = await self.append(thread_id, title, body)
+        delivered, push_note = await self.push(
+            person, {"kind": "notice", "title": title, "body": body, "thread_id": thread_id}
+        )
+        result = _outcome(delivered, push_note, thread)
         emit_agent_audit(
             "notify.sent",
-            status="ok" if delivered else "undelivered",
+            status="ok" if result["channels"] else "undelivered",
             # Never the text: the audit log is read by whoever holds `audit:read`.
             payload={
-                "channels": ["push"],
+                "channels": result["channels"],
                 "delivered": delivered,
+                "thread": thread,
                 "thread_id": thread_id,
                 "recipient": person,
             },
             manifest_id=self.manifest_id,
         )
-        result: dict[str, Any] = {"delivered": delivered, "channels": ["push"]}
-        if note is not None:
-            result["note"] = note
         return json.dumps(result)
+
+    async def push(self, person: str, message: dict[str, Any]) -> tuple[int, str | None]:
+        """Push `message` to `person`'s browsers: how many accepted it, and why none did."""
+        from felix.push.notify import enabled, send_to_person
+
+        if not enabled(self.settings):
+            return 0, "push notifications are not configured on this deployment"
+        try:
+            # A fresh context, as `notify._schedule` uses: the run's carries its manifest's metric
+            # allowlist, which would drop `felix_push_delivery`. Awaited: the count is the answer.
+            send = send_to_person(self.settings, self.tenant_id, person, message, ttl=NOTICE_TTL_SECONDS)
+            delivered = await asyncio.get_running_loop().create_task(send, context=contextvars.Context())
+        except Exception:
+            logger.warning("notify send failed manifest=%s", self.manifest_id, exc_info=True)
+            return 0, "the notice could not be pushed"
+        if delivered == 0:
+            return 0, "the person has no device subscribed to notifications here, or none accepted it"
+        return delivered, None
 
     async def preview(self, args: ToolInput) -> str:
         """What an approver reads: the notice as it would be sent. Runs `admit` and the cleaning
@@ -408,6 +487,38 @@ class _Notices:
         _ctx, auth = self.admit(parsed, reserve=False)
         title, body = await self.clean(parsed)
         return f"notify {auth.acting_for} on their own devices\n\n{title}\n\n{body}"
+
+
+def notice_entry(title: str, body: str) -> AppendableEvent:
+    """The entry a notice leaves in the conversation it links to: for the person, not the model.
+
+    `custom`, so `include_in_llm_context` keeps it out of every prompt (`in_context` is spelled out
+    false, for a reader); `role` says who it is from. Plain text: a client draws a custom entry's
+    content as written, not as markdown."""
+    from felix.session.types import AppendableEvent
+
+    return AppendableEvent(
+        kind="custom",
+        role="assistant",
+        content=f"{title}\n\n{body}",
+        metadata={"type": NOTICE_ENTRY_TYPE, "title": title, "in_context": False},
+    )
+
+
+def _outcome(delivered: int, push_note: str | None, thread: str) -> dict[str, Any]:
+    """The result the model reads: how many browsers took it, the channels that delivered it, what
+    became of it in the conversation it links to, and a note saying why anything did not."""
+    appended = thread == THREAD_APPENDED
+    channels = [*(["push"] if delivered else []), *(["thread"] if appended else [])]
+    notes = [n for n in (push_note, _THREAD_NOTES.get(thread)) if n]
+    if appended and push_note:
+        notes.append("it is in their conversation for when they next open it")
+    elif not channels:
+        notes.append("the person was not notified")
+    result: dict[str, Any] = {"delivered": delivered, "channels": channels, "thread": thread}
+    if notes:
+        result["note"] = "; ".join(notes)
+    return result
 
 
 def make_notify_tool(settings: Any, *, tenant_id: str, manifest: Manifest) -> Tool:
@@ -430,7 +541,9 @@ def make_notify_tool(settings: Any, *, tenant_id: str, manifest: Manifest) -> To
             "they turned on notifications. Use it when something they asked about has happened or "
             "needs them -- especially from a scheduled task, where nobody is reading the "
             "conversation. It goes to that person only; there is no recipient to choose. Links are "
-            f"removed. At most {spec.max_per_run} per run. Returns how many devices received it."
+            f"removed. At most {spec.max_per_run} per run. From a scheduled task it is also added to "
+            "the conversation the task was scheduled from, for the person to read there. Returns how "
+            "many devices received it and the channels that delivered it."
         ),
         args=_NotifyArgs,
         handler=_notify,
@@ -441,11 +554,18 @@ def make_notify_tool(settings: Any, *, tenant_id: str, manifest: Manifest) -> To
 
 __all__ = [
     "LINK_REMOVED",
+    "NOTICE_ENTRY_TYPE",
     "NOTIFY",
     "NOTIFY_APPROVAL_RULE_ID",
+    "THREAD_APPENDED",
+    "THREAD_FAILED",
+    "THREAD_MISSING",
+    "THREAD_NOT_ELIGIBLE",
+    "THREAD_RUN_LIVE",
     "default_notify_rule",
     "hourly_key",
     "make_notify_tool",
+    "notice_entry",
     "notify_approval_rule",
     "reset_notify_for_tests",
     "strip_links",
