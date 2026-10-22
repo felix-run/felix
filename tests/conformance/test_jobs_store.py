@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 from felix.jobs import store as jobs
+from felix.jobs.schedule import ScheduleError
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("store_settings", BACKENDS, indirect=True)
@@ -431,3 +432,41 @@ async def test_a_job_with_no_due_time_is_claimed_once_too(store_settings: Any) -
         store_settings, TENANT, JOB, seen_next_run_at=None, last_run_at=1, next_run_at=9
     )
     assert (first, second) == (True, False)
+
+
+@parametrized
+async def test_a_one_shot_is_due_at_its_moment_and_stays_fired(store_settings: Any) -> None:
+    """`at:` sets the due time on the write that creates it -- on both arms, since Postgres builds
+    a new row by a different branch than the twin -- and a rewrite after its claim keeps it fired."""
+    at = "at:2999-01-01T00:00:00Z"
+    created = await _put(store_settings, schedule=at)
+    assert created["next_run_at"] == 32_472_144_000_000
+    (row,) = await jobs.list_jobs(store_settings, TENANT)
+    assert row["next_run_at"] == 32_472_144_000_000
+
+    claimed = await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=32_472_144_000_000, last_run_at=1, next_run_at=None
+    )
+    assert claimed
+    rewritten = await _put(store_settings, schedule=at, payload={"prompt": "edited"})
+    assert rewritten["next_run_at"] is None
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["next_run_at"] is None
+
+    with pytest.raises(ScheduleError, match="in the past"):
+        await _put(store_settings, name="late", schedule="at:2001-01-01T00:00:00Z")
+    assert await jobs.get_job(store_settings, TENANT, "late") is None
+
+
+@parametrized
+async def test_first_run_at_sets_a_new_recurring_jobs_due_time_and_a_rewrite_ignores_it(
+    store_settings: Any,
+) -> None:
+    """`jobs/agent_tools.py` writes a recurring task due at its schedule's first slot, not on the
+    next sweep. Only the write that creates the row may set it: a rewrite keeps the due time held."""
+    created = await _put(store_settings, schedule="@daily", first_run_at=5_000)
+    assert created["next_run_at"] == 5_000
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["next_run_at"] == 5_000
+
+    rewritten = await _put(store_settings, schedule="@daily", first_run_at=9_000)
+    assert rewritten["next_run_at"] == 5_000
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["next_run_at"] == 5_000

@@ -389,6 +389,9 @@ class Settings(BaseSettings):
     # Finished workflow runs: each step's inputs and outputs, kept for the run view; 0 keeps every
     # run. The run's record of its starter is cleared the moment it ends; this bounds the rest.
     workflow_run_retention_days: int = Field(default=30, ge=0)
+    # One-shot tasks an agent scheduled (`schedule_task`) that have fired, with their run history,
+    # once the run is this old; 0 keeps them. Never a job an operator wrote, nor a recurring task.
+    scheduled_task_retention_days: int = Field(default=30, ge=0)
     # The session event log is the chat record, so the default keeps it. When set, a
     # thread is dropped whole once its last event is this old.
     session_retention_days: int = Field(default=0, ge=0)

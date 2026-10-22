@@ -80,6 +80,7 @@ Copy `manifests/governed.yaml` when the agent needs governance — it is the ful
 | `http_tools` / `search_tools` / `document_tools` / `image_tools` / `github_publish` | `tools/{http_fetch,web_search,document_search,image_tools,github_publish}.py` |
 | `skills` / `skills_declared_only` / `personal_skills` | `felix/skills/loader.py` — catalog XML appended to the system prompt; personal skills also via `runtime.py` |
 | `skill_suggestion` / `skill_authoring` | `skills/suggest.py` (read in `patterns/react.py`); `skills/{authoring,tools}.py` |
+| `scheduling` | `jobs/agent_tools.py:make_scheduling_tools` → `schedule_task` / `list_scheduled` / `cancel_scheduled`, bound by `builder.py:_bind_scheduling`; `approval: true` adds `default_scheduling_rule` beside the plan rule |
 | `session` | `session/strategies.py` via `runtime.py:build_tenant_agent` |
 | `memory` / `procedural_memory` | `memory/{capture,store,procedural}.py` |
 | `policies`, `command_screening`, `content_screening`, `limits`, `guardrails`, `approvals`, `artifacts` | the `apply_*` wrappers in `builder.py` (fixed order — see the governance-pipeline skill) |

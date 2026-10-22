@@ -10,6 +10,30 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-10-22
+
+### Changed
+
+- A `FELIX_GOOGLE_ACCOUNTS` entry without a `sub` is warned about at startup. (#649)
+
+### Security
+
+- A scheduled job written with a GitHub, Google or GitHub Actions sign-in is re-checked at each
+  firing: its writer's `FELIX_GOOGLE_ACCOUNTS` entry or `FELIX_GITHUB_ORG_TENANTS` grant must still
+  admit them to the job's tenant, the scopes are cut to what it grants now, and a writer it no
+  longer admits has the run refused. (#649)
+
+- The GitHub connection and repository routes accept only Felix's own GitHub sign-in, not an API key
+  or a minted token whose subject has the form `github:<id>`. (#649)
+
+- `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` refuses to start while a tenant has both a Google account
+  and a GitHub org grant, where one person could approve their own run as a second subject. (#649)
+
+- Dependencies upgraded past advisories published on 2026-10-20: certifi 2026.10.19 (critical
+  GHSA-6q48-6c7w-9gw2: an emSign root CA with compromised intermediate keys, which could let an
+  on-path attacker intercept outbound HTTPS), aiohttp 3.14.5 and pillow 13.0.0. Deployments that
+  build their own images should rebuild. (#650)
+
 ## [0.15.0] — 2026-10-15
 
 ### Added
@@ -4934,3 +4958,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.14.0]: https://github.com/felix-run/felix/releases/tag/v0.14.0
 [0.14.1]: https://github.com/felix-run/felix/releases/tag/v0.14.1
 [0.15.0]: https://github.com/felix-run/felix/releases/tag/v0.15.0
+[0.15.1]: https://github.com/felix-run/felix/releases/tag/v0.15.1
