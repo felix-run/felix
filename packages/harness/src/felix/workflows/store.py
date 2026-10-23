@@ -102,6 +102,8 @@ def _workflow_dict(row: Workflow | dict[str, Any]) -> dict[str, Any]:
         "revision": _revision(row.generation, row.version),
         "definition": row.definition_json,
         "updated_by": row.updated_by,
+        "created_by": row.created_by,
+        "authored_via": row.authored_via,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -167,8 +169,11 @@ def _put_in_memory(
     workflow_id: str,
     definition: dict[str, Any],
     ts: int,
+    *,
     precondition: Precondition,
     updated_by: str,
+    created_by: str,
+    authored_via: str,
 ) -> dict[str, Any]:
     # No await between the check and the store, so this is atomic on the loop.
     existing = _memory_workflows.get((tenant_id, workflow_id))
@@ -187,6 +192,8 @@ def _put_in_memory(
         "revision": _revision(generation, version),
         "definition": definition,
         "updated_by": updated_by,
+        "created_by": existing["created_by"] if existing else created_by,
+        "authored_via": existing["authored_via"] if existing else authored_via,
         "created_at": existing["created_at"] if existing else ts,
         # Past the previous value, so two saves in one millisecond still order.
         "updated_at": max(ts, existing["updated_at"] + 1) if existing else ts,
@@ -203,14 +210,29 @@ async def put_workflow(
     *,
     precondition: Precondition = None,
     updated_by: str = "",
+    created_by: str = "",
+    authored_via: str = "",
 ) -> dict[str, Any]:
-    """Create or replace a workflow; conditional on ``precondition`` (see module)."""
+    """Create or replace a workflow; conditional on ``precondition`` (see module).
+
+    ``created_by`` and ``authored_via`` are recorded when this creates the row and ignored when it
+    replaces one: a replace never changes who made a workflow, or through what.
+    """
     _check_id(workflow_id)
     definition = spec.model_dump(mode="json", exclude_none=True)
     ts = now_ms()
 
     if _use_memory(settings):
-        return _put_in_memory(tenant_id, workflow_id, definition, ts, precondition, updated_by)
+        return _put_in_memory(
+            tenant_id,
+            workflow_id,
+            definition,
+            ts,
+            precondition=precondition,
+            updated_by=updated_by,
+            created_by=created_by,
+            authored_via=authored_via,
+        )
 
     async with tenant_session(settings, tenant_id) as db:
         # Locked so the precondition and the write see the same row.
@@ -236,6 +258,8 @@ async def put_workflow(
                 generation=uuid.uuid4().hex,
                 definition_json=definition,
                 updated_by=updated_by,
+                created_by=created_by,
+                authored_via=authored_via,
                 created_at=ts,
                 updated_at=ts,
             )

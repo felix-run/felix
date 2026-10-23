@@ -794,6 +794,13 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       - **What `workflows:read` sees.** It reads every step's inputs and outputs and, since #645,
         each step's transcript, which can carry a trigger's payload. Keep that, or gate outputs and
         transcripts behind a stronger scope?
+- [~] **Agent-authored workflows** (`spec.workflow_authoring`). An agent drafts, checks, saves and
+      runs workflows for the person it acts for, each save held for that person's approval.
+      *Landed:* each workflow records `created_by` and `authored_via` (`0045_workflow_owner`), set at
+      creation and kept on every replace, and shown on `/workflows`; an agent may change only the
+      ones it made for that person (`authored_via = agent:<manifest>`). *Next:* the tools
+      (`workflow_catalog`, `check_workflow`, `save_workflow`, `list_my_workflows`, `run_workflow`),
+      the spec block and its unwaivable approval rule.
 - [ ] Open: whether a workflow can call another; per-step retry and timeout. (A tool schema that
       drifted since a `tool_call` step was wired fails the step at run, #640.)
 

@@ -56,6 +56,32 @@ async def test_a_save_round_trips_and_counts_versions(
 
 
 @parametrized
+async def test_who_created_a_workflow_survives_every_replace(store_settings: Any) -> None:
+    # An agent may change only the workflows it made for that person, so a replace -- by anyone,
+    # through anything -- must never move `created_by` or `authored_via`.
+    first = await _put(
+        store_settings, "triage", updated_by="ada", created_by="ada", authored_via="agent:quick"
+    )
+    assert (first["created_by"], first["authored_via"]) == ("ada", "agent:quick")
+    replaced = await _put(
+        store_settings, "triage", "Triage v2", updated_by="op", created_by="op", authored_via=""
+    )
+    assert (replaced["created_by"], replaced["authored_via"]) == ("ada", "agent:quick")
+    assert replaced["updated_by"] == "op"
+    stored = await workflows.get_workflow(store_settings, TENANT, "triage")
+    assert stored is not None
+    assert (stored["created_by"], stored["authored_via"]) == ("ada", "agent:quick")
+    listed = await workflows.list_workflows(store_settings, TENANT)
+    assert [(r["created_by"], r["authored_via"]) for r in listed] == [("ada", "agent:quick")]
+
+
+@parametrized
+async def test_a_workflow_saved_without_an_author_records_none(store_settings: Any) -> None:
+    row = await _put(store_settings, "triage", updated_by="op")
+    assert (row["created_by"], row["authored_via"]) == ("", "")
+
+
+@parametrized
 async def test_an_unconditional_save_replaces_and_counts(store_settings: Any) -> None:
     await _put(store_settings, "triage")
     replaced = await _put(store_settings, "triage", "Replaced")

@@ -89,6 +89,10 @@ class Workflow(Base):
     generation: Mapped[str] = mapped_column(Text, nullable=False)
     definition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     updated_by: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # Who created it and through what (`agent:<manifest>`, empty for the routes), fixed at creation
+    # and kept on every replace, so an agent changes only what it made for that person (0045).
+    created_by: Mapped[str] = mapped_column(Text, server_default="", default="")
+    authored_via: Mapped[str] = mapped_column(Text, server_default="", default="")
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 

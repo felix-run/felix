@@ -358,3 +358,47 @@ def test_a_listed_tool_whose_schema_cannot_become_ports_says_so() -> None:
         assert listed["inputs"] is None
         assert listed["problem"] == "this tool's input schema cannot become step ports"
         assert listed["input_schema"] == schema, "the schema is still shown, so the author can see why"
+
+
+async def test_a_save_records_its_creator_and_a_replace_keeps_them() -> None:
+    # A workflow made through the routes is a person's, never an agent's: `authored_via` stays
+    # empty, so `spec.workflow_authoring` may not change it, whoever its creator is.
+    keys = {
+        "ada-token": {"tenant_id": "default", "sub": "ada", "scopes": ["workflows:write"]},
+        "bob-token": {"tenant_id": "default", "sub": "bob", "scopes": ["workflows:write"]},
+    }
+    settings = make_settings(auth_mode="api_key", auth_api_keys=json.dumps(keys))
+    ada, bob = ({"Authorization": f"Bearer {k}"} for k in keys)
+    async with app_client(settings) as client:
+        created = (await client.put("/workflows/w", json=_definition(), headers=ada)).json()
+        assert (created["created_by"], created["authored_via"], created["updated_by"]) == ("ada", "", "ada")
+        replaced = (await client.put("/workflows/w", json=_definition(), headers=bob)).json()
+        assert (replaced["created_by"], replaced["authored_via"], replaced["updated_by"]) == (
+            "ada",
+            "",
+            "bob",
+        )
+        listed = (await client.get("/workflows", headers=bob)).json()["items"]
+        assert [(i["created_by"], i["authored_via"]) for i in listed] == [("ada", "")]
+
+
+async def test_an_agent_authored_workflow_reads_back_as_one() -> None:
+    # Every route-made workflow has an empty `authored_via`, so only a row an agent wrote proves
+    # the routes return the stored value rather than a constant.
+    from felix.workflows.schema import WorkflowSpec
+
+    settings = make_settings()
+    await workflow_store.put_workflow(
+        settings,
+        "default",
+        "agent-made",
+        WorkflowSpec.model_validate(_definition()),
+        updated_by="ada",
+        created_by="ada",
+        authored_via="agent:quick",
+    )
+    async with app_client(settings) as client:
+        read = (await client.get("/workflows/agent-made")).json()
+        assert (read["created_by"], read["authored_via"]) == ("ada", "agent:quick")
+        listed = (await client.get("/workflows")).json()["items"]
+        assert [(i["id"], i["authored_via"]) for i in listed] == [("agent-made", "agent:quick")]
