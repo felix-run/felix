@@ -761,3 +761,162 @@ async def test_a_superseded_row_is_not_restorable(memory_settings: Any) -> None:
         await memory_store.restore(memory_settings, TENANT, old["id"], source="management_api")
         == "not_forgotten"
     )
+
+
+# --- task expiry (the nightly retention sweep) ------------------------------------------
+#
+# Two arms again: a dict walk and one UPDATE with the trust ladder in SQL. The operator-row
+# case is the one most likely to drift, because `_trust_of_column` and `_trust` are separate
+# implementations of one ranking.
+
+DAY_MS = 24 * 60 * 60 * 1000
+T0 = 1_800_000_000_000
+
+
+def _at(monkeypatch: pytest.MonkeyPatch, ms: int) -> None:
+    monkeypatch.setattr(memory_store, "now_ms", lambda: ms)
+
+
+OTHER_TENANT = "conformance-other"
+
+
+async def _status(settings: Any, mem_id: str, *, tenant: str = TENANT) -> tuple[str, dict[str, Any]]:
+    row = (await memory_store.get_many(settings, tenant, [mem_id]))[mem_id]
+    return row["status"], dict(row.get("metadata") or {})
+
+
+@parametrized
+async def test_a_stale_agent_task_is_forgotten_by_retention(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _at(monkeypatch, T0)
+    task = await _put(
+        memory_settings,
+        "The user wants a file named notes.txt.",
+        kind="task",
+        metadata={"source": "assistant", "origin": "capture"},
+    )
+    # A second tenant's: the sweep is a worker cron over every tenant, not one tenant's call.
+    theirs = await memory_store.put_memory(
+        memory_settings, OTHER_TENANT, content="Rename the staging bucket.", kind="task", manifest_id=MANIFEST
+    )
+    _at(monkeypatch, T0 + 31 * DAY_MS)
+
+    assert await memory_store.expire_tasks(memory_settings, T0 + DAY_MS) == 2
+    assert (await _status(memory_settings, theirs["id"], tenant=OTHER_TENANT))[0] == FORGOTTEN
+
+    status, metadata = await _status(memory_settings, task["id"])
+    assert status == FORGOTTEN
+    assert metadata[memory_store.RETIRED_BY_KEY] == memory_store.RETENTION_SOURCE
+    # Merged into, not replaced: the writer's provenance survives the stamp.
+    assert metadata["source"] == "assistant" and metadata["origin"] == "capture"
+    row = (await memory_store.get_many(memory_settings, TENANT, [task["id"]]))[task["id"]]
+    assert row["superseded_seq"] is None, "a forget has no position in turn time"
+    assert row["updated_at"] == T0 + 31 * DAY_MS
+    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+
+
+@parametrized
+async def test_task_expiry_spares_fresh_tasks_facts_and_operator_tasks(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _at(monkeypatch, T0)
+    old_fact = await _put(memory_settings, "The user prefers dark mode.", kind="fact")
+    operator_task = await _put(memory_settings, "Renew the TLS certificate.", kind="task", metadata=OPERATOR)
+    _at(monkeypatch, T0 + 10 * DAY_MS)
+    fresh_task = await _put(memory_settings, "Draft the release notes.", kind="task")
+
+    assert await memory_store.expire_tasks(memory_settings, T0 + DAY_MS) == 0
+
+    for row in (old_fact, operator_task, fresh_task):
+        assert (await _status(memory_settings, row["id"]))[0] == ACTIVE
+
+
+@parametrized
+async def test_a_restated_task_is_judged_by_its_last_write(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`updated_at`, not `created_at`: a task the agent restated recently is still in progress."""
+    _at(monkeypatch, T0)
+    task = await _put(memory_settings, "Draft the release notes.", kind="task")
+    _at(monkeypatch, T0 + 10 * DAY_MS)
+    await _put(memory_settings, "Draft the release notes.", kind="task")
+
+    assert await memory_store.expire_tasks(memory_settings, T0 + DAY_MS) == 0
+    assert (await _status(memory_settings, task["id"]))[0] == ACTIVE
+
+
+@parametrized
+async def test_an_expired_task_comes_back_by_restore_or_by_restating(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retention acts at agent rank, so both undo paths an agent has reach its forget."""
+    _at(monkeypatch, T0)
+    a = await _put(memory_settings, "Book the venue.", kind="task")
+    b = await _put(memory_settings, "Order the catering.", kind="task")
+    _at(monkeypatch, T0 + 31 * DAY_MS)
+    assert await memory_store.expire_tasks(memory_settings, T0 + DAY_MS) == 2
+
+    assert await memory_store.restore(memory_settings, TENANT, a["id"], source="") == "restored"
+    status, metadata = await _status(memory_settings, a["id"])
+    assert status == ACTIVE and memory_store.RETIRED_BY_KEY not in metadata
+
+    await _put(memory_settings, "Order the catering.", kind="task")
+    assert (await _status(memory_settings, b["id"]))[0] == ACTIVE
+    # Reactivated with today's clock, so tonight's sweep does not retire it straight back.
+    assert await memory_store.expire_tasks(memory_settings, T0 + DAY_MS) == 0
+
+
+@parametrized
+async def test_task_expiry_never_touches_a_row_already_retired(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Active rows only. Re-forgetting an operator-forgotten task would overwrite its
+    `retired_by: management_api` with `retention` -- agent rank -- and the next agent turn
+    restating the sentence would bring back what the operator removed. A superseded task is the
+    same: its stamp is what keeps an agent from undoing the operator's correction."""
+    _at(monkeypatch, T0)
+    forgotten = await _put(memory_settings, "Email the old vendor.", kind="task")
+    superseded = await _put(memory_settings, "Use the old deploy script.", kind="task", origin_seq=1)
+    assert await memory_store.forget(memory_settings, TENANT, forgotten["id"], source="management_api")
+    await memory_store.supersede(memory_settings, TENANT, superseded["id"], 2, source="management_api")
+    _at(monkeypatch, T0 + 31 * DAY_MS)
+
+    assert await memory_store.expire_tasks(memory_settings, T0 + DAY_MS) == 0
+
+    for row, state in ((forgotten, FORGOTTEN), (superseded, SUPERSEDED)):
+        status, metadata = await _status(memory_settings, row["id"])
+        assert status == state
+        assert metadata[memory_store.RETIRED_BY_KEY] == "management_api"
+    # And so the operator's forget still holds against an agent restating the task.
+    await _put(memory_settings, "Email the old vendor.", kind="task")
+    assert (await _status(memory_settings, forgotten["id"]))[0] == FORGOTTEN
+
+
+@parametrized
+async def test_task_expiry_cutoff_is_strict_and_falls_back_to_created_at(
+    memory_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row exactly at the cutoff stays. One whose `updated_at` is the 0 an old row was
+    backfilled with is judged by `created_at` -- not by 0, which is older than every cutoff."""
+    _at(monkeypatch, T0)
+    at_cutoff = await _put(memory_settings, "Exactly at the line.", kind="task")
+    zeroed = await _put(memory_settings, "Written before updated_at existed.", kind="task")
+    if str(memory_settings.database_url).startswith("memory://"):
+        memory_store._memory_rows[(TENANT, zeroed["id"])]["updated_at"] = 0
+    else:
+        from felix.db.session import get_session_factory
+        from sqlalchemy import text
+
+        async with get_session_factory(settings=memory_settings)() as db:
+            await db.execute(
+                text("UPDATE memory_vectors SET updated_at = 0 WHERE tenant_id = :t AND id = :i"),
+                {"t": TENANT, "i": zeroed["id"]},
+            )
+            await db.commit()
+
+    assert await memory_store.expire_tasks(memory_settings, T0) == 0
+    assert (await _status(memory_settings, at_cutoff["id"]))[0] == ACTIVE
+    assert (await _status(memory_settings, zeroed["id"]))[0] == ACTIVE
+
+    assert await memory_store.expire_tasks(memory_settings, T0 + 1) == 2

@@ -38,10 +38,17 @@ class Embedder(Protocol):
     ``enabled`` is part of the contract rather than an implementation detail: callers
     branch on it to decide whether a vector channel is worth running at all, which is
     what lets the whole feature degrade instead of erroring.
+
+    ``model`` names what made the vectors, and is recorded on each one so a later model
+    change can tell which rows to re-embed. It is the backend's own model, which for a hosted
+    backend with `FELIX_MEMORY_EMBEDDING_MODEL` unset is the provider's default rather than the
+    setting; `build_embedder` fills it from the setting for a backend that names none, so a
+    caller reads ``embedder.model`` and never guesses. Empty only on a disabled embedder.
     """
 
     enabled: bool
     dim: int | None
+    model: str
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
 
@@ -51,6 +58,7 @@ class NullEmbedder:
 
     enabled = False
     dim: int | None = None
+    model = ""
 
     async def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return []
@@ -255,7 +263,16 @@ def build_embedder(settings: Settings) -> Embedder:
             ", ".join(list_embedder_backends()),
         )
         return NullEmbedder()
-    return factory(settings)
+    embedder = factory(settings)
+    # The one place the setting stands in for a backend that names no model of its own -- a
+    # registered plugin, typically. Every built-in sets its own, so this changes nothing for
+    # them; it is what lets every caller read `embedder.model` instead of each guessing.
+    if getattr(embedder, "enabled", False) and not getattr(embedder, "model", ""):
+        try:
+            embedder.model = str(getattr(settings, "memory_embedding_model", "") or "")
+        except AttributeError:
+            logger.warning("embedder backend %r names no model and will not take one", name)
+    return embedder
 
 
 __all__ = [

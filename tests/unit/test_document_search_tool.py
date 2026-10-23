@@ -250,6 +250,7 @@ async def test_the_vector_channel_is_reachable_from_the_tool() -> None:
 
         enabled = True
         dim = 768
+        model = "meaning"
 
         async def embed(self, texts: Any) -> list[list[float]]:
             out = []

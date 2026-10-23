@@ -75,6 +75,18 @@ x-felix-env: &felix-env
   FELIX_SECRETS_BACKEND: ${FELIX_SECRETS_BACKEND:-env}
   FELIX_GCP_PROJECT: ${FELIX_GCP_PROJECT:-}
   FELIX_AWS_REGION: ${FELIX_AWS_REGION:-}
+  # Memory embeddings. Every Felix process needs the same answer: capture embeds in the api
+  # and the worker alike, and the worker's consolidate_memory cron backfills rows stored
+  # without a vector. `auto` is the local model when the embeddings extra is installed,
+  # otherwise none; `workers_ai` / `openai` / `google` use that provider's credential. The
+  # model is empty on purpose -- empty falls through to the backend's own default, where the
+  # Settings default (`bge-base-en-v1.5`, a local model name) would be sent to a hosted one.
+  FELIX_MEMORY_EMBEDDER: ${FELIX_MEMORY_EMBEDDER:-auto}
+  FELIX_MEMORY_EMBEDDING_MODEL: ${FELIX_MEMORY_EMBEDDING_MODEL:-}
+  # Declares the `memory_vectors.embedding` column width; it does not resize it.
+  FELIX_MEMORY_EMBEDDING_DIM: ${FELIX_MEMORY_EMBEDDING_DIM:-768}
+  # Agent-written task memories untouched this long are forgotten (restorable); 0 keeps them.
+  FELIX_MEMORY_TASK_RETENTION_DAYS: ${FELIX_MEMORY_TASK_RETENTION_DAYS:-30}
   # OTLP export, off by default. Reachable from the base stack on purpose: a backend is
   # something Felix *sends to*, so pointing at one — a collector, a hosted vendor, a
   # console you self-host elsewhere — must not require running that backend inside this

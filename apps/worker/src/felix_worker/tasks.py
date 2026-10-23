@@ -221,19 +221,25 @@ async def run_scheduled_jobs() -> None:
 @broker.task(schedule=[{"cron": "*/15 * * * *"}])
 @_instrumented("consolidate_memory")
 async def consolidate_memory() -> None:
-    """Exact content-hash dedupe, then model-judged duplicate merging where a manifest opts in.
+    """Exact content-hash dedupe, model-judged duplicate merging where a manifest opts in, then
+    the embedding backfill (`memory.backfill.embed_missing`).
 
     The second pass reads `spec.memory.consolidate` per (tenant, manifest) pool and supersedes
     agent-written facts the consolidation model groups as saying the same thing; see
     `felix.memory.consolidation`. Its own failures are counted per pool, never raised, so one
     tenant's broken route cannot stop another's pass.
     """
+    from felix.memory import backfill
     from felix.memory.consolidation import consolidate_all_pools, consolidate_pools
 
     n = await consolidate_pools(_settings)
     logger.info("memory_consolidate superseded=%s", n)
     merged = await consolidate_all_pools(_settings)
     logger.info("memory_consolidate_merge %s", merged)
+    # Rows capture stored without a vector (no embedder then, or one that was down), a bounded
+    # batch per tick. A no-op without an enabled embedder; never raises.
+    embedded = await backfill.embed_missing(_settings)
+    logger.info("memory_embed_backfill embedded=%s", embedded)
 
 
 @broker.task(schedule=[{"cron": "0 3 * * *"}])
