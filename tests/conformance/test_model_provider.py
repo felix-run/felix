@@ -679,6 +679,53 @@ async def test_isolate_cache_is_honoured_on_every_path(arm: _Arm) -> None:
             assert "cache_control" not in block, "an isolated request must not place breakpoints"
 
 
+class _SearchTool:
+    name = "search"
+    description = "look things up"
+    args_schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    raw_input_schema = None
+
+
+def _tool_choice(body: dict[str, Any]) -> Any:
+    """The choice in the wire's own spelling, flattened: `none` on both when it is refused."""
+    choice = body.get("tool_choice")
+    return choice.get("type") if isinstance(choice, dict) else choice
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+async def test_tool_choice_none_is_honoured_on_every_path(arm: _Arm) -> None:
+    """The react loop's last step sends `tool_choice: none` so a run at its step limit answers
+    instead of stopping on calls nothing will execute. The tools stay in the body: Anthropic
+    refuses a tool-call history with none defined. All three paths, since `isolate_cache` was
+    once threaded onto one of them and dropped from the one the loop takes."""
+    assert arm.transport is not None
+    opts = ModelChatOptions(tool_choice="none")
+
+    arm.program_turn()
+    await arm.client.chat(_user(), [_SearchTool()], opts)
+    arm.program_stream()
+    async for _ in arm.client.stream_turn(_user(), [_SearchTool()], opts):
+        pass
+    arm.program_stream()
+    async for _ in arm.client.stream(_user(), [_SearchTool()], opts):
+        pass
+
+    assert len(arm.transport.sent) == 3
+    for body in arm.transport.sent:
+        assert _tool_choice(body) == "none"
+        assert "search" in json.dumps(body.get("tools")), "the tools must still be sent"
+
+
+@pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
+async def test_a_normal_turn_with_tools_leaves_the_choice_to_the_model(arm: _Arm) -> None:
+    """The counterpart, so the test above cannot pass by refusing tools on every turn."""
+    assert arm.transport is not None
+    arm.program_stream()
+    async for _ in arm.client.stream_turn(_user(), [_SearchTool()]):
+        pass
+    assert _tool_choice(arm.transport.sent[-1]) in {None, "auto"}
+
+
 @pytest.mark.parametrize("arm", ["openai", "anthropic"], indirect=True)
 async def test_a_normal_request_still_asks_for_caching(arm: _Arm) -> None:
     """The counterpart, so the test above cannot pass by never caching at all."""

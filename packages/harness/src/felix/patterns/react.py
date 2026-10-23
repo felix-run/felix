@@ -72,6 +72,14 @@ logger = logging.getLogger("felix.patterns.react")
 
 DEFAULT_RECURSION = 10
 
+# Sent beside `tool_choice: none` on a run's last step. A tool call made there could never
+# be executed, so without this the run ended on "Stopped at the step limit" with the
+# research done and no answer written.
+LAST_STEP_NOTE = (
+    "This is your last step: no more tool calls can run. Answer now from what you have "
+    "found so far, and say what you could not finish checking."
+)
+
 # How long to wait on a running tool batch before checking the side-event queue again.
 # The queue has one reader (`drain`), so this is a poll rather than a wakeup; a quarter
 # second is imperceptible against a decision a person has to make, and bounds the idle
@@ -1350,6 +1358,12 @@ class _ReactAgent:
                 active_tools = await _tools_for_run()
                 chunks: list[str] = []
                 result: ModelChatResult | None = None
+                turn_opts = opts
+                if _step == self.recursion_limit - 1 and active_tools:
+                    # The tools are still sent: Anthropic refuses a tool-call history with
+                    # none defined. A model that calls one anyway falls through to `max_turns`.
+                    turn_opts = replace(opts or ModelChatOptions(), tool_choice="none")
+                    transient.append(ChatMessage(role="user", content=LAST_STEP_NOTE, transient=True))
 
                 # Retry once, and only while nothing has shipped: a client that has
                 # already rendered deltas cannot un-render them, so a mid-stream
@@ -1363,7 +1377,7 @@ class _ReactAgent:
                     try:
                         if emit_events:
                             async for item in self._stream_one_turn(
-                                model, outgoing, active_tools, input.thread_id, tenant_id, opts
+                                model, outgoing, active_tools, input.thread_id, tenant_id, turn_opts
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
@@ -1375,7 +1389,7 @@ class _ReactAgent:
                         else:
                             # No display to feed, so ask for the turn directly rather
                             # than streaming deltas nobody will read.
-                            result = await model.chat(outgoing, active_tools, opts)
+                            result = await model.chat(outgoing, active_tools, turn_opts)
                     except ModelGatewayError as exc:
                         if attempt or emitted or not is_context_overflow(exc):
                             raise
@@ -1402,7 +1416,7 @@ class _ReactAgent:
                     break
 
                 if result is None:
-                    result = await model.chat(outgoing, active_tools, opts)
+                    result = await model.chat(outgoing, active_tools, turn_opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
                 last_usage = usage_block or last_usage

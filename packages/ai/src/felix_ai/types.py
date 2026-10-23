@@ -422,6 +422,13 @@ class ModelChatOptions:
     #
     # `None` means free text, which is every existing call.
     output_schema: dict[str, Any] | None = None
+    # `"none"` asks for an answer with no tool calls while still sending the tools. Dropping
+    # the tools instead is refused by Anthropic once the history holds a `tool_use` block, and
+    # it would change the cached prefix. The agent loop sends it on its last step, so a run
+    # that hits its step limit answers from what it has instead of stopping mid-research. A
+    # wire that cannot express it ignores it; the loop still reports `max_turns` if the model
+    # calls a tool anyway.
+    tool_choice: Literal["auto", "none"] = "auto"
 
 
 @dataclass(slots=True)

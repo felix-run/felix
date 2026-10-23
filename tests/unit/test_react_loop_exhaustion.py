@@ -72,6 +72,39 @@ async def test_running_out_of_steps_is_reported_not_swallowed(monkeypatch: pytes
     assert ("felix_run_stop_reason", {"manifest_id": "m", "reason": "max_turns"}) in counted
 
 
+class _HonoursToolChoice(_AlwaysCalls):
+    """Asks for a tool on every turn it may, and answers when the request refuses tools."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[tuple[str, bool]] = []
+
+    async def chat(self, messages: list[ChatMessage], tools: list[Any], opts: Any = None) -> ModelChatResult:
+        choice = getattr(opts, "tool_choice", "auto")
+        noted = any(m.transient and m.content == react_mod.LAST_STEP_NOTE for m in messages)
+        self.seen.append((choice, noted))
+        if choice == "none":
+            self.turns += 1
+            return ModelChatResult(
+                message=ChatMessage(role="assistant", content="here is what I found"),
+                stop_reason="end_turn",
+                usage=TokenUsage(),
+            )
+        return await super().chat(messages, tools, opts)
+
+
+async def test_the_last_step_asks_for_an_answer_instead_of_another_call() -> None:
+    """The support agent's docs research ran out at step ten and ended on calls nothing ran,
+    with no answer. The last step now refuses tools and says why, so a model that honours it
+    finishes the run with the answer it has."""
+    model = _HonoursToolChoice()
+    out = await _agent(model, limit=3).invoke(InvokeInput(messages=[ChatMessage(role="user", content="go")]))
+    assert model.seen == [("auto", False), ("auto", False), ("none", True)]
+    assert out.stop_reason == "end_turn"
+    assert out.final.content == "here is what I found"
+    assert not out.final.tool_calls
+
+
 def test_the_openai_wire_reports_it_as_length() -> None:
     """`/v1` maps unknown stop reasons to `stop`; a run cut short must not read as one."""
     from felix_ai.wire.openai_completions import finish_reason_for
