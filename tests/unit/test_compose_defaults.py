@@ -49,6 +49,12 @@ PASSED_THROUGH = {
     "FELIX_REPO_CHECKOUT_TTL_DAYS": "repo_checkout_ttl_days",
     "FELIX_REPO_CLONE_TIMEOUT_SECONDS": "repo_clone_timeout_seconds",
     "FELIX_TIMEZONE": "timezone",
+    "FELIX_MEMORY_EMBEDDER": "memory_embedder",
+    "FELIX_MEMORY_EMBEDDING_DIM": "memory_embedding_dim",
+    "FELIX_MEMORY_TASK_RETENTION_DAYS": "memory_task_retention_days",
+    # Not FELIX_MEMORY_EMBEDDING_MODEL: Compose passes it empty on purpose, so a hosted
+    # embedder falls through to its provider's model rather than receiving the Settings
+    # default, a local model name. `test_hosted_providers.py` pins that fall-through.
 }
 
 # A tracing backend is something Felix sends to, so pointing at one must not require
@@ -66,7 +72,10 @@ def test_the_compose_default_matches_the_settings_default(env_var: str, field: s
     assert match, f"{env_var} is not passed through deploy/docker/compose.yml"
 
     written = match.group(1)
-    expected = getattr(Settings(database_url="memory://x"), field)
+    # The schema default, not an instance's value: an instance reads the environment, and
+    # `scripts/test.sh` exports `FELIX_MEMORY_EMBEDDER=none` so the suite never loads a model --
+    # which made the comparison about the test runner rather than about `Settings`.
+    expected = Settings.model_fields[field].default
     # An empty string is a value only a text field accepts: a numeric or boolean one rejects it at
     # startup. `workspace_deployment_tenants` is the text field whose default is empty.
     if not isinstance(expected, str):
@@ -206,6 +215,13 @@ EVERY_PROCESS = (
     "FELIX_WORKSPACE_GATEWAY_TOKEN",
     # Set in `.env` for felix#652 and never delivered: Compose has no `env_file`.
     "FELIX_TIMEZONE",
+    # Capture embeds in the api and the worker alike, and the worker's backfill embeds what
+    # capture could not; production set FELIX_MEMORY_EMBEDDER=workers_ai and it reached neither.
+    "FELIX_MEMORY_EMBEDDER",
+    "FELIX_MEMORY_EMBEDDING_MODEL",
+    "FELIX_MEMORY_EMBEDDING_DIM",
+    # The retention sweep runs in the worker; listed for every process like the rest of the anchor.
+    "FELIX_MEMORY_TASK_RETENTION_DAYS",
 )
 
 
@@ -246,6 +262,15 @@ def test_verifying_and_push_settings_reach_every_felix_process(env_var: str) -> 
     for name in ("migrate", "api", "worker", "scheduler"):
         if name in env:
             assert env_var in env[name], f"{env_var} does not reach {name}"
+
+
+def test_the_embedding_model_reaches_api_and_worker_empty_by_default() -> None:
+    """Empty, not the `Settings` default: `bge-base-en-v1.5` is a local model name, and an
+    explicitly set model is what a hosted backend sends. Empty falls through to the provider's
+    own (`test_hosted_providers.py` pins that half)."""
+    env = _service_env()
+    for name in ("api", "worker"):
+        assert env[name].get("FELIX_MEMORY_EMBEDDING_MODEL") == "${FELIX_MEMORY_EMBEDDING_MODEL:-}", name
 
 
 def _compose_yaml(path: Path) -> dict[str, Any]:

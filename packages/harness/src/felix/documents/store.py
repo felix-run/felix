@@ -163,7 +163,10 @@ async def _embed_chunks(
     if not chunks or embedder is None or not getattr(embedder, "enabled", False):
         return vectors, ""
 
-    model = str(getattr(embedder, "model", "") or type(embedder).__name__)
+    # `model` is part of the `Embedder` Protocol and `build_embedder` fills it for every backend
+    # it builds. The class name stands in only where it is still empty -- one constructed by
+    # hand with no model -- because a chunk's vector must record *something* that made it.
+    model = str(embedder.model or type(embedder).__name__)
     for start in range(0, len(chunks), EMBED_BATCH):
         window = chunks[start : start + EMBED_BATCH]
         try:

@@ -116,11 +116,15 @@ async def ready_schema(url: str) -> None:
             stamped = await conn.scalar(text("SELECT to_regclass('public.alembic_version')"))
             current = await conn.scalar(text("SELECT version_num FROM alembic_version")) if stamped else None
             if current is not None and current == script_head():
+                # `memory_vector_config` is kept: its one row is written by migration 0009 and
+                # records the width the vector column was built at -- deployment configuration,
+                # not a test's rows. Truncated, every test after the first ran with no width
+                # known, so no vector was ever refused for its width on this arm.
                 tables = (
                     await conn.execute(
                         text(
-                            "SELECT quote_ident(tablename) FROM pg_tables "
-                            "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+                            "SELECT quote_ident(tablename) FROM pg_tables WHERE schemaname = 'public' "
+                            "AND tablename NOT IN ('alembic_version', 'memory_vector_config')"
                         )
                     )
                 ).scalars()

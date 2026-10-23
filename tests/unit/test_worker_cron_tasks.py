@@ -236,6 +236,36 @@ async def test_consolidate_memory_runs_and_reports_a_count() -> None:
     assert result is None  # the task logs its count rather than returning it
 
 
+async def test_consolidate_memory_embeds_a_vectorless_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backfill has no cron of its own: it rides this one. Dropping the call would leave every
+    vectorless memory vectorless, and nothing downstream would complain -- so this asserts the
+    outcome, a stored vector, with the embedder chosen the way a deployment chooses one."""
+    from felix.memory import embedder as embedder_mod
+    from felix.memory import store as memory_store
+
+    class _CronEmbedder:
+        enabled = True
+        dim = None
+        model = "cron-fake"
+
+        async def embed(self, texts: Any) -> list[list[float]]:
+            return [[0.5, 0.5, 0.5] for _ in texts]
+
+    monkeypatch.setattr(embedder_mod, "_backends", dict(embedder_mod._backends))
+    embedder_mod.register_embedder_backend("cron-fake", lambda _s: _CronEmbedder())
+    # The worker reads its settings once, at import; this is the deployment setting the embedder.
+    settings = worker_tasks._settings.model_copy(update={"memory_embedder": "cron-fake"})
+    monkeypatch.setattr(worker_tasks, "_settings", settings)
+    row = await memory_store.put_memory(settings, TENANT, content="Captured while the embedder was down.")
+    assert not memory_store._memory_rows[(TENANT, row["id"])].get("embedding"), "the premise"
+
+    await worker_tasks.consolidate_memory.original_func()
+
+    stored = memory_store._memory_rows[(TENANT, row["id"])]
+    assert stored["embedding"] == [0.5, 0.5, 0.5]
+    assert stored["embedding_model"] == "cron-fake"
+
+
 async def test_every_task_body_is_callable_without_arguments() -> None:
     """Production calls these with nothing; a body that grew a parameter would fail only there.
 

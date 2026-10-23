@@ -392,6 +392,11 @@ class Settings(BaseSettings):
     # One-shot tasks an agent scheduled (`schedule_task`) that have fired, with their run history,
     # once the run is this old; 0 keeps them. Never a job an operator wrote, nor a recurring task.
     scheduled_task_retention_days: int = Field(default=30, ge=0)
+    # Active `task` memories an agent wrote ("the user wants to create notes.txt") are forgotten
+    # once untouched this long; 0 keeps them. Nothing else retires a task -- it has no topic_key
+    # -- so without this every one stays in recall and the prelude for good. Forgotten, so
+    # `POST /memory/{id}/restore` undoes it; an operator-written task is never expired.
+    memory_task_retention_days: int = Field(default=30, ge=0)
     # Run records kept per job (`job_runs`, one per firing), newest first; trimmed after each run is
     # recorded, for every job. 0 keeps every run. A run of the current UTC day that ran (not
     # `skipped`) is kept past it until the day ends: it is what a heartbeat's daily cap counts.
