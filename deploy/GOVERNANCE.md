@@ -2434,6 +2434,7 @@ lock as the revision (and before it), so a save cannot land on a workflow taken 
 A person's save through `PUT /workflows/{id}` takes the workflow over, and the agent can no longer
 change it. Whether the agent may still run it depends on whose save it was, decided under the same
 lock (`store._replaced_via`):
+
 - The person it was made for (their issuer-qualified key matches `created_by`): it becomes
   `owner:agent:<manifest>`, and the agent may still run it for them. They wrote what it now holds.
 - Anyone else: `authored_via` is cleared, and the agent may neither change nor run it. Otherwise
@@ -2450,6 +2451,7 @@ it, a job or a trigger included. The approver reads the whole definition, every 
 JSON. Text the model wrote sits inside quoted strings, so it cannot draw a line of the preview's
 layout, and an agent step's prompt is capped at 4,000 characters so nothing is cut off. The tool's
 own checks run first, so a call it would refuse never asks anyone. Those checks cover:
+
 - the definition's problems;
 - more than `max_steps` steps;
 - a step kind outside `kinds` (an allowlist: `agent_turn`, `tool_call`, `approval`, `branch`);
@@ -2460,6 +2462,7 @@ own checks run first, so a call it would refuse never asks anyone. Those checks 
   at the cap can pass it; the tenant's 500 is the hard bound.
 
 Saving and running refuse:
+
 - a caller who is anonymous, uses a shared subject, or has no owner key;
 - a scheduled or triggered run (`RequestContext.unattended`);
 - any call made on a workflow's own thread, so a workflow cannot write or start another.
