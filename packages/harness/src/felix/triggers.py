@@ -391,6 +391,17 @@ def triggers_configured(settings: Any) -> bool:
     return bool(_raw(settings).strip())
 
 
+def unpinned_workflow_triggers(settings: Any) -> list[tuple[str, str]]:
+    """`(trigger, workflow)` for each trigger that starts a workflow with no `revision` pin: it
+    runs whatever revision is saved when an event arrives, and refuses to start one an agent
+    still holds (`workflows.store.agent_holds`)."""
+    return sorted(
+        (name, t.target.workflow)
+        for name, t in parse_triggers(settings).items()
+        if isinstance(t.target, WorkflowTarget) and t.target.revision is None
+    )
+
+
 async def resolved_keys(settings: Any, trigger: Trigger) -> tuple[bytes, ...]:
     """The trigger's signing keys, each `secret:NAME` resolved through the secrets backend (and so
     registered for masking). Raises what the backend raises, and `ValueError` for a key that
@@ -597,6 +608,7 @@ __all__ = [
     "shown_event",
     "signing_keys",
     "triggers_configured",
+    "unpinned_workflow_triggers",
     "verifier_for",
     "verify_github",
     "verify_standard",
