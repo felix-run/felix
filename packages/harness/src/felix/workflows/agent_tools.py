@@ -2,7 +2,7 @@
 an agent building workflows for the person it acts for.
 
 Bound by `manifests/builder.py` for a manifest with `spec.workflow_authoring`, before the governance
-stack, so every wrapper applies -- and by default an approval rule (`workflow_save_approval_rule`)
+stack, so every wrapper applies -- and by default an approval rule (`permission_mode.WORKFLOW_SAVE_APPROVAL`)
 holds each `save_workflow` call until a person has read the definition it would save.
 
 A workflow saved here is an ordinary one (`workflows/store.py`), so the console lists, edits and
@@ -33,13 +33,13 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from felix.auth.mgmt import SCOPE_WORKFLOWS_READ, SCOPE_WORKFLOWS_WRITE
-from felix.governance.permission_mode import SAVE_WORKFLOW_TOOL_NAME, WORKFLOW_SAVE_APPROVAL_RULE_ID
+from felix.governance.permission_mode import SAVE_WORKFLOW_TOOL_NAME
 from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 if TYPE_CHECKING:
     from felix.context import AuthContext
-    from felix.manifests.schema import ApprovalRule, WorkflowAuthoringSpec
+    from felix.manifests.schema import WorkflowAuthoringSpec
     from felix.workflows.check import Problem
     from felix.workflows.schema import WorkflowSpec
 
@@ -119,33 +119,6 @@ class _RunArgs(BaseModel):
         ),
         json_schema_extra={"maxLength": 100},
     )
-
-
-def workflow_save_approval_rule() -> ApprovalRule:
-    """The rule a manifest gets for `save_workflow` when `spec.workflow_authoring.approval` is on:
-    single-use and for the person who asked, so an approval is never a standing licence to save."""
-    from felix.manifests.schema import ApprovalRule
-
-    return ApprovalRule(
-        id=WORKFLOW_SAVE_APPROVAL_RULE_ID,
-        description="Approve saving this workflow",
-        tools=[SAVE_WORKFLOW],
-        one_shot=True,
-        bind_principal=True,
-    )
-
-
-def default_workflow_save_rule(
-    authoring: WorkflowAuthoringSpec | None, approvals: list[ApprovalRule]
-) -> ApprovalRule | None:
-    """The approval rule to add for `save_workflow`, or None: as `default_scheduling_rule` decides
-    for `schedule_task` -- none when authoring or its approval is off, or when one of the
-    manifest's own rules names `save_workflow` literally and gates every call to it."""
-    if authoring is None or not authoring.approval:
-        return None
-    if any(SAVE_WORKFLOW in r.tools and not r.when_args for r in approvals):
-        return None
-    return workflow_save_approval_rule()
 
 
 def _parse(definition: dict[str, Any]) -> WorkflowSpec:
@@ -682,7 +655,5 @@ def make_workflow_authoring_tools(
 __all__ = [
     "SAVE_WORKFLOW",
     "WORKFLOW_AUTHORING_TOOL_NAMES",
-    "default_workflow_save_rule",
     "make_workflow_authoring_tools",
-    "workflow_save_approval_rule",
 ]

@@ -16,13 +16,17 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
-from felix.governance.permission_mode import WORKFLOW_SAVE_APPROVAL_RULE_ID
+from felix.governance.permission_mode import (
+    WORKFLOW_SAVE_APPROVAL,
+    WORKFLOW_SAVE_APPROVAL_RULE_ID,
+    default_builtin_rule,
+)
 from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import ApprovalRule, WorkflowAuthoringSpec
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 from felix.workflows import runs as run_store
 from felix.workflows import store as workflow_store
-from felix.workflows.agent_tools import default_workflow_save_rule, make_workflow_authoring_tools
+from felix.workflows.agent_tools import make_workflow_authoring_tools
 from felix.workflows.schema import WorkflowSpec
 
 from tests.support.factories import make_settings
@@ -526,7 +530,7 @@ def _manifest(**spec: Any) -> Any:
 def test_the_default_rule_is_added_only_where_nothing_already_gates_every_save(
     approval: bool, rules: list[ApprovalRule], added: bool
 ) -> None:
-    rule = default_workflow_save_rule(WorkflowAuthoringSpec(approval=approval), rules)
+    rule = default_builtin_rule(WORKFLOW_SAVE_APPROVAL, WorkflowAuthoringSpec(approval=approval), rules)
     assert (rule is not None) is added
     if rule is not None:
         assert (rule.id, rule.tools, rule.one_shot, rule.bind_principal) == (
@@ -535,7 +539,7 @@ def test_the_default_rule_is_added_only_where_nothing_already_gates_every_save(
             True,
             True,
         )
-    assert default_workflow_save_rule(None, rules) is None
+    assert default_builtin_rule(WORKFLOW_SAVE_APPROVAL, None, rules) is None
 
 
 async def _compiled(settings: Settings, **spec: Any) -> dict[str, Tool]:

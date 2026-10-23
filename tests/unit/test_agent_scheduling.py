@@ -14,12 +14,13 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
-from felix.jobs import store as jobs_store
-from felix.jobs.agent_tools import (
+from felix.governance.permission_mode import (
+    SCHEDULING_APPROVAL,
     SCHEDULING_APPROVAL_RULE_ID,
-    default_scheduling_rule,
-    make_scheduling_tools,
+    default_builtin_rule,
 )
+from felix.jobs import store as jobs_store
+from felix.jobs.agent_tools import make_scheduling_tools
 from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import ApprovalRule, SchedulingSpec
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
@@ -397,7 +398,7 @@ def _manifest(**spec: Any) -> Any:
 
 
 def test_the_default_rule_is_single_use_and_bound_to_the_asker() -> None:
-    rule = default_scheduling_rule(SchedulingSpec(), [])
+    rule = default_builtin_rule(SCHEDULING_APPROVAL, SchedulingSpec(), [])
     assert rule is not None
     assert (rule.id, rule.tools, rule.one_shot, rule.bind_principal, rule.when_args) == (
         SCHEDULING_APPROVAL_RULE_ID,
@@ -426,8 +427,10 @@ def test_the_default_rule_is_single_use_and_bound_to_the_asker() -> None:
 def test_the_default_rule_is_added_only_where_nothing_already_gates_every_call(
     approval: bool, rules: list[ApprovalRule], added: bool
 ) -> None:
-    assert (default_scheduling_rule(SchedulingSpec(approval=approval), rules) is not None) is added
-    assert default_scheduling_rule(None, rules) is None
+    assert (
+        default_builtin_rule(SCHEDULING_APPROVAL, SchedulingSpec(approval=approval), rules) is not None
+    ) is added
+    assert default_builtin_rule(SCHEDULING_APPROVAL, None, rules) is None
 
 
 def _ids(rules: list[ApprovalRule] | None) -> list[str]:

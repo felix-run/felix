@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from felix.context import RequestContext, try_get_context
 from felix.manifests.tool_match import matches_any
@@ -40,39 +40,115 @@ from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, de
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from felix.manifests.schema import PermissionModeName, PermissionsSpec
+    from felix.manifests.schema import ApprovalRule, PermissionModeName, PermissionsSpec
 
 logger = logging.getLogger("felix.governance.permission_mode")
 
 BYPASS_SCOPE = "approvals:bypass"
 EXIT_PLAN_TOOL_NAME = "exit_plan_mode"
 PLAN_APPROVAL_RULE_ID = "plan-approval"
-# The rule `spec.scheduling` adds over `schedule_task` (`jobs/agent_tools.py`).
-SCHEDULING_APPROVAL_RULE_ID = "scheduling.schedule_task"
-# The rule `spec.notify.approval` adds over `notify` (`push/agent_tool.py`).
-NOTIFY_APPROVAL_RULE_ID = "notify.notify"
-# The rule `spec.workflow_authoring` adds over `save_workflow` (`workflows/agent_tools.py`).
-WORKFLOW_SAVE_APPROVAL_RULE_ID = "workflow_authoring.save_workflow"
-# Approvals no permission mode waives, by the id of the rule that asks for them. The plan's is how
-# plan mode ends.
-UNWAIVABLE_RULE_IDS = frozenset(
-    {
-        PLAN_APPROVAL_RULE_ID,
-        SCHEDULING_APPROVAL_RULE_ID,
-        NOTIFY_APPROVAL_RULE_ID,
-        WORKFLOW_SAVE_APPROVAL_RULE_ID,
-    }
-)
-# Tools whose approval no permission mode waives, whichever rule asked for it -- the built-in one or
-# a manifest's own, a glob included. A scheduled task's prompt runs later on its writer's authority
-# with nobody watching, so a thread in `bypass` (a person present now) does not answer for it. A
-# notice's approval is an author asking that a person read every message before it reaches a lock
-# screen; a mode chosen for the thread does not answer for that either. A saved workflow runs later
-# -- by its author's agent, a job or a trigger -- as whoever starts it, so a person reads it first.
 SCHEDULE_TASK_TOOL_NAME = "schedule_task"
 NOTIFY_TOOL_NAME = "notify"
 SAVE_WORKFLOW_TOOL_NAME = "save_workflow"
-UNWAIVABLE_TOOLS = frozenset({SCHEDULE_TASK_TOOL_NAME, NOTIFY_TOOL_NAME, SAVE_WORKFLOW_TOOL_NAME})
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltinApproval:
+    """An approval a spec block adds over the tool it binds, and that no permission mode waives.
+
+    One row per such tool, in `BUILTIN_APPROVALS`, from which `UNWAIVABLE_RULE_IDS`,
+    `UNWAIVABLE_TOOLS` and the rules the builder adds (`builtin_approval_rules`) are all derived:
+    a tool cannot be gated without being unwaivable, or listed as unwaivable with no rule to add.
+    """
+
+    #: The `spec` field whose block binds the tool; the block's `approval` turns the rule on.
+    spec_field: str
+    tool: str
+    rule_id: str
+    description: str
+
+
+# A scheduled task's prompt runs later on its writer's authority with nobody watching, so a thread
+# in `bypass` (a person present now) does not answer for it (`jobs/agent_tools.py`).
+SCHEDULING_APPROVAL = BuiltinApproval(
+    "scheduling", SCHEDULE_TASK_TOOL_NAME, "scheduling.schedule_task", "Approve scheduling this task"
+)
+# A notice's approval is an author asking that a person read every message before it reaches a lock
+# screen; a mode chosen for the thread does not answer for that either (`push/agent_tool.py`).
+NOTIFY_APPROVAL = BuiltinApproval("notify", NOTIFY_TOOL_NAME, "notify.notify", "Approve sending this notice")
+# A saved workflow runs later -- by its author's agent, a job or a trigger -- as whoever starts it,
+# so a person reads it first (`workflows/agent_tools.py`).
+WORKFLOW_SAVE_APPROVAL = BuiltinApproval(
+    "workflow_authoring",
+    SAVE_WORKFLOW_TOOL_NAME,
+    "workflow_authoring.save_workflow",
+    "Approve saving this workflow",
+)
+BUILTIN_APPROVALS: tuple[BuiltinApproval, ...] = (
+    SCHEDULING_APPROVAL,
+    NOTIFY_APPROVAL,
+    WORKFLOW_SAVE_APPROVAL,
+)
+
+SCHEDULING_APPROVAL_RULE_ID = SCHEDULING_APPROVAL.rule_id
+NOTIFY_APPROVAL_RULE_ID = NOTIFY_APPROVAL.rule_id
+WORKFLOW_SAVE_APPROVAL_RULE_ID = WORKFLOW_SAVE_APPROVAL.rule_id
+# Approvals no permission mode waives, by the id of the rule that asks for them. The plan's is how
+# plan mode ends.
+UNWAIVABLE_RULE_IDS = frozenset({PLAN_APPROVAL_RULE_ID, *(b.rule_id for b in BUILTIN_APPROVALS)})
+# Tools whose approval no permission mode waives, whichever rule asked for it -- the built-in one or
+# a manifest's own, a glob included.
+UNWAIVABLE_TOOLS = frozenset(b.tool for b in BUILTIN_APPROVALS)
+
+
+def builtin_rule(builtin: BuiltinApproval) -> ApprovalRule:
+    """``builtin``'s rule: single-use and for the person who asked, so an approval is never a
+    standing licence for the next call."""
+    from felix.manifests.schema import ApprovalRule
+
+    return ApprovalRule(
+        id=builtin.rule_id,
+        description=builtin.description,
+        tools=[builtin.tool],
+        one_shot=True,
+        bind_principal=True,
+    )
+
+
+class _ApprovalSwitch(Protocol):
+    """A spec block a `BuiltinApproval` names: all the rule needs of it is its switch."""
+
+    approval: bool
+
+
+def default_builtin_rule(
+    builtin: BuiltinApproval, block: _ApprovalSwitch | None, approvals: list[ApprovalRule]
+) -> ApprovalRule | None:
+    """The rule to add for ``builtin`` given its spec ``block``, or None.
+
+    None when the block is unset, when its `approval` is off, or when one of the manifest's own rules
+    names the tool *literally* and gates every call to it. A glob does not count: as a literal ours
+    beats it in `apply_approvals`, so `approvals: [{tools: ["*"]}]` leaves the call under the
+    built-in one-shot, principal-bound rule rather than a looser catch-all. Nor does a rule with
+    `when_args`, which gates only some calls; ours, the later literal, is selected.
+    """
+    if block is None or not block.approval:
+        return None
+    if any(builtin.tool in r.tools and not r.when_args for r in approvals):
+        return None
+    return builtin_rule(builtin)
+
+
+def builtin_approval_rules(spec: Any, approvals: list[ApprovalRule]) -> list[ApprovalRule]:
+    """Every built-in rule ``spec`` asks for, in `BUILTIN_APPROVALS` order: what the builder adds
+    beside the manifest's own `approvals`."""
+    return [
+        rule
+        for builtin in BUILTIN_APPROVALS
+        if (rule := default_builtin_rule(builtin, getattr(spec, builtin.spec_field), approvals)) is not None
+    ]
+
+
 # How long a person has to approve a plan before the request expires.
 PLAN_APPROVAL_TTL_SECONDS = 1800
 
@@ -343,20 +419,28 @@ async def in_plan_mode(req: RequestContext) -> bool:
 
 
 __all__ = [
+    "BUILTIN_APPROVALS",
     "BYPASS_SCOPE",
     "EXIT_PLAN_TOOL_NAME",
+    "NOTIFY_APPROVAL",
     "NOTIFY_APPROVAL_RULE_ID",
     "NOTIFY_TOOL_NAME",
     "PLAN_APPROVAL_RULE_ID",
     "SAVE_WORKFLOW_TOOL_NAME",
     "SCHEDULE_TASK_TOOL_NAME",
+    "SCHEDULING_APPROVAL",
     "SCHEDULING_APPROVAL_RULE_ID",
     "UNWAIVABLE_RULE_IDS",
     "UNWAIVABLE_TOOLS",
+    "WORKFLOW_SAVE_APPROVAL",
     "WORKFLOW_SAVE_APPROVAL_RULE_ID",
     "WORKSPACE_EDIT_TOOLS",
+    "BuiltinApproval",
     "apply_permission_mode",
+    "builtin_approval_rules",
+    "builtin_rule",
     "current_mode",
+    "default_builtin_rule",
     "effective_mode",
     "in_plan_mode",
     "make_exit_plan_tool",

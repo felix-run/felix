@@ -15,13 +15,12 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.governance.permission_mode import NOTIFY_APPROVAL, NOTIFY_APPROVAL_RULE_ID, default_builtin_rule
 from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import ApprovalRule, NotifySpec
 from felix.push import store as push_store
 from felix.push.agent_tool import (
-    NOTIFY_APPROVAL_RULE_ID,
     SENT_THIS_RUN_EXTRA,
-    default_notify_rule,
     hourly_key,
     make_notify_tool,
     strip_links,
@@ -926,7 +925,7 @@ async def test_the_block_binds_notify_and_gates_it_only_when_asked(
 
 
 def test_the_approval_rule_is_single_use_and_bound_to_the_asker() -> None:
-    rule = default_notify_rule(NotifySpec(approval=True), [])
+    rule = default_builtin_rule(NOTIFY_APPROVAL, NotifySpec(approval=True), [])
     assert rule is not None
     assert (rule.id, rule.tools, rule.one_shot, rule.bind_principal) == (
         NOTIFY_APPROVAL_RULE_ID,
@@ -934,7 +933,12 @@ def test_the_approval_rule_is_single_use_and_bound_to_the_asker() -> None:
         True,
         True,
     )
-    assert default_notify_rule(NotifySpec(approval=True), [ApprovalRule(id="mine", tools=["notify"])]) is None
+    assert (
+        default_builtin_rule(
+            NOTIFY_APPROVAL, NotifySpec(approval=True), [ApprovalRule(id="mine", tools=["notify"])]
+        )
+        is None
+    )
 
 
 async def test_a_tool_already_named_notify_is_refused_at_compile() -> None:

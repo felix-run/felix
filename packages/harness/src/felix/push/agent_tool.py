@@ -1,7 +1,7 @@
 """`notify`: an agent telling the person it acts for something, on their own devices.
 
 Bound by `manifests/builder.py` for a manifest with `spec.notify`, before the governance stack, so
-every wrapper applies -- and with `approval: true` an approval rule (`notify_approval_rule`) holds
+every wrapper applies -- and with `approval: true` an approval rule (`permission_mode.NOTIFY_APPROVAL`) holds
 each call until a person has read it, which no permission mode waives
 (`permission_mode.UNWAIVABLE_TOOLS`). Off by default: the runs a notice is for -- a scheduled
 task's firing, a heartbeat -- have nobody watching to approve anything.
@@ -63,13 +63,13 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from felix.governance.permission_mode import NOTIFY_APPROVAL_RULE_ID, NOTIFY_TOOL_NAME
+from felix.governance.permission_mode import NOTIFY_TOOL_NAME
 from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 if TYPE_CHECKING:
     from felix.context import AuthContext, RequestContext
-    from felix.manifests.schema import ApprovalRule, Manifest, NotifySpec
+    from felix.manifests.schema import Manifest, NotifySpec
     from felix.security.rate_limit import RateLimiterBackend
     from felix.session.types import AppendableEvent
 
@@ -178,31 +178,6 @@ class _NotifyArgs(BaseModel):
         ),
         json_schema_extra={"minLength": 1, "maxLength": MAX_MESSAGE_CHARS},
     )
-
-
-def notify_approval_rule() -> ApprovalRule:
-    """The rule a manifest gets for `notify` when `spec.notify.approval` is on: single-use and for
-    the person who asked, so one approval never licenses the next notice."""
-    from felix.manifests.schema import ApprovalRule
-
-    return ApprovalRule(
-        id=NOTIFY_APPROVAL_RULE_ID,
-        description="Approve sending this notice",
-        tools=[NOTIFY],
-        one_shot=True,
-        bind_principal=True,
-    )
-
-
-def default_notify_rule(notify: NotifySpec | None, approvals: list[ApprovalRule]) -> ApprovalRule | None:
-    """The approval rule to add for `notify`, or None: when notify is off, when `approval` is off,
-    or when one of the manifest's own rules names `notify` literally and gates every call to it --
-    as `jobs/agent_tools.py:default_scheduling_rule` decides for `schedule_task`."""
-    if notify is None or not notify.approval:
-        return None
-    if any(NOTIFY in r.tools and not r.when_args for r in approvals):
-        return None
-    return notify_approval_rule()
 
 
 def _rate_limiter(settings: Any) -> RateLimiterBackend:
@@ -557,17 +532,14 @@ __all__ = [
     "LINK_REMOVED",
     "NOTICE_ENTRY_TYPE",
     "NOTIFY",
-    "NOTIFY_APPROVAL_RULE_ID",
     "THREAD_APPENDED",
     "THREAD_FAILED",
     "THREAD_MISSING",
     "THREAD_NOT_ELIGIBLE",
     "THREAD_RUN_LIVE",
-    "default_notify_rule",
     "hourly_key",
     "make_notify_tool",
     "notice_entry",
-    "notify_approval_rule",
     "reset_notify_for_tests",
     "strip_links",
 ]

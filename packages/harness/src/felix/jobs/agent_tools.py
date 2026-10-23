@@ -1,7 +1,7 @@
 """`schedule_task`, `list_scheduled` and `cancel_scheduled`: an agent scheduling its own follow-up work.
 
 Bound by `manifests/builder.py` for a manifest with `spec.scheduling`, before the governance
-stack, so every wrapper applies -- and by default an approval rule (`scheduling_approval_rule`)
+stack, so every wrapper applies -- and by default an approval rule (`permission_mode.SCHEDULING_APPROVAL`)
 holds each `schedule_task` call until a person has read the prompt it would leave behind.
 
 A task is an ordinary scheduled job (`jobs/store.py`) on the compiling manifest, written as the
@@ -27,14 +27,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.auth.mgmt import SCOPE_JOBS_READ, SCOPE_JOBS_WRITE
 from felix.auth.recorded import token_expiry_ms
-from felix.governance.permission_mode import SCHEDULE_TASK_TOOL_NAME, SCHEDULING_APPROVAL_RULE_ID
+from felix.governance.permission_mode import SCHEDULE_TASK_TOOL_NAME
 from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 if TYPE_CHECKING:
     from felix.context import AuthContext
     from felix.jobs.schedule import Schedule
-    from felix.manifests.schema import ApprovalRule, SchedulingSpec
+    from felix.manifests.schema import SchedulingSpec
 
 logger = logging.getLogger("felix.jobs.agent_tools")
 
@@ -106,38 +106,6 @@ def _now_ms() -> int:
     from felix.jobs.store import now_ms
 
     return now_ms()
-
-
-def scheduling_approval_rule() -> ApprovalRule:
-    """The rule a manifest gets for `schedule_task` when `spec.scheduling.approval` is on: single-use
-    and for the person who asked, so an approval is never a standing licence to schedule."""
-    from felix.manifests.schema import ApprovalRule
-
-    return ApprovalRule(
-        id=SCHEDULING_APPROVAL_RULE_ID,
-        description="Approve scheduling this task",
-        tools=[SCHEDULE_TASK],
-        one_shot=True,
-        bind_principal=True,
-    )
-
-
-def default_scheduling_rule(
-    scheduling: SchedulingSpec | None, approvals: list[ApprovalRule]
-) -> ApprovalRule | None:
-    """The approval rule to add for `schedule_task`, or None.
-
-    None when scheduling is off, when `approval` is off, or when one of the manifest's own rules
-    names `schedule_task` *literally* and gates every call to it. A glob does not count: as a
-    literal ours beats it in `apply_approvals`, so `approvals: [{tools: ["*"]}]` leaves the call
-    under the built-in one-shot, principal-bound rule rather than a looser catch-all. Nor does a
-    rule with `when_args`, which gates only some calls; ours, the later literal, is selected.
-    """
-    if scheduling is None or not scheduling.approval:
-        return None
-    if any(SCHEDULE_TASK in r.tools and not r.when_args for r in approvals):
-        return None
-    return scheduling_approval_rule()
 
 
 class _AgentTasks:
@@ -454,10 +422,7 @@ def make_scheduling_tools(
 
 __all__ = [
     "SCHEDULE_TASK",
-    "SCHEDULING_APPROVAL_RULE_ID",
     "SCHEDULING_TOOL_NAMES",
-    "default_scheduling_rule",
     "is_fired_task",
     "make_scheduling_tools",
-    "scheduling_approval_rule",
 ]
