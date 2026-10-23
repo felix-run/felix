@@ -221,7 +221,18 @@ and `hb.manifest_missing` disables one whose manifest no longer resolves (`NO_MA
 applies `model` and the lower of `max_turns` and the manifest's own bounds after
 `prepare_tenant_invoke`; `after` prunes; `result` records `quiet` (`extras[SENT_THIS_RUN_EXTRA] == 0`)
 and the answer cut to 500. `keep_schedule_current` moves a drifted schedule with
-`jobs_store.set_schedule` (one conditional UPDATE, never an upsert). Firing-thread retention is
+`jobs_store.set_schedule` (one conditional UPDATE, never an upsert). `hb.over_daily_cap` (in
+`begin_firing`, after the schedule refresh) makes `refusal` a `skipped` result (`reason: daily_cap`)
+once `jobs_store.count_runs_since(..., utc_day_start(now))` -- every status but `SKIPPED`, manual runs
+included -- reaches `max_firings_per_day` (None, the default, caps nothing); `fire_job` records
+`skipped` as its own status rather than `error`, and the job stays enabled. `fire_job`'s cancelled
+and failed paths go through `_end_abnormally`, which records the run (`CANCELLED`, under
+`asyncio.shield`; `EXECUTION_FAILED`) *before* `_clear_running`, so every firing counts.
+`hb.cap_warnings` (via `governance.manifest_warnings`) warns when an explicit cap is below
+`schedule.most_firings_per_utc_day`. `record_run` then trims every job to `FELIX_JOB_RUNS_KEEP`
+(`trim_runs`: newest by `(started_at, run_id)`, at most `TRIM_BATCH` per call, never a non-skipped run
+of the current UTC day, so the cap's count survives a small keep; contract in
+`tests/conformance/test_jobs_store.py`). Firing-thread retention is
 `prune_firing_threads` over `session/prune.py` (`threads_under`, `delete_threads` -- the one
 definition of deleting a thread whole, which retention's memory arm also uses; contract in
 `tests/conformance/test_session_prune.py`), keeping the newest `keep_threads` firing-minted threads

@@ -392,6 +392,10 @@ class Settings(BaseSettings):
     # One-shot tasks an agent scheduled (`schedule_task`) that have fired, with their run history,
     # once the run is this old; 0 keeps them. Never a job an operator wrote, nor a recurring task.
     scheduled_task_retention_days: int = Field(default=30, ge=0)
+    # Run records kept per job (`job_runs`, one per firing), newest first; trimmed after each run is
+    # recorded, for every job. 0 keeps every run. A run of the current UTC day that ran (not
+    # `skipped`) is kept past it until the day ends: it is what a heartbeat's daily cap counts.
+    job_runs_keep: int = Field(default=200, ge=0)
     # The session event log is the chat record, so the default keeps it. When set, a
     # thread is dropped whole once its last event is this old.
     session_retention_days: int = Field(default=0, ge=0)

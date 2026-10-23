@@ -963,6 +963,12 @@ class HeartbeatSpec(_Strict):
     #: Firing conversations kept per person; older ones are deleted with their events after each
     #: firing. The person's own heartbeat conversation, where notices land, is never among them.
     keep_threads: int = Field(default=20, ge=1, le=200)
+    #: Firings per person per UTC day, scheduled and `POST /heartbeats/{manifest}/run` alike. One
+    #: due past it runs nothing -- no model call -- and is recorded `skipped`; the heartbeat stays on
+    #: and fires again the next UTC day. Unset: no cap beyond what `schedule` fires. One below what
+    #: the schedule fires in a day is allowed -- the cap binds -- and warned about at write
+    #: (`heartbeat_cap_warnings`). Skipped firings do not count toward it.
+    max_firings_per_day: int | None = Field(default=None, ge=1, le=1440)
 
     @field_validator("checklist")
     @classmethod

@@ -458,7 +458,12 @@ async def fire_job(
     run does not borrow the caller's), the same inbound checks, the same thread, the same
     screening of its prompt, the same run record. A manual run records its `trigger` and who
     asked, and leaves the schedule where it was.
+
+    However it ends -- cancelled, or failed outside the work -- it leaves a run record, written
+    before the `running` mark is cleared (`_end_abnormally`): a heartbeat's daily cap counts run
+    records, so a firing that left none would be a model call nothing counted.
     """
+    recorded: dict[str, Any] | None = None
     try:
         result: dict[str, Any] = {"status": "ok"}
         if _credential_expired(job, started_at):
@@ -484,7 +489,9 @@ async def fire_job(
         if requested_by:
             result["requested_by"] = requested_by
 
-        status = "ok" if result.get("status") == "ok" else "error"
+        # `skipped`: a limit held the firing and nothing ran (`hb.over_daily_cap`). Anything else
+        # that is not `ok` is an error.
+        status = result["status"] if result.get("status") in {"ok", jobs_store.SKIPPED} else "error"
         run = await jobs_store.record_run(
             settings,
             tenant_id,
@@ -495,6 +502,7 @@ async def fire_job(
             error=str(result.get("error") or ""),
             result=result,
         )
+        recorded = run
         # Do not write `enabled=True` back from a stale read — that silently
         # re-enabled a job an operator had just disabled. And never the schedule: a manual run
         # leaves it where it was, and a scheduled one was advanced by its claim (`claim_run`).
@@ -514,21 +522,61 @@ async def fire_job(
         return run
     except asyncio.CancelledError:
         # A worker shutting down, or a manual run's caller gone: the run ends here, so its mark does.
-        await _clear_running(settings, tenant_id, job, started_at, "cancelled")
+        # Shielded, so a second cancel cannot stop the record half-written; the model may already
+        # have been called, and a heartbeat's cap must count it.
+        try:
+            await asyncio.shield(
+                _end_abnormally(
+                    settings, tenant_id, job, started_at, CANCELLED, trigger, requested_by, recorded
+                )
+            )
+        except Exception:
+            logger.warning("job_cancel_record_failed name=%s", job.get("name"), exc_info=True)
         raise
     except Exception:
         logger.exception("job_failed name=%s", job.get("name"))
-        await _clear_running(settings, tenant_id, job, started_at, "execution failed")
-        return await jobs_store.record_run(
-            settings,
-            tenant_id,
-            job["name"],
-            status="error",
-            started_at=started_at,
-            finished_at=now_ms(),
-            error="execution failed",
-            result={"trigger": trigger},
+        return await _end_abnormally(
+            settings, tenant_id, job, started_at, EXECUTION_FAILED, trigger, requested_by, recorded
         )
+
+
+# The error of a run that ended outside its work: cancelled (a worker shutting down, a manual run's
+# caller gone), or failed in the scheduler itself.
+CANCELLED = "cancelled"
+EXECUTION_FAILED = "execution failed"
+
+
+async def _end_abnormally(
+    settings: Settings,
+    tenant_id: str,
+    job: dict[str, Any],
+    started_at: int,
+    error: str,
+    trigger: str,
+    requested_by: str,
+    recorded: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Record the run as an error -- unless it was recorded already -- and only then clear its
+    `running` mark. In that order: cleared first, a manual run could claim the job in between and
+    find one run fewer to count than happened."""
+    try:
+        if recorded is None:
+            result: dict[str, Any] = {"status": "error", "error": error, "trigger": trigger}
+            if requested_by:
+                result["requested_by"] = requested_by
+            recorded = await jobs_store.record_run(
+                settings,
+                tenant_id,
+                job["name"],
+                status="error",
+                started_at=started_at,
+                finished_at=now_ms(),
+                error=error,
+                result=result,
+            )
+    finally:
+        await _clear_running(settings, tenant_id, job, started_at, error)
+    return recorded
 
 
 async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int:

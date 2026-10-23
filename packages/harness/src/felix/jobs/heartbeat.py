@@ -18,7 +18,8 @@ A firing never reads instructions from the job: its prompt is built from the man
 `checklist` (`firing_prompt`), so an operator's edit applies from the next firing and no one with
 `jobs:write` can put words in it. Each firing runs in a fresh thread, and after it the oldest
 firing threads past `keep_threads` are deleted (`prune_firing_threads`); the conversation is never
-one of them.
+one of them. A firing past the manifest's `max_firings_per_day` in the current UTC day -- scheduled or
+asked for -- invokes nothing and is recorded `skipped`, reason `daily_cap` (`over_daily_cap`).
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ MAX_ANSWER_CHARS = 500
 NO_HEARTBEAT = "this manifest no longer defines a heartbeat; it has been turned off"
 NO_MANIFEST = "this heartbeat's manifest no longer exists; it has been turned off"
 CREDENTIAL_EXPIRED = "the credential that turned this heartbeat on has expired; turn it on again"
+# The `reason` a skipped run records (`over_daily_cap`) when the heartbeat had already run
+# `max_firings_per_day` times in the current UTC day.
+DAILY_CAP = "daily_cap"
 _MINT_ATTEMPTS = 5
 _FIRING_SUFFIX = re.compile(r"[0-9a-f]{16}")
 
@@ -365,7 +369,9 @@ async def begin_firing(
     """The firing of a heartbeat job against its resolved `manifest`, or None for any other job.
 
     The prompt is the manifest's checklist as it is now -- never the job's payload, which a holder of
-    `jobs:write` could have re-saved. A manifest that no longer defines a heartbeat turns it off."""
+    `jobs:write` could have re-saved. A manifest that no longer defines a heartbeat turns it off.
+    One past its `max_firings_per_day` is refused before anything is invoked, recorded `skipped`
+    with reason `daily_cap` (`over_daily_cap`), and stays on."""
     if not is_heartbeat_job(job):
         return None
     firing = Firing(settings=settings, tenant_id=tenant_id, job=job)
@@ -373,9 +379,58 @@ async def begin_firing(
     if heartbeat is None:
         firing.refusal = await _turn_off(settings, tenant_id, job, NO_HEARTBEAT)
         return firing
-    firing.heartbeat, firing.prompt = heartbeat, firing_prompt(heartbeat.checklist)
     await keep_schedule_current(settings, tenant_id, job, heartbeat.schedule)
+    firing.refusal = await over_daily_cap(settings, tenant_id, job, heartbeat)
+    if firing.refusal is None:
+        firing.heartbeat, firing.prompt = heartbeat, firing_prompt(heartbeat.checklist)
     return firing
+
+
+async def over_daily_cap(
+    settings: Settings, tenant_id: str, job: dict[str, Any], heartbeat: HeartbeatSpec
+) -> dict[str, Any] | None:
+    """The skipped run's result when this heartbeat has already run `max_firings_per_day` times in
+    the current UTC day -- scheduled or asked for, every run but a skipped one -- else None, and
+    always None with no cap set. The heartbeat stays on: the cap holds a day's firings, it is not a
+    fault."""
+    from felix.jobs import store as jobs_store
+    from felix.jobs.scheduler import now_ms
+
+    if heartbeat.max_firings_per_day is None:
+        return None
+    since = jobs_store.utc_day_start(now_ms())
+    ran = await jobs_store.count_runs_since(settings, tenant_id, str(job["name"]), since)
+    if ran < heartbeat.max_firings_per_day:
+        return None
+    return {
+        "status": jobs_store.SKIPPED,
+        "reason": DAILY_CAP,
+        "max_firings_per_day": heartbeat.max_firings_per_day,
+    }
+
+
+def cap_warnings(manifest: Manifest) -> list[str]:
+    """What an author should hear about the heartbeat's cap: one set below what its schedule fires in
+    a UTC day holds the rest of that day's slots `skipped`. Allowed -- an operator may want a fast
+    cadence early and quiet later -- but never silent."""
+    import time
+
+    from felix.jobs.schedule import ScheduleError, most_firings_per_utc_day, parse_schedule
+
+    heartbeat = manifest.spec.heartbeat
+    if heartbeat is None or heartbeat.max_firings_per_day is None:
+        return []
+    try:
+        most = most_firings_per_utc_day(parse_schedule(heartbeat.schedule), int(time.time() * 1000))
+    except ScheduleError:
+        return []
+    if most is None or heartbeat.max_firings_per_day >= most:
+        return []
+    return [
+        f"spec.heartbeat.max_firings_per_day is {heartbeat.max_firings_per_day}, and its schedule fires "
+        f"up to {most} times in a UTC day: every firing past the cap is recorded skipped and runs "
+        "nothing until UTC midnight"
+    ]
 
 
 async def manifest_missing(settings: Settings, tenant_id: str, job: dict[str, Any]) -> dict[str, Any] | None:
@@ -394,6 +449,7 @@ def expired_message(job: dict[str, Any]) -> str | None:
 
 __all__ = [
     "CREDENTIAL_EXPIRED",
+    "DAILY_CAP",
     "HEARTBEAT",
     "HEARTBEAT_OK",
     "NO_HEARTBEAT",
@@ -401,6 +457,7 @@ __all__ = [
     "Firing",
     "HeartbeatRefused",
     "begin_firing",
+    "cap_warnings",
     "enrol",
     "expired_message",
     "firing_prompt",
@@ -412,6 +469,7 @@ __all__ = [
     "manifest_missing",
     "mine",
     "origin",
+    "over_daily_cap",
     "prune_firing_threads",
     "public",
 ]

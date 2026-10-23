@@ -248,9 +248,10 @@ def manifest_warnings(manifest: Manifest) -> list[str]:
     stored manifest carrying it is unwise rather than broken — an upgrade must not make it
     unstorable.
     """
+    from felix.jobs.heartbeat import cap_warnings
     from felix.manifests.delete_gate import delete_gate_warnings
 
-    return delete_gate_warnings(manifest)
+    return [*delete_gate_warnings(manifest), *cap_warnings(manifest)]
 
 
 def validate_governance(manifest: Manifest, settings: Any | None = None) -> None:

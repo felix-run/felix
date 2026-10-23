@@ -233,4 +233,38 @@ def shortest_gap_ms(parsed: Schedule, now: int) -> int | None:
     return min(gaps) if gaps else None
 
 
-__all__ = ["SCHEDULE_GRAMMAR", "Schedule", "ScheduleError", "parse_schedule", "shortest_gap_ms"]
+_DAY_MS = 86_400_000
+_DAYS_SAMPLED = 7
+
+
+def most_firings_per_utc_day(parsed: Schedule, now: int) -> int | None:
+    """The most times a recurring schedule fires in one UTC day, or None for one that does not
+    recur. An interval's phase follows its last firing, so it is the most any day can hold
+    (`ceil(day / interval)`); a cron's days differ (`0 9 * * 1-5`), so the busiest of the next
+    seven whole UTC days is taken."""
+    if parsed.one_shot:
+        return None
+    if parsed.interval_ms is not None:
+        return -(-_DAY_MS // parsed.interval_ms)
+    if parsed.cron is None:
+        return None
+    first = now - now % _DAY_MS + _DAY_MS
+    most = 0
+    for day in range(_DAYS_SAMPLED):
+        start = first + day * _DAY_MS
+        fired, at = 0, parsed.next_after(start - 1)
+        while at is not None and at < start + _DAY_MS:
+            fired += 1
+            at = parsed.next_after(at)
+        most = max(most, fired)
+    return most
+
+
+__all__ = [
+    "SCHEDULE_GRAMMAR",
+    "Schedule",
+    "ScheduleError",
+    "most_firings_per_utc_day",
+    "parse_schedule",
+    "shortest_gap_ms",
+]

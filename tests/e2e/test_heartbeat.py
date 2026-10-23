@@ -41,6 +41,7 @@ ALICE_PHONE = "https://web.push.apple.com/e2e-alice-phone"
 BOB_LAPTOP = "https://fcm.googleapis.com/fcm/send/e2e-bob-laptop"
 CHECKLIST = "Look at the nightly build and the open incident queue."
 HOUR_MS = 3_600_000
+DAY_MS = 24 * HOUR_MS
 REFUSAL = (
     "[approval unavailable] tool=calculator rule=calc-gate: this run is unattended "
     "(no person started it), so no one can approve it; the call was not made."
@@ -57,7 +58,12 @@ def _env() -> dict[str, str]:
 
 
 def _manifest(
-    name: str = "e2e-hb", *, checklist: str | None = CHECKLIST, schedule: str = "every:60m", **spec: Any
+    name: str = "e2e-hb",
+    *,
+    checklist: str | None = CHECKLIST,
+    schedule: str = "every:60m",
+    cap: int | None = None,
+    **spec: Any,
 ) -> Any:
     body: dict[str, Any] = {
         "pattern": "react",
@@ -73,6 +79,8 @@ def _manifest(
             "keep_threads": 2,
             "model": "claude-haiku",
         }
+        if cap is not None:
+            body["heartbeat"]["max_firings_per_day"] = cap
     return parse_manifest(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": name}, "spec": body}
     )
@@ -107,6 +115,26 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     monkeypatch.setattr(scheduler, "now_ms", lambda: now[0])
     monkeypatch.setattr(jobs_store, "now_ms", lambda: now[0])
     return now
+
+
+@pytest.fixture
+def phoenix_local_time() -> Any:
+    """The process's local zone, and Felix's own, seven hours behind UTC, so a day counted from
+    local midnight -- or from `FELIX_TIMEZONE`'s -- ends at a different firing than a UTC one."""
+    import os
+    import time
+
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Phoenix"
+    time.tzset()
+    try:
+        yield "America/Phoenix"
+    finally:
+        if before is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
 
 
 async def _enrol(app: Any, headers: dict[str, str], manifest: str = "e2e-hb", **body: Any) -> Any:
@@ -419,3 +447,132 @@ async def test_a_conversation_that_is_gone_is_replaced_on_the_next_enrolment(boo
         assert second != first and second.startswith("default:hb-")
         store = get_session_store(app.settings, tenant_id="default")
         assert await thread_exists(store.open(second), settings=app.settings, tenant_id="default")
+
+
+def _start_of_a_utc_day(clock: list[int], hour: int) -> None:
+    """Move the clock to `hour`:00 UTC of the next UTC day."""
+    clock[0] = clock[0] - clock[0] % DAY_MS + DAY_MS + hour * HOUR_MS
+
+
+async def _statuses(app: Any, name: str) -> list[str]:
+    return [r["status"] for r in await _runs(app, name)]
+
+
+async def test_a_heartbeat_fires_at_most_its_daily_cap_in_a_utc_day(
+    boot: Any, clock: list[int], phoenix_local_time: str
+) -> None:
+    """`max_firings_per_day: 2`: the third firing of a UTC day runs nothing and is recorded `skipped`;
+    the heartbeat stays on. The count starts again at UTC midnight, which is 17:00 the previous day
+    in Phoenix -- the install's zone and the process's here -- so a day counted any other way fails."""
+    from felix.jobs import heartbeat as hb
+
+    script = [ScriptedTurn(content="HEARTBEAT_OK") for _ in range(3)]
+    env = {**_env(), "FELIX_TIMEZONE": phoenix_local_time}
+    _start_of_a_utc_day(clock, 20)  # sweeps at +61 min: 21:01, 22:02, 23:03, then 00:04 next day
+    async with boot(script, env=env, manifests={"e2e-hb": _manifest(cap=2)}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        assert await _sweep(app, clock) == 1
+        assert await _sweep(app, clock) == 1
+        assert len(app.spy.prompts) == 2
+
+        assert await _sweep(app, clock) == 1, "the third is fired, and held"
+        held = await _last_run(app, name)
+        assert (held["status"], held["error"]) == ("skipped", ""), held
+        assert held["result"] == {
+            "status": "skipped",
+            "reason": hb.DAILY_CAP,
+            "max_firings_per_day": 2,
+            "trigger": "schedule",
+        }
+        assert len(app.spy.prompts) == 2, "a skipped firing calls no model"
+        job = await _job(app, name)
+        assert (job["enabled"], job["last_status"]) == (True, "skipped")
+
+        assert await _sweep(app, clock) == 1, "00:04 UTC -- 17:04 yesterday in Phoenix"
+        assert (await _last_run(app, name))["status"] == "ok"
+        assert len(app.spy.prompts) == 3
+        assert await _statuses(app, name) == ["ok", "skipped", "ok", "ok"], "newest first"
+
+
+async def test_asking_for_a_firing_counts_toward_the_cap(boot: Any, clock: list[int]) -> None:
+    """`POST /heartbeats/{manifest}/run` is a firing like any other: it counts, and past the cap it
+    is held too -- no way round it by hand."""
+    _start_of_a_utc_day(clock, 1)
+    script = [ScriptedTurn(content="HEARTBEAT_OK")]
+    async with boot(script, env=_env(), manifests={"e2e-hb": _manifest(cap=1)}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        first = await app.client.post("/heartbeats/e2e-hb/run", headers=ALICE)
+        assert (first.status_code, first.json()["status"]) == (200, "ok"), first.text
+        clock[0] += 60_000
+        again = await app.client.post("/heartbeats/e2e-hb/run", headers=ALICE)
+        assert again.status_code == 200, again.text
+        assert (again.json()["status"], again.json()["result"]["trigger"]) == ("skipped", "manual")
+        assert await _sweep(app, clock) == 1
+        assert await _statuses(app, name) == ["skipped", "skipped", "ok"]
+    assert len(app.spy.prompts) == 1, "only the first firing called the model"
+
+
+async def test_skipped_firings_do_not_count_so_raising_the_cap_gives_today_more(
+    boot: Any, clock: list[int]
+) -> None:
+    _start_of_a_utc_day(clock, 1)
+    script = [ScriptedTurn(content="HEARTBEAT_OK") for _ in range(2)]
+    async with boot(script, env=_env(), manifests={"e2e-hb": _manifest(cap=1)}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        assert await _sweep(app, clock) == 1
+        assert await _sweep(app, clock) == 1
+        assert await _sweep(app, clock) == 1
+        assert await _statuses(app, name) == ["skipped", "skipped", "ok"]
+
+        await _publish(app, _manifest(cap=2))
+        assert await _sweep(app, clock) == 1
+        assert (await _last_run(app, name))["status"] == "ok", "two skipped runs counted for nothing"
+    assert len(app.spy.prompts) == 2
+
+
+async def test_a_cancelled_firing_is_recorded_and_counts_toward_the_cap(
+    boot: Any, clock: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker shutting down mid-firing -- or a caller leaving a manual run -- may already have
+    called the model. The firing is recorded anyway, so the cap counts it."""
+    import asyncio
+
+    from felix_ai.providers.scripted import ScriptedClient
+
+    _start_of_a_utc_day(clock, 1)
+    entered = asyncio.Event()
+
+    async def _hang(self: Any, *args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def _hang_stream(self: Any, *args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await asyncio.Event().wait()
+        yield None
+
+    async with boot([], env=_env(), manifests={"e2e-hb": _manifest(cap=1)}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        with monkeypatch.context() as hanging:
+            for method, fake in (("chat", _hang), ("stream_turn", _hang_stream), ("stream", _hang_stream)):
+                hanging.setattr(ScriptedClient, method, fake)
+            sweep = asyncio.create_task(_sweep(app, clock))
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            sweep.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await sweep
+        cancelled = await _last_run(app, name)
+        assert (cancelled["status"], cancelled["error"]) == ("error", "cancelled"), cancelled
+        assert (await _job(app, name))["last_status"] == "error", "its running mark cleared"
+        called = len(app.spy.prompts)
+        assert called == 1, "the cancelled firing had reached the model"
+
+        assert await _sweep(app, clock) == 1
+        assert (await _last_run(app, name))["status"] == "skipped", "the cancelled firing counted"
+        assert len(app.spy.prompts) == called
+
+
+async def _runs(app: Any, name: str) -> list[dict[str, Any]]:
+    from felix.jobs import store as jobs_store
+
+    return await jobs_store.list_runs(app.settings, "default", name, limit=100)
