@@ -143,16 +143,10 @@ def _git_disarmed(env: dict[str, str]) -> dict[str, str]:
 
 
 def _child_env() -> dict[str, str]:
-    """The stdio child environment, minus any `PATH` entry that is not absolute, with git
-    disarmed (`_GIT_DISARMED`).
-
-    A relative entry — `.`, `node_modules/.bin`, `.venv/bin`, all common on a developer host
-    — resolves against the child's cwd, which the model chose. An absolute one does not.
-    """
-    env = stdio_child_env({})
-    if "PATH" in env:
-        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep) if os.path.isabs(p))
-    return _git_disarmed(env)
+    """The stdio child environment with git disarmed (`_GIT_DISARMED`). Its `PATH` keeps only
+    absolute entries (`stdio_policy.absolute_path_entries`): a relative one resolves against the
+    child's cwd, which the model chose."""
+    return _git_disarmed(stdio_child_env({}))
 
 
 class _Stream:
