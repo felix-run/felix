@@ -157,13 +157,19 @@ class Outcome:
 # --- starting and stopping runs ---------------------------------------------------------------
 
 
-def run_problems(spec: WorkflowSpec) -> list[Problem]:
-    """Everything that stops `spec` running here: its graph problems, then kinds with no executor."""
-    _, found = check(spec)
+def check_runnable(spec: WorkflowSpec) -> tuple[dict[str, Any], list[Problem]]:
+    """`check`'s ports and problems, plus a problem for each kind with no executor: one graph check
+    for a caller that shows the ports too."""
+    ports, found = check(spec)
     for step in spec.steps:
         if step.kind not in RUNNABLE_KINDS:
             found.append(Problem("not_runnable", f"steps of kind {step.kind!r} cannot run yet", step=step.id))
-    return found
+    return ports, found
+
+
+def run_problems(spec: WorkflowSpec) -> list[Problem]:
+    """Everything that stops `spec` running here: its graph problems, then kinds with no executor."""
+    return check_runnable(spec)[1]
 
 
 def check_inputs(spec: WorkflowSpec, inputs: dict[str, Any]) -> None:
@@ -174,48 +180,72 @@ def check_inputs(spec: WorkflowSpec, inputs: dict[str, Any]) -> None:
         raise BadInputs(missing, unknown)
 
 
-async def _pin_manifests(settings: Settings, tenant_id: str, spec: WorkflowSpec) -> dict[str, Any]:
-    """Each manifest an agent or tool step names, resolved, checked against the starter, and pinned.
+def named_manifests(spec: WorkflowSpec) -> dict[str, str]:
+    """Each step that runs on a manifest as the starter, by id, and the manifest it names.
 
-    Raises `NotRunnable` for one that does not resolve and `NotPermitted` for one whose inbound
-    rules refuse the caller in context. With no caller in context (no request), nothing is
-    refused here; the child enforces the manifest's rules when it runs.
+    The one rule for which steps name a manifest: what a run pins and admits here, and what an
+    agent's save checks (`agent_tools`). A step whose config names none is left out; `run_problems`
+    reports it before anything here is asked.
     """
-    from felix.context import try_get_context
-    from felix.durability.runs import ttl_seconds
+    return {
+        step.id: step.config["manifest"]
+        for step in spec.steps
+        if step.kind in _MANIFEST_KINDS and isinstance(step.config.get("manifest"), str)
+    }
+
+
+async def admitted_manifests(
+    settings: Settings, tenant_id: str, spec: WorkflowSpec, auth: Any | None
+) -> dict[str, Any]:
+    """Each manifest a step names, resolved and -- with ``auth`` -- checked against its inbound rules.
+
+    Raises `NotRunnable` for one that does not resolve and `NotPermitted` for one that refuses
+    ``auth``. With no ``auth`` (no request), nothing is refused here; the child enforces the
+    manifest's rules when it runs. Shared by a run's start and an agent's save, so a workflow an
+    agent may save is one its person may start.
+    """
     from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
-    from felix.manifests.pin import pin_fields_for
     from felix.runtime import resolve_tenant_manifest
 
-    caller = try_get_context()
-    pins: dict[str, Any] = {}
+    resolved_by_name: dict[str, Any] = {}
     unresolved: list[Problem] = []
-    for step in spec.steps:
-        if step.kind not in _MANIFEST_KINDS:
-            continue
-        name = str(step.config["manifest"])  # validated by `run_problems` through the kind's config
-        if name in pins:
+    for step_id, name in named_manifests(spec).items():
+        if name in resolved_by_name:
             continue
         try:
             resolved = await resolve_tenant_manifest(settings, tenant_id, name)
         except Exception:
-            logger.warning(
-                "workflow start: manifest %s did not resolve", loggable(name, limit=200), exc_info=True
-            )
-            unresolved.append(Problem("not_runnable", f"no manifest named {name!r}", step=step.id))
+            logger.warning("workflow: manifest %s did not resolve", loggable(name, limit=200), exc_info=True)
+            unresolved.append(Problem("not_runnable", f"no manifest named {name!r}", step=step_id))
             continue
-        if caller is not None:
+        if auth is not None:
             try:
-                enforce_inbound_auth(resolved.manifest, caller.auth)
+                enforce_inbound_auth(resolved.manifest, auth)
             except InboundAuthError as refused:
                 raise NotPermitted(name, int(getattr(refused, "status_code", 403) or 403)) from None
-        pins[name] = {
+        resolved_by_name[name] = resolved
+    if unresolved:
+        raise NotRunnable(unresolved)
+    return resolved_by_name
+
+
+async def _pin_manifests(settings: Settings, tenant_id: str, spec: WorkflowSpec) -> dict[str, Any]:
+    """Each manifest an agent or tool step names, admitted for the starter in context and pinned."""
+    from felix.context import try_get_context
+    from felix.durability.runs import ttl_seconds
+    from felix.manifests.pin import pin_fields_for
+
+    caller = try_get_context()
+    admitted = await admitted_manifests(
+        settings, tenant_id, spec, caller.auth if caller is not None else None
+    )
+    return {
+        name: {
             "pin": await pin_fields_for(settings, tenant_id, resolved.manifest, version=resolved.version),
             "ttl_s": ttl_seconds(settings, resolved.manifest.spec.execution),
         }
-    if unresolved:
-        raise NotRunnable(unresolved)
-    return pins
+        for name, resolved in admitted.items()
+    }
 
 
 async def start_run(

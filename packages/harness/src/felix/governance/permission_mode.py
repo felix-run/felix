@@ -51,17 +51,28 @@ PLAN_APPROVAL_RULE_ID = "plan-approval"
 SCHEDULING_APPROVAL_RULE_ID = "scheduling.schedule_task"
 # The rule `spec.notify.approval` adds over `notify` (`push/agent_tool.py`).
 NOTIFY_APPROVAL_RULE_ID = "notify.notify"
+# The rule `spec.workflow_authoring` adds over `save_workflow` (`workflows/agent_tools.py`).
+WORKFLOW_SAVE_APPROVAL_RULE_ID = "workflow_authoring.save_workflow"
 # Approvals no permission mode waives, by the id of the rule that asks for them. The plan's is how
 # plan mode ends.
-UNWAIVABLE_RULE_IDS = frozenset({PLAN_APPROVAL_RULE_ID, SCHEDULING_APPROVAL_RULE_ID, NOTIFY_APPROVAL_RULE_ID})
+UNWAIVABLE_RULE_IDS = frozenset(
+    {
+        PLAN_APPROVAL_RULE_ID,
+        SCHEDULING_APPROVAL_RULE_ID,
+        NOTIFY_APPROVAL_RULE_ID,
+        WORKFLOW_SAVE_APPROVAL_RULE_ID,
+    }
+)
 # Tools whose approval no permission mode waives, whichever rule asked for it -- the built-in one or
 # a manifest's own, a glob included. A scheduled task's prompt runs later on its writer's authority
 # with nobody watching, so a thread in `bypass` (a person present now) does not answer for it. A
 # notice's approval is an author asking that a person read every message before it reaches a lock
-# screen; a mode chosen for the thread does not answer for that either.
+# screen; a mode chosen for the thread does not answer for that either. A saved workflow runs later
+# -- by its author's agent, a job or a trigger -- as whoever starts it, so a person reads it first.
 SCHEDULE_TASK_TOOL_NAME = "schedule_task"
 NOTIFY_TOOL_NAME = "notify"
-UNWAIVABLE_TOOLS = frozenset({SCHEDULE_TASK_TOOL_NAME, NOTIFY_TOOL_NAME})
+SAVE_WORKFLOW_TOOL_NAME = "save_workflow"
+UNWAIVABLE_TOOLS = frozenset({SCHEDULE_TASK_TOOL_NAME, NOTIFY_TOOL_NAME, SAVE_WORKFLOW_TOOL_NAME})
 # How long a person has to approve a plan before the request expires.
 PLAN_APPROVAL_TTL_SECONDS = 1800
 
@@ -337,10 +348,12 @@ __all__ = [
     "NOTIFY_APPROVAL_RULE_ID",
     "NOTIFY_TOOL_NAME",
     "PLAN_APPROVAL_RULE_ID",
+    "SAVE_WORKFLOW_TOOL_NAME",
     "SCHEDULE_TASK_TOOL_NAME",
     "SCHEDULING_APPROVAL_RULE_ID",
     "UNWAIVABLE_RULE_IDS",
     "UNWAIVABLE_TOOLS",
+    "WORKFLOW_SAVE_APPROVAL_RULE_ID",
     "WORKSPACE_EDIT_TOOLS",
     "apply_permission_mode",
     "current_mode",

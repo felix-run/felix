@@ -39,6 +39,13 @@ ProblemCode = Literal[
     "not_runnable",
     # The check stopped listing at `MAX_PROBLEMS`; this last entry says how many it left out.
     "too_many_problems",
+    # What an agent may not save (`spec.workflow_authoring`, `agent_tools.check_reach`): more steps
+    # than its `max_steps`, or a step naming a manifest outside its `manifests`.
+    "too_many_steps",
+    "manifest_not_allowed",
+    # A step kind outside its `kinds`, and an agent step's prompt longer than an approver is shown.
+    "kind_not_allowed",
+    "prompt_too_long",
 ]
 
 # A response lists at most this many problems. An editor shows the first screenful anyway, and an

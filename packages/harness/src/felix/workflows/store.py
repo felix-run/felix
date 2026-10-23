@@ -86,6 +86,39 @@ class WorkflowConflict(Exception):
         self.current = current
 
 
+class WorkflowNotOwned(Exception):
+    """A write conditional on ``owner`` found the workflow made by someone else, or through
+    something else -- or adopted since by a person's save (`put_workflow`)."""
+
+    def __init__(self, workflow_id: str) -> None:
+        super().__init__(f"workflow {workflow_id!r} is not the writer's")
+        self.workflow_id = workflow_id
+
+
+# `(created_by, authored_via)` a replace must find, or `None` for no such condition.
+Owner = tuple[str, str] | None
+
+
+def _owned_by(owner: Owner, created_by: str, authored_via: str) -> bool:
+    return owner is None or (created_by, authored_via) == owner
+
+
+# What a person's own save makes of an agent's workflow made for them: `owner:agent:<manifest>`.
+# The agent may still run it (the person wrote what it now holds) but no longer change it.
+OWNER_EDIT_PREFIX = "owner:"
+
+
+def _replaced_via(current_via: str, created_by: str, authored_via: str, writer_owner: str | None) -> str:
+    """The `authored_via` a replace leaves: ``authored_via`` as given, unless a person's save (`""`)
+    lands on an agent's workflow made for that same person (``writer_owner``, issuer-qualified, is
+    its `created_by`) -- then `owner:agent:<manifest>`. Decided here, under the row lock, so it is
+    judged against the row actually replaced."""
+    base = current_via.removeprefix(OWNER_EDIT_PREFIX)
+    if not authored_via and writer_owner and base.startswith("agent:") and created_by == writer_owner:
+        return OWNER_EDIT_PREFIX + base
+    return authored_via
+
+
 def _revision(generation: str, version: int) -> str:
     return f"{generation}.{version}"
 
@@ -171,12 +204,17 @@ def _put_in_memory(
     ts: int,
     *,
     precondition: Precondition,
+    owner: Owner,
     updated_by: str,
     created_by: str,
     authored_via: str,
+    writer_owner: str | None,
 ) -> dict[str, Any]:
-    # No await between the check and the store, so this is atomic on the loop.
+    # No await between the checks and the store, so this is atomic on the loop. Owner first, as
+    # on Postgres: a row adopted since it was read is not the writer's, whatever its revision.
     existing = _memory_workflows.get((tenant_id, workflow_id))
+    if existing is not None and not _owned_by(owner, existing["created_by"], existing["authored_via"]):
+        raise WorkflowNotOwned(workflow_id)
     if _precondition_fails(precondition, existing["revision"] if existing else None):
         raise WorkflowConflict(workflow_id, _workflow_dict(existing) if existing else None)
     if existing is None and sum(1 for t, _ in _memory_workflows if t == tenant_id) >= MAX_PER_TENANT:
@@ -193,7 +231,11 @@ def _put_in_memory(
         "definition": definition,
         "updated_by": updated_by,
         "created_by": existing["created_by"] if existing else created_by,
-        "authored_via": existing["authored_via"] if existing else authored_via,
+        "authored_via": (
+            _replaced_via(existing["authored_via"], existing["created_by"], authored_via, writer_owner)
+            if existing
+            else authored_via
+        ),
         "created_at": existing["created_at"] if existing else ts,
         # Past the previous value, so two saves in one millisecond still order.
         "updated_at": max(ts, existing["updated_at"] + 1) if existing else ts,
@@ -209,14 +251,22 @@ async def put_workflow(
     spec: WorkflowSpec,
     *,
     precondition: Precondition = None,
+    owner: Owner = None,
     updated_by: str = "",
     created_by: str = "",
     authored_via: str = "",
+    writer_owner: str | None = None,
 ) -> dict[str, Any]:
     """Create or replace a workflow; conditional on ``precondition`` (see module).
 
-    ``created_by`` and ``authored_via`` are recorded when this creates the row and ignored when it
-    replaces one: a replace never changes who made a workflow, or through what.
+    ``created_by`` is recorded when this creates the row and kept by every replace. ``authored_via``
+    is what made *this* save, so a person's save through the routes (`""`) takes over a workflow an
+    agent made, and the agent may not change it again. ``owner``, when given, is the
+    ``(created_by, authored_via)`` an existing row must hold, checked under the same lock as the
+    precondition -- else :class:`WorkflowNotOwned` and nothing written. A check made before the
+    call and not here would let a save land on a row adopted in between. ``writer_owner`` is the
+    writer's issuer-qualified key: a person's save over an agent's workflow made for them leaves it
+    `owner:agent:<manifest>`, still theirs to run through that agent (`_replaced_via`).
     """
     _check_id(workflow_id)
     definition = spec.model_dump(mode="json", exclude_none=True)
@@ -229,14 +279,21 @@ async def put_workflow(
             definition,
             ts,
             precondition=precondition,
+            owner=owner,
             updated_by=updated_by,
             created_by=created_by,
             authored_via=authored_via,
+            writer_owner=writer_owner,
         )
 
     async with tenant_session(settings, tenant_id) as db:
         # Locked so the precondition and the write see the same row.
         current = await db.get(Workflow, (tenant_id, workflow_id), with_for_update=True)
+        # Owner first: a row a person adopted since the writer read it is not theirs, and saying
+        # so beats "changed", which invites a retry that can only fail the same way.
+        if current is not None and not _owned_by(owner, current.created_by, current.authored_via):
+            await db.rollback()
+            raise WorkflowNotOwned(workflow_id)
         stored = _revision(current.generation, current.version) if current else None
         if _precondition_fails(precondition, stored):
             snapshot = _workflow_dict(current) if current is not None else None
@@ -268,6 +325,9 @@ async def put_workflow(
             current.version += 1
             current.definition_json = definition
             current.updated_by = updated_by
+            current.authored_via = _replaced_via(
+                current.authored_via, current.created_by, authored_via, writer_owner
+            )
             current.updated_at = max(ts, current.updated_at + 1)
         try:
             await db.commit()
@@ -319,9 +379,12 @@ __all__ = [
     "ABSENT",
     "MAX_LIST",
     "MAX_PER_TENANT",
+    "OWNER_EDIT_PREFIX",
+    "Owner",
     "Precondition",
     "WorkflowConflict",
     "WorkflowLimitReached",
+    "WorkflowNotOwned",
     "delete_workflow",
     "get_workflow",
     "list_workflows",

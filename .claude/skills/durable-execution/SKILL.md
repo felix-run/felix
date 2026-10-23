@@ -203,6 +203,30 @@ re-reading each before the delete; a disabled task holds no place under `max_tas
 `approval: true` the builder adds `scheduling_approval_rule` unless a manifest rule without `when_args`
 names `schedule_task` literally (a glob does not count).
 
+`spec.workflow_authoring` binds `workflows/agent_tools.py`: `workflow_catalog` (kinds, config
+schemas, `WorkflowSpec`'s schema, and a manifest's step tools through `tool_step.step_tools`, less
+the authoring tools; serialized by `workflows/present.py`, which the `/workflows` routes share),
+`check_workflow` (`engine.check_runnable` + `_AgentWorkflows.check_reach`: `kinds`, `max_steps`,
+the 4,000-character agent prompt cap, and `manifests` over `engine.named_manifests`, the one rule
+for which steps name a manifest),
+`save_workflow`, `list_my_workflows`, `run_workflow`. A saved workflow's `created_by` is
+`AuthContext.skill_owner` (issuer-qualified; refused when None) and its `authored_via` is
+`agent:<manifest>`. `store.put_workflow(owner=)` checks that pair under the row lock, before the
+revision precondition, and raises `WorkflowNotOwned`. A save is also checked against
+`engine.admitted_manifests`, the admission a run's start makes. `authored_via` is what made the latest save, so a route save adopts the
+workflow. The creator's own save (`writer_owner == created_by`) leaves `owner:agent:<manifest>`
+(`store._replaced_via`), which `_AgentWorkflows.holds` lets the agent run but `is_mine` not edit;
+anyone else's leaves `""`. A create mints `wf-<hex>` with `precondition=ABSENT`; a replace passes the revision it read.
+
+`save_workflow` and `run_workflow` refuse `RequestContext.unattended` and a workflow thread
+(`thread_ids.is_workflow_thread`). `admit` also runs in the approval preview. `run_workflow` calls
+`engine.start_run(trigger="agent:<manifest>", untrusted_inputs=<every input>)`, and `StartRefused.message`
+is relayed. `max_active_runs` counts the non-terminal runs of the person's workflows from this agent.
+The preview shows the whole definition as escaped JSON and maps a non-refusal failure to
+`unavailable`. With `approval: true` the builder adds `workflow_save_approval_rule`, unless a manifest
+rule without `when_args` names `save_workflow` literally. `UNWAIVABLE_TOOLS` and `UNWAIVABLE_RULE_IDS`
+both hold it.
+
 **Heartbeats** (`jobs/heartbeat.py`, `routes/heartbeats.py`). `spec.heartbeat` is the operator's;
 `PUT /heartbeats/{manifest}` (`heartbeats:write`, `require_person`) resolves the manifest (404), runs
 its inbound auth as the firing's caller (`scheduler.job_auth` over the would-be job) and only then
