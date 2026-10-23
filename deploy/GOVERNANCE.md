@@ -2115,7 +2115,7 @@ A run is unattended when no person started it and so no one is there to answer: 
 firing (the sweep or `POST /jobs/{name}/run` -- both run as `cron` for the job's writer), an
 inbound trigger's run (`POST /triggers/{id}`, as `trigger:<id>`), and everything either starts --
 a workflow run's agent and tool steps, a durable or background child. A firing marks its caller
-`scheduled` and a trigger marks its caller `unattended`; both marks travel with the recorded caller
+`scheduled` and a trigger marks its caller `trigger_run`; both marks travel with the recorded caller
 into each of those (only ever added on replay), so `RequestContext.unattended` is derived from them
 wherever the run resumes; nothing has to remember to set it. For a trigger this matters twice: the
 sender chooses the payload, so an approval row would show an approver arguments an outsider picked,
@@ -2127,7 +2127,7 @@ In an unattended run every gate that would wait on a person answers at once inst
 |------|----------------------|
 | An approval rule with `allow_unattended: false` (the default) | The call is refused before a preview is computed: the model gets `[approval unavailable] tool=<name> rule=<id>: this run is unattended (no person started it), so no one can approve it; the call was not made.` No approval row is written, nothing is pushed, no `approval_required` frame is emitted, nothing waits. It is a `policy_deny` audit row with `control: approvals`, and `felix_approval_unattended_refused` counts it. |
 | An approval rule with `allow_unattended: true` | Unchanged: the row is written, pushed and waited on for `ttl_seconds`, named for the job's writer. Use it where a person reliably answers within the ttl -- and remember the sweep awaits each firing in turn, so a long ttl delays every job after it. |
-| A `command_screening` rule with `require_approval` | Refused at once (`[command approval unavailable: …]`). It has no `allow_unattended`. |
+| A `command_screening` rule with `require_approval` | Refused at once (`[command approval unavailable] tool=<name> rule=command:<reason>: …`, the same wording). It has no `allow_unattended`. |
 | A client tool (`spec.client_tools`) | Refused at once with a `transport_unavailable` tool error; no request is recorded for a client. |
 | `ask_user` | Answers `no_one_watching` at once, as it does off any live stream. |
 

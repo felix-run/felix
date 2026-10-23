@@ -134,10 +134,10 @@ class _ClientToolExecutor:
         if _unattended():
             # No client is attached to a run nobody started by hand (`RequestContext.unattended`):
             # the request would sit unanswered for the whole timeout, holding a scheduled sweep.
+            from felix.tools.refusal import unattended_refusal
+
             return tool_error_output(
-                ToolErrorCode.TRANSPORT_UNAVAILABLE,
-                f"[client tool unavailable] tool={self._name}: this run is unattended (no person "
-                "started it), so no client is attached to run it; the call was not made.",
+                ToolErrorCode.TRANSPORT_UNAVAILABLE, unattended_refusal("client tool", self._name)
             )
 
         request = {

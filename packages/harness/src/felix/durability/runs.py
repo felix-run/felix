@@ -91,10 +91,6 @@ def record_caller(tenant_id: str, expires_at: int) -> tuple[dict[str, Any], int]
     # the resumed compile loads the catalog the request would have -- and a credential's manifest
     # pin, which every child the run delegates to is checked against.
     auth = recorded.record_caller(caller.auth, skill_owner=True)
-    if caller.unattended:
-        # A run started from an unattended context is unattended, whether the mark came from its
-        # caller (`AuthContext.unattended` / `scheduled`, recorded above) or was set on the context.
-        auth["unattended"] = True
     # The token's own expiry, as a single integer — not the claims. Without it this would
     # be the first path in Felix where authority survives `exp`: there is no revocation
     # anywhere in `felix/auth/`, so `exp` is the sole and complete bound on a compromised

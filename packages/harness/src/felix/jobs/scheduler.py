@@ -373,12 +373,12 @@ async def _record_expired(
         error=CREDENTIAL_EXPIRED,
         result={"status": "error", "error": CREDENTIAL_EXPIRED, "trigger": trigger},
     )
-    await jobs_store.touch_run(
+    # Over this firing's own claim only, as every run's end is (`jobs_store.finish_run`).
+    await jobs_store.finish_run(
         settings,
         tenant_id,
         job["name"],
-        last_run_at=started_at,
-        next_run_at=jobs_store.KEEP_SCHEDULE,
+        started_at=started_at,
         last_status="error",
         last_error=CREDENTIAL_EXPIRED,
     )

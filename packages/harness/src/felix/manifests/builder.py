@@ -61,6 +61,7 @@ from felix.session.clearing import model_view_strategy
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
+from felix.tools.refusal import unattended_refusal
 from felix.tools.types import (
     Tool,
     ToolInput,
@@ -460,6 +461,13 @@ def apply_command_screening(
                                 "command",  # type: ignore[arg-type]
                             )
                         if decision == "require_approval":
+                            req = try_get_context()
+                            if req is not None and req.unattended:
+                                # No command rule carries `allow_unattended`: never a wait here.
+                                return deny_output(
+                                    unattended_refusal("command approval", tool.name, f"command:{reason}"),
+                                    "approvals",
+                                )
                             record_counter(
                                 "felix_approval_required",
                                 {"manifest_id": manifest_id, "tool": tool.name, "rule": "command"},
@@ -756,15 +764,6 @@ def _decision_check(req: Any, approval_id: str, thread_id: str) -> Any:
     return check
 
 
-def unattended_refusal(tool_name: str, rule_id: str) -> str:
-    """The tool result of a call an unattended run could not have approved. Written for the
-    model: it says why, and that nothing happened, so the run can carry on and report it."""
-    return (
-        f"[approval unavailable] tool={tool_name} rule={rule_id}: this run is unattended "
-        "(no person started it), so no one can approve it; the call was not made."
-    )
-
-
 async def _await_approval(
     *,
     manifest_id: str,
@@ -790,9 +789,6 @@ async def _await_approval(
     req = try_get_context()
     if req is None:
         return False, args, "no request context"
-    if req.unattended:
-        # No rule here carries `allow_unattended`, so an unattended run never waits on one.
-        return False, args, "unavailable: this run is unattended, so no one can approve it; not run"
 
     # Resolved before the row is written, not after: a durable run's only channel is the row
     # (the frame cannot cross from the worker to the API's stream), so the thread goes on both.
@@ -1265,7 +1261,7 @@ def apply_approvals(
                     "felix_approval_unattended_refused",
                     {"manifest_id": manifest_id, "tool": tool.name, "rule": rule.id},
                 )
-                return deny_output(unattended_refusal(tool.name, rule.id), "approvals")
+                return deny_output(unattended_refusal("approval", tool.name, rule.id), "approvals")
 
             if preview_failure is not None:
                 record_counter(

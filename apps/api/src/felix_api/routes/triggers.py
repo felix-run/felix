@@ -213,16 +213,11 @@ def _trigger_auth(trigger: Trigger) -> AuthContext:
         scopes=trigger.scopes,
         anonymous=False,
         scheme="trigger",
-        # No person is there to answer an approval for a sender's event. Not `scheduled`: that means
-        # "descends from a job", which `schedule_task` reads; a trigger run is refused there anyway,
-        # as a shared subject.
-        unattended=True,
+        # No person is there to answer an approval for a sender's event (`RequestContext.unattended`).
+        # Not `scheduled`: that means "descends from a job", which `schedule_task` reads; a trigger
+        # run is refused there anyway, as a shared subject.
+        trigger_run=True,
     )
-
-
-def _trigger_context(settings: Any, trigger: Trigger) -> RequestContext:
-    """The trigger's principal in a context of its own, unattended like every trigger run."""
-    return RequestContext(settings=settings, auth=_trigger_auth(trigger), unattended=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +236,7 @@ async def _prepare_workflow_run(
     from felix.workflows import store as workflow_store
     from felix.workflows.schema import WorkflowSpec
 
-    async with async_run_with_context(_trigger_context(settings, trigger)):
+    async with async_run_with_context(RequestContext(settings=settings, auth=_trigger_auth(trigger))):
         workflow = await workflow_store.get_workflow(settings, trigger.tenant, target.workflow)
     if workflow is None:
         raise _Unavailable(f"workflow {target.workflow!r} does not exist")
@@ -262,7 +257,7 @@ async def _start_workflow_run(
 
     assert isinstance(trigger.target, WorkflowTarget)
     who = f"{TRIGGER_RUN_PREFIX}{trigger.id}"
-    async with async_run_with_context(_trigger_context(settings, trigger)):
+    async with async_run_with_context(RequestContext(settings=settings, auth=_trigger_auth(trigger))):
         try:
             run = await engine.start_run(
                 settings,
@@ -302,9 +297,7 @@ async def _start_run(
 
     auth = _trigger_auth(trigger)
     thread = f"{trigger.tenant}:trigger:{trigger.id}:{uuid.uuid4().hex[:16]}"
-    ctx = RequestContext(
-        settings=settings, auth=auth, manifest_id=target.manifest, thread_id=thread, unattended=True
-    )
+    ctx = RequestContext(settings=settings, auth=auth, manifest_id=target.manifest, thread_id=thread)
     # Everything from here as the trigger's tenant: resolution, admission and the pin read the
     # manifest store, and the enqueue records this principal as the run's authority.
     async with async_run_with_context(ctx):

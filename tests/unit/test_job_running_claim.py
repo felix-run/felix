@@ -62,20 +62,18 @@ async def test_a_slow_run_is_not_fired_again_by_the_next_sweep(
     await _job(settings)
     clock = {"now": T0}
     monkeypatch.setattr(scheduler, "now_ms", lambda: clock["now"])
-    release = asyncio.Event()
+    release, entered = asyncio.Event(), asyncio.Event()
     calls: list[int] = []
 
     async def _slow(_settings: Settings, *, tenant_id: str, job: dict[str, Any]) -> dict[str, Any]:
         calls.append(clock["now"])
+        entered.set()
         await release.wait()
         return {"status": "ok"}
 
     monkeypatch.setattr(scheduler, "_invoke_job_manifest", _slow)
     first = asyncio.create_task(scheduler.run_due_jobs(settings))
-    for _ in range(100):
-        if calls:
-            break
-        await asyncio.sleep(0.01)
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert calls == [T0]
     assert (await _row(settings))["last_status"] == "running"
 
@@ -155,7 +153,8 @@ async def test_a_cancelled_run_clears_its_mark(settings: Settings, monkeypatch: 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert (await _row(settings))["last_status"] == "error"
+    row = await _row(settings)
+    assert (row["last_status"], row["last_error"]) == ("error", "cancelled")
 
 
 async def test_a_manual_claim_refuses_a_running_job_and_holds_off_the_sweep(settings: Settings) -> None:

@@ -83,8 +83,8 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
 - Untrusted-source screening only applies to tools `_is_untrusted_tool()` marks (MCP, peers,
   browser, queues, sandboxes) — a built-in tool is not screened, by design.
 - Approvals surface as an interrupt (`approvals/interrupt.py`). An unattended run
-  (`RequestContext.unattended`, derived in `__post_init__` from `AuthContext.scheduled` (a job's
-  firing) or `AuthContext.unattended` (an inbound trigger's run), each carried by the recorded caller
+  (`RequestContext.unattended`, a read-only property over `AuthContext.scheduled` (a job's
+  firing) and `AuthContext.trigger_run` (an inbound trigger's run), each carried by the recorded caller
   into everything the run starts) never waits: a rule without `allow_unattended` refuses with
   `[approval unavailable]` before the preview, row, push or frame, and so do a command-screening
   approval (`_await_approval`) and a client tool (`tools/client_bridge.py`). `allow_unattended: true`

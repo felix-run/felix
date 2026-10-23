@@ -689,7 +689,7 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       channel, Slack and email to follow). *Landed (this PR):* scheduled and triggered work stops
       waiting on nobody. A job's firing, an inbound trigger's run, and everything either starts
       (workflow steps, durable and background children) is unattended -- `RequestContext.unattended`,
-      derived from `AuthContext.scheduled` / `AuthContext.unattended`, which the recorded caller
+      derived from `AuthContext.scheduled` / `AuthContext.trigger_run`, which the recorded caller
       carries -- and there an approval rule without
       `allow_unattended` refuses the call at once (no row, push, frame or wait), as do a
       command-screening approval and a client tool; `allow_unattended: true` keeps the wait. Found

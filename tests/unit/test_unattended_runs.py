@@ -6,7 +6,7 @@ whole tenant, emitted a frame into a thread no one had open, and then blocked fo
 sweep -- every tenant's, too -- waited with it. `ApprovalRule.allow_unattended` was read only by the
 EU AI Act compile check, and `RequestContext.unattended` by nothing.
 
-Now a context built from a scheduled caller is unattended (`RequestContext.__post_init__`), and in
+Now a context over a scheduled or triggered caller is unattended (`RequestContext.unattended`), and in
 one the gates that wait on a person refuse at once: an approval rule without `allow_unattended`, a
 command-screening approval, a client tool. `ask_user` already refused off a live stream.
 """
@@ -106,17 +106,20 @@ def test_a_scheduled_caller_makes_its_context_unattended_and_a_person_does_not(s
     assert not RequestContext(settings=settings, auth=_person()).unattended
 
 
-def test_an_explicit_mark_is_kept_and_a_triggers_mark_survives_the_record(settings: Settings) -> None:
-    """A trigger's caller is `unattended` without being `scheduled` (that means "descends from a
-    job"); its mark rides `record_caller` / `replay_caller` into the run it starts, only ever added."""
+def test_a_triggers_mark_survives_the_record_and_makes_its_runs_unattended(settings: Settings) -> None:
+    """A trigger's caller is `trigger_run` without being `scheduled` (that means "descends from a
+    job"); the mark rides `record_caller` / `replay_caller` into the run it starts, only ever added,
+    and a context over it is unattended. `unattended` is derived: no builder can set it."""
     from felix.auth.recorded import record_caller, replay_caller
 
-    assert RequestContext(settings=settings, auth=_person(), unattended=True).unattended
-    sender = AuthContext(principal_sub="trigger:gh", tenant_id=TENANT, scheme="trigger", unattended=True)
+    sender = AuthContext(principal_sub="trigger:gh", tenant_id=TENANT, scheme="trigger", trigger_run=True)
+    assert RequestContext(settings=settings, auth=sender).unattended
     replayed = replay_caller(record_caller(sender), tenant_id=TENANT, actor="fiber")
-    assert (replayed.unattended, replayed.scheduled) == (True, False)
+    assert (replayed.trigger_run, replayed.scheduled) == (True, False)
     assert RequestContext(settings=settings, auth=replayed).unattended
-    assert not replay_caller(record_caller(_person()), tenant_id=TENANT, actor="fiber").unattended
+    assert not replay_caller(record_caller(_person()), tenant_id=TENANT, actor="fiber").trigger_run
+    with pytest.raises((TypeError, AttributeError)):
+        RequestContext(settings=settings, auth=_person(), unattended=True)  # type: ignore[call-arg]
 
 
 def test_a_durable_child_of_a_scheduled_run_is_unattended(settings: Settings) -> None:
@@ -245,7 +248,10 @@ async def test_a_command_approval_in_an_unattended_run_is_refused_at_once(settin
             timeout=5,
         )
     text = tool_output_content(out)
-    assert text.startswith("[command approval unavailable: this run is unattended"), text
+    assert text == (
+        "[command approval unavailable] tool=run rule=command:sudo: this run is unattended "
+        "(no person started it), so no one can approve it; the call was not made."
+    ), text
     assert ran == [] and await approvals_store.list_approvals(settings, TENANT, status=None) == []
 
 

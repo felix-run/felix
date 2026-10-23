@@ -162,7 +162,7 @@ async def test_a_trigger_run_reaching_a_gated_tool_is_refused_at_once(boot: Any)
         resp = await app.client.post("/triggers/gh", content=body, headers=_github(body))
         assert resp.status_code == 202, resp.text
         [run] = await _runs(app)
-        assert run["state_json"]["auth"].get("unattended") is True
+        assert run["state_json"]["auth"].get("trigger_run") is True
         done = await asyncio.wait_for(_finish(app, run["id"]), timeout=10)
         [tool] = [m for m in app.spy.prompts[1] if m.role == "tool"]
         pending = await app.client.get("/approvals", headers=BEARER, params={"status": "pending"})

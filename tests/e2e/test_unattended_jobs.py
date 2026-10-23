@@ -176,19 +176,41 @@ async def test_a_workflow_jobs_agent_step_is_refused_too(boot: Any, pushed: list
 
 
 async def test_a_manual_run_is_refused_while_the_job_is_running(boot: Any) -> None:
+    """A real run in flight -- parked on an approval its rule lets an unattended run ask for -- holds
+    the job: a second manual run is refused, and once the first ends through the route, a third runs.
+    Nothing in the test touches the claim; the route takes it and the run's end releases it."""
     from felix.jobs import store as jobs_store
-    from felix.jobs.scheduler import now_ms
 
-    async with boot([ScriptedTurn(content="ran")], env=ENV, manifests=MANIFESTS) as app:
-        await _put_job(app, "slow", {"manifest_id": "plain", "payload": {"prompt": "go"}})
-        assert await jobs_store.claim_manual_run(app.settings, "default", "slow", last_run_at=now_ms())
-        busy = await app.client.post("/jobs/slow/run", headers=ALICE)
-        assert (busy.status_code, busy.json()["detail"]) == (409, {"error": "job_running"})
-        assert await jobs_store.list_runs(app.settings, "default", "slow") == [], "nothing ran"
-        await jobs_store.touch_run(
-            app.settings, "default", "slow", last_run_at=now_ms(), next_run_at=jobs_store.KEEP_SCHEDULE
-        )
-        ran = await app.client.post("/jobs/slow/run", headers=ALICE)
-        missing = await app.client.post("/jobs/nope/run", headers=ALICE)
-    assert ran.status_code == 200 and ran.json()["result"]["answer"] == "ran", ran.text
+    script = [CALC, ScriptedTurn(content="done"), ScriptedTurn(content="ran again")]
+    async with boot(
+        script,
+        env=ENV,
+        manifests={"slow": _manifest("slow", gate={"ttl_seconds": 30, "allow_unattended": True})},
+    ) as app:
+        await _put_job(app, "slow", {"manifest_id": "slow", "payload": {"prompt": "go"}})
+        first = asyncio.create_task(app.client.post("/jobs/slow/run", headers=ALICE))
+        try:
+            pending: list[dict[str, Any]] = []
+            for _ in range(200):  # the gate writes its row a moment after the run starts
+                await asyncio.sleep(0.02)
+                pending = (await app.client.get("/approvals", headers=ALICE)).json()["items"]
+                if pending:
+                    break
+            assert pending, "the first run never reached its approval"
+            busy = await app.client.post("/jobs/slow/run", headers=ALICE)
+            assert (busy.status_code, busy.json()["detail"]) == (409, {"error": "job_running"})
+
+            decided = await app.client.post(
+                f"/approvals/{pending[0]['id']}/decide", headers=ALICE, json={"decision": "approved"}
+            )
+            assert decided.status_code == 200, decided.text
+            ran = await asyncio.wait_for(first, timeout=10)
+            assert ran.status_code == 200 and ran.json()["result"]["answer"] == "done", ran.text
+            again = await asyncio.wait_for(app.client.post("/jobs/slow/run", headers=ALICE), timeout=10)
+            missing = await app.client.post("/jobs/nope/run", headers=ALICE)
+            runs = await jobs_store.list_runs(app.settings, "default", "slow")
+        finally:
+            first.cancel()
+    assert again.status_code == 200 and again.json()["result"]["answer"] == "ran again", again.text
     assert missing.status_code == 404
+    assert len(runs) == 2, "the refused run left no record"
