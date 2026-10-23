@@ -825,9 +825,17 @@ onto the library's import gate instead.
         through `ToolRunner`'s `[error/…]` line unread. The MCP handler now returns its failures
         as `[mcp_error]` output, which closes it there; the general fix screens and masks
         `str(exc)` for untrusted transports.
-      - *A stdio command's `PATH` is the manifest's.* The allowlist approves the name (`uvx`); the
-        binary that runs is resolved on the child env's `PATH`, which `spec.mcp_servers[].env`
-        may set. Resolve against the API's own `PATH` and spawn the absolute path, or forbid `PATH`.
+      - [x] *A stdio command's `PATH` was the manifest's.* An allowed name is now resolved on the
+        API's own `PATH` and spawned by absolute path (`stdio_policy.resolve_stdio_command`), and
+        `PATH` joined the env keys a manifest may not set, so an interpreter started through
+        `/usr/bin/env` comes from the operator's directories too.
+      - [ ] *The stdio env denylist misses variables that run code with no file on the host.*
+        `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n=core.fsmonitor`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`,
+        `BASH_FUNC_<name>%%`, `SHELLOPTS`+`PS4`, `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS` reach a
+        fixed allowlisted binary (an `mcp-server-git`) through `mcp_servers[].env`. A prefix ban
+        breaks legitimate keys (`GIT_AUTHOR_NAME`); the fix is a designed allowlist of env keys, or
+        `shell.py:_git_disarmed` applied plus a targeted denylist. Needs the stored-manifest
+        story: refusing at spawn drops that server's tools, refusing at write blocks the save.
       - *stdio reads are unbounded until a newline* (the SDK buffers a line in full); the old
         reader trusted `Content-Length`, so not new.
       - *Per-call cost.* A call is a fresh session: a `server/discover` probe for a modern server,

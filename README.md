@@ -800,7 +800,9 @@ Outbound integrations, all declared on the manifest:
 
 > [!WARNING]
 > **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
-> allowed, and **shell tools are disabled** unless `FELIX_SHELL_ALLOWED_COMMANDS` names the argv
+> allowed (a bare name runs the binary the API's own `PATH` finds, and a manifest may not set the
+> child's `PATH`; allowlisting an interpreter or package runner such as `uvx`/`npx` lets a manifest
+> run anything through its arguments), and **shell tools are disabled** unless `FELIX_SHELL_ALLOWED_COMMANDS` names the argv
 > prefixes allowed. Manifest-supplied argv is arbitrary code execution. A shell tool's command
 > runs as the API's user and can read the API's environment unless `FELIX_SHELL_RUNNER_URL` points
 > it at a `felix-shell-runner` (with `FELIX_SHELL_RUNNER_TOKEN`), which the builder stack runs in

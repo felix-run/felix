@@ -17,15 +17,18 @@ from typing import Any, TextIO
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from felix.manifests.schema import McpServerRef
-from felix.security.stdio_policy import assert_stdio_command_allowed, stdio_child_env
+from felix.security.stdio_policy import resolve_stdio_command, stdio_child_env
 
 
 def stdio_parameters(ref: McpServerRef, *, settings: Any | None = None) -> StdioServerParameters:
     """What the SDK spawns for ``ref``, after the allowlist has said it may.
 
-    The SDK merges its own short list of inherited variables (`PATH`, `HOME`, `USER` and the
-    like, none of them credentials) under ``env``; the API's model keys, database URL and cloud
-    credentials are in neither.
+    The command is spawned by the absolute path the allowlisted name resolves to on the API's
+    own PATH, and the child's PATH is the API's too (a manifest may not set it), so neither the
+    binary nor an interpreter it starts through `/usr/bin/env` comes from a directory the
+    manifest chose. The SDK merges its own short list of inherited variables (`HOME`, `USER` and
+    the like, none of them credentials) under ``env``; the API's model keys, database URL and
+    cloud credentials are in neither.
     """
     if not ref.command:
         raise RuntimeError("stdio MCP ref has no command")
@@ -34,9 +37,9 @@ def stdio_parameters(ref: McpServerRef, *, settings: Any | None = None) -> Stdio
         from felix.config import get_settings
 
         settings = get_settings()
-    assert_stdio_command_allowed(ref.command, settings)
+    command = resolve_stdio_command(ref.command, settings)
     return StdioServerParameters(
-        command=ref.command, args=list(ref.args), env=stdio_child_env(ref.env), cwd=ref.cwd or None
+        command=command, args=list(ref.args), env=stdio_child_env(ref.env), cwd=ref.cwd or None
     )
 
 
