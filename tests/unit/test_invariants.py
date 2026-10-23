@@ -548,6 +548,13 @@ def test_every_memory_store_function_is_classified() -> None:
             "operator row is never kept or retired, and the stamp it leaves ranks at _rank of "
             "'consolidation' (agent), which _may_reactivate lets an agent undo"
         ),
+        # A cron, not a writer: it forgets on age alone, so it acts at agent rank and no higher.
+        "expire_tasks": (
+            "guarded: active kind='task' rows only, and only where _trust(row) <= _rank('retention') "
+            "-- agent rank, so an operator-written task is never expired; forgets (no superseded_seq) "
+            "and stamps retired_by=retention, which _retirer_rank ranks as agent, so _may_reactivate "
+            "lets an agent re-store bring it back and restore undoes it"
+        ),
     }
     # Everything else: reads, projections, ranking helpers, embedding plumbing. Listed
     # explicitly rather than inferred, which is the whole point -- a new function is
@@ -583,6 +590,17 @@ def test_every_memory_store_function_is_classified() -> None:
         "consolidation_batch",
         "plan_merges",
         "_survivor_key",
+        # Task expiry's pure predicate; `expire_tasks` is the write.
+        "_task_expired",
+        # The embedding backfill's store halves (`memory/backfill.py` drives them): reads, and
+        # writes to the vector columns only, never `status`.
+        "configured_embedding_dim",
+        "missing_embeddings",
+        "_missing_in_memory",
+        "_missing_in_postgres",
+        "write_embeddings",
+        "_write_embeddings_in_memory",
+        "_write_embeddings_in_postgres",
         # Clears the in-memory twin between tests; no request path reaches it.
         "reset_memory_for_tests",
     }

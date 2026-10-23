@@ -31,6 +31,23 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.16.1: old task memories expire, and Compose passes the embedder through
+
+Migration `0045` adds the workflow author columns (#667); it runs with the image as usual.
+
+**Agent-written task memories untouched for 30 days are forgotten** by the nightly retention
+sweep, from the first sweep after the roll (#669). Tasks have no topic key, so until now they
+stayed in recall indefinitely. A forget is not a delete: `POST /memory/{id}/restore` brings one
+back, and the agent storing the same task again does too. Tasks written through `/memory` are
+never expired. Set `FELIX_MEMORY_TASK_RETENTION_DAYS=0` to keep them all, as before.
+
+**Compose deployments: `FELIX_MEMORY_EMBEDDER` now takes effect.** The Compose file never passed
+the embedder settings into the containers, so a value in `.env` did nothing (#669). If your `.env`
+sets one, the roll turns semantic recall on. The worker's memory job then embeds the memories
+already stored, 100 per 15-minute tick. A hosted embedder (`workers_ai`, `openai`, `google`) sends
+memory text to that provider. Leave `FELIX_MEMORY_EMBEDDING_MODEL` empty to use the provider's
+default, which for `workers_ai` is the 768-wide `@cf/baai/bge-base-en-v1.5` the column expects.
+
 ## 0.16.0: unattended runs refuse approvals, MCP speaks the SDK, heartbeats need a scope
 
 **Check three things before the roll.** No migration is needed for any of them.

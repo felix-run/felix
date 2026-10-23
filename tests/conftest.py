@@ -226,6 +226,11 @@ def _isolate_process_global_stores():
         from felix.memory.consolidation import reset_for_tests as reset_consolidation_for_tests
 
         reset_consolidation_for_tests()
+        # The backfill remembers an embedder whose width the column refused, for the life of the
+        # process, so a test that provokes a refusal would silence every later backfill test.
+        from felix.memory.backfill import reset_backfill_for_tests
+
+        reset_backfill_for_tests()
         # Content-addressed, so a stale entry would answer a later test's transcription call
         # before its scripted model was ever asked.
         from felix.governance.image_screening import clear_image_screening_caches

@@ -199,12 +199,12 @@ def _heuristic_facts(text: str, *, max_facts: int, min_chars: int) -> list[str]:
     return facts
 
 
-def _embedding_model(settings: Settings) -> str:
-    return str(getattr(settings, "memory_embedding_model", "") or "")
+async def _embed_facts(settings: Settings, facts: list[str]) -> tuple[list[list[float]] | None, str]:
+    """Vectors for a batch of facts and the model that made them; ``None`` with no embedder.
 
-
-async def _embed_facts(settings: Settings, facts: list[str]) -> list[list[float]] | None:
-    """Vectors for a batch of facts, or ``None`` when no embedder is configured.
+    The model is the backend's own, not the setting: a hosted backend falls back to its
+    provider's default when `FELIX_MEMORY_EMBEDDING_MODEL` is empty, so the setting recorded
+    `""` for every Workers AI vector. The backfill records the backend's model the same way.
 
     One call for the whole batch rather than one per fact — an embedding endpoint
     charges per request, and a local model pays its startup cost per call.
@@ -213,18 +213,20 @@ async def _embed_facts(settings: Settings, facts: list[str]) -> list[list[float]
     which is the whole reason the vector channel is optional.
     """
     if not facts:
-        return None
+        return None, ""
     try:
         from felix.memory.embedder import build_embedder
 
         embedder = build_embedder(settings)
-        if not getattr(embedder, "enabled", False):
-            return None
+        if not embedder.enabled:
+            return None, ""
         vectors = await embedder.embed(facts)
     except Exception:
         logger.warning("memory embedding failed; storing facts without vectors")
-        return None
-    return vectors if vectors and len(vectors) == len(facts) else None
+        return None, ""
+    if not vectors or len(vectors) != len(facts):
+        return None, ""
+    return vectors, embedder.model
 
 
 async def _known_values(settings: Settings, tenant_id: str, *, manifest_id: str) -> list[tuple[str, str]]:
@@ -340,7 +342,7 @@ async def capture_from_turn(
 
     chosen = _drop_known(proposed, known, remembered=_remembered_this_request(manifest_id))
     chosen = chosen[: capture.max_facts]
-    vectors = await _embed_facts(settings, [m.content for m in chosen])
+    vectors, embedding_model = await _embed_facts(settings, [m.content for m in chosen])
 
     stored: list[str] = []
     for i, memory in enumerate(chosen):
@@ -364,7 +366,7 @@ async def capture_from_turn(
                 # the attempt to establish it was withdrawn.
                 metadata={"source": "assistant", "origin": "capture"},
                 embedding=vectors[i] if vectors else None,
-                embedding_model=_embedding_model(settings) if vectors else "",
+                embedding_model=embedding_model,
             )
             stored.append(memory.content)
         except Exception:

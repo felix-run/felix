@@ -41,6 +41,10 @@ it as `denied`/`timeout`, which also makes it sweepable here like any other sett
 * `workflow_runs` — finished (`runs.RUN_TERMINAL`) longer ago than the run TTL. A run in flight
   is never swept; a finished one has already had its recorded starter and pins cleared.
 * `plans` — past their own `expires_at`; `memory_vectors` — superseded past a grace period.
+* `memory_vectors` of `kind='task'` — **forgotten**, not deleted, once active and untouched for
+  the memory task TTL (`memory.store.expire_tasks`). A task has no topic_key, so nothing else
+  ever retires one; forgetting keeps it restorable. Agent-written tasks only: an operator's is
+  theirs to retire.
 * `jobs` (+ their `job_runs`) — only one-shot tasks an agent scheduled (`schedule_task`) that have
   fired, once that run is older than the scheduled-task TTL. A job an operator wrote is the
   operator's to delete, and a recurring task is still doing its work.
@@ -145,6 +149,9 @@ class Cutoffs:
     #: A file's checkpoints in a thread go once its newest is older than this, content and rows. On
     #: by default (`FELIX_FILE_CHECKPOINT_RETENTION_DAYS=7`): they exist for an undo, not a record.
     file_checkpoint: int | None
+    #: Agent-written active `task` memories untouched since this are forgotten. On by default
+    #: (`FELIX_MEMORY_TASK_RETENTION_DAYS=30`): nothing else ever retires a task.
+    memory_task: int | None
     memory: int
 
     @classmethod
@@ -163,6 +170,7 @@ class Cutoffs:
             attachment=days(settings.attachment_retention_days),
             artifact=days(settings.artifact_retention_days),
             file_checkpoint=days(settings.file_checkpoint_retention_days),
+            memory_task=days(settings.memory_task_retention_days),
             memory=now - MEMORY_SUPERSEDED_GRACE_MS,
         )
 
@@ -230,6 +238,7 @@ async def run_retention_sweep(settings: Settings) -> dict[str, int]:
     counts["file_checkpoints"] = await _sweep_file_checkpoints(settings, cutoffs.file_checkpoint)
     counts["skill_import_sighting"] = await _sweep_sightings(settings, cutoffs.now)
     counts["scheduled_tasks"] = await _sweep_fired_tasks(settings, cutoffs.now)
+    counts["memory_tasks_forgotten"] = await _expire_memory_tasks(settings, cutoffs.memory_task)
     logger.info("retention_sweep %s", counts)
     return counts
 
@@ -244,6 +253,24 @@ async def _sweep_sightings(settings: Settings, now: int) -> int:
         return await get_sighting_store(settings).prune(before=now - SIGHTING_RETENTION_DAYS * 86_400_000)
     except Exception:
         logger.warning("retention: skill_import_sighting sweep failed", exc_info=True)
+        return 0
+
+
+async def _expire_memory_tasks(settings: Settings, cutoff: int | None) -> int:
+    """Forget stale agent-written `task` memories, every tenant's (`memory.store.expire_tasks`).
+
+    Through the store on both backends rather than in each arm here: it is a status write
+    with a trust predicate and a retirer stamp, not a delete, and the store is where every
+    other retirement route keeps that rule. A failure is logged, not raised, like the
+    sightings sweep."""
+    if cutoff is None:
+        return 0
+    from felix.memory.store import expire_tasks
+
+    try:
+        return await expire_tasks(settings, cutoff)
+    except Exception:
+        logger.warning("retention: memory task expiry failed", exc_info=True)
         return 0
 
 

@@ -251,6 +251,8 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
         # Skill-import sightings go through their store on both backends; none here.
         "skill_import_sighting": 0,
         "scheduled_tasks": 0,
+        # On by default (30 days), but the memories seeded here are facts, not tasks.
+        "memory_tasks_forgotten": 0,
     }
     assert await _audit_ids(settings) == {new_audit}, f"{old_audit=} should be gone"
     assert await _usage_ids(settings) == {new_usage}, f"{old_usage=} should be gone"
@@ -851,3 +853,28 @@ async def test_only_fired_one_shot_tasks_past_their_ttl_are_swept(
     clock.ms += 400 * DAY
     assert (await retention.run_retention_sweep(kept))["scheduled_tasks"] == 0
     assert len(await jobs_store.list_jobs(settings, TENANT)) == 6
+
+
+@parametrized
+async def test_the_sweep_forgets_stale_agent_tasks_and_zero_days_keeps_them(
+    retention_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wired into the nightly sweep, counted under its own key, and off at 0. The rule itself --
+    which rows qualify -- is the memory store's contract (`test_memory_store.py`)."""
+    settings = _retention(retention_settings).model_copy(update={"memory_task_retention_days": 30})
+    clock = Clock(ms=1_800_000_000_000)
+    clock.install(monkeypatch)
+    old = await memory_store.put_memory(settings, TENANT, content="Create notes.txt.", kind="task")
+    clock.ms += 29 * DAY
+    recent = await memory_store.put_memory(settings, TENANT, content="Draft the release notes.", kind="task")
+    clock.ms += 2 * DAY
+
+    kept = settings.model_copy(update={"memory_task_retention_days": 0})
+    assert (await retention.run_retention_sweep(kept))["memory_tasks_forgotten"] == 0
+    assert (await memory_store.get_many(settings, TENANT, [old["id"]]))[old["id"]]["status"] == "active"
+
+    assert (await retention.run_retention_sweep(settings))["memory_tasks_forgotten"] == 1
+    rows = await memory_store.get_many(settings, TENANT, [old["id"], recent["id"]])
+    assert rows[old["id"]]["status"] == memory_store.FORGOTTEN
+    assert rows[old["id"]]["metadata"][memory_store.RETIRED_BY_KEY] == "retention"
+    assert rows[recent["id"]]["status"] == "active"

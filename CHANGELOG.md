@@ -10,6 +10,30 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-10-22
+
+### Added
+
+- Workflows record who created them and through what (`created_by`, `authored_via`), returned by `/workflows`. (#667)
+
+- `FELIX_MEMORY_TASK_RETENTION_DAYS` (default 30): the nightly retention sweep forgets agent-written task memories untouched that long. They can be restored with `POST /memory/{id}/restore`, and operator-written tasks are never expired. (#669)
+
+- The worker embeds memories stored without a vector, so turning on an embedder covers memories stored before it. (#669)
+
+### Fixed
+
+- Memory capture no longer stores a second copy of a fact the agent saved with `remember` in the same turn, or a fact the pool already holds. The extractor is now shown the pool's known values and reuses their topic keys. (#666)
+
+- The memory prelude no longer spends its limit on superseded values of one topic. (#666)
+
+- Compose now passes `FELIX_MEMORY_EMBEDDER`, `FELIX_MEMORY_EMBEDDING_MODEL`, `FELIX_MEMORY_EMBEDDING_DIM` and `FELIX_MEMORY_TASK_RETENTION_DAYS` to its containers; previously setting them in `.env` did nothing. (#669)
+
+- Vectors from a hosted embedder now record the model that made them instead of an empty name. (#669)
+
+### Security
+
+- A tool's raised exception is held to secret masking (any tool) and content screening (untrusted and relaying tools) as its output is. A known secret is redacted, and a flagged error is quarantined or blocked, keeping its error code. Before, the exception text reached the model unread. (#665)
+
 ## [0.16.0] — 2026-10-22
 
 ### Added
@@ -5066,3 +5090,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.15.0]: https://github.com/felix-run/felix/releases/tag/v0.15.0
 [0.15.1]: https://github.com/felix-run/felix/releases/tag/v0.15.1
 [0.16.0]: https://github.com/felix-run/felix/releases/tag/v0.16.0
+[0.16.1]: https://github.com/felix-run/felix/releases/tag/v0.16.1

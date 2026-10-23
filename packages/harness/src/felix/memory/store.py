@@ -507,15 +507,36 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
         )
         await db.execute(stmt)
         if embedding:
-            await _write_embedding(db, tenant_id, mem_id, embedding, model=row["embedding_model"])
+            await _write_embedding(
+                db,
+                tenant_id,
+                mem_id,
+                embedding,
+                model=row["embedding_model"],
+                expected_dim=await _configured_dim(db),
+            )
         await db.commit()
 
 
 _warned_embedding_dim = False
 
 
-async def _write_embedding(db: Any, tenant_id: str, mem_id: str, vector: list[float], *, model: str) -> None:
-    """Set the pgvector column, which has no ORM representation.
+async def _write_embedding(
+    db: Any,
+    tenant_id: str,
+    mem_id: str,
+    vector: list[float],
+    *,
+    model: str,
+    expected_dim: int | None,
+    only_if_missing: bool = False,
+) -> bool:
+    """Set the pgvector column, which has no ORM representation. Returns whether a row changed.
+
+    `expected_dim` is the column width, read by the caller (`_configured_dim`) so a batch
+    writer reads it once rather than once per row. `only_if_missing` leaves a row that already
+    has a vector alone: the backfill reads its batch, releases the connection and calls the
+    embedder, and a capture may have embedded the same row in between.
 
     A vector whose length does not match the column is rejected loudly. Postgres would
     reject it anyway, and the previous behaviour — swallow the error into a debug log —
@@ -525,7 +546,7 @@ async def _write_embedding(db: Any, tenant_id: str, mem_id: str, vector: list[fl
     global _warned_embedding_dim
     from sqlalchemy import text as sa_text
 
-    expected = await _configured_dim(db)
+    expected = expected_dim
     if expected is not None and len(vector) != expected:
         if not _warned_embedding_dim:
             _warned_embedding_dim = True
@@ -537,17 +558,18 @@ async def _write_embedding(db: Any, tenant_id: str, mem_id: str, vector: list[fl
                 len(vector),
                 expected,
             )
-        return
+        return False
 
     literal = "[" + ",".join(repr(float(v)) for v in vector) + "]"
-    await db.execute(
+    result = await db.execute(
         sa_text(
             "UPDATE memory_vectors SET embedding = CAST(:vec AS vector), "
             "embedding_dim = :dim, embedding_model = :model "
-            "WHERE tenant_id = :tenant AND id = :id"
+            "WHERE tenant_id = :tenant AND id = :id" + (" AND embedding IS NULL" if only_if_missing else "")
         ),
         {"vec": literal, "dim": len(vector), "model": model, "tenant": tenant_id, "id": mem_id},
     )
+    return bool(getattr(result, "rowcount", 0))
 
 
 async def _configured_dim(db: Any) -> int | None:
@@ -1208,24 +1230,259 @@ async def merge_duplicates(
     return len(planned), refused
 
 
+# --- task expiry (nightly retention) ---------------------------------------------------
+#
+# A `task` is work in progress: "the user wants to create notes.txt". It carries no
+# topic_key, so nothing supersedes it, nothing marks it done, and the retention sweep only
+# ever deleted *superseded* rows -- so every task an agent captured stayed active, in recall
+# and in the prelude, for the life of the deployment (sixteen of them, the oldest a month
+# old, in the first audit of a real store). Age is the only signal a task has gone stale.
+#
+# The retirer is named `retention`, which `_TRUST_RANK` does not list, so it ranks at
+# `_DEFAULT_TRUST` -- the agent's rank, deliberately: a cron acting on age has no more
+# authority than the agent that wrote the row. Two consequences follow, and both are wanted.
+# An operator-written task (`management_api`) is never touched: the cron cannot outrank its
+# writer, and an operator who wrote a task down meant it to stay until they say otherwise.
+# And `_may_reactivate` lets an agent re-storing the same sentence bring the row back,
+# which is right: a task restated today is in progress again, and it returns with a fresh
+# `updated_at`, so the next sweep does not retire it straight back.
+RETENTION_SOURCE = "retention"
+TASK_KIND = "task"
+
+
+def _task_expired(row: dict[str, Any], cutoff_ms: int) -> bool:
+    """Active, a task, agent-written, and untouched since before the cutoff.
+
+    `updated_at` rather than `created_at`, so a task the agent restated last week is not
+    retired for having first been written last month; `created_at` stands in where the
+    column is the zero a pre-`updated_at` row was backfilled with.
+    """
+    last = int(row.get("updated_at") or 0) or int(row.get("created_at") or 0)
+    return (
+        _is_active(row)
+        and row.get("kind") == TASK_KIND
+        and _trust(row) <= _rank(RETENTION_SOURCE)
+        and last < cutoff_ms
+    )
+
+
+async def expire_tasks(settings: Settings, cutoff_ms: int) -> int:
+    """Forget every agent-written active task untouched since `cutoff_ms`. Returns rows forgotten.
+
+    Forgotten, not deleted, and not superseded: a forget has no position in turn time (see
+    `forget`), it is listed by `list_forgotten`, and `POST /memory/{id}/restore` undoes it.
+    The row is stamped `retired_by: retention`, so the operator's view says what retired it.
+
+    Cross-tenant, so the Postgres arm runs under `rls_bypass()` as `consolidate_pools` does.
+    """
+    ts = now_ms()
+    if _use_memory(settings):
+        expired = 0
+        for row in _memory_rows.values():
+            if _task_expired(row, cutoff_ms):
+                row["status"] = FORGOTTEN
+                _stamp_retirer(row, RETENTION_SOURCE)
+                row["updated_at"] = ts
+                expired += 1
+        return expired
+
+    from felix.db.session import rls_bypass
+
+    last = func.coalesce(func.nullif(MemoryVector.updated_at, 0), MemoryVector.created_at)
+    factory = get_session_factory(settings=settings)
+    with rls_bypass():
+        async with factory() as db:
+            result = await db.execute(
+                update(MemoryVector)
+                .where(
+                    MemoryVector.status == ACTIVE,
+                    MemoryVector.kind == TASK_KIND,
+                    # The SQL form of `_task_expired`'s rank test: the writer may not
+                    # outrank the retirer, so an operator's task is left alone.
+                    _trust_of_column(MemoryVector.metadata_json) <= _rank(RETENTION_SOURCE),
+                    last < cutoff_ms,
+                )
+                .values(
+                    status=FORGOTTEN,
+                    updated_at=ts,
+                    metadata_json=MemoryVector.metadata_json.op("||")(
+                        sa_cast({RETIRED_BY_KEY: RETENTION_SOURCE}, JSONB)
+                    ),
+                )
+            )
+            await db.commit()
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+# --- vectorless rows (the backfill's reads and writes) -----------------------------------
+#
+# Capture stores a fact without a vector whenever the embedder is unset or down
+# (`capture._embed_facts` never raises), and nothing ever came back for it. These are the two
+# store halves of putting that right; the job that drives them -- which embedder, whether it
+# is worth calling, what a refusal means -- is `memory/backfill.py`, not the store's business.
+
+# One row the backfill may embed: `(tenant_id, memory id, content)`.
+MissingRow = tuple[str, str, str]
+
+
+async def configured_embedding_dim(settings: Settings) -> int | None:
+    """The width the stored vector column accepts, or ``None`` when nothing fixes one.
+
+    Postgres reads `memory_vector_config`, which the migration that built the `vector(N)`
+    column wrote. The twin has no column and keeps any vector inline, so it has no width to
+    report -- and `put_memory` there accepts any length -- so it answers ``None`` rather than
+    borrowing `FELIX_MEMORY_EMBEDDING_DIM`, which would refuse on one write path and not the
+    other.
+    """
+    if _use_memory(settings):
+        return None
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    with rls_bypass():
+        async with factory() as db:
+            return await _configured_dim(db)
+
+
+async def missing_embeddings(settings: Settings, *, limit: int) -> list[MissingRow]:
+    """Up to `limit` active rows with no vector, every tenant's, newest first.
+
+    Newest first so that while a backlog drains, the memories recall is likeliest to want go
+    first; ordered down to tenant and id so the twin and Postgres pick the same batch.
+    Cross-tenant, under `rls_bypass()` like `consolidate_pools`.
+    """
+    bound = max(1, int(limit))
+    if _use_memory(settings):
+        return _missing_in_memory(bound)
+    return await _missing_in_postgres(settings, bound)
+
+
+def _missing_in_memory(limit: int) -> list[MissingRow]:
+    rows = [
+        (tenant_id, row)
+        for (tenant_id, _), row in _memory_rows.items()
+        if _is_active(row) and not row.get("embedding")
+    ]
+    rows.sort(key=lambda item: (int(item[1].get("created_at") or 0), item[0], item[1]["id"]), reverse=True)
+    return [(tenant_id, str(row["id"]), str(row.get("content") or "")) for tenant_id, row in rows[:limit]]
+
+
+async def _missing_in_postgres(settings: Settings, limit: int) -> list[MissingRow]:
+    from sqlalchemy import literal_column
+
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    with rls_bypass():
+        async with factory() as db:
+            rows = (
+                await db.execute(
+                    select(MemoryVector.tenant_id, MemoryVector.id, MemoryVector.content)
+                    # The pgvector column has no ORM attribute (see `MemoryVector`).
+                    .where(MemoryVector.status == ACTIVE, literal_column("embedding").is_(None))
+                    .order_by(
+                        MemoryVector.created_at.desc(),
+                        collate(MemoryVector.tenant_id, "C").desc(),
+                        collate(MemoryVector.id, "C").desc(),
+                    )
+                    .limit(limit)
+                )
+            ).all()
+    return [(str(t), str(i), str(c or "")) for t, i, c in rows]
+
+
+async def write_embeddings(
+    settings: Settings,
+    batch: list[MissingRow],
+    vectors: list[list[float]],
+    *,
+    model: str,
+    expected_dim: int | None,
+) -> int:
+    """Attach `vectors` to the rows of `batch`, positionally. Returns rows written.
+
+    Only ever fills a gap: a row that gained a vector since `missing_embeddings` read it -- a
+    capture embedded it while the backfill's embedder call was in flight -- keeps the one it
+    has. `expected_dim` is the width the caller already read (`configured_embedding_dim`), so
+    a batch costs one read of it, not one per row; a vector of another width is not written.
+    """
+    if len(batch) != len(vectors):
+        raise ValueError(f"{len(vectors)} vectors for {len(batch)} rows")
+    if _use_memory(settings):
+        return _write_embeddings_in_memory(batch, vectors, model=model, expected_dim=expected_dim)
+    return await _write_embeddings_in_postgres(
+        settings, batch, vectors, model=model, expected_dim=expected_dim
+    )
+
+
+def _write_embeddings_in_memory(
+    batch: list[MissingRow], vectors: list[list[float]], *, model: str, expected_dim: int | None
+) -> int:
+    written = 0
+    for (tenant_id, mem_id, _), vector in zip(batch, vectors, strict=True):
+        row = _memory_rows.get((tenant_id, mem_id))
+        if row is None or row.get("embedding"):
+            continue
+        if expected_dim is not None and len(vector) != expected_dim:
+            continue
+        row["embedding"] = list(vector)
+        row["embedding_dim"] = len(vector)
+        row["embedding_model"] = model
+        written += 1
+    return written
+
+
+async def _write_embeddings_in_postgres(
+    settings: Settings,
+    batch: list[MissingRow],
+    vectors: list[list[float]],
+    *,
+    model: str,
+    expected_dim: int | None,
+) -> int:
+    from felix.db.session import rls_bypass
+
+    factory = get_session_factory(settings=settings)
+    written = 0
+    with rls_bypass():
+        async with factory() as db:
+            for (tenant_id, mem_id, _), vector in zip(batch, vectors, strict=True):
+                if await _write_embedding(
+                    db,
+                    tenant_id,
+                    mem_id,
+                    vector,
+                    model=model,
+                    expected_dim=expected_dim,
+                    only_if_missing=True,
+                ):
+                    written += 1
+            await db.commit()
+    return written
+
+
 __all__ = [
     "ACTIVE",
     "CONSOLIDATION_SOURCE",
     "FORGOTTEN",
     "SUPERSEDED",
     "as_of",
+    "configured_embedding_dim",
     "consolidate_pools",
     "consolidation_batch",
     "current_turn_seq",
+    "expire_tasks",
     "forget",
     "get_many",
     "list_active",
     "list_memory_pools",
     "memory_id",
     "merge_duplicates",
+    "missing_embeddings",
     "normalize_topic_key",
     "plan_merges",
     "put_memory",
     "reset_memory_for_tests",
     "supersede",
+    "write_embeddings",
 ]
