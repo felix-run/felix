@@ -466,6 +466,8 @@ def _flow_env(**spec: Any) -> dict[str, str]:
         "secret": "secret:TRIGGER_E2E_HOOK",
         "events": ["issues"],
         "inputs": SOURCES,
+        # Every workflow trigger is pinned; `_save_flow` re-pins it to what it saves.
+        "revision": "unsaved.0",
         **spec,
     }
     return {
@@ -477,9 +479,15 @@ def _flow_env(**spec: Any) -> dict[str, str]:
 
 
 async def _save_flow(app: Any, flow: dict[str, Any] | None = None) -> str:
+    """Save `triage`, then pin the trigger to that revision, as an operator would after reading it.
+    The registry is re-read per delivery, so the pin takes effect at once."""
     saved = await app.client.put("/workflows/triage", json=flow or TRIAGE_FLOW, headers=BEARER)
     assert saved.status_code in (200, 201), saved.text
-    return str(saved.json()["revision"])
+    revision = str(saved.json()["revision"])
+    triggers = json.loads(app.settings.triggers)
+    triggers["gh"]["revision"] = revision
+    app.settings.triggers = json.dumps(triggers)
+    return revision
 
 
 async def _post(app: Any, payload: dict[str, Any], delivery: str = GUID) -> Any:
@@ -570,17 +578,59 @@ async def test_a_payload_that_starts_nothing_spends_none_of_the_limit(boot: Any)
     assert [bad.status_code, good.status_code, over.status_code] == [422, 202, 429]
 
 
-async def test_a_trigger_pinned_to_a_revision_runs_only_that_one(boot: Any) -> None:
+async def _resave(app: Any, by: str, flow: dict[str, Any]) -> None:
+    """Save `triage` again without re-pinning: through the routes as a person, or as an agent's
+    `save_workflow` writes it for its person (`spec.workflow_authoring`)."""
+    if by == "person":
+        saved = await app.client.put("/workflows/triage", json=flow, headers=BEARER)
+        assert saved.status_code == 200, saved.text
+        return
+    from felix.workflows import store as workflow_store
+    from felix.workflows.schema import WorkflowSpec
+
+    row = await workflow_store.get_workflow(app.settings, "default", "triage")
+    assert row is not None
+    await workflow_store.put_workflow(
+        app.settings,
+        "default",
+        "triage",
+        WorkflowSpec.model_validate(flow),
+        created_by="https://issuer.example|e2e",
+        authored_via=workflow_store.AGENT_VIA_PREFIX + "e2e-agent",
+    )
+
+
+@pytest.mark.parametrize("by", ["person", "agent"])
+async def test_a_trigger_pinned_to_a_revision_runs_only_that_one(boot: Any, by: str) -> None:
     async with boot([], env=_flow_env(), manifests={"e2e-agent": AGENT}) as app:
         current = await _save_flow(app)
-        # The registry is re-read per delivery, so an operator's pin takes effect here.
-        app.settings.triggers = _flow_env(revision="0.0")["FELIX_TRIGGERS"]
+        # Saved again, and the pin does not follow it.
+        await _resave(app, by, {**TRIAGE_FLOW, "name": "Triage, edited"})
         stale = await _post(app, ISSUE)
         assert await _workflow_runs(app) == []
-        app.settings.triggers = _flow_env(revision=current)["FELIX_TRIGGERS"]
+        newest = await _save_flow(app)
         pinned = await _post(app, ISSUE)
+        runs = await _workflow_runs(app)
     assert (stale.status_code, stale.json()["detail"]) == (503, "trigger_unavailable")
     assert pinned.status_code == 202, pinned.text
+    assert newest != current
+    assert [r["revision"] for r in runs] == [newest]
+
+
+async def test_a_save_that_changes_the_inputs_is_refused_as_stale_not_as_the_payload(boot: Any) -> None:
+    """The pin is checked before the payload, which is held to the inputs the *pinned* revision
+    declares: an edit retyping one is the operator's to re-pin (503, not kept), not the sender's 422."""
+    async with boot([], env=_flow_env(), manifests={"e2e-agent": AGENT}) as app:
+        await _save_flow(app)
+        # `number` now a string: the sender's 7 no longer fits it, though it fits the pinned one.
+        retyped = {**TRIAGE_FLOW["inputs"], "number": {"type": "string"}}
+        await _resave(app, "person", {**TRIAGE_FLOW, "inputs": retyped})
+        stale = await _post(app, ISSUE)
+        await _save_flow(app)  # the shape the trigger maps, pinned again
+        again = await _post(app, ISSUE)
+    assert (stale.status_code, stale.json()["detail"]) == (503, "trigger_unavailable")
+    assert again.status_code == 202, again.text
+    assert again.headers.get("idempotent-replayed") is None
 
 
 async def test_a_trigger_whose_workflow_cannot_run_is_unavailable_until_fixed(boot: Any) -> None:
@@ -599,108 +649,3 @@ async def test_a_trigger_whose_workflow_cannot_run_is_unavailable_until_fixed(bo
         (503, "trigger_unavailable"),
     ]
     assert fixed.status_code == 202, fixed.text
-
-
-# --- an unpinned trigger and a workflow an agent holds ----------------------------------------
-
-PERSON = "https://issuer.example|e2e"
-
-
-async def _agent_saves(app: Any, *, adopted: bool = False) -> str:
-    """`triage` saved as `save_workflow` saves it -- an agent's, for `PERSON` -- and, `adopted`,
-    then saved over by that person through the routes' own store call (`owner:agent:<manifest>`)."""
-    from felix.workflows import store as workflow_store
-    from felix.workflows.schema import WorkflowSpec
-
-    spec = WorkflowSpec.model_validate(TRIAGE_FLOW)
-    via = workflow_store.AGENT_VIA_PREFIX + "e2e-agent"
-    row = await workflow_store.put_workflow(
-        app.settings, "default", "triage", spec, created_by=PERSON, authored_via=via
-    )
-    if adopted:
-        row = await workflow_store.put_workflow(
-            app.settings, "default", "triage", spec, created_by=PERSON, writer_owner=PERSON
-        )
-        assert row["authored_via"] == workflow_store.OWNER_EDIT_PREFIX + via, row
-    return str(row["revision"])
-
-
-async def _refusals(app: Any) -> list[tuple[str, dict[str, Any]]]:
-    from felix.audit import store as audit_store
-
-    await audit_store.flush_pending(app.settings)
-    events, _ = await audit_store.list_events(app.settings, "default", event_type="workflow_run_refused")
-    return [(e["principal_subj"], e["status"], e["payload_json"]) for e in events]
-
-
-async def test_an_unpinned_trigger_refuses_a_workflow_an_agent_holds_until_pinned(boot: Any) -> None:
-    async with boot([], env=_flow_env(), manifests={"e2e-agent": AGENT}) as app:
-        current = await _agent_saves(app)
-        unpinned = await _post(app, ISSUE)
-        assert await _workflow_runs(app) == []
-        refusals = await _refusals(app)
-        # The operator pins what they read: the refusal was not kept as the delivery's answer.
-        app.settings.triggers = _flow_env(revision=current)["FELIX_TRIGGERS"]
-        pinned = await _post(app, ISSUE)
-        runs = await _workflow_runs(app)
-        assert len(await _refusals(app)) == 1
-    assert (unpinned.status_code, unpinned.json()["detail"]) == (503, "trigger_unavailable")
-    assert refusals == [
-        (
-            "trigger:gh",
-            "denied",
-            {
-                "workflow_id": "triage",
-                "revision": current,
-                "trigger": "trigger:gh",
-                "reason": "unpinned_agent_workflow",
-            },
-        )
-    ]
-    assert pinned.status_code == 202, pinned.text
-    assert [r["revision"] for r in runs] == [current]
-
-
-async def test_a_refused_delivery_spends_the_limit_so_replays_cannot_flood_the_audit(boot: Any) -> None:
-    async with boot([], env=_flow_env(rate_limit=1), manifests={"e2e-agent": AGENT}) as app:
-        await _agent_saves(app)
-        # The refusal is not kept, so the same signed body can be posted again.
-        first, again = await _post(app, ISSUE), await _post(app, ISSUE)
-        refusals = await _refusals(app)
-    assert [first.status_code, again.status_code] == [503, 429]
-    assert len(refusals) == 1, refusals
-
-
-async def test_an_unpinned_trigger_runs_a_workflow_its_person_has_saved_over(boot: Any) -> None:
-    async with boot([], env=_flow_env(), manifests={"e2e-agent": AGENT}) as app:
-        await _agent_saves(app, adopted=True)
-        resp = await _post(app, ISSUE)
-        refusals = await _refusals(app)
-    assert resp.status_code == 202, resp.text
-    assert refusals == []
-
-
-async def test_the_boot_names_each_trigger_that_starts_a_workflow_unpinned(
-    boot: Any, caplog: pytest.LogCaptureFixture
-) -> None:
-    triggers = {
-        "loose": {**json.loads(_flow_env()["FELIX_TRIGGERS"])["gh"]},
-        "held": {**json.loads(_flow_env()["FELIX_TRIGGERS"])["gh"], "revision": "g.1"},
-        "chat": {
-            "tenant": "default",
-            "manifest": "e2e-triage",
-            "prompt": PROMPT,
-            "scheme": "github",
-            "secret": "secret:TRIGGER_E2E_HOOK",
-        },
-    }
-    env = {**_flow_env(), "FELIX_TRIGGERS": json.dumps(triggers)}
-    with caplog.at_level("WARNING", logger="felix_api.app"):
-        async with boot([], env=env, manifests={"e2e-agent": AGENT, "e2e-triage": TRIAGE}):
-            pass
-    warned = [
-        r.args
-        for r in caplog.records
-        if r.name == "felix_api.app" and r.levelname == "WARNING" and "revision pin" in str(r.msg)
-    ]
-    assert warned == [("loose", "triage")]

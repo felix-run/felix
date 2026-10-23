@@ -1000,14 +1000,16 @@ Storage and execution:
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `POST /triggers/{id}` starts a durable run from a signed event: a pushed commit, a failed
   payment, an alert. The operator registers each trigger in `FELIX_TRIGGERS` (a JSON map of id →
-  `{tenant, manifest, scheme, secret, prompt, events?, scopes?, rate_limit?}`); `scheme` is
+  `{tenant, manifest, scheme, secret, prompt, events?, scopes?, rate_limit?}`, or `workflow`, `inputs`
+  and `revision` in place of `manifest` and `prompt`); `scheme` is
   `standard` (Standard Webhooks) or `github` (`X-Hub-Signature-256`). The signature is verified
   before the body is read, a replay gets the first delivery's answer, and each trigger has its own
   per-minute limit counted only for deliveries that would start a run. Secrets are `secret:NAME` outside a
   development install. The run's instruction is the operator's `prompt`; the sender's payload reaches the
   model only through the `trigger_event` tool the manifest lists, as untrusted output, after a
   marker scan at intake. A trigger may instead name a `workflow` and map payload fields to its
-  inputs by JSON Pointer (`inputs`), each checked against the input's declared type before the
+  inputs by JSON Pointer (`inputs`); it must pin the workflow `revision` it runs, so a later save,
+  a person's or an agent's, starts nothing until the operator pins again. Each input is checked against the input's declared type before the
   rate limit is spent; the sender's strings, objects and arrays are recorded as untrusted, and
   every agent step of a triggered run reads what it is given inside a fence of its own. See
   `deploy/GOVERNANCE.md`.

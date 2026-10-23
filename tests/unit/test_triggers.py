@@ -305,7 +305,11 @@ def _flow(**over: Any) -> dict[str, Any]:
         (_flow(inputs={"n": 3}), "needs a source"),
         (_flow(inputs={"n": "/" + "x" * 600}), "needs a source"),
         (_flow(inputs=["n"]), "must map"),
-        (_flow(revision=""), "`revision`"),
+        # Unpinned, whoever saves the workflow next -- an agent included -- picks what a sender starts.
+        (_flow(), "must pin the workflow `revision`"),
+        (_flow(revision=""), "must pin the workflow `revision`"),
+        (_flow(revision="  "), "must pin the workflow `revision`"),
+        (_flow(revision=3), "must pin the workflow `revision`"),
         # The event header is unsigned, so only a listed type is passed on: without a list, nothing.
         (_flow(inputs={"kind": "$event"}), "needs `events`"),
     ],
@@ -314,6 +318,11 @@ def test_a_malformed_workflow_trigger_fails_the_boot(spec: dict[str, Any], says:
     settings = make_settings(triggers=json.dumps({"t": spec}), environment="development")
     with pytest.raises(ValueError, match=says):
         T.parse_triggers(settings)
+
+
+def test_an_unpinned_workflow_trigger_fails_the_boot_not_its_first_event() -> None:
+    with pytest.raises(RuntimeError, match="FELIX_TRIGGERS: trigger 't' must pin the workflow `revision`"):
+        make_settings(triggers=json.dumps({"t": _flow()}), environment="development").validate_runtime()
 
 
 def test_a_workflow_trigger_parses_to_its_own_target() -> None:
@@ -354,7 +363,7 @@ def _trigger(events: frozenset[str] | None, **sources: str) -> T.Trigger:
     return T.Trigger(
         id="t",
         tenant="acme",
-        target=T.WorkflowTarget(workflow="triage", input_sources=sources),
+        target=T.WorkflowTarget(workflow="triage", revision="g.1", input_sources=sources),
         scheme="github",
         secrets=(KEY,),
         events=events,
