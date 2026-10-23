@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [make.felix.run](https://make.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-10-15 (cutting 0.15.0: the workflows console and #647 marked done, the open workflow decisions listed); before that 2026-10-10 (completed items folded into HISTORY.md); before that 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
+**Last reviewed:** 2026-10-22 (cutting 0.16.0: self-scheduling, notify, unattended runs and heartbeats landed through #663; the W4 entry is current); before that 2026-10-15 (cutting 0.15.0: the workflows console and #647 marked done, the open workflow decisions listed); before that 2026-10-10 (completed items folded into HISTORY.md); before that 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
 2026-09-29, after 0.5.0)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
