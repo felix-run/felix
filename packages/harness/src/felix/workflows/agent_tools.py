@@ -45,6 +45,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("felix.workflows.agent_tools")
 
+# Step kinds that act on nothing outside the run: a gate a person answers, and a branch on a value.
+# `run_reach` counts every other kind as able to change something, a plugin's included.
+_INERT_STEP_KINDS = frozenset({"approval", "branch"})
+
+
+def _reached(spec: WorkflowSpec, supplied: set[str]) -> set[str]:
+    """The ids of the steps a value on one of the ``supplied`` inputs can reach, through any chain
+    of edges, control edges included."""
+    from felix.workflows.schema import TRIGGER
+
+    reached: set[str] = set()
+    frontier = {e.target.step for e in spec.edges if e.source.step == TRIGGER and e.source.port in supplied}
+    while frontier:
+        step = frontier.pop()
+        if step not in reached:
+            reached.add(step)
+            frontier |= {e.target.step for e in spec.edges if e.source.step == step}
+    return reached
+
+
 SAVE_WORKFLOW = SAVE_WORKFLOW_TOOL_NAME
 WORKFLOW_AUTHORING_TOOL_NAMES = frozenset(
     {"workflow_catalog", "check_workflow", SAVE_WORKFLOW, "list_my_workflows", "run_workflow"}
@@ -581,46 +601,52 @@ class _AgentWorkflows:
     async def run_reach(
         self, args: _RunArgs, auth: AuthContext, workflow: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """The `tool_call` steps a value this call supplies can reach, through any chain of edges,
-        each with whether its tool can change something. A tool the step's manifest no longer
-        binds, or a manifest that does not compile, counts as one that can: the run would fail
-        there, and an approval costs less than guessing it would."""
-        from felix.workflows.schema import TRIGGER, WorkflowSpec
-        from felix.workflows.tool_step import step_tools
+        """The steps a value this call supplies can reach, through any chain of edges, each with
+        whether it can change something. A `tool_call` step can when its tool can; a tool the
+        manifest no longer binds, or a manifest that does not compile, counts as one that can: the
+        run would fail there, and an approval costs less than guessing it would. Every other step
+        can, but `approval` and `branch`: an agent step's model chooses its own calls from the
+        value, through its sub-agents' tools as well as its own, and may remember what it read;
+        and step kinds are an open registry."""
+        from felix.workflows.schema import WorkflowSpec
 
         spec = WorkflowSpec.model_validate(workflow["definition"])
-        supplied = set(args.inputs)
-        reached: set[str] = set()
-        frontier = {
-            e.target.step for e in spec.edges if e.source.step == TRIGGER and e.source.port in supplied
-        }
-        while frontier:
-            step = frontier.pop()
-            if step in reached:
-                continue
-            reached.add(step)
-            frontier |= {e.target.step for e in spec.edges if e.source.step == step}
-        tools_by_manifest: dict[str, dict[str, bool] | None] = {}
-        found = []
+        reached = _reached(spec, set(args.inputs))
+        by_manifest: dict[str, dict[str, bool] | None] = {}
+        found: list[dict[str, Any]] = []
         for step in spec.steps:
-            if step.id not in reached or step.kind != "tool_call":
+            if step.id not in reached or step.kind in _INERT_STEP_KINDS:
                 continue
-            manifest, tool = str(step.config.get("manifest", "")), str(step.config.get("tool", ""))
-            if manifest not in tools_by_manifest:
-                try:
-                    bound = await step_tools(self.settings, self.tenant_id, manifest, auth)
-                    # `read_only` is plan mode's word, and `task` carries it because a foreground
-                    # child shares the mode -- not because it changes nothing. A peer (`task`, an
-                    # A2A agent) acts on what it is told, so here it always counts as writing.
-                    tools_by_manifest[manifest] = {t.name: bool(t.read_only and not t.is_peer) for t in bound}
-                except Exception:
-                    logger.warning("run_workflow: step tools of a manifest did not resolve", exc_info=True)
-                    tools_by_manifest[manifest] = None
-            read_only = (tools_by_manifest[manifest] or {}).get(tool, False)
-            found.append(
-                {"step": step.id, "manifest": manifest, "tool": tool, "changes_things": not read_only}
-            )
+            hit: dict[str, Any] = {"step": step.id, "kind": step.kind}
+            if "manifest" in step.config:
+                hit["manifest"] = str(step.config["manifest"])
+            if step.kind == "tool_call":
+                hit["tool"] = str(step.config.get("tool", ""))
+                changes = await self._changes_by_tool(hit.get("manifest", ""), auth, by_manifest)
+                hit["changes_things"] = True if changes is None else changes.get(hit["tool"], True)
+            else:
+                hit["changes_things"] = True
+            found.append(hit)
         return found
+
+    async def _changes_by_tool(
+        self, manifest: str, auth: AuthContext, cache: dict[str, dict[str, bool] | None]
+    ) -> dict[str, bool] | None:
+        """Each tool a `tool_call` step on ``manifest`` can name, with whether it can change
+        something; `None` when the manifest does not resolve. Read once per manifest per call."""
+        from felix.workflows.tool_step import step_tools
+
+        if manifest not in cache:
+            try:
+                bound = await step_tools(self.settings, self.tenant_id, manifest, auth)
+                # `read_only` is plan mode's word, and `task` carries it because a foreground
+                # child shares the mode -- not because it changes nothing. A peer (`task`, an
+                # A2A agent) acts on what it is told, so here it always counts as writing.
+                cache[manifest] = {t.name: not (t.read_only and not t.is_peer) for t in bound}
+            except Exception:
+                logger.warning("run_workflow: step tools of a manifest did not resolve", exc_info=True)
+                cache[manifest] = None
+        return cache[manifest]
 
     async def run_binding(self, args: ToolInput) -> str:
         """What an approval of a run binds beyond its arguments: the workflow's revision now. A
@@ -677,7 +703,7 @@ class _AgentWorkflows:
             json.dumps(parsed.inputs, indent=2, sort_keys=True, ensure_ascii=True, default=str),
         ]
         if reach:
-            lines += ["", "--- tools those inputs reach ---"]
+            lines += ["", "--- steps those inputs reach ---"]
             lines += [json.dumps(hit, sort_keys=True, ensure_ascii=True) for hit in reach]
         return "\n".join(lines)
 

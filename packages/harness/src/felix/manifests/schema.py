@@ -986,8 +986,10 @@ class WorkflowAuthoringSpec(_Strict):
     #: trigger included, so a person reads it first. `false` adds no rule.
     approval: bool = True
     #: When `run_workflow` waits for the person's approval. `auto`: only when a value the call
-    #: supplies can reach a `tool_call` step whose tool is not `read_only` -- the one place a
-    #: model-chosen input lands unfenced, as a tool argument. `always`: every run. `never`: no rule.
+    #: supplies can reach a step that can change something -- a `tool_call` step whose tool is not
+    #: `read_only` (where a model-chosen input lands unfenced, as a tool argument), any `agent_turn`
+    #: step (the input becomes its prompt, and its model picks the calls), or a step of any other
+    #: kind but `approval` and `branch`. `always`: every run. `never`: no rule.
     #: Closed on purpose: each value is a different rule the harness adds, not an implementation to
     #: swap. A manifest rule naming `run_workflow` literally replaces it and gates every call; unlike
     #: the save's, a permission mode (`bypass`) may waive it, since a run starts in front of the person.

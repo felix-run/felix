@@ -31,6 +31,19 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## Unreleased: workflow triggers pin a revision, and agent steps count toward a run's approval
+
+**Every workflow trigger must pin `revision`** (#681). A `FELIX_TRIGGERS` entry that names a
+`workflow` without one stops the API and the worker at boot. Before the roll, read each workflow's
+current `revision` (`GET /workflows/{id}`, after reading the definition) and add it to its trigger;
+`felix doctor` reports any you missed. After that, every save to the workflow, a person's or an
+agent's, makes the trigger answer `503 trigger_unavailable` until you pin the new revision.
+
+**Agent steps count toward `run_approval: auto`.** A run whose inputs reach an agent step
+now waits for the person, as it already did for a `tool_call` step whose tool changes things; so
+does a step of a plugin's kind. Only `approval` and `branch` steps are passed over.
+`run_approval: never` keeps no rule at all.
+
 ## 0.17.0: memory belongs to the person, and agent workflow runs ask first
 
 Migration `0046_memory_principal` adds `memory_vectors.principal` and two indexes, built
