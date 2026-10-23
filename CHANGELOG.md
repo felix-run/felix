@@ -10,6 +10,112 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-22
+
+### Added
+
+- `spec.scheduling` lets an agent schedule follow-up work for the person it is talking to, through three tools: `schedule_task`, `list_scheduled` and `cancel_scheduled`. A task is a job on the manifest that runs as that person. It needs `jobs:write`, is capped per person, and a recurring task has a minimum interval. A person approves each `schedule_task` call by default, and no permission mode, `bypass` included, waives an approval on `schedule_task`, whichever rule asks for it. (#651)
+
+- Jobs accept a one-shot schedule, `at:<ISO-8601 timestamp with offset>`, which fires once. A timestamp without an offset, or one already in the past, is refused. (#651)
+
+- `FELIX_SCHEDULED_TASK_RETENTION_DAYS` (default 30): the nightly retention sweep deletes agent-scheduled tasks that will not run again — a one-shot that has fired, or a task disabled when its credential expired — together with their run history. Jobs an operator wrote are never deleted. (#651)
+
+- The model is told today's date (end of the system prompt) and the current time (a transient note on a run's first call) in the new `FELIX_TIMEZONE` zone; `spec.system_prompt.include_datetime: false` turns it off. (#652)
+
+- `spec.notify` binds a `notify` tool: an agent sends a short plain-text notice (title up to 80 characters, message up to 500) as a Web Push to the person its run acts for, and only to browsers that person subscribed. It takes no recipient and refuses runs for no one or for a shared credential. Before sending it redacts known secrets (not personal data), removes links — in any script, including lookalike characters, encoded or spelled-out dots, and IPv4/IPv6 addresses — and screens the text: always with the marker scan, plus the manifest's screening model and decider when `content_screening` is on. It is limited by `max_per_hour` per person per manifest (default 10) and `max_per_run` (default 3; parallel calls in one turn cannot all pass it, and a durable run's resume starts a new count). It needs approval only with `approval: true`, which no permission mode waives. (#654)
+
+- A notice sent from a scheduled task's firing links to the conversation the task was scheduled from, when the person wrote the task and the thread is the tenant's own. Pushes for approvals and questions are unchanged: tenant-wide and metadata-only. (#654)
+
+- A `notify` sent from a scheduled task now also leaves the notice in the chat thread the task was scheduled from, on the thread's active branch, so the person finds it there when they open the thread, even if no browser took the push. The entry is for the person only: a `custom` entry (`metadata.type: notice`) that is never part of a model prompt. Nothing is written to a thread that does not exist or while a run is going on in it; the push still goes. (#656)
+
+- `notify`'s result has a `thread` field (`appended`, `run_live`, `missing`, `failed` or `not_eligible`). `channels` now lists only the channels that delivered, so `"push"` appears only when a browser took the notice. The `notify.sent` audit row carries the same fields. (#656)
+
+- `POST /mcp/{manifest}` selects the agent by path, so any MCP host can reach any manifest. (#657)
+
+- `/mcp` speaks MCP protocol `2026-07-28` (`server/discover`, per-request `_meta`, header validation) alongside the legacy `initialize` handshake. (#657)
+
+- `felix_approval_unattended_refused` metric for gated calls refused in an unattended run. (#658)
+
+- Heartbeats: an operator defines `spec.heartbeat` on a manifest (a `checklist`, a recurring `schedule` held to `min_interval_minutes` of at least 15, an optional firing `model` route, `max_turns` that only ever narrows the manifest's own bound, `keep_threads`; it needs `spec.notify`), and a person turns their own on or off over `GET /heartbeats`, `PUT /heartbeats/{manifest}` (`{enabled}` only), `DELETE /heartbeats/{manifest}` and `POST /heartbeats/{manifest}/run`, under the new `heartbeats:read` / `heartbeats:write` scopes. Each firing runs unattended as that person, from the manifest's current checklist, and either answers `HEARTBEAT_OK` quietly or calls `notify` once, which pushes to them and leaves the notice in their heartbeat conversation. Only the newest `keep_threads` firing threads are kept. A heartbeat enrolled with an API key or a Felix sign-in is re-checked at every firing; one enrolled with any other credential stops at that credential's expiry (`expires_at`). (#661)
+
+- `spec.heartbeat.max_firings_per_day` (optional, 1–1440; unset caps nothing beyond the schedule): a heartbeat fires at most that many times per UTC day, scheduled firings and `POST /heartbeats/{manifest}/run` alike. A firing past the cap calls no model, is recorded as a run with the new status `skipped` (`reason: daily_cap`), and leaves the heartbeat on; skipped runs do not count toward the cap. A cap below what the schedule fires in a UTC day is returned as a warning by `PUT /manifests` and `felix validate-manifest`. (#663)
+
+- `FELIX_JOB_RUNS_KEEP` (default 200, 0 keeps all): after each run is recorded, a job's `job_runs` history is trimmed to its newest N, at most 1000 rows per trim. This applies to every job, not only heartbeats; runs of the current UTC day that ran are kept until the day ends, since the heartbeat cap counts them. (#663)
+
+### Changed
+
+- A chat turn opens 10 Postgres transactions instead of 13 (`/chat`) or 15 (`/chat/stream`), and a streamed tool call no longer reads the session head four times. Thread metadata is read once per chat request, the stream's resume cursor comes from the turn's own appends, and the compacting render's reads share one transaction. (#653)
+
+- Work running as the `skill-improver` or `skill-eval` actor is refused by `schedule_task` and `notify`, like the other machine actors. (#654)
+
+- A react turn marks its thread as running before its first append, not just before its first model call, so a workspace note sent while the turn opens is queued for it instead of being written between the person's message and the reply. The mark is refreshed once the history is assembled, and a turn that fails while opening clears the mark and releases its run queue. (#656)
+
+- `/mcp` is served by the official `mcp` Python SDK, and `mcp` is now a core dependency. The `mcp` and `full` extras no longer carry it, so `pip install felix[mcp]` is no longer a valid extra. (#657)
+
+- MCP internal errors use JSON-RPC `-32603` instead of `-32000`. On `2026-07-28` requests, invalid params answer HTTP 400 and an unknown method answers 404. (#657)
+
+- MCP notifications are answered `202 Accepted` with no body. `GET /mcp` answers 405 instead of an informational JSON body. (#657)
+
+- An MCP POST must send `Content-Type: application/json` and an `Accept` that includes `application/json`, as the transport specifies. (#657)
+
+- A scheduled job's run, an inbound trigger's run (`POST /triggers/{id}`), and everything either starts (workflow steps, durable and background children) are now unattended: a tool gated by an approval rule without `allow_unattended: true` is refused at once with `[approval unavailable]` — no approval row, no push, no wait. Existing jobs and triggers whose runs waited for someone to approve now refuse those calls; set `allow_unattended: true` on the rule to keep the old waiting behaviour. (#658)
+
+- Command-screening `require_approval` rules and client tools also refuse at once in an unattended run instead of waiting out their timeout. (#658)
+
+- `POST /jobs/{name}/run` answers `409 {"error": "job_running"}` while a run of that job is in flight. (#658)
+
+- `PUT /jobs/{name}` with `enabled: false` clears a job's `running` mark, so an operator can release a job held by a worker that died mid-run; re-enabling lets the next sweep fire it. (#658)
+
+- Outbound MCP (`spec.mcp_servers`) uses the official `mcp` Python SDK client. Every call opens a proper session (handshake first), and either protocol era is spoken. (#659)
+
+- stdio MCP servers are spoken to in the spec's newline-delimited JSON. A server that only understands `Content-Length` framing no longer works. (#659)
+
+- A failed MCP tool call returns `[mcp_error] …` tool output, screened and masked like any output, instead of raising. `[mcp_error]` results now count as failures in audit and eval. (#659)
+
+- A stdio MCP server whose `env` sets `PATH` is refused at spawn, like `LD_PRELOAD`: that server binds no tools. (#660)
+
+- A scheduled task whose writer re-saves it onto a different manifest is now an ordinary job: retention no longer sweeps it as a task, and its firings no longer link `notify` to the conversation it was scheduled from. (#661)
+
+- A git MCP server can no longer use a credential helper. Pass its token through a `secret:` env key it reads. (#662)
+
+- `GET /jobs/{name}/runs` and a job's `last_status` can now read `skipped` as well as `ok` and `error`. (#663)
+
+### Fixed
+
+- A gated tool in one scheduled job no longer stalls every job behind it in the sweep for the approval's ttl. (#658)
+
+- A job whose run outlasts its interval is no longer fired again beside itself; a `running` mark older than 6 hours (a crashed worker) is reclaimed, and a run that fails or is cancelled always clears the mark. (#658)
+
+- A run that outlives the 6-hour bound and is reclaimed can no longer erase the new run's `running` mark when it finally ends; a run's end is recorded only over its own claim. (#658)
+
+- An MCP server's JSON-RPC error message and a timed-out MCP call reach the model as such, not as a generic internal error. (#659)
+
+- A slow MCP server can no longer hold an agent compile or a tool call open past three times its timeout. (#659)
+
+- A job firing that is cancelled (a worker shutting down, a caller leaving a manual run) now leaves an `error` run record (`cancelled`), and a firing that fails in the scheduler is recorded before its `running` mark clears; before, a cancelled firing left no record at all. (#663)
+
+### Security
+
+- A scheduled task can never outlive the token that wrote it. A one-shot set after the token expires is refused, and a task firing after that is refused and disabled. (#651)
+
+- Scheduled work cannot schedule more, including a workflow a job starts and that workflow's agent steps. (#651)
+
+- A subject shared by everyone who uses it cannot own tasks: an API key with no `sub`, an inbound trigger's run, or a machine actor acting for no one. (#651)
+
+- A `schedule_task` call the tool would refuse is denied before an approval is requested. (#651)
+
+- OpenTelemetry upgraded to 1.45.1 / 0.66b1, past CVE-2026-114603 in `opentelemetry-api` 1.44.0. (#655)
+
+- `PUT /jobs` ignores a `payload.scheduled_by` sent in the body. Only `schedule_task` (and, since #661, heartbeat enrolment) writes that record, so a job writer can no longer point a firing's notice at someone else's conversation. A task re-saved by its own writer, as pausing or resuming it does, keeps its origin; re-saved by anyone else it becomes an ordinary job. (#656)
+
+- A notice links to, and is written into, only a chat thread of the tenant's own whose id suffix has no `:`. Threads the harness creates for itself (`job:`, `channel:`, `a2a:`, `workflow:`, `fiber:`) are never targeted. (#656)
+
+- A stdio MCP server's command is resolved on the API's own `PATH` and spawned by absolute path, so an allowlisted name always runs the operator's binary. The child's `PATH` is the API's, with relative entries dropped. (#660)
+
+- A stdio MCP server's `env` may not set variables that make it run code: git's program and config variables (`GIT_CONFIG_*`, `GIT_SSH_COMMAND`, `GIT_ALLOW_PROTOCOL`, `GIT_TRACE*`, …), bash's exported functions and hooks, JVM option variables and further interpreter search paths, matched case-insensitively. Saving such a manifest is refused with `400`; a stored one binds no tools for that server. (#662)
+
+- A stdio MCP server's git runs with the shell tool's pins: hooks, `core.fsmonitor`, pager, editor, `core.sshCommand`, `core.askPass`, credential helper and signing programs fixed, and `protocol.ext.allow=never`. The shell tool gains the last two and `GIT_TERMINAL_PROMPT=0`. (#662)
+
 ## [0.15.1] — 2026-10-22
 
 ### Changed
@@ -4959,3 +5065,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.14.1]: https://github.com/felix-run/felix/releases/tag/v0.14.1
 [0.15.0]: https://github.com/felix-run/felix/releases/tag/v0.15.0
 [0.15.1]: https://github.com/felix-run/felix/releases/tag/v0.15.1
+[0.16.0]: https://github.com/felix-run/felix/releases/tag/v0.16.0
