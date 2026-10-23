@@ -10,6 +10,7 @@ capture bound to one pool, the operator's `/memory` routes, and `felix memory as
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -552,9 +553,13 @@ def test_assign_moves_operator_rows_only_when_asked(_cli: dict[str, Any]) -> Non
     ids=["manifest-name", "shared-key", "machine-actor", "actions", "tenant-delimiter"],
 )
 def test_assign_refuses_what_is_not_one_agent_and_one_person(
-    _cli: dict[str, Any], args: list[str], hint: str
+    _cli: dict[str, Any], args: list[str], hint: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("COLUMNS", "300")  # typer's error box wraps to the console width
     result = CliRunner().invoke(app, ["memory", "assign", *args])
-    assert result.exit_code == 2, result.output
-    assert hint in result.output
+    # Under CI (`GITHUB_ACTIONS`) typer colours its usage error, and the escape codes split the
+    # option name being matched; read it as a terminal without colour would show it.
+    output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert result.exit_code == 2, output
+    assert hint in output, output
     assert _cli == {}, "the store was reached with an argument the command should have refused"
