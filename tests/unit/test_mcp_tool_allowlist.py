@@ -8,7 +8,6 @@ manifest to itself and mean it.
 
 from __future__ import annotations
 
-import json
 import logging
 
 import pytest
@@ -20,47 +19,14 @@ REMOTE_TOOLS = ("issue_read", "issue_write", "create_pull_request", "report[2024
 
 
 def _install_fake_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Resp:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-
-        def __init__(self, body: dict):
-            self._body = body
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return self._body
-
-        @property
-        def text(self) -> str:
-            return json.dumps(self._body)
-
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, json=None, headers=None):
-            method = (json or {}).get("method")
-            if method == "initialize":
-                return _Resp({"jsonrpc": "2.0", "id": 1, "result": {}})
-            if method == "tools/list":
-                tools = [
-                    {"name": n, "description": n, "inputSchema": {"type": "object"}} for n in REMOTE_TOOLS
-                ]
-                return _Resp({"jsonrpc": "2.0", "id": 2, "result": {"tools": tools}})
-            return _Resp({"jsonrpc": "2.0", "id": 0, "error": {"code": -1, "message": "nope"}})
-
+    """The server's listing, at the discovery seam: these test the binder, not the transport
+    (`test_mcp_client_sdk.py` runs that against a real server)."""
     import felix.mcp.client as client_mod
 
-    monkeypatch.setattr(client_mod.httpx, "AsyncClient", _Client)
+    async def listing(ref: McpServerRef, **_kwargs: object) -> list[dict[str, object]]:
+        return [{"name": n, "description": n, "inputSchema": {"type": "object"}} for n in REMOTE_TOOLS]
+
+    monkeypatch.setattr(client_mod, "list_remote_tools", listing)
 
 
 async def _bound_names(tools: list[str]) -> list[str]:

@@ -783,9 +783,26 @@ onto the library's import gate instead.
       header the SDK answers a malformed body with pydantic's text (`Validation error: …`), which
       quotes the client's own `input_value`. No server data, but not `client_safe_message` either;
       accepted for now as SDK behaviour, revisit if the SDK changes or a pre-validation is cheap.
-- [ ] **Outbound client on the SDK.** Replace `mcp/client.py` and `mcp/stdio.py` with `mcp.Client`
-      over the SDK's Streamable HTTP and stdio transports, keeping `safe_async_client` egress, the
-      stdio allowlist and the scrubbed child env.
+- [~] **Outbound client on the SDK.** `mcp/client.py` opens an SDK `Client` per discovery and per
+      call, either era (a legacy server's calls skip the `server/discover` probe). The SDK's HTTP is
+      httpx2, so the egress guard gained an httpx2 twin (`security/egress_httpx2.py`) built on the
+      same `connect_pinned` / `guard_request`; stdio is the SDK's `stdio_client` behind the allowlist
+      and the scrubbed env, and now speaks the spec's newline-delimited JSON rather than LSP-style
+      `Content-Length` frames.
+- [ ] **Follow-ups from the SDK-client reviews.**
+      - *Exceptions skip screening and masking for every untrusted tool.* `apply_content_screening`
+        and `apply_secret_masking` read a tool's output; an exception's text reaches the model
+        through `ToolRunner`'s `[error/…]` line unread. The MCP handler now returns its failures
+        as `[mcp_error]` output, which closes it there; the general fix screens and masks
+        `str(exc)` for untrusted transports.
+      - *A stdio command's `PATH` is the manifest's.* The allowlist approves the name (`uvx`); the
+        binary that runs is resolved on the child env's `PATH`, which `spec.mcp_servers[].env`
+        may set. Resolve against the API's own `PATH` and spawn the absolute path, or forbid `PATH`.
+      - *stdio reads are unbounded until a newline* (the SDK buffers a line in full); the old
+        reader trusted `Content-Length`, so not new.
+      - *Per-call cost.* A call is a fresh session: a `server/discover` probe for a modern server,
+        the listing that keeps the SDK from listing after the call, the call, the close. Passing the
+        discovered `DiscoverResult` as `prior_discover` with a version pin would drop the probe.
 - [ ] **Skills extension on the server.** `skills/list`, `skills/get` and skill files over
       `resources/read` from the manifest's own catalog (one helper shared with `build_agent`),
       manifests of sha256 and size computed from the redacted bytes served. Blocked on an SDK release

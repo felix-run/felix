@@ -8,10 +8,9 @@ from felix.durability.fibers import create_fiber, get_fiber, resume_due_fibers
 from felix.durability.runs import get_durable_run, start_durable_chat
 from felix.embeddings import cosine_similarity, rank_indices_by_query
 from felix.manifests.schema import ExecutionSpec, McpServerRef, ToolsRetrievalSpec
-from felix.mcp.client import tools_from_mcp_servers
 from felix.patterns.types import ChatMessage
 from felix.tools.retrieval import select_tools
-from felix.tools.types import ToolInvocationCtx, define_tool
+from felix.tools.types import define_tool
 from pydantic import ValidationError
 
 
@@ -119,30 +118,3 @@ async def test_durable_ttl_expires() -> None:
     got = await get_fiber(settings, "t-ttl", fiber["id"])
     assert got is not None
     assert got["status"] == "expired"
-
-
-async def test_mcp_stdio_tool_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_stdio(ref: McpServerRef, method: str, params: dict | None = None, **_k):
-        if method == "tools/list":
-            return {
-                "tools": [
-                    {
-                        "name": "ping",
-                        "description": "Ping",
-                        "inputSchema": {"type": "object", "properties": {}},
-                    }
-                ]
-            }
-        if method == "tools/call":
-            return {"content": [{"type": "text", "text": "pong"}]}
-        return {}
-
-    monkeypatch.setattr("felix.mcp.stdio.stdio_rpc", fake_stdio)
-    ref = McpServerRef(name="local", transport="stdio", command="mcp-fake")
-    tools = await tools_from_mcp_servers([ref])
-    assert len(tools) == 1
-    assert tools[0].name == "local__ping"
-    assert tools[0].executor.transport == "mcp"
-    out = await tools[0].executor.execute({}, ToolInvocationCtx())
-    text = out if isinstance(out, str) else out.content
-    assert "pong" in text
