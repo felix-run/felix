@@ -213,6 +213,10 @@ def _trigger_auth(trigger: Trigger) -> AuthContext:
         scopes=trigger.scopes,
         anonymous=False,
         scheme="trigger",
+        # No person is there to answer an approval for a sender's event (`RequestContext.unattended`).
+        # Not `scheduled`: that means "descends from a job", which `schedule_task` reads; a trigger
+        # run is refused there anyway, as a shared subject.
+        trigger_run=True,
     )
 
 

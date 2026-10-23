@@ -257,8 +257,8 @@ spec:
   # listed by name rather than as `github__*` because a glob would gate the read tools too and
   # would hide a write tool that slipped into the allowlist above without a rule here.
   #
-  # allow_unattended is only enforced under eu_ai_act at risk_tier high, which is why the
-  # governance block below sets exactly that — otherwise the field is decoration.
+  # allow_unattended: false refuses these calls outright in a scheduled run (nobody is there to
+  # approve); eu_ai_act at risk_tier high, below, is what keeps a later edit from turning it on.
   approvals:
     # Its own rule, stricter than the one below. one_shot: a grant publishes once — a resumed or
     # replayed call with the same sha needs a new decision, not the hour-old one. bind_principal:
@@ -346,8 +346,8 @@ spec:
   observability:
     trace: true
 
-  # eu_ai_act at risk_tier high is what makes `allow_unattended: false` an enforced compile-time
-  # requirement rather than an inert field. It also forces forbid_plaintext_secrets and
+  # eu_ai_act at risk_tier high makes `allow_unattended: false` a compile-time requirement, on
+  # top of the run-time refusal it already means. It also forces forbid_plaintext_secrets and
   # pin_compile true, and requires the transparency notice plus content screening — all of which
   # this manifest wants anyway.
   governance:

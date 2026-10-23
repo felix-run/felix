@@ -148,7 +148,17 @@ is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SC
 Plugin `cron_tasks` become `plugin_<name>` every minute via `_register_plugin_cron_tasks`, which only
 the worker's startup hook calls. Each built-in task is wrapped in `_instrumented`; plugin runners are not. Jobs:
 `jobs/scheduler.py:run_due_jobs_all_tenants` binds each tenant with `rls_tenant`,
-`jobs/store.py:claim_run` compare-and-sets `next_run_at`, `fire_job` runs as `cron` on behalf of the
+`jobs/store.py:claim_run` compare-and-sets `next_run_at` and refuses a job whose `last_status` is
+`running` unless `last_run_at` is older than `RUNNING_STALE_MS` (6 h: three times a run's
+longest wall clock plus a last approval wait), so a run outlasting its interval is not fired beside
+itself; refused, the due time stays put and the first tick after the run fires it once.
+`POST /jobs/{name}/run` takes the same mark (`claim_manual_run`) and answers `409 {"error":
+"job_running"}` while it stands. `fire_job` clears it on every exit, the outer `except` and a
+cancellation included (`_clear_running`), through `finish_run`, which compare-and-sets on
+`last_run_at` so a run reclaimed as stale cannot clear its reclaimer's mark. `PUT /jobs/{name}` with
+`enabled: false` clears a mark (`DISABLED_WHILE_RUNNING`), the operator's override for a dead worker. A firing is unattended (`RequestContext.unattended`, from
+`AuthContext.scheduled`), so a gated tool without `allow_unattended` is refused at once rather than
+holding the sweep for the rule's ttl. `fire_job` runs as `cron` on behalf of the
 job's last writer (`created_by`, with the scopes recorded in `created_auth`) through
 `runtime.prepare_tenant_invoke`, so the manifest's inbound auth applies; a job with no recorded
 writer runs with no scopes. Fibers and jobs record and replay a caller through one module,

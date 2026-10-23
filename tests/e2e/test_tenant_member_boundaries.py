@@ -78,7 +78,8 @@ MANIFESTS = {
         "gated",
         {"allow_anonymous": True},
         tools=["calculator"],
-        approvals=[{"id": "calc-gate", "tools": ["calculator"], "ttl_seconds": 2}],
+        # `allow_unattended`: a job's firing is unattended, and only such a rule asks anyone.
+        approvals=[{"id": "calc-gate", "tools": ["calculator"], "ttl_seconds": 2, "allow_unattended": True}],
     ),
 }
 

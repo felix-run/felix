@@ -144,6 +144,34 @@ async def test_a_verified_event_starts_a_run_that_reads_the_payload_through_the_
     assert "Fix the build" in str(tool.content) and "event: push" in str(tool.content)
 
 
+async def test_a_trigger_run_reaching_a_gated_tool_is_refused_at_once(boot: Any) -> None:
+    """A sender's event is no person's request: a gated call in its run is refused before a row is
+    written -- the sender would otherwise choose the arguments an approver is shown, and hold the
+    worker's slot for the rule's ttl. The run is a durable fiber, so the mark crossed the record."""
+    gated = _agent(
+        "e2e-triage",
+        tools=["trigger_event", "calculator"],
+        approvals=[{"id": "calc-gate", "tools": ["calculator"], "ttl_seconds": 300}],
+    )
+    script = [
+        ScriptedTurn(tool_calls=[ToolCall(id="c1", name="calculator", args={"expression": "1+1"})]),
+        ScriptedTurn(content="Triaged."),
+    ]
+    body = _body()
+    async with boot(script, env=_env(gh={"scheme": "github"}), manifests={"e2e-triage": gated}) as app:
+        resp = await app.client.post("/triggers/gh", content=body, headers=_github(body))
+        assert resp.status_code == 202, resp.text
+        [run] = await _runs(app)
+        assert run["state_json"]["auth"].get("trigger_run") is True
+        done = await asyncio.wait_for(_finish(app, run["id"]), timeout=10)
+        [tool] = [m for m in app.spy.prompts[1] if m.role == "tool"]
+        pending = await app.client.get("/approvals", headers=BEARER, params={"status": "pending"})
+        denied = await app.client.get("/approvals", headers=BEARER, params={"status": "denied"})
+    assert done["status"] == "completed" and done["final"]["content"] == "Triaged."
+    assert str(tool.content).startswith("[approval unavailable] tool=calculator rule=calc-gate:")
+    assert pending.json()["items"] == [] and denied.json()["items"] == []
+
+
 async def test_the_trigger_path_is_open_only_to_triggers(boot: Any) -> None:
     """The bearer exemption covers `/triggers/` and nothing else, configured or not."""
     async with boot([], env=_env(gh={"scheme": "github"}), manifests={"e2e-triage": TRIAGE}) as app:

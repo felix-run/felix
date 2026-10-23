@@ -113,6 +113,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_inbound_screening` | `manifest_id`, `surface`, `action` | Inbound screening acted on a user turn (`surface=turn`) or on MCP tool-call arguments (`surface=tool_arguments`); `action` is `denied`, `quarantined` or `unavailable`. |
 | `felix_secret_masking` | `manifest_id`, `tool` | A secret was masked out of tool output. |
 | `felix_approval_required` | `manifest_id`, `tool`, `rule` | A call paused for human approval. |
+| `felix_approval_unattended_refused` | `manifest_id`, `tool`, `rule` | A gated call in an unattended run (a scheduled job, or anything it started) refused at once because the rule does not set `allow_unattended`: no approval row, no push, no wait. Also a `policy_deny` audit row with `control: approvals`. |
 | `felix_approval_preview_failed` | `manifest_id`, `tool`, `rule` | A tool with an approval preview (`publish_commits`) could not compute it, so the call was refused and no approval row was written. |
 | `felix_control_unavailable` | `control` | **Watch this.** A control could not run at all. |
 | `felix_mcp_instructions` | `manifest_id`, `outcome` | An opted-in MCP server's `initialize` instructions were `used` as its tools' guidance, or `flagged` by the injection markers and dropped. |

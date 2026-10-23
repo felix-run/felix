@@ -39,6 +39,11 @@ class AuthContext:
     # and its agent steps, a durable child. `schedule_task` refuses such a caller, so scheduled
     # work never schedules more work, however many hops down.
     scheduled: bool = False
+    # Set on an inbound trigger's run (`routes/triggers.py:_trigger_auth`): the caller is an outside
+    # sender's event, not a person. Recorded and replayed like `scheduled` (only ever added), so a
+    # run it starts -- a durable run, a workflow and its steps -- carries it. Whether anyone can
+    # answer is `RequestContext.unattended`, which reads this and `scheduled`.
+    trigger_run: bool = False
 
     @property
     def acting_for(self) -> str:
@@ -82,11 +87,23 @@ class RequestContext:
     limit_state: LimitState = field(default_factory=LimitState)
     manifest_id: str = ""
     thread_id: str | None = None
-    unattended: bool = False
     extras: dict[str, Any] = field(default_factory=dict)
     # `spec.observability.metrics`: when non-empty, only these counter names are
     # recorded for this manifest. Empty means record everything (the default).
     metric_names: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def unattended(self) -> bool:
+        """No person is there to answer: a scheduled job's firing, an inbound trigger's run, and
+        everything either starts. An approval rule without `allow_unattended`, a command-screening
+        approval and a client tool refuse at once in such a run rather than wait out a deadline
+        nobody will meet.
+
+        Derived, never set: both marks ride the recorded caller (`auth/recorded.py`) into every
+        run the work starts -- a workflow's agent step, a durable child -- so a context built from
+        that caller is unattended without its builder having to remember, and no builder can say
+        otherwise."""
+        return self.auth.scheduled or self.auth.trigger_run
 
 
 _ctx: ContextVar[RequestContext | None] = ContextVar("felix_request_context", default=None)

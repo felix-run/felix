@@ -506,25 +506,34 @@ async def test_a_tool_already_named_schedule_task_is_refused_at_compile() -> Non
 # --- the approval gate never sees a call the tool would refuse ---------------------------------
 
 
-async def _gated_schedule_task(settings: Settings, tenant: str = "default") -> Tool:
+async def _gated_schedule_task(settings: Settings, tenant: str = "default", **spec: Any) -> Tool:
     from felix.manifests import builder
     from felix.tools.builtins import default_tool_provider
 
     deps = builder.BuildDeps(tools=default_tool_provider(), settings=settings, tenant_id=tenant)
-    agent = await builder.build_agent(_manifest(scheduling={}), deps=deps)
+    agent = await builder.build_agent(_manifest(scheduling={}, **spec), deps=deps)
     return next(t for t in agent.tools if t.name == "schedule_task")
 
 
+# The manifest's own rule over `schedule_task`, displacing the built-in one, and letting an
+# unattended run ask -- so a firing reaches the preview, where the tool's own refusal answers it.
+ASKS_UNATTENDED = {"approvals": [{"id": "sched", "tools": ["schedule_task"], "allow_unattended": True}]}
+
+
 @pytest.mark.parametrize(
-    ("auth", "code"),
+    ("auth", "spec", "marker", "code"),
     [
-        (_firing(), "scheduled_run"),
-        (AuthContext(tenant_id=TENANT, scopes=ALICE_SCOPES), "no_caller"),
+        # A firing is unattended, so the default rule refuses it before the preview is even asked.
+        (_firing(), {}, "[approval unavailable]", None),
+        # Even a rule that lets an unattended run ask never writes a row for a firing: the preview
+        # runs the tool's own checks first, and scheduled work may not schedule more.
+        (_firing(), ASKS_UNATTENDED, "[approval preview failed]", "scheduled_run"),
+        (AuthContext(tenant_id=TENANT, scopes=ALICE_SCOPES), {}, "[approval preview failed]", "no_caller"),
     ],
-    ids=["cron", "anonymous"],
+    ids=["cron", "cron-allow-unattended", "anonymous"],
 )
 async def test_a_refused_caller_is_denied_before_any_approval_is_asked(
-    settings: Settings, auth: AuthContext, code: str
+    settings: Settings, auth: AuthContext, spec: dict[str, Any], marker: str, code: str | None
 ) -> None:
     """Under the default rule the approvals wrapper runs before the tool. A scheduled run or an
     anonymous caller used to write a pending row -- its prompt in front of an approver -- and a
@@ -533,7 +542,7 @@ async def test_a_refused_caller_is_denied_before_any_approval_is_asked(
 
     from felix.approvals import store as approvals_store
 
-    tool = await _gated_schedule_task(settings, TENANT)
+    tool = await _gated_schedule_task(settings, TENANT, **spec)
     req = RequestContext(settings=settings, auth=auth, manifest_id=MANIFEST, thread_id=f"{TENANT}:t1")
     async with async_run_with_context(req):
         out = await asyncio.wait_for(
@@ -544,7 +553,9 @@ async def test_a_refused_caller_is_denied_before_any_approval_is_asked(
             timeout=5,
         )
     text = tool_output_content(out)
-    assert "[approval preview failed]" in text and code in text, text
+    assert text.startswith(marker), text
+    if code is not None:
+        assert code in text, text
     assert await approvals_store.list_approvals(settings, TENANT, status=None) == []
     await _no_jobs(settings)
 
@@ -711,6 +722,8 @@ async def test_a_task_fired_after_its_token_expired_is_refused_and_disabled(sett
     listed = await _call(settings, _tools(settings)["list_scheduled"], {}, _jwt_auth(exp))
     assert listed["tasks"][0]["expires_at"] == "2026-10-20T01:00:00Z"
 
+    # Claimed first, as every firing is: the refusal is recorded over that claim (`finish_run`).
+    assert await jobs_store.claim_manual_run(settings, TENANT, out["name"], last_run_at=exp)
     run = await fire_job(settings, TENANT, job, started_at=exp)
 
     assert (run["status"], run["error"]) == ("error", CREDENTIAL_EXPIRED)

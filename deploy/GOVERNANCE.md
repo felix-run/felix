@@ -2095,7 +2095,7 @@ not reported. Every bundled manifest is held to it by
 | `ttl_seconds` | How long the run waits for a decision before failing closed. |
 | `one_shot` | The grant is spent by the one call it authorizes — the call that waited for the decision, or a later call that found it approved; a replay of the same call needs a new approval. |
 | `bind_principal` | Only the principal who was approved may use the grant. Without it, any principal in the tenant can reuse it. |
-| `allow_unattended` | EU AI Act high-risk manifests must set this to `false`. |
+| `allow_unattended` | Whether the rule still asks when the run is **unattended** — a scheduled job's firing, or anything it starts (see [Unattended runs](#unattended-runs)). `false` (the default) refuses such a call at once; `true` writes the row and waits as for a person. EU AI Act high-risk manifests must set this to `false`. |
 | `when_args` | Gate only the calls that carry these arguments (non-empty); empty gates every call. Each name must be an argument some tool the rule reaches takes, or the rule never fires. For tools whose schemas ship with the harness — built-ins, plugin tools, the memory tools — a rule naming them literally is **refused** at `PUT /manifests` and by `felix validate-manifest` when a name is not one of their arguments. For everything else (MCP tools, globs) it is a compile-time warning and `felix_approval_when_args_unknown`, not a refusal: an MCP schema can change under a stored manifest, and that must not become an outage. A glob such as `github__*` with `when_args: [force]` is flagged only if *no* tool it reaches takes `force`. |
 
 **Skill authoring.** `spec.skill_authoring.mode: publish` is refused at validation unless the
@@ -2115,6 +2115,47 @@ An `update_skill` grant binds the version it edits: `parent_version` is a requir
 call signature is a hash of the arguments, so a grant found later — by a retry, another replica or
 a resumed fiber — authorizes an edit of that version only, and the call is refused with
 `parent_changed` if the skill has moved past it.
+
+### Unattended runs
+
+A run is unattended when no person started it and so no one is there to answer: a scheduled job's
+firing (the sweep or `POST /jobs/{name}/run` -- both run as `cron` for the job's writer), an
+inbound trigger's run (`POST /triggers/{id}`, as `trigger:<id>`), and everything either starts --
+a workflow run's agent and tool steps, a durable or background child. A firing marks its caller
+`scheduled` and a trigger marks its caller `trigger_run`; both marks travel with the recorded caller
+into each of those (only ever added on replay), so `RequestContext.unattended` is derived from them
+wherever the run resumes; nothing has to remember to set it. For a trigger this matters twice: the
+sender chooses the payload, so an approval row would show an approver arguments an outsider picked,
+and every such wait would hold a worker slot for the rule's ttl.
+
+In an unattended run every gate that would wait on a person answers at once instead:
+
+| Gate | Unattended behaviour |
+|------|----------------------|
+| An approval rule with `allow_unattended: false` (the default) | The call is refused before a preview is computed: the model gets `[approval unavailable] tool=<name> rule=<id>: this run is unattended (no person started it), so no one can approve it; the call was not made.` No approval row is written, nothing is pushed, no `approval_required` frame is emitted, nothing waits. It is a `policy_deny` audit row with `control: approvals`, and `felix_approval_unattended_refused` counts it. |
+| An approval rule with `allow_unattended: true` | Unchanged: the row is written, pushed and waited on for `ttl_seconds`, named for the job's writer. Use it where a person reliably answers within the ttl -- and remember the sweep awaits each firing in turn, so a long ttl delays every job after it. |
+| A `command_screening` rule with `require_approval` | Refused at once (`[command approval unavailable] tool=<name> rule=command:<reason>: …`, the same wording). It has no `allow_unattended`. |
+| A client tool (`spec.client_tools`) | Refused at once with a `transport_unavailable` tool error; no request is recorded for a client. |
+| `ask_user` | Answers `no_one_watching` at once, as it does off any live stream. |
+
+A grant that already exists still counts: a call whose exact signature a person approved earlier,
+or a permission mode that waives the rule, runs. That includes a mode set on the run's thread: a
+holder of `approvals:write` can put a job's thread in `accept_edits`, which waives the job's
+edit-tool approvals in its unattended runs too -- only `bypass` is re-checked against the job's
+writer. A workflow's own `approval` step is not a tool
+gate and is unchanged -- it parks the workflow run, not a worker, and waits for its decision.
+
+Before this, a firing that reached a gated tool wrote a pending row, pushed it to the whole
+tenant, and then waited out the rule's ttl (five minutes with none) while every job behind it in
+the sweep waited too. A job that relied on that -- someone answering the push within the ttl --
+now needs `allow_unattended: true` on the rule; an EU AI Act high-risk manifest cannot set it,
+and its scheduled runs therefore never take a gated action.
+
+**A job is not fired while its last run is going** (`last_status: running`, read by every claim,
+the sweep's and `POST /jobs/{name}/run`'s, which answers `409 job_running`). A run's end clears the
+mark only over its own claim. A stuck mark -- a worker that died mid-run -- stops counting after six
+hours; `PUT /jobs/{name}` with `enabled: false` clears it at once, and re-enabling lets the next
+sweep fire the job (beside the old run, should it in fact still be going).
 
 `spec.policies` and `spec.approvals` are capped at 64 rules each: matching is O(rules × tools)
 and a manifest is compiled per request.

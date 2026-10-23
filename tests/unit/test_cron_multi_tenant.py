@@ -114,8 +114,10 @@ async def test_overlapping_tick_from_a_stale_read_does_not_refire(
 async def test_a_run_outlasting_its_interval_does_not_rewind_the_schedule(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Run one claims slot T and is still running when the next tick claims T+5. Run one's
-    completion used to write T+5 back as due, and the tick after fired the T+5 slot again."""
+    """Run one claims slot T and is still running when slot T+5 comes due. Run one's completion
+    used to write the slot it read back as due, and the tick after fired it again. Now the tick
+    during the run cannot claim at all (`claim_run` reads `running`), and run one's completion
+    leaves the due time the claim set, so the first tick after it claims that slot exactly once."""
     from felix.jobs import scheduler
 
     await _job(settings, "default", "a")
@@ -126,12 +128,17 @@ async def test_a_run_outlasting_its_interval_does_not_rewind_the_schedule(
     assert await jobs_store.claim_run(
         settings, "default", "a", seen_next_run_at=job["next_run_at"], last_run_at=t0, next_run_at=first_slot
     )
-    # The next tick claims the following slot while run one is still going...
     second_slot = scheduler.next_run_at_ms("*/5 * * * *", first_slot)
-    assert await jobs_store.claim_run(
+    assert not await jobs_store.claim_run(
         settings, "default", "a", seen_next_run_at=first_slot, last_run_at=first_slot, next_run_at=second_slot
-    )
+    ), "the next tick claimed a job whose run is still going"
     # ...and run one finishes.
     await scheduler.fire_job(settings, "default", job, started_at=t0)
     (after,) = await jobs_store.list_jobs(settings, "default")
-    assert after["next_run_at"] == second_slot
+    assert (after["next_run_at"], after["last_status"]) == (first_slot, "ok")
+    assert await jobs_store.claim_run(
+        settings, "default", "a", seen_next_run_at=first_slot, last_run_at=first_slot, next_run_at=second_slot
+    )
+    assert not await jobs_store.claim_run(
+        settings, "default", "a", seen_next_run_at=first_slot, last_run_at=first_slot, next_run_at=second_slot
+    )

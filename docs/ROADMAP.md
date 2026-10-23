@@ -512,9 +512,10 @@ Done — every item is in [HISTORY.md](HISTORY.md) under *Roadmap tidy: complete
 Done — the items are in [HISTORY.md](HISTORY.md) under *Roadmap tidy: completed items folded in (Oct 2026)*. Kept here
 because it is still the first thing an adopter checks:
 
-Checked and *not* a gap, so nobody "fixes" it: `allow_unattended` is enforced — at compile, under
-`eu_ai_act` at `risk_tier: high` (`governance.py:209`), which is why `contributor.yaml` carries a
-comment explaining exactly that. It is conditional, not inert.
+Checked and *not* a gap, so nobody "fixes" it: `allow_unattended` is enforced — at run time, by
+the approvals wrapper, which refuses a gated call in an unattended run (a scheduled job and what
+it starts) unless the rule sets it; and at compile, under `eu_ai_act` at `risk_tier: high`
+(`governance.py`), which requires it to be `false`.
 
 ---
 ## Next (this quarter)
@@ -668,8 +669,8 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       for a task the person wrote, and only the tenant's own thread id). With it, the machine
       actors moved to `auth/actors.py` and the person check to `tools/refusal.py`, shared with
       `schedule_task`. *Follow-up:* the per-run count is per request context, so a durable run's
-      resume starts it again; carrying it in the fiber state would make it per run. *Landed (this
-      PR):* `notify` PR 2: the notice is also left in the chat thread it links to, when that is
+      resume starts it again; carrying it in the fiber state would make it per run. *Landed
+      (#656):* `notify` PR 2: the notice is also left in the chat thread it links to, when that is
       not the run's own, as an entry for the person that no model prompt carries (`custom`,
       `metadata.type: notice`) on the active branch, so it is there when the person opens it --
       even when no browser took the push. Not into a thread that does not exist, nor while a run
@@ -685,9 +686,24 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       turn lands in; the live-run mark (`workspace_notes.mark_run_active`) is set only by the `react`
       loop, so a third-party pattern that writes a thread without running it leaves none. *Next
       for notify:* PR 3 makes delivery a channel seam (`register_notifier`, push the first
-      channel, Slack and email to follow). *Next:* heartbeat
-      jobs, which `notify` exists for; memory scoped per user, plus an agent-editable `USER.md` and
-      `SOUL.md`.
+      channel, Slack and email to follow). *Landed (this PR):* scheduled and triggered work stops
+      waiting on nobody. A job's firing, an inbound trigger's run, and everything either starts
+      (workflow steps, durable and background children) is unattended -- `RequestContext.unattended`,
+      derived from `AuthContext.scheduled` / `AuthContext.trigger_run`, which the recorded caller
+      carries -- and there an approval rule without
+      `allow_unattended` refuses the call at once (no row, push, frame or wait), as do a
+      command-screening approval and a client tool; `allow_unattended: true` keeps the wait. Found
+      in a real run: a gated job parked the serial sweep for the rule's ttl, every tenant's jobs
+      behind it. And a running job is not fired again: `claim_run` reads `last_status = running`
+      (stale after 6 h, so a crashed worker cannot wedge a job), `fire_job` clears the mark on
+      every exit, only over its own claim (`finish_run` compare-and-sets `last_run_at`), disabling
+      a job clears a stuck mark, and `POST /jobs/{name}/run` answers `409 job_running` while one is
+      in flight.
+      *Follow-ups:* the sweep still awaits each firing in turn, so one long run delays the jobs
+      after it (fan out per job, bounded); `accept_edits` on a job's thread still waives its edit-tool
+      approvals unattended (only `bypass` is re-checked); a job run record does not list the calls it refused
+      (they are `policy_deny` audit rows). *Next:* heartbeat core -- heartbeat jobs, which `notify`
+      exists for; memory scoped per user, plus an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,
       with office-document skills; installable bundles through the skill-import gate; a stock
