@@ -224,8 +224,12 @@ async def put_job(
             "next_run_at": _next_run_at(existing["schedule"], existing.get("next_run_at"))
             if existing
             else _due_on_new_schedule(),
-            "last_status": existing.get("last_status", "") if existing else "",
-            "last_error": existing.get("last_error", "") if existing else "",
+            "last_status": _status_after_write(existing.get("last_status", ""), enabled) if existing else "",
+            "last_error": (
+                _error_after_write(existing.get("last_status", ""), existing.get("last_error", ""), enabled)
+                if existing
+                else ""
+            ),
             "created_at": existing["created_at"] if existing else ts,
             "payload_json": deepcopy(payload) if payload else {},
             "enabled": enabled,
@@ -261,11 +265,28 @@ async def put_job(
             row.workflow_id = workflow_id
             row.workflow_revision = workflow_revision
             row.payload_json = deepcopy(payload) if payload else {}
+            row.last_error = _error_after_write(row.last_status, row.last_error, enabled)
+            row.last_status = _status_after_write(row.last_status, enabled)
             row.enabled = enabled
             row.created_by = created_by
             row.created_auth = deepcopy(created_auth)
         await db.commit()
         return _job_dict(row)
+
+
+# Disabling a job is the operator's kill switch (`PUT /jobs/{name}` with `enabled: false`), and it
+# clears a `running` mark: a worker that died mid-run leaves one that would otherwise hold the job
+# for `RUNNING_STALE_MS` with no way round it. It does not stop a run still going -- nothing here
+# can -- and once the job is re-enabled the next sweep may fire it beside such a run.
+DISABLED_WHILE_RUNNING = "disabled while marked running"
+
+
+def _status_after_write(status: str, enabled: bool) -> str:
+    return "error" if not enabled and status == RUNNING else status
+
+
+def _error_after_write(status: str, error: str, enabled: bool) -> str:
+    return DISABLED_WHILE_RUNNING if not enabled and status == RUNNING else error
 
 
 # `touch_run(next_run_at=KEEP_SCHEDULE)`: record a run without moving the schedule. A manual run
@@ -308,6 +329,37 @@ async def touch_run(
         await db.commit()
 
 
+# How long a run marked `running` holds its job against another claim. Past it the mark is taken
+# for a run that died with its worker -- a crash, an OOM kill, a cancelled task -- and the job is
+# claimable again: a mark nothing clears must not stop a job for good. Six hours is three times
+# the longest a run can legitimately take: a run's own `max_wall_clock_seconds` is at most an
+# hour, and the call it starts last may wait out an approval ttl of at most another hour
+# (`manifests/schema.py`, both `MAX_INTEGRATION_TIMEOUT_S`). A fixed bound rather than one per
+# schedule: a long interval does not make a run longer, and a short one must not let a slow run
+# be fired over. `tests/unit/test_job_running_claim.py` holds it above those two bounds.
+RUNNING = "running"
+RUNNING_STALE_MS = 6 * 60 * 60 * 1000
+
+
+def _free(row: dict[str, Any], at: int) -> bool:
+    """Whether a twin row may be claimed at `at`: no run marked, or the mark gone stale."""
+    if row.get("last_status") != RUNNING:
+        return True
+    started = row.get("last_run_at")
+    return started is None or started < at - RUNNING_STALE_MS
+
+
+def _free_clause(at: int) -> Any:
+    """`_free` as a WHERE clause, so the claim stays one UPDATE that the row lock decides."""
+    from sqlalchemy import or_
+
+    return or_(
+        Job.last_status.is_distinct_from(RUNNING),
+        Job.last_run_at.is_(None),
+        Job.last_run_at < at - RUNNING_STALE_MS,
+    )
+
+
 async def claim_run(
     settings: Settings,
     tenant_id: str,
@@ -317,19 +369,25 @@ async def claim_run(
     last_run_at: int,
     next_run_at: int | None,
 ) -> bool:
-    """Mark a due job running, only if its `next_run_at` is still the one this tick read.
+    """Mark a due job running, only if its `next_run_at` is still the one this tick read and no
+    run of it is in flight.
 
     `touch_run` writes unconditionally, so two scheduler ticks that read the same due job --
     two workers, or a slow tick overlapping the next minute's -- both claimed it and both fired
     it. Compare-and-set on `next_run_at`: the first claim moves it, and every later claim for
     the same due time finds it moved and gets False. A single `UPDATE ... WHERE` on Postgres, so
     the row lock decides between concurrent claims.
+
+    And not while `last_status` is `running` (unless that mark is older than `RUNNING_STALE_MS`):
+    the claim moved `next_run_at` to the next slot, so a run outlasting its interval found that
+    slot due on a later tick and was fired a second time beside itself. Refused, the due time is
+    left where it is, and the first tick after the run ends fires it once.
     """
     if _use_memory(settings):
         row = _memory_jobs.get((tenant_id, name))
-        if row is None or row.get("next_run_at") != seen_next_run_at:
+        if row is None or row.get("next_run_at") != seen_next_run_at or not _free(row, last_run_at):
             return False
-        row.update(last_run_at=last_run_at, next_run_at=next_run_at, last_status="running", last_error="")
+        row.update(last_run_at=last_run_at, next_run_at=next_run_at, last_status=RUNNING, last_error="")
         return True
 
     from sqlalchemy import update
@@ -342,8 +400,68 @@ async def claim_run(
                 Job.tenant_id == tenant_id,
                 Job.name == name,
                 Job.next_run_at.is_not_distinct_from(seen_next_run_at),
+                _free_clause(last_run_at),
             )
-            .values(last_run_at=last_run_at, next_run_at=next_run_at, last_status="running", last_error="")
+            .values(last_run_at=last_run_at, next_run_at=next_run_at, last_status=RUNNING, last_error="")
+        )
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
+async def claim_manual_run(settings: Settings, tenant_id: str, name: str, *, last_run_at: int) -> bool:
+    """Mark a job running for a run someone asked for (`POST /jobs/{name}/run`), only if no run of
+    it is in flight. The schedule is left where it is, as a manual run leaves it.
+
+    The same mark `claim_run` writes and reads, so a sweep does not fire a job over a manual run
+    and a manual run is not started over a scheduled one: both share the job's thread, and two
+    runs on one thread interleave one transcript. False when the job is gone or running.
+    """
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None or not _free(row, last_run_at):
+            return False
+        row.update(last_run_at=last_run_at, last_status=RUNNING, last_error="")
+        return True
+
+    from sqlalchemy import update
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Job)
+            .where(Job.tenant_id == tenant_id, Job.name == name, _free_clause(last_run_at))
+            .values(last_run_at=last_run_at, last_status=RUNNING, last_error="")
+        )
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
+async def finish_run(
+    settings: Settings, tenant_id: str, name: str, *, started_at: int, last_status: str, last_error: str = ""
+) -> bool:
+    """Record how a run ended -- only if the job still holds *this* run's claim.
+
+    A run that outlived `RUNNING_STALE_MS` may have been reclaimed by another, whose claim wrote its
+    own `last_run_at`. An unconditional write from the first run's end then erased the second's
+    `running` mark, and the next tick fired the job beside it. Compare-and-set on `last_run_at`,
+    which each claim sets to its run's `started_at`: one `UPDATE ... WHERE` on Postgres. False when
+    the job is gone or another run has claimed it since; the schedule is never touched.
+    """
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None or row.get("last_run_at") != started_at:
+            return False
+        row.update(last_status=last_status, last_error=last_error)
+        return True
+
+    from sqlalchemy import update
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Job)
+            .where(Job.tenant_id == tenant_id, Job.name == name, Job.last_run_at == started_at)
+            .values(last_status=last_status, last_error=last_error)
         )
         await db.commit()
         return bool(getattr(result, "rowcount", 0))
@@ -469,9 +587,14 @@ async def record_run(
 
 
 __all__ = [
+    "RUNNING",
+    "RUNNING_STALE_MS",
     "BothTargets",
+    "claim_manual_run",
+    "claim_run",
     "delete_job",
     "disable_job",
+    "finish_run",
     "get_job",
     "list_jobs",
     "list_runs",

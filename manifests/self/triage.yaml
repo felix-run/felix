@@ -180,7 +180,7 @@ spec:
   observability:
     trace: true
 
-  # eu_ai_act at risk_tier high is what makes `allow_unattended: false` enforced.
+  # eu_ai_act at risk_tier high makes `allow_unattended: false` a compile-time requirement.
   governance:
     frameworks: [eu_ai_act]
     risk_tier: high

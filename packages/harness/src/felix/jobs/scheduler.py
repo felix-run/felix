@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -384,6 +385,23 @@ async def _record_expired(
     return run
 
 
+async def _clear_running(
+    settings: Settings, tenant_id: str, job: dict[str, Any], started_at: int, error: str
+) -> None:
+    """End a run's `running` mark when the run ended some way other than the normal record.
+
+    The claim marked the job `running`, and it is not claimable again while that mark stands
+    (`jobs_store.claim_run`). Left behind, it would hold the job for `RUNNING_STALE_MS` for nothing.
+    Best effort: the staleness bound is what covers a worker that cannot write at all.
+    """
+    try:
+        await jobs_store.finish_run(
+            settings, tenant_id, job["name"], started_at=started_at, last_status="error", last_error=error
+        )
+    except Exception:
+        logger.warning("job_status_reset_failed name=%s", job.get("name"), exc_info=True)
+
+
 async def fire_job(
     settings: Settings,
     tenant_id: str,
@@ -442,18 +460,25 @@ async def fire_job(
         # leaves it where it was, and a scheduled one was advanced by its claim (`claim_run`).
         # Writing it again here moved it *back* when a run outlasted its interval -- the next
         # tick had already claimed the next slot, and this rewrote that slot as due.
-        await jobs_store.touch_run(
+        #
+        # And only over this run's own claim (`finish_run`): a run reclaimed as stale while it
+        # still went on must not erase the mark of the run that reclaimed it.
+        await jobs_store.finish_run(
             settings,
             tenant_id,
             job["name"],
-            last_run_at=started_at,
-            next_run_at=jobs_store.KEEP_SCHEDULE,
+            started_at=started_at,
             last_status=status,
             last_error=str(result.get("error") or ""),
         )
         return run
+    except asyncio.CancelledError:
+        # A worker shutting down, or a manual run's caller gone: the run ends here, so its mark does.
+        await _clear_running(settings, tenant_id, job, started_at, "cancelled")
+        raise
     except Exception:
         logger.exception("job_failed name=%s", job.get("name"))
+        await _clear_running(settings, tenant_id, job, started_at, "execution failed")
         return await jobs_store.record_run(
             settings,
             tenant_id,

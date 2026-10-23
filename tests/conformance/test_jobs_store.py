@@ -418,6 +418,74 @@ async def test_two_ticks_claiming_one_due_run_fire_it_once(store_settings: Any) 
 
 
 @parametrized
+async def test_a_running_job_is_not_claimed_until_its_mark_goes_stale(store_settings: Any) -> None:
+    """`claim_run` moved `next_run_at` and wrote `running`, and read only the first: a run that
+    outlasted its interval was claimed again on a later tick. Both arms read the mark now -- one
+    `UPDATE ... WHERE` on Postgres -- and both let a mark older than `RUNNING_STALE_MS` go, the
+    boundary itself still holding."""
+    await _put(store_settings, schedule="*/5 * * * *")
+    await jobs.touch_run(store_settings, TENANT, JOB, last_run_at=0, next_run_at=1_000)
+    t0 = 1_800_000_000_000
+    assert await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=1_000, last_run_at=t0, next_run_at=2_000
+    )
+    stale = t0 + jobs.RUNNING_STALE_MS
+    for at in (t0 + 300_000, stale):
+        assert not await jobs.claim_run(
+            store_settings, TENANT, JOB, seen_next_run_at=2_000, last_run_at=at, next_run_at=3_000
+        ), f"claimed a job still running at {at}"
+        assert not await jobs.claim_manual_run(store_settings, TENANT, JOB, last_run_at=at)
+    row = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (row["next_run_at"], row["last_run_at"], row["last_status"]) == (2_000, t0, "running")
+
+    assert await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=2_000, last_run_at=stale + 1, next_run_at=3_000
+    )
+    # Ended normally, the mark is gone and a manual run may claim it -- leaving the schedule.
+    await jobs.touch_run(
+        store_settings, TENANT, JOB, last_run_at=stale + 1, next_run_at=jobs.KEEP_SCHEDULE, last_status="ok"
+    )
+    assert await jobs.claim_manual_run(store_settings, TENANT, JOB, last_run_at=stale + 2)
+    row = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (row["next_run_at"], row["last_run_at"], row["last_status"]) == (3_000, stale + 2, "running")
+    assert not await jobs.claim_manual_run(store_settings, TENANT, "no-such-job", last_run_at=stale)
+
+
+@parametrized
+async def test_a_runs_end_is_written_only_over_its_own_claim(store_settings: Any) -> None:
+    """`finish_run` compare-and-sets on `last_run_at`: a run reclaimed as stale cannot overwrite
+    the claim that reclaimed it, on either arm."""
+    await _put(store_settings, schedule="*/5 * * * *")
+    await jobs.touch_run(store_settings, TENANT, JOB, last_run_at=0, next_run_at=1_000)
+    assert await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=1_000, last_run_at=5_000, next_run_at=2_000
+    )
+    assert not await jobs.finish_run(store_settings, TENANT, JOB, started_at=4_999, last_status="ok")
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["last_status"] == "running"
+    assert await jobs.finish_run(
+        store_settings, TENANT, JOB, started_at=5_000, last_status="error", last_error="boom"
+    )
+    row = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (row["last_status"], row["last_error"], row["next_run_at"]) == ("error", "boom", 2_000)
+    assert not await jobs.finish_run(
+        store_settings, TENANT, "no-such-job", started_at=5_000, last_status="ok"
+    )
+
+
+@parametrized
+async def test_disabling_a_running_job_clears_its_mark(store_settings: Any) -> None:
+    await _put(store_settings, schedule="*/5 * * * *")
+    await jobs.touch_run(store_settings, TENANT, JOB, last_run_at=0, next_run_at=1_000)
+    assert await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=1_000, last_run_at=5_000, next_run_at=2_000
+    )
+    await _put(store_settings, schedule="*/5 * * * *", enabled=False)
+    row = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (row["last_status"], row["last_error"]) == ("error", jobs.DISABLED_WHILE_RUNNING)
+    assert row["last_run_at"] == 5_000 and row["next_run_at"] == 2_000
+
+
+@parametrized
 async def test_a_job_with_no_due_time_is_claimed_once_too(store_settings: Any) -> None:
     """A scheduled job that has never run has a NULL `next_run_at`, which the scheduler treats as
     due, and it must still be claimable -- on both arms. The second claim loses because the first

@@ -26,7 +26,18 @@ Status updated in place as each piece lands; the ladder below is only as real as
 | `felix-boundary` required check (`.github/workflows/felix-boundary.yml`) | `[x]` | feat/felix-boundary |
 | Eval rules that score a trajectory (`tools_called`, `max_errors`, …) | `[x]` | feat/eval-trajectory-rules |
 | `scripts/self-scoreboard.py` | `[x]` | feat/self-scoreboard |
-| Scheduled triage / implement jobs (`payload.fresh_thread`) | `[x]` | feat/job-fresh-thread |
+| Scheduled triage / implement jobs (`payload.fresh_thread`) — read and draft only; see below | `[x]` | feat/job-fresh-thread |
+
+**Scheduled runs read and draft; a person starts the write.** A job's run is unattended, so every
+approval-gated call in it — each `github__*` write and `publish_commits` — is refused at once with
+`[approval unavailable] tool=<name> rule=<id>: …`, with no approval row and no wait
+(`deploy/GOVERNANCE.md`, "Unattended runs"). `eu_ai_act` at `risk_tier: high` keeps
+`allow_unattended: false` on both manifests, so that holds. A scheduled triage or implement run
+gathers evidence and drafts the ticket or change, then says what it would do in its answer — the
+job run's `result.answer` (neither manifest binds `notify` yet, so nothing is pushed); the
+mutating step is a hand-started `POST /chat` (below), where each call is approved as usual. Every
+refused call is a `policy_deny` audit row with `control: approvals` (`GET /audit`); the job's run
+record (`GET /jobs/<name>/runs`) carries the run's answer, not a list of refused calls.
 
 ## The ladder
 

@@ -516,15 +516,16 @@ async def _gated_schedule_task(settings: Settings, tenant: str = "default") -> T
 
 
 @pytest.mark.parametrize(
-    ("auth", "code"),
+    ("auth", "marker", "code"),
     [
-        (_firing(), "scheduled_run"),
-        (AuthContext(tenant_id=TENANT, scopes=ALICE_SCOPES), "no_caller"),
+        # A firing is unattended, so the gate refuses it before the preview is even asked.
+        (_firing(), "[approval unavailable]", "unattended"),
+        (AuthContext(tenant_id=TENANT, scopes=ALICE_SCOPES), "[approval preview failed]", "no_caller"),
     ],
     ids=["cron", "anonymous"],
 )
 async def test_a_refused_caller_is_denied_before_any_approval_is_asked(
-    settings: Settings, auth: AuthContext, code: str
+    settings: Settings, auth: AuthContext, marker: str, code: str
 ) -> None:
     """Under the default rule the approvals wrapper runs before the tool. A scheduled run or an
     anonymous caller used to write a pending row -- its prompt in front of an approver -- and a
@@ -544,7 +545,7 @@ async def test_a_refused_caller_is_denied_before_any_approval_is_asked(
             timeout=5,
         )
     text = tool_output_content(out)
-    assert "[approval preview failed]" in text and code in text, text
+    assert marker in text and code in text, text
     assert await approvals_store.list_approvals(settings, TENANT, status=None) == []
     await _no_jobs(settings)
 

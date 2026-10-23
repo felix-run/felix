@@ -756,6 +756,15 @@ def _decision_check(req: Any, approval_id: str, thread_id: str) -> Any:
     return check
 
 
+def unattended_refusal(tool_name: str, rule_id: str) -> str:
+    """The tool result of a call an unattended run could not have approved. Written for the
+    model: it says why, and that nothing happened, so the run can carry on and report it."""
+    return (
+        f"[approval unavailable] tool={tool_name} rule={rule_id}: this run is unattended "
+        "(no person started it), so no one can approve it; the call was not made."
+    )
+
+
 async def _await_approval(
     *,
     manifest_id: str,
@@ -781,6 +790,9 @@ async def _await_approval(
     req = try_get_context()
     if req is None:
         return False, args, "no request context"
+    if req.unattended:
+        # No rule here carries `allow_unattended`, so an unattended run never waits on one.
+        return False, args, "unavailable: this run is unattended, so no one can approve it; not run"
 
     # Resolved before the row is written, not after: a durable run's only channel is the row
     # (the frame cannot cross from the worker to the API's stream), so the thread goes on both.
@@ -1173,6 +1185,7 @@ def apply_approvals(
             granted = waived_by is not None
             pending_row: dict[str, object] | None = None
             preview_failure: str | None = None
+            unattended = False
             # What the row and the frame show. Equal to `args` unless the tool computes a
             # preview, which is added here and nowhere else: the signature below is hashed from
             # `args`, so a preview can neither widen nor narrow what an approval authorizes.
@@ -1213,6 +1226,11 @@ def apply_approvals(
                         granted = True
                         if approved.get("edited_args"):
                             args = _without_preview(tool, approved["edited_args"])
+                    elif req.unattended and not rule.allow_unattended:
+                        # No one is there to decide (`RequestContext.unattended`): refused below,
+                        # before a preview, a row, a push or a wait -- a scheduled sweep used to
+                        # stall behind the rule's whole ttl, and every job after it with it.
+                        unattended = True
                     else:
                         preview = await _approval_preview(tool, args)
                         if preview is not None:
@@ -1241,6 +1259,13 @@ def apply_approvals(
                     preview_failure = str(exc)
                 except Exception:
                     logger.debug("approvals store lookup failed", exc_info=True)
+
+            if unattended:
+                record_counter(
+                    "felix_approval_unattended_refused",
+                    {"manifest_id": manifest_id, "tool": tool.name, "rule": rule.id},
+                )
+                return deny_output(unattended_refusal(tool.name, rule.id), "approvals")
 
             if preview_failure is not None:
                 record_counter(
