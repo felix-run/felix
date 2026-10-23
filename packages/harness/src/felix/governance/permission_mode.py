@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from felix.context import RequestContext, try_get_context
 from felix.manifests.tool_match import matches_any
@@ -115,8 +115,14 @@ def builtin_rule(builtin: BuiltinApproval) -> ApprovalRule:
     )
 
 
+class _ApprovalSwitch(Protocol):
+    """A spec block a `BuiltinApproval` names: all the rule needs of it is its switch."""
+
+    approval: bool
+
+
 def default_builtin_rule(
-    builtin: BuiltinApproval, block: Any, approvals: list[ApprovalRule]
+    builtin: BuiltinApproval, block: _ApprovalSwitch | None, approvals: list[ApprovalRule]
 ) -> ApprovalRule | None:
     """The rule to add for ``builtin`` given its spec ``block``, or None.
 

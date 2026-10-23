@@ -27,6 +27,38 @@ from tests.support.factories import make_settings
 IDS = [b.spec_field for b in BUILTIN_APPROVALS]
 
 
+def _block_model(field: Any) -> Any:
+    """A spec field's block model: the non-None member of `X | None`, or the annotation itself."""
+    block = field.annotation
+    return next(a for a in getattr(block, "__args__", (block,)) if a is not type(None))
+
+
+def test_every_spec_block_with_an_approval_switch_has_a_row() -> None:
+    """The converse of the row checks below: a block whose `approval` is not in the table would be a
+    gate that parses, reads as "held for approval", and adds no rule -- and a mode would waive it."""
+    switched = {
+        name
+        for name, field in Spec.model_fields.items()
+        if hasattr(_block_model(field), "model_fields") and "approval" in _block_model(field).model_fields
+    }
+    assert switched == {b.spec_field for b in BUILTIN_APPROVALS}
+
+
+def test_the_rows_are_the_ones_approval_rows_already_name() -> None:
+    """A rule id is stored on every approval row it asked for, and a description is what an approver
+    reads: neither changes by accident."""
+    assert {(b.spec_field, b.tool, b.rule_id, b.description) for b in BUILTIN_APPROVALS} == {
+        ("scheduling", "schedule_task", "scheduling.schedule_task", "Approve scheduling this task"),
+        ("notify", "notify", "notify.notify", "Approve sending this notice"),
+        (
+            "workflow_authoring",
+            "save_workflow",
+            "workflow_authoring.save_workflow",
+            "Approve saving this workflow",
+        ),
+    }
+
+
 def test_the_unwaivable_sets_are_the_table_and_the_plan() -> None:
     assert {b.tool for b in BUILTIN_APPROVALS} == UNWAIVABLE_TOOLS
     assert {PLAN_APPROVAL_RULE_ID} | {b.rule_id for b in BUILTIN_APPROVALS} == UNWAIVABLE_RULE_IDS
@@ -37,10 +69,7 @@ def test_the_unwaivable_sets_are_the_table_and_the_plan() -> None:
 def test_each_row_names_a_spec_block_with_an_approval_switch(builtin: BuiltinApproval) -> None:
     field = Spec.model_fields.get(builtin.spec_field)
     assert field is not None, f"spec.{builtin.spec_field} does not exist"
-    block = field.annotation
-    # `X | None`: the block's own model is the non-None member.
-    model = next(a for a in getattr(block, "__args__", (block,)) if a is not type(None))
-    assert "approval" in model.model_fields, f"spec.{builtin.spec_field} has no `approval`"
+    assert "approval" in _block_model(field).model_fields, f"spec.{builtin.spec_field} has no `approval`"
 
 
 async def _compiled(
@@ -77,7 +106,9 @@ async def test_each_rows_block_binds_its_tool_and_compiles_its_rule(
 ) -> None:
     names, rules = await _compiled({builtin.spec_field: {"approval": True}}, monkeypatch)
     assert builtin.tool in names, f"spec.{builtin.spec_field} does not bind {builtin.tool}"
-    [rule] = [r for r in rules if r.id == builtin.rule_id]
+    ids = [r.id for r in rules]
+    assert ids.count(builtin.rule_id) == 1, f"spec.{builtin.spec_field} compiled {ids}, not {builtin.rule_id}"
+    rule = next(r for r in rules if r.id == builtin.rule_id)
     assert (rule.tools, rule.one_shot, rule.bind_principal, rule.when_args) == (
         [builtin.tool],
         True,
