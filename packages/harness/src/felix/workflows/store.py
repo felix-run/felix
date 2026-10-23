@@ -103,6 +103,22 @@ def _owned_by(owner: Owner, created_by: str, authored_via: str) -> bool:
     return owner is None or (created_by, authored_via) == owner
 
 
+# What a person's own save makes of an agent's workflow made for them: `owner:agent:<manifest>`.
+# The agent may still run it (the person wrote what it now holds) but no longer change it.
+OWNER_EDIT_PREFIX = "owner:"
+
+
+def _replaced_via(current_via: str, created_by: str, authored_via: str, writer_owner: str | None) -> str:
+    """The `authored_via` a replace leaves: ``authored_via`` as given, unless a person's save (`""`)
+    lands on an agent's workflow made for that same person (``writer_owner``, issuer-qualified, is
+    its `created_by`) -- then `owner:agent:<manifest>`. Decided here, under the row lock, so it is
+    judged against the row actually replaced."""
+    base = current_via.removeprefix(OWNER_EDIT_PREFIX)
+    if not authored_via and writer_owner and base.startswith("agent:") and created_by == writer_owner:
+        return OWNER_EDIT_PREFIX + base
+    return authored_via
+
+
 def _revision(generation: str, version: int) -> str:
     return f"{generation}.{version}"
 
@@ -192,6 +208,7 @@ def _put_in_memory(
     updated_by: str,
     created_by: str,
     authored_via: str,
+    writer_owner: str | None,
 ) -> dict[str, Any]:
     # No await between the checks and the store, so this is atomic on the loop. Owner first, as
     # on Postgres: a row adopted since it was read is not the writer's, whatever its revision.
@@ -214,7 +231,11 @@ def _put_in_memory(
         "definition": definition,
         "updated_by": updated_by,
         "created_by": existing["created_by"] if existing else created_by,
-        "authored_via": authored_via,
+        "authored_via": (
+            _replaced_via(existing["authored_via"], existing["created_by"], authored_via, writer_owner)
+            if existing
+            else authored_via
+        ),
         "created_at": existing["created_at"] if existing else ts,
         # Past the previous value, so two saves in one millisecond still order.
         "updated_at": max(ts, existing["updated_at"] + 1) if existing else ts,
@@ -234,6 +255,7 @@ async def put_workflow(
     updated_by: str = "",
     created_by: str = "",
     authored_via: str = "",
+    writer_owner: str | None = None,
 ) -> dict[str, Any]:
     """Create or replace a workflow; conditional on ``precondition`` (see module).
 
@@ -242,7 +264,9 @@ async def put_workflow(
     agent made, and the agent may not change it again. ``owner``, when given, is the
     ``(created_by, authored_via)`` an existing row must hold, checked under the same lock as the
     precondition -- else :class:`WorkflowNotOwned` and nothing written. A check made before the
-    call and not here would let a save land on a row adopted in between.
+    call and not here would let a save land on a row adopted in between. ``writer_owner`` is the
+    writer's issuer-qualified key: a person's save over an agent's workflow made for them leaves it
+    `owner:agent:<manifest>`, still theirs to run through that agent (`_replaced_via`).
     """
     _check_id(workflow_id)
     definition = spec.model_dump(mode="json", exclude_none=True)
@@ -259,6 +283,7 @@ async def put_workflow(
             updated_by=updated_by,
             created_by=created_by,
             authored_via=authored_via,
+            writer_owner=writer_owner,
         )
 
     async with tenant_session(settings, tenant_id) as db:
@@ -300,7 +325,9 @@ async def put_workflow(
             current.version += 1
             current.definition_json = definition
             current.updated_by = updated_by
-            current.authored_via = authored_via
+            current.authored_via = _replaced_via(
+                current.authored_via, current.created_by, authored_via, writer_owner
+            )
             current.updated_at = max(ts, current.updated_at + 1)
         try:
             await db.commit()
@@ -352,6 +379,7 @@ __all__ = [
     "ABSENT",
     "MAX_LIST",
     "MAX_PER_TENANT",
+    "OWNER_EDIT_PREFIX",
     "Owner",
     "Precondition",
     "WorkflowConflict",

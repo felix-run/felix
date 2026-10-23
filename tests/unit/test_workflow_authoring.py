@@ -294,16 +294,18 @@ async def test_an_operators_workflow_is_never_the_agents(settings: Settings) -> 
     assert stored is not None and stored["definition"]["name"] == "Route a label"
 
 
-async def test_a_persons_save_in_the_console_takes_the_workflow_over(settings: Settings) -> None:
+async def test_another_persons_save_in_the_console_takes_the_workflow_away(settings: Settings) -> None:
+    """Their edit would otherwise run as alice, through alice's agent, with alice never having seen it."""
     tools = _tools(settings)
     saved = await _save(settings, tools)
-    # What `PUT /workflows/{id}` does: no `authored_via`.
+    # What `PUT /workflows/{id}` does for someone else: no `authored_via`, their own key.
     await workflow_store.put_workflow(
         settings,
         TENANT,
         saved["workflow_id"],
         WorkflowSpec.model_validate(_route(name="Reviewed")),
         updated_by="op",
+        writer_owner=_owner("op"),
     )
     for tool, args in (
         ("save_workflow", {"definition": _route(), "workflow_id": saved["workflow_id"]}),
@@ -311,6 +313,44 @@ async def test_a_persons_save_in_the_console_takes_the_workflow_over(settings: S
     ):
         assert (await _call(settings, tools[tool], args))["error"] == "no_such_workflow", tool
     assert (await _call(settings, tools["list_my_workflows"], {}))["workflows"] == []
+
+
+async def test_the_persons_own_console_edit_stays_runnable_here_but_not_changeable(
+    settings: Settings,
+) -> None:
+    tools = _tools(settings)
+    saved = await _save(settings, tools)
+    edited = await workflow_store.put_workflow(
+        settings,
+        TENANT,
+        saved["workflow_id"],
+        WorkflowSpec.model_validate(_route(name="Mine, reviewed")),
+        updated_by="alice",
+        writer_owner=_owner("alice"),
+    )
+    assert edited["authored_via"] == f"owner:{VIA}"
+    refused = await _save(settings, tools, workflow_id=saved["workflow_id"])
+    assert refused["error"] == "edited_by_person", refused
+    listed = await _call(settings, tools["list_my_workflows"], {})
+    assert [(w["workflow_id"], w["editable"]) for w in listed["workflows"]] == [(saved["workflow_id"], False)]
+    started = await _call(
+        settings, tools["run_workflow"], {"workflow_id": saved["workflow_id"], "inputs": {"label": "bug"}}
+    )
+    assert "run_id" in started, started
+    run = await run_store.get_run(settings, TENANT, started["run_id"])
+    assert run is not None and run["revision"] == edited["revision"], "it runs what alice saved"
+    # The same subject at another issuer is not alice: their edit takes it away.
+    await workflow_store.put_workflow(
+        settings,
+        TENANT,
+        saved["workflow_id"],
+        WorkflowSpec.model_validate(_route()),
+        writer_owner="https://other.example|alice",
+    )
+    out = await _call(
+        settings, tools["run_workflow"], {"workflow_id": saved["workflow_id"], "inputs": {"label": "bug"}}
+    )
+    assert out["error"] == "no_such_workflow", out
 
 
 async def test_an_adoption_between_the_check_and_the_write_still_refuses(

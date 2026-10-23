@@ -94,6 +94,26 @@ async def test_a_save_conditional_on_its_owner_lands_only_on_their_row(store_set
 
 
 @parametrized
+async def test_a_persons_own_save_keeps_their_agents_workflow_runnable(store_settings: Any) -> None:
+    # Decided under the row lock, on both arms: only the creator's own save keeps the agent's mark.
+    await _put(store_settings, "triage", created_by="iss|ada", authored_via="agent:quick")
+    own = await _put(store_settings, "triage", writer_owner="iss|ada")
+    assert own["authored_via"] == "owner:agent:quick"
+    again = await _put(store_settings, "triage", writer_owner="iss|ada")
+    assert again["authored_via"] == "owner:agent:quick", "a second own save keeps it"
+    other = await _put(store_settings, "triage", writer_owner="iss|bob")
+    assert other["authored_via"] == ""
+    assert (await _put(store_settings, "triage", writer_owner="iss|ada"))["authored_via"] == "", (
+        "once another person has saved it, the creator's save does not bring the mark back"
+    )
+    # A route-made workflow never gains one, whoever saves it.
+    await _put(store_settings, "ops", created_by="iss|ada")
+    assert (await _put(store_settings, "ops", writer_owner="iss|ada"))["authored_via"] == ""
+    stored = await workflows.get_workflow(store_settings, TENANT, "triage")
+    assert stored is not None and stored["authored_via"] == ""
+
+
+@parametrized
 async def test_a_workflow_saved_without_an_author_records_none(store_settings: Any) -> None:
     row = await _put(store_settings, "triage", updated_by="op")
     assert (row["created_by"], row["authored_via"]) == ("", "")

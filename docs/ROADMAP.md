@@ -801,7 +801,8 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       (`workflow_catalog`, `check_workflow`, `save_workflow`, `list_my_workflows`, `run_workflow`),
       the spec block and its unwaivable approval rule. The owner is the issuer-qualified
       `skill_owner`, checked under the store's row lock. A person's save through the routes adopts
-      the workflow. The tools refuse unattended runs and workflow threads, and mint `wf-<hex>` ids.
+      the workflow: their own keeps it runnable by the agent (`owner:agent:<manifest>`), anyone
+      else's takes it away entirely. The tools refuse unattended runs and workflow threads, and mint `wf-<hex>` ids.
       *Open:* the console marking agent-written workflows (felix-web); a Slack or other channel
       caller with no `skill_owner` cannot author.
       *Decisions for the maintainer:* whether `run_workflow` should take an optional per-run

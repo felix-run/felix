@@ -369,6 +369,12 @@ async def get_workflow(
     return _present(row)
 
 
+def _writer_owner() -> str | None:
+    """The caller's issuer-qualified key (`AuthContext.skill_owner`), or None."""
+    ctx = try_get_context()
+    return ctx.auth.skill_owner if ctx is not None else None
+
+
 @router.put(
     "/{workflow_id}",
     response_model=WorkflowOut,
@@ -404,8 +410,10 @@ async def put_workflow(
             precondition=precondition,
             updated_by=who,
             # Kept only if this creates it. No `authored_via`: a person's save through the routes,
-            # which takes over a workflow an agent made (`spec.workflow_authoring`).
+            # which takes over a workflow an agent made (`spec.workflow_authoring`) -- for its own
+            # person, one the agent may still run but not change (`store._replaced_via`).
             created_by=who,
+            writer_owner=_writer_owner(),
         )
     except workflow_store.WorkflowConflict as conflict:
         raise _changed(conflict, conditional=precondition is not None) from None

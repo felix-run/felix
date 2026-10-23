@@ -126,11 +126,11 @@ async def test_an_approved_workflow_is_the_persons_runs_as_them_and_a_console_sa
             (started["run_id"], f"agent:{NAME}", "alice")
         ]
 
-        # Alice edits it in the console: it is hers now, and the agent may not change it.
+        # Alice edits it in the console: the agent may still run it for her, but not change it.
         put = await app.client.put(
             f"/workflows/{saved['workflow_id']}", headers=ALICE, json={**DEFINITION, "name": "Reviewed"}
         )
-        assert put.status_code == 200 and put.json()["authored_via"] == "", put.text
+        assert put.status_code == 200 and put.json()["authored_via"] == f"owner:agent:{NAME}", put.text
         app.spy.queue.extend(
             [
                 _call("c4", "save_workflow", {"definition": DEFINITION, "workflow_id": saved["workflow_id"]}),
@@ -140,6 +140,6 @@ async def test_an_approved_workflow_is_the_persons_runs_as_them_and_a_console_sa
         assert (await asyncio.wait_for(_chat(app, "Change it back."), timeout=20)).status_code == 200
         # Refused by the tool's own checks, which the approval gate runs first: no one is asked.
         last = next(str(m.content) for m in reversed(app.spy.prompts[-1]) if getattr(m, "role", "") == "tool")
-        assert last.startswith("[approval preview failed]") and "no_such_workflow" in last, last
+        assert last.startswith("[approval preview failed]") and "edited_by_person" in last, last
         listing = await app.client.get("/approvals", headers=ALICE, params={"thread_id": f"default:{NAME}"})
         assert [p["status"] for p in listing.json()["items"]] in ([], ["approved"]), listing.json()

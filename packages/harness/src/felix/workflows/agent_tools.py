@@ -229,16 +229,30 @@ class _AgentWorkflows:
         return auth, owner
 
     def is_mine(self, row: dict[str, Any] | None, owner: str) -> bool:
+        """Whether this agent may change ``row``: it made it for ``owner`` and no person has saved
+        it since."""
         return row is not None and (row.get("created_by"), row.get("authored_via")) == (owner, self.via)
 
+    def holds(self, row: dict[str, Any] | None, owner: str) -> bool:
+        """Whether this agent may run ``row`` for ``owner``: one it may change, or one it made for
+        them that they have since edited themselves (`store.OWNER_EDIT_PREFIX`). Never one another
+        person saved: their edit would run as ``owner`` with ``owner`` never having seen it."""
+        from felix.workflows.store import OWNER_EDIT_PREFIX
+
+        return (
+            row is not None
+            and row.get("created_by") == owner
+            and row.get("authored_via") in {self.via, OWNER_EDIT_PREFIX + self.via}
+        )
+
     async def mine(self, owner: str) -> list[dict[str, Any]]:
-        """The workflows this agent holds for ``owner`` -- and nothing else in the tenant."""
+        """The workflows this agent holds for ``owner`` (`holds`) -- and nothing else in the tenant."""
         from felix.workflows import store as workflow_store
 
         rows = await workflow_store.list_workflows(
             self.settings, self.tenant_id, limit=workflow_store.MAX_LIST
         )
-        return [r for r in rows if self.is_mine(r, owner)]
+        return [r for r in rows if self.holds(r, owner)]
 
     def check_reach(self, spec: WorkflowSpec) -> list[Problem]:
         """What this agent may not save, beside what any workflow may not: more than `max_steps`, a
@@ -360,11 +374,18 @@ class _AgentWorkflows:
             current = await workflow_store.get_workflow(self.settings, self.tenant_id, args.workflow_id)
             # One answer for an id that does not exist and one that is not theirs: a different one
             # would tell the model which ids other people hold.
+            if self.holds(current, owner) and not self.is_mine(current, owner):
+                raise ToolRefused(
+                    "edited_by_person",
+                    "this person has edited that workflow in the console, so it can still be run from "
+                    "here but no longer changed; nothing was saved. Save a new one instead",
+                )
             if not self.is_mine(current, owner):
                 raise ToolRefused(
                     "no_such_workflow",
                     "there is no workflow of that id among the ones this agent holds for this person "
-                    "(one a person has since saved in the console is theirs now); nothing was saved",
+                    "(one someone else has since saved in the console is no longer this agent's); "
+                    "nothing was saved",
                 )
         elif len(await self.mine(owner)) >= self.spec.max_workflows:
             raise ToolRefused(
@@ -462,6 +483,8 @@ class _AgentWorkflows:
                     "workflow_id": row["id"],
                     "name": str(definition.get("name", "")),
                     "revision": row["revision"],
+                    # False once the person edited it in the console: runnable here, not changeable.
+                    "editable": self.is_mine(row, owner),
                     "inputs": sorted((definition.get("inputs") or {}).keys()),
                     "updated_at": _iso(row.get("updated_at")),
                     "last_run": (
@@ -495,13 +518,13 @@ class _AgentWorkflows:
                 f"a run's inputs may be at most {MAX_RUN_INPUT_BYTES} bytes; nothing was run",
             )
         workflow = await workflow_store.get_workflow(self.settings, self.tenant_id, args.workflow_id)
-        if not self.is_mine(workflow, owner):
+        if not self.holds(workflow, owner):
             raise ToolRefused(
                 "no_such_workflow",
                 "there is no workflow of that id among the ones this agent holds for this person; "
                 "nothing was run",
             )
-        assert workflow is not None  # `is_mine` is False for None
+        assert workflow is not None  # `holds` is False for None
         if await self.active_runs(owner) >= self.spec.max_active_runs:
             raise ToolRefused(
                 "too_many_runs",

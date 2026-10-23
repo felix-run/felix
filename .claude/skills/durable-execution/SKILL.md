@@ -213,8 +213,10 @@ for which steps name a manifest),
 `AuthContext.skill_owner` (issuer-qualified; refused when None) and its `authored_via` is
 `agent:<manifest>`. `store.put_workflow(owner=)` checks that pair under the row lock, before the
 revision precondition, and raises `WorkflowNotOwned`. A save is also checked against
-`engine.admitted_manifests`, the admission a run's start makes. `authored_via` is what made the latest save, so a route save (`""`) adopts the
-workflow. A create mints `wf-<hex>` with `precondition=ABSENT`; a replace passes the revision it read.
+`engine.admitted_manifests`, the admission a run's start makes. `authored_via` is what made the latest save, so a route save adopts the
+workflow. The creator's own save (`writer_owner == created_by`) leaves `owner:agent:<manifest>`
+(`store._replaced_via`), which `_AgentWorkflows.holds` lets the agent run but `is_mine` not edit;
+anyone else's leaves `""`. A create mints `wf-<hex>` with `precondition=ABSENT`; a replace passes the revision it read.
 
 `save_workflow` and `run_workflow` refuse `RequestContext.unattended` and a workflow thread
 (`thread_ids.is_workflow_thread`). `admit` also runs in the approval preview. `run_workflow` calls

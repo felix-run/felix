@@ -2431,9 +2431,18 @@ one, owned by the person the conversation acts for. The owner is their issuer-qu
 (`issuer|subject`, `AuthContext.skill_owner`), so the same subject at another issuer is someone
 else. `authored_via` records `agent:<manifest>`. The agent sees, changes and runs only workflows
 holding both, never an operator's or another person's. The store checks the pair under the same row
-lock as the revision (and before it), so a save cannot land on a workflow taken over in between. A person's own save
-through `PUT /workflows/{id}` clears `authored_via`, which takes the workflow over: the agent can no
-longer change or run it. New workflows get an id minted by the tool (`wf-<hex>`), so an agent cannot
+lock as the revision (and before it), so a save cannot land on a workflow taken over in between.
+
+A person's save through `PUT /workflows/{id}` takes the workflow over, and the agent can no longer
+change it. Whether the agent may still run it depends on whose save it was, decided under the same
+lock (`store._replaced_via`):
+- The person it was made for (their issuer-qualified key matches `created_by`): it becomes
+  `owner:agent:<manifest>`, and the agent may still run it for them. They wrote what it now holds.
+- Anyone else: `authored_via` is cleared, and the agent may neither change nor run it. Otherwise
+  that person's edit would run as the owner, through the owner's agent, without the owner having
+  seen it. Once cleared, the owner's later saves do not bring the mark back.
+
+New workflows get an id minted by the tool (`wf-<hex>`), so an agent cannot
 re-create a deleted id that a job or trigger still names.
 
 `save_workflow` is gated by the built-in `workflow_authoring.save_workflow` rule (`one_shot`,
