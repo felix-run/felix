@@ -2476,19 +2476,30 @@ unfenced. Fencing applies to agent steps alone; otherwise only that manifest's o
 screening and approvals govern them. `run_approval` decides when `run_workflow` waits for the
 person:
 - **`auto`** (the default): only when a value the call supplies can reach, through any chain of
-  edges, a `tool_call` step whose tool is not `read_only`. The rule
-  (`workflow_authoring.run_workflow.auto`) is one the harness marks conditional
-  (`permission_mode.CONDITIONAL_APPROVAL_RULE_IDS`). Two things make it ask instead of guessing: a
-  tool the step's manifest no longer binds counts as one that changes things, and a condition that
-  fails gates the call.
+  edges, a `tool_call` step whose tool changes things.
+  - A tool counts as changing nothing only if it is `read_only` and is not a peer. `task` and A2A
+    agents act on what they are told, whatever plan mode makes of them.
+  - Two things make it ask instead of guessing: a tool the step's manifest no longer binds counts as
+    one that changes things, and a condition that fails, or a call it cannot admit yet, gates.
+  - The rule (`workflow_authoring.run_workflow.auto`) is conditional because the compile hands that
+    rule *object* to `apply_approvals(conditional=)`. A manifest rule cannot become conditional by
+    copying its id.
 - **`always`**: every run (`workflow_authoring.run_workflow`).
 - **`never`**: no rule.
 
-The approver reads the inputs as escaped JSON and every tool they reach. A manifest rule naming
-`run_workflow` literally replaces the built-in rule and gates every call: `Tool.approval_condition`
-is consulted only for a harness rule, so a tool cannot exempt itself from an operator's gate.
-Unlike the save's, this approval can be waived by a permission mode (`bypass`), because a run
-starts now, in front of the person. `max_active_runs`
+The approver reads the inputs as escaped JSON and every tool they reach. The approval is bound to
+the workflow's revision (`approval_binding`), and the run starts that revision, so a save landing
+during the wait needs a new approval.
+
+A manifest's own rule over `run_workflow` always wins:
+- Under `auto`, any manifest rule that matches `run_workflow` (literal or glob, with or without
+  `when_args`) means the harness adds no rule, so an existing gate is never loosened.
+- Under `always`, a literal rule without `when_args` replaces the harness rule.
+
+`Tool.approval_condition` is consulted only for the harness's rule, so a tool cannot exempt itself
+from an operator's gate. Unlike the save's, this approval can be waived by a permission mode
+(`bypass`): the run starts in front of the person, though its steps run later with nobody watching.
+`max_active_runs`
 (default 3) bounds the runs one person's agent can hold going, so a looping agent cannot fill the
 tenant's run quota.
 

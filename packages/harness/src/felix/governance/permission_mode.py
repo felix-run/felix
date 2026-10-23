@@ -57,9 +57,6 @@ RUN_WORKFLOW_TOOL_NAME = "run_workflow"
 # a mode they chose for the thread (`bypass`) may waive it -- unlike a save, which outlives the turn.
 WORKFLOW_RUN_APPROVAL_RULE_ID = "workflow_authoring.run_workflow"
 WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID = "workflow_authoring.run_workflow.auto"
-# Rules `apply_approvals` applies only to the calls whose tool's `approval_condition` says so. Only
-# rules the harness adds: a manifest's own rule gates every call it matches.
-CONDITIONAL_APPROVAL_RULE_IDS = frozenset({WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID})
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,7 +428,6 @@ async def in_plan_mode(req: RequestContext) -> bool:
 __all__ = [
     "BUILTIN_APPROVALS",
     "BYPASS_SCOPE",
-    "CONDITIONAL_APPROVAL_RULE_IDS",
     "EXIT_PLAN_TOOL_NAME",
     "NOTIFY_APPROVAL",
     "NOTIFY_APPROVAL_RULE_ID",

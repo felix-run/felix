@@ -843,11 +843,31 @@ async def test_auto_counts_a_tool_it_cannot_find_as_one_that_changes_things(sett
     assert await _needs(settings, "gone", {"value": 1}) is True
 
 
-async def test_a_run_the_tool_would_refuse_asks_no_one(settings: Settings) -> None:
+async def test_a_run_the_tool_refuses_now_still_counts_as_needing_approval(settings: Settings) -> None:
+    """It may be admitted by the time it runs; the preview refuses it first, asking no one."""
     await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
-    assert await _needs(settings, "writes", {"value": 1}, _auth("bob")) is False, (
-        "not bob's: refused, not asked"
-    )
+    assert await _needs(settings, "writes", {"value": 1}, _auth("bob")) is True
+
+
+async def test_a_task_step_counts_as_changing_things_whatever_plan_mode_calls_it(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`task` is `read_only` for plan mode -- a foreground child shares the mode -- but a run's input
+    becomes the child's instructions, and the child may write. Any peer counts as writing."""
+    from dataclasses import replace
+
+    from felix.workflows import tool_step
+
+    calculator = (await _compiled(settings, tools=["calculator"]))["calculator"]
+    task = replace(calculator, name="task", is_peer=True)
+    assert task.read_only and task.is_peer, "shaped as delegation's `task` is"
+
+    async def _bound(*_a: Any) -> list[Tool]:
+        return [task]
+
+    monkeypatch.setattr(tool_step, "step_tools", _bound)
+    await _held(settings, "delegates", [_tool_step("hand", "task")], [_edge("trigger", "value", "hand")])
+    assert await _needs(settings, "delegates", {"value": "write the file"}) is True
 
 
 @pytest.mark.parametrize(
@@ -857,9 +877,13 @@ async def test_a_run_the_tool_would_refuse_asks_no_one(settings: Settings) -> No
         ("always", [], "workflow_authoring.run_workflow"),
         ("never", [], None),
         ("auto", [ApprovalRule(id="mine", tools=["run_workflow"])], None),
-        ("auto", [ApprovalRule(id="all", tools=["*"])], "workflow_authoring.run_workflow.auto"),
+        # Under `auto` any manifest rule over `run_workflow` keeps it: a conditional rule is looser.
+        ("auto", [ApprovalRule(id="all", tools=["*"])], None),
+        ("auto", [ApprovalRule(id="some", tools=["run_workflow"], when_args=["revision"])], None),
+        # Under `always` ours is the stricter, and displaces a glob as the unwaivable ones do.
+        ("always", [ApprovalRule(id="all", tools=["*"])], "workflow_authoring.run_workflow"),
     ],
-    ids=["auto", "always", "never", "own-literal", "glob"],
+    ids=["auto", "always", "never", "own-literal", "auto-glob", "auto-when-args", "always-glob"],
 )
 def test_the_run_rule_follows_run_approval(
     run_approval: str, rules: list[ApprovalRule], rule_id: str | None
@@ -963,3 +987,75 @@ async def test_bypass_waives_the_run_approval_unlike_the_saves() -> None:
     await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
     rows, done = await _run_call(settings, tools, "writes", {"value": "x", "other": ""}, thread=thread)
     assert rows == [] and done is not None and "run_id" in done, done
+
+
+async def test_an_approval_binds_the_revision_and_the_run_starts_that_revision(settings: Settings) -> None:
+    from felix.workflows.agent_tools import _AgentWorkflows
+
+    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    flows = _AgentWorkflows(settings, tenant_id=TENANT, manifest_id=MANIFEST, spec=WorkflowAuthoringSpec())
+    before = await flows.run_binding({"workflow_id": "writes"})
+    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    after = await flows.run_binding({"workflow_id": "writes"})
+    assert before and after and before != after, "a save is a different call to approve"
+
+    tools = _tools(settings)
+    out = await _call(
+        settings, tools["run_workflow"], {"workflow_id": "writes", "inputs": {"value": "x", "other": ""}}
+    )
+    run = await run_store.get_run(settings, TENANT, out["run_id"])
+    assert run is not None and run["revision"] == after
+
+
+async def test_a_manifest_rule_copying_the_conditional_id_still_gates_every_call(settings: Settings) -> None:
+    """Conditional is the compile's own rule object, not an id: a manifest cannot claim it."""
+    tools = await _compiled(
+        settings,
+        workflow_authoring={"run_approval": "auto"},
+        approvals=[{"id": "workflow_authoring.run_workflow.auto", "tools": ["run_workflow"]}],
+    )
+    await _held(settings, "reads", [_tool_step("calc", "calculator")], [_edge("trigger", "value", "calc")])
+    rows, done = await _run_call(settings, tools, "reads", {"value": "2+2", "other": ""})
+    assert done is None and [r["rule_id"] for r in rows] == ["workflow_authoring.run_workflow.auto"]
+
+
+async def test_a_grant_for_one_revision_does_not_run_another(settings: Settings) -> None:
+    """Approve a run, then save the workflow again: the same call is a different one to approve."""
+    from felix.approvals import store as approvals_store
+
+    tools = await _compiled(settings, workflow_authoring={"run_approval": "always"})
+    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    inputs = {"value": "x", "other": ""}
+    rows, _ = await _run_call(settings, tools, "writes", inputs)
+    [first] = rows
+    await approvals_store.decide(settings, TENANT, first["id"], decision="approved", decided_by="alice")
+    # A new revision lands while the grant waits to be spent.
+    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    rows, done = await _run_call(settings, tools, "writes", inputs)
+    assert done is None, "the grant was for the revision the approver saw"
+    assert [r["id"] for r in rows if r["status"] == "pending" and r["id"] != first["id"]], rows
+
+
+async def test_the_run_starts_the_revision_it_read_not_whatever_is_current_then(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.workflows import engine
+
+    seen: list[Any] = []
+    real = engine.start_run
+
+    async def _spy(*a: Any, **k: Any) -> Any:
+        seen.append(k.get("revision"))
+        return await real(*a, **k)
+
+    monkeypatch.setattr(engine, "start_run", _spy)
+    await _held(settings, "reads", [_tool_step("calc", "calculator")], [_edge("trigger", "value", "calc")])
+    stored = await workflow_store.get_workflow(settings, TENANT, "reads")
+    assert stored is not None
+    out = await _call(
+        settings,
+        _tools(settings)["run_workflow"],
+        {"workflow_id": "reads", "inputs": {"value": "1", "other": ""}},
+    )
+    assert "run_id" in out, out
+    assert seen == [stored["revision"]]

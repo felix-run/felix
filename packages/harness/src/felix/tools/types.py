@@ -137,10 +137,10 @@ class Tool:
     # `update_skill` answer with the library they would save into, which under
     # `personal_skills: write` depends on the caller rather than on the arguments.
     approval_binding: Callable[[ToolInput], Awaitable[str]] | None = None
-    # Whether this call needs the approval its rule asks for -- consulted *only* for a rule the
-    # harness marks conditional (`permission_mode.CONDITIONAL_APPROVAL_RULE_IDS`), never for a rule
-    # a manifest wrote, so a tool cannot exempt itself from an operator's gate. False runs the call
-    # ungated; True, or a condition that raises, gates it.
+    # Whether this call needs the approval its rule asks for -- consulted *only* for a rule object
+    # the compile added as conditional (`apply_approvals(conditional=)`), never for one a manifest
+    # wrote, whatever its id: a tool cannot exempt itself from an operator's gate. False runs the
+    # call ungated; True, or a condition that raises, gates it.
     approval_condition: Callable[[ToolInput], Awaitable[bool]] | None = None
     # A trusted tool that may return text an untrusted author wrote, marking each such result
     # (`untrusted_output`): content screening wraps it so those results are screened, and only

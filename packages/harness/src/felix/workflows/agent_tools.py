@@ -124,22 +124,30 @@ class _RunArgs(BaseModel):
 def workflow_run_rule(
     authoring: WorkflowAuthoringSpec | None, approvals: list[ApprovalRule]
 ) -> ApprovalRule | None:
-    """The rule `run_approval` adds over `run_workflow`, or None: none for `never`, and none when one
-    of the manifest's own rules names `run_workflow` literally and gates every call (the policy
-    `permission_mode.default_builtin_rule` holds for the unwaivable ones). One-shot and bound to
-    the person, like theirs; under `auto` conditional on the call (`run_needs_approval`)."""
+    """The rule `run_approval` adds over `run_workflow`, or None. None for `never`. Under `always`,
+    none when a manifest rule names `run_workflow` literally and gates every call (the policy
+    `permission_mode.default_builtin_rule` holds: ours is the stricter). Under `auto`, none when
+    any manifest rule matches it at all. One-shot and bound to the person; under `auto` the
+    compile passes it to `apply_approvals` as conditional on the call (`run_needs_approval`)."""
     from felix.governance.permission_mode import (
         RUN_WORKFLOW_TOOL_NAME,
         WORKFLOW_RUN_APPROVAL_RULE_ID,
         WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID,
     )
     from felix.manifests.schema import ApprovalRule
+    from felix.manifests.tool_match import matches_any
 
     if authoring is None or authoring.run_approval == "never":
         return None
-    if any(RUN_WORKFLOW_TOOL_NAME in r.tools and not r.when_args for r in approvals):
-        return None
     auto = authoring.run_approval == "auto"
+    if auto:
+        # A conditional rule is looser than any rule a manifest wrote over `run_workflow` -- a glob,
+        # or one with `when_args` -- and as a literal it would be selected over them: under `auto`
+        # every such rule keeps the call, exactly as it did before `run_approval` existed.
+        if any(matches_any(r.tools, RUN_WORKFLOW_TOOL_NAME) for r in approvals):
+            return None
+    elif any(RUN_WORKFLOW_TOOL_NAME in r.tools and not r.when_args for r in approvals):
+        return None
     return ApprovalRule(
         id=WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID if auto else WORKFLOW_RUN_APPROVAL_RULE_ID,
         description="Approve running this workflow with these inputs",
@@ -549,7 +557,9 @@ class _AgentWorkflows:
                 args.inputs,
                 trigger=self.via,
                 started_by=auth.acting_for,
-                revision=args.revision or None,
+                # The revision this call just read, which an approval was bound to
+                # (`run_binding`): a save landing during the wait is a different call.
+                revision=args.revision or workflow["revision"],
                 # A model's inputs may carry what it read from anyone, so every agent step of the
                 # run reads them fenced as data (`kinds.render_prompt`), as a trigger's are.
                 untrusted_inputs=tuple(args.inputs),
@@ -597,7 +607,10 @@ class _AgentWorkflows:
             if manifest not in tools_by_manifest:
                 try:
                     bound = await step_tools(self.settings, self.tenant_id, manifest, auth)
-                    tools_by_manifest[manifest] = {t.name: bool(t.read_only) for t in bound}
+                    # `read_only` is plan mode's word, and `task` carries it because a foreground
+                    # child shares the mode -- not because it changes nothing. A peer (`task`, an
+                    # A2A agent) acts on what it is told, so here it always counts as writing.
+                    tools_by_manifest[manifest] = {t.name: bool(t.read_only and not t.is_peer) for t in bound}
                 except Exception:
                     logger.warning("run_workflow: step tools of a manifest did not resolve", exc_info=True)
                     tools_by_manifest[manifest] = None
@@ -607,14 +620,30 @@ class _AgentWorkflows:
             )
         return found
 
+    async def run_binding(self, args: ToolInput) -> str:
+        """What an approval of a run binds beyond its arguments: the workflow's revision now. A
+        grant given for one revision authorizes no run of another, and `run` starts the revision
+        it read, so what the approver was shown is what runs."""
+        from felix.workflows import store as workflow_store
+
+        workflow_id = str(args.get("workflow_id") or "")
+        row = (
+            await workflow_store.get_workflow(self.settings, self.tenant_id, workflow_id)
+            if workflow_id
+            else None
+        )
+        return str(row["revision"]) if row else ""
+
     async def run_needs_approval(self, args: ToolInput) -> bool:
         """`auto` run approval's condition: whether a value this call supplies can reach a tool
-        that can change something. A call the tool would refuse needs none -- it changes nothing."""
+        that can change something. A call the tool would refuse now still asks: it may be admitted
+        by the time it runs (a run finished, freeing a place), and the preview refuses it first
+        anyway, asking no one."""
         try:
             parsed = _RunArgs.model_validate(args)
             auth, _owner, workflow = await self.admit_run(parsed, None)
         except ValidationError, ToolRefused:
-            return False
+            return True
         return any(hit["changes_things"] for hit in await self.run_reach(parsed, auth, workflow))
 
     async def run_preview(self, args: ToolInput) -> str:
@@ -647,12 +676,7 @@ class _AgentWorkflows:
         ]
         if reach:
             lines += ["", "--- tools those inputs reach ---"]
-            lines += [
-                json.dumps(
-                    {**hit, "changes_things": hit["changes_things"]}, sort_keys=True, ensure_ascii=True
-                )
-                for hit in reach
-            ]
+            lines += [json.dumps(hit, sort_keys=True, ensure_ascii=True) for hit in reach]
         return "\n".join(lines)
 
     async def preview(self, args: ToolInput) -> str:
@@ -777,6 +801,7 @@ def make_workflow_authoring_tools(
     )
     run_tool.approval_preview = flows.run_preview
     run_tool.approval_condition = flows.run_needs_approval
+    run_tool.approval_binding = flows.run_binding
     return [catalog, check, save, listing, run_tool]
 
 
