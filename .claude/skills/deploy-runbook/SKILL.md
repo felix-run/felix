@@ -9,7 +9,7 @@ metadata:
 
 # Deploy runbook
 
-```
+```text
 Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
            ├─ felix-api        (CPython 3.14, Granian, FastAPI)
            ├─ felix-worker     (Taskiq consumer)

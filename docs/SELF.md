@@ -173,7 +173,7 @@ workflow cannot change the check that judges it, and with `enforce_admins` on, d
 person merging a change to the workflow. Until that check lands, CODEOWNERS plus required review is
 the gate.
 
-```
+```text
 .github/**                                   manifests/self/**
 .claude/**                                   docs/SELF.md
 skills/**                                    .dockerignore

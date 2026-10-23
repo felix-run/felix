@@ -4,7 +4,7 @@ Project-scoped configuration for [Claude Code](https://code.claude.com/docs/en/o
 this repo: the Felix agents harness (Python 3.14, uv workspace) and its companion docs site in the
 separate **felix-web** repo.
 
-```
+```text
 .claude/
 ├── settings.json     hook registration, permission allow/ask/deny, status line
 ├── agents/           subagents (delegated, isolated context)

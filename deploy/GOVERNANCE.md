@@ -866,7 +866,6 @@ these values: reaching a host takes seconds or never, so a raised request ceilin
 also let an unreachable host park a socket. `FELIX_MODEL_TIMEOUT_SECONDS` (default 120)
 bounds each model-provider request the same way.
 
-
 Every manifest-supplied or model-supplied URL is checked before it is dialled.
 
 **The guard is enforcing, not advisory.** Outbound HTTP goes through a transport that
@@ -2152,7 +2151,6 @@ name, globs and `when_args` rules included. Gating the delete and not the write 
 not reported. Every bundled manifest is held to it by
 `tests/unit/test_workspace_delete_rename_tools.py`, through the same check.
 
-
 | Field | Behaviour |
 |-------|-----------|
 | `ttl_seconds` | How long the run waits for a decision before failing closed. |
@@ -2353,7 +2351,7 @@ an approval rule without `allow_unattended` is refused in it at once, and nothin
 **It speaks only through `notify`**, with every `notify` control: to the person and no one else,
 secrets redacted, links stripped, screened, `max_per_run` and `max_per_hour`. The notice is also
 left in the person's own heartbeat conversation (`{tenant}:hb-<hex>`, created at enrolment and
-titled "Heartbeat: <manifest>") as an entry for the person that no model prompt carries. Each run
+titled `Heartbeat: <manifest>`) as an entry for the person that no model prompt carries. Each run
 record says whether the firing was `quiet` (sent no notice) and keeps the first 500 characters of
 its answer.
 

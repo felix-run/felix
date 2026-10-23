@@ -1,15 +1,20 @@
-# Felix Docker packaging (image + Compose).
-#
-# Always run Compose from the **repo root** so `.env`, build context, and
-# `./workspace` resolve correctly:
-#
-#   make up
-#   make up-lite
-#   make up-gcp    # GCE / public VM (no DB/cache publish)
-#   make up-pooled # + PgBouncer, for many workers on few connections
-#
-# Equivalent:
-#   docker compose -f deploy/docker/compose.yml --project-directory . up --build
+# Felix Docker packaging (image + Compose)
+
+Always run Compose from the **repo root** so `.env`, build context, and `./workspace` resolve
+correctly:
+
+```bash
+make up
+make up-lite
+make up-gcp    # GCE / public VM (no DB/cache publish)
+make up-pooled # + PgBouncer, for many workers on few connections
+```
+
+Equivalent:
+
+```bash
+docker compose -f deploy/docker/compose.yml --project-directory . up --build
+```
 
 | File | Role |
 |------|------|
@@ -36,7 +41,7 @@ that service alone on purpose.
 Reach for it when the connection arithmetic stops working. Each Felix process holds its
 own pool, so the ceiling is:
 
-```
+```text
 FELIX_WORKERS x (FELIX_DB_POOL_SIZE + FELIX_DB_MAX_OVERFLOW)
 ```
 
@@ -114,7 +119,7 @@ would reach the reader within a second whether or not it was ever notified, so t
 would pass against a broken notification layer. At 30 s, prompt delivery has only one
 explanation. A measured run delivered in **2 ms**:
 
-```
+```text
    10 upstream=192.168.32.4:8080
    10 upstream=192.168.32.5:8080
    A is subscribed to felix:thread:default:default:smoke-…

@@ -44,7 +44,7 @@ non-empty, so the day the scan stops finding anything is the day it fails rather
 
 Abbreviated — `raises` stands for the test framework's raises context manager:
 
-```
+```python
 assert result                             # passes on any truthy object — near zero information
 assert result is not None                 # passes on the wrong object of the right shape
 assert len(items) > 0                     # passes on the wrong items

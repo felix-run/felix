@@ -385,6 +385,7 @@ Shaped after a recheck of the provider against **Sandbox SDK 1.0**, which was re
 those disagree, this one is current.
 
 **What changed in the provider.**
+
 - **No more `getSandbox`.** In 1.0 the gateway writes its own Durable Object, which drives
   `this.ctx.container` (`start`, `exec(argv)`, `destroy`), and the Worker reaches it with
   `getByName`. `createBackup`/`restoreBackup` give way to `DirectoryBackup`: one directory, kept as
@@ -396,6 +397,7 @@ those disagree, this one is current.
 - **The file API follows symlinks and has no ranged read.**
 
 **Decisions.**
+
 - **Files, then shell.**
   - **3a** puts the five file tools on the hosted backend.
   - **3b** runs `shell_tools` inside the same sandbox through `exec`. The harness still applies the
@@ -436,6 +438,7 @@ those disagree, this one is current.
   code it is ported from. A test compares the two as syntax trees, so they cannot drift.
 
 **Pull requests, in order, all in this repository.**
+
 1. The gateway Worker (`deploy/cloudflare/workspace-gateway`), its image and the `felix-fs` helper,
    the five file operations, its handler contract tests, the helper's tests in the harness suite,
    and `wrangler.example.jsonc`.

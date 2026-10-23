@@ -10,7 +10,7 @@
 
 Please **do not** open a public GitHub issue for security vulnerabilities.
 
-Email **blake.bauman@gmail.com** with:
+Email **<blake.bauman@gmail.com>** with:
 
 - A short description of the issue
 - Steps to reproduce (PoC if available)

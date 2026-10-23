@@ -518,6 +518,7 @@ it starts) unless the rule sets it; and at compile, under `eu_ai_act` at `risk_t
 (`governance.py`), which requires it to be `false`.
 
 ---
+
 ## Next (this quarter)
 
 ### Harness parity program (gap analysis, 2026-10-10)
@@ -1436,6 +1437,7 @@ cycle's, and the route contracts below are the next capability-adjacent step.
       `felix-anthropic-api-key` + recreate API/worker.
 
 ---
+
 ## Later / explicit non-goals
 
 - [!] **`FELIX_POLICY_BUNDLE_PUBKEY` / OPA** — no signed policy-bundle

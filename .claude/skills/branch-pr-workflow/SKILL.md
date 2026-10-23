@@ -42,7 +42,7 @@ Commit or push **only when the user asks**.
 5. **Commit messages**: imperative subject describing the change ("Wire Presidio PII, opt-in LLM
    judges, and Postgres RLS."), body explains *why*, and the Claude co-author trailer:
 
-   ```
+   ```text
    Co-Authored-By: Claude <model name> <noreply@anthropic.com>
    ```
 

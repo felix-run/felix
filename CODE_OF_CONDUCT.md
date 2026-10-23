@@ -33,7 +33,7 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainers at **blake.bauman@gmail.com**. All complaints will
+reported to the maintainers at **<blake.bauman@gmail.com>**. All complaints will
 be reviewed and investigated promptly and fairly.
 
 ## Attribution

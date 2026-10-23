@@ -64,6 +64,7 @@ roll, `felix_approval_unattended_refused` counts what is refused. Each refused c
 `policy_deny` audit row.
 
 **MCP moved to the official Python SDK, on both sides** (#657, #659, #660, #662):
+
 - `mcp` is a core dependency, so `felix[mcp]` is no longer an extra; drop it from install lines.
 - `/mcp` clients must send `Content-Type: application/json` and an `Accept` that includes it.
 - A stdio server must speak newline-delimited JSON; `Content-Length` framing no longer works.
@@ -448,7 +449,7 @@ connection the policies are skipped and isolate nothing**, while everything appe
 the failure worth checking for deliberately, because unlike a blackout it is silent in the direction
 that matters. `felix doctor` reports it:
 
-```
+```text
 ok    tenant RLS — enforced
 FAIL  tenant RLS — policies active but this role is superuser/BYPASSRLS, which skips them entirely
 FAIL  tenant RLS — FELIX_DATABASE_RLS=true but no policies — run `felix migrate head`
