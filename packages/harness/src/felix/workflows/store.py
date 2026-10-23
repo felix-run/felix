@@ -103,9 +103,17 @@ def _owned_by(owner: Owner, created_by: str, authored_via: str) -> bool:
     return owner is None or (created_by, authored_via) == owner
 
 
+# What an agent's save records: `agent:<manifest>`.
+AGENT_VIA_PREFIX = "agent:"
 # What a person's own save makes of an agent's workflow made for them: `owner:agent:<manifest>`.
 # The agent may still run it (the person wrote what it now holds) but no longer change it.
 OWNER_EDIT_PREFIX = "owner:"
+
+
+def agent_holds(authored_via: str) -> bool:
+    """Whether an agent may still change the workflow: it saved the revision there now, and no
+    person has saved over it since. What it holds can change under anything that runs it unpinned."""
+    return authored_via.startswith(AGENT_VIA_PREFIX)
 
 
 def _replaced_via(current_via: str, created_by: str, authored_via: str, writer_owner: str | None) -> str:
@@ -114,7 +122,7 @@ def _replaced_via(current_via: str, created_by: str, authored_via: str, writer_o
     its `created_by`) -- then `owner:agent:<manifest>`. Decided here, under the row lock, so it is
     judged against the row actually replaced."""
     base = current_via.removeprefix(OWNER_EDIT_PREFIX)
-    if not authored_via and writer_owner and base.startswith("agent:") and created_by == writer_owner:
+    if not authored_via and writer_owner and agent_holds(base) and created_by == writer_owner:
         return OWNER_EDIT_PREFIX + base
     return authored_via
 
@@ -377,6 +385,7 @@ async def delete_workflow(
 
 __all__ = [
     "ABSENT",
+    "AGENT_VIA_PREFIX",
     "MAX_LIST",
     "MAX_PER_TENANT",
     "OWNER_EDIT_PREFIX",
@@ -385,6 +394,7 @@ __all__ = [
     "WorkflowConflict",
     "WorkflowLimitReached",
     "WorkflowNotOwned",
+    "agent_holds",
     "delete_workflow",
     "get_workflow",
     "list_workflows",

@@ -5,7 +5,8 @@ In order: the body fits; the trigger exists and the signature verifies (one answ
 ids cannot be probed); the body is UTF-8 JSON; then, once per delivery -- a replay gets the first
 answer back -- the event type is one the trigger runs for; for a workflow trigger, the payload
 supplies the workflow's inputs (else `invalid_payload`, kept as the answer); the trigger's
-per-minute limit has room; and the run starts as the trigger's own principal -- a durable chat on
+per-minute limit has room; a workflow an agent still holds is refused unless the trigger pins its
+`revision`; and the run starts as the trigger's own principal -- a durable chat on
 a thread of its own, or a workflow run. Ignored deliveries are
 claimed too, so a captured one cannot be relabelled into a run later; only deliveries that would
 start a run spend the limit. Every refusal names its kind and nothing else: the reason is logged.
@@ -17,7 +18,7 @@ import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -248,14 +249,41 @@ async def _prepare_workflow_run(
     return _PreparedWorkflowRun(workflow=workflow, inputs=inputs, untrusted=untrusted)
 
 
+def _refuse_unpinned(settings: Any, trigger: Trigger, workflow: dict[str, Any]) -> NoReturn:
+    """Audited as `workflow_run_refused`, then `_Unavailable`: the operator pins the trigger's
+    `revision` to the one they read, or a person takes the workflow over by saving it."""
+    from felix.audit import store as audit_store
+
+    audit_store.record_event(
+        settings,
+        trigger.tenant,
+        "workflow_run_refused",
+        principal_subj=f"{TRIGGER_RUN_PREFIX}{trigger.id}",
+        status="denied",
+        payload={
+            "workflow_id": workflow["id"],
+            "revision": workflow["revision"],
+            "trigger": f"{TRIGGER_RUN_PREFIX}{trigger.id}",
+            "reason": "unpinned_agent_workflow",
+        },
+    )
+    raise _Unavailable(f"workflow {workflow['id']!r} is an agent's: the trigger must pin its `revision`")
+
+
 async def _start_workflow_run(
     settings: Any, trigger: Trigger, delivery: Delivery, prepared: _PreparedWorkflowRun
 ) -> str:
     """The run, as `trigger:<id>` with the trigger's scopes, held to the trigger's `revision` if
     it pins one; its id. Every agent step of it fences what it is given (`runs.fences_prompts`)."""
     from felix.workflows import engine
+    from felix.workflows import store as workflow_store
 
     assert isinstance(trigger.target, WorkflowTarget)
+    if trigger.target.revision is None and workflow_store.agent_holds(prepared.workflow["authored_via"]):
+        # An agent can save a new revision whenever its person approves one, and that approval
+        # never asked about this trigger: unpinned, a sender would start whatever it wrote last.
+        # After the limit, so a replayed delivery cannot write refusals faster than runs could start.
+        _refuse_unpinned(settings, trigger, prepared.workflow)
     who = f"{TRIGGER_RUN_PREFIX}{trigger.id}"
     async with async_run_with_context(RequestContext(settings=settings, auth=_trigger_auth(trigger))):
         try:

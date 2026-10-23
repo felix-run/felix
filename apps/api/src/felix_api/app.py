@@ -20,6 +20,7 @@ from felix.config import Settings, get_settings
 from felix.idempotency import build_idempotency_store
 from felix.logging_setup import (
     configure_logging,
+    loggable,
 )
 from felix.plugins import get_registry
 from felix.security.rate_limit import (
@@ -27,7 +28,7 @@ from felix.security.rate_limit import (
     build_rate_limiter_backend,
 )
 from felix.tools.provider import ToolProvider
-from felix.triggers import TRIGGER_PATH_PREFIX
+from felix.triggers import TRIGGER_PATH_PREFIX, unpinned_workflow_triggers
 from starlette.responses import Response
 
 from felix_api.composition import compose, installed_plugins
@@ -110,6 +111,13 @@ def create_app(
     # FELIX_LOG_LEVEL was never applied to the logging module, and structlog was a
     # dependency nothing imported.
     configure_logging(cfg)
+    for trigger_id, workflow_id in unpinned_workflow_triggers(cfg):
+        logger.warning(
+            "trigger %s starts workflow %s with no revision pin: it runs whatever is saved when an "
+            "event arrives, and refuses while an agent holds the workflow",
+            trigger_id,
+            loggable(workflow_id, limit=64),
+        )
     plugin_list = list(plugins if plugins is not None else installed_plugins())
     tool_provider = tools if tools is not None else compose(cfg)
 

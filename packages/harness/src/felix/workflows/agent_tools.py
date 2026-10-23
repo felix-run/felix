@@ -189,8 +189,10 @@ class _AgentWorkflows:
     def __init__(
         self, settings: Any, *, tenant_id: str, manifest_id: str, spec: WorkflowAuthoringSpec
     ) -> None:
+        from felix.workflows.store import AGENT_VIA_PREFIX
+
         self.settings, self.tenant_id, self.manifest_id, self.spec = settings, tenant_id, manifest_id, spec
-        self.via = f"agent:{manifest_id}"
+        self.via = f"{AGENT_VIA_PREFIX}{manifest_id}"
         self.allowed = frozenset(spec.manifests or [manifest_id])
 
     def caller(

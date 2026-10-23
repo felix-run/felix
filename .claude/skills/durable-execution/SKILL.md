@@ -176,7 +176,9 @@ Pointer, checks each against the declared schema (`ports.value_mismatch`), and l
 strings, objects, arrays and `$delivery` as the run's `untrusted_inputs`
 (`0044_workflow_run_untrusted`). `runs.fences_prompts` (any untrusted input, or a `trigger:` run)
 makes `kinds.render_prompt(fenced=)` wrap every value an agent step is given in a per-prompt
-`data-<hex>` tag and append `FENCE_NOTE`.
+`data-<hex>` tag and append `FENCE_NOTE`. A trigger with no `revision` refuses a workflow
+`store.agent_holds` (`_refuse_unpinned`, audited `workflow_run_refused`), and `create_app` warns
+at boot for each `triggers.unpinned_workflow_triggers` entry.
 `jobs/schedule.py:parse_schedule` reads the grammar — seconds, `every:30s` / `@every 5m`, the
 `@daily`-style macros, five-field cron in UTC, and a one-shot `at:<ISO-8601 with offset>` — and a
 schedule outside it is refused, never guessed. An empty schedule is manual only: the sweep skips it and
