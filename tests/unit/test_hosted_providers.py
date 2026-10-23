@@ -264,6 +264,22 @@ def test_an_explicit_embedding_model_still_wins() -> None:
     assert _build_compat("google")(settings).model == "text-embedding-3-large"
 
 
+def test_an_empty_embedding_model_from_the_environment_falls_through_to_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compose passes `FELIX_MEMORY_EMBEDDING_MODEL: ${FELIX_MEMORY_EMBEDDING_MODEL:-}`, so an
+    install that never set it still gets the variable, *set*, to "". Set means "declared" to
+    `_build_compat`, and a declared value is the model id -- an empty one must still fall
+    through to the provider's own default, or every Compose deployment that only chose
+    `FELIX_MEMORY_EMBEDDER=workers_ai` would send `{"model": ""}`."""
+    from felix.memory.embedder import _build_compat
+
+    monkeypatch.setenv("FELIX_MEMORY_EMBEDDING_MODEL", "")
+    settings = _settings(model_provider_options='{"workers_ai":{"api_key":"k","account_id":"a"}}')
+    assert "memory_embedding_model" in settings.model_fields_set, "the premise: env-set counts as set"
+    assert _build_compat("workers_ai")(settings).model == "@cf/baai/bge-base-en-v1.5"
+
+
 def test_a_placeholder_in_a_configured_gateway_url_is_not_a_secret() -> None:
     """`placeholders()` used to read the provider's *default* template while
     `resolve_base_url` reads the configured one, so a `{region}` gateway URL had its region

@@ -276,6 +276,7 @@ def test_document_identity_is_source_and_title() -> None:
 async def test_a_failing_embedder_degrades_to_text_only_rather_than_losing_the_document() -> None:
     class _Broken:
         enabled = True
+        model = "broken"
 
         async def embed(self, texts: list[str]) -> list[list[float]]:
             raise RuntimeError("model unavailable")
@@ -292,6 +293,7 @@ async def test_a_short_embedder_batch_is_refused_rather_than_misaligned() -> Non
 
     class _Short:
         enabled = True
+        model = "short"
 
         async def embed(self, texts: list[str]) -> list[list[float]]:
             return [[1.0] * 26]  # one vector regardless of how many chunks
