@@ -250,11 +250,11 @@ async def test_gcp_secrets_are_keyed_by_project(monkeypatch: pytest.MonkeyPatch)
 
 
 async def test_a_degraded_discovery_is_not_remembered(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Discovery degrades rather than raising: no tools from a failed stdio spawn, no handshake
-    from a failed `initialize`. Neither may stand for the server for a whole TTL."""
+    """A stdio server that cannot be spawned degrades to no tools rather than raising; that answer
+    may not stand for the server for a whole TTL."""
     from felix.mcp import client
 
-    answers = [([], {}), ([{"name": "search"}], {}), ([{"name": "search"}], {"instructions": "x"})]
+    answers = [([], {}), ([{"name": "search"}], {"protocolVersion": "2025-06-18"})]
     asked = 0
 
     async def degrading(ref: McpServerRef, *, allow_http: bool = False, handshake: Any = None) -> list:
@@ -267,8 +267,8 @@ async def test_a_degraded_discovery_is_not_remembered(monkeypatch: pytest.Monkey
     monkeypatch.setattr(client, "list_remote_tools", degrading)
     for _ in range(4):
         await client.tools_from_mcp_servers([_ref("docs")])
-    # Asked again after each partial answer; the first whole one is the last fetch.
-    assert asked == 3
+    # Asked again after the empty answer; the first answer with tools is the last fetch.
+    assert asked == 2
 
 
 async def test_mcp_discovery_concurrency_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:

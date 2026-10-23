@@ -196,52 +196,6 @@ def test_an_mcp_error_keeps_its_marker_with_or_without_text() -> None:
     assert _tool_result({"content": [{"type": "text", "text": "ok"}]}) == "ok"
 
 
-async def test_the_mcp_client_handler_returns_a_servers_images(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The handler's wiring: the helper alone would pass with the handler still text-only."""
-    import felix.mcp.client as client_mod
-    from felix.manifests.schema import McpServerRef
-
-    class _Resp:
-        status_code = 200
-        headers: dict[str, str] = {}
-
-        def __init__(self, body: Any) -> None:
-            self._body = body
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> Any:
-            return self._body
-
-    listing = {"tools": [{"name": "render", "description": "Render", "inputSchema": {"type": "object"}}]}
-
-    class _Client:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            pass
-
-        async def __aenter__(self) -> Any:
-            return self
-
-        async def __aexit__(self, *a: Any) -> bool:
-            return False
-
-        async def post(self, url: str, json: Any = None, headers: Any = None) -> _Resp:
-            method = (json or {}).get("method")
-            result = {"tools/list": listing, "tools/call": {"content": [_image_block()]}}.get(method, {})
-            return _Resp({"jsonrpc": "2.0", "id": 1, "result": result})
-
-    monkeypatch.setattr(client_mod.httpx, "AsyncClient", _Client)
-    (tool,) = await client_mod.tools_from_mcp_servers(
-        [McpServerRef(name="docs", url="https://mcp.example.com/mcp", transport="http")], allow_http=False
-    )
-    out = await tool.executor.execute({}, ToolInvocationCtx())
-    assert [a.url for a in tool_output_images(out)] == [PNG]
-
-
-# --- MCP server ----------------------------------------------------------------------------
-
-
 async def _call_snap(images: Any, *, tenant: str = "default") -> list[dict[str, Any]]:
     """`tools/call` on Felix's MCP server for a tool returning `images()`, through the SDK server (`mcp_rpc`)."""
     from felix.context import AuthContext

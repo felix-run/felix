@@ -104,6 +104,96 @@ async def approved_addresses(
     return approved
 
 
+async def connect_pinned(
+    dial: Any,
+    host: str,
+    port: int,
+    *,
+    allow_http: bool,
+    timeout: float | None,
+    local_address: str | None,
+    socket_options: Any,
+) -> Any:
+    """Resolve ``host`` once, validate every answer, and ``dial`` an approved address.
+
+    ``dial`` is the backend's own `connect_tcp` (httpcore's, or httpcore2's for the MCP SDK's
+    httpx2 client): one implementation of the pin, whichever HTTP stack is dialling.
+    """
+    try:
+        approved = await approved_addresses(host, allow_http=allow_http, timeout=timeout)
+    except TimeoutError:
+        _refuse(host, "", "resolution timed out")
+
+    # Try each approved address in turn. anyio races the addresses a name resolves to —
+    # Happy Eyeballs — which is what lets a host with an AAAA record work from a
+    # container that has no IPv6 egress. Pinning a single address throws that fallback
+    # away; every address here has already been validated, so trying them in order keeps
+    # the security property and the reachability.
+    last: OSError | None = None
+    for addr in approved:
+        try:
+            return await dial(
+                addr, port, timeout=timeout, local_address=local_address, socket_options=socket_options
+            )
+        except OSError as exc:
+            last = exc
+    raise last if last is not None else EgressBlocked(_BLOCKED_MESSAGE)
+
+
+def guard_request(
+    request: Any, *, allow_http: bool, egress: EgressBound | None, credentials: CredentialSet | None
+) -> None:
+    """The per-request half of the guard, run on every hop before it is sent.
+
+    The backend only sees resolved addresses, so it enforces the IP half of the guard and
+    nothing else. Running the syntactic half here rather than at each call site means a new
+    caller cannot get half a guard by forgetting a line, and a redirect target is checked on the
+    same terms as the original URL. ``request`` is an httpx or httpx2 `Request`.
+    """
+    ssrf.assert_safe_outbound_url(str(request.url), allow_http=allow_http, resolve=False)
+    # The agent's own hosts (`spec.network.allow_hosts`), on the same terms: each hop, here.
+    # `raw_host` is the ASCII (punycode) name the patterns are written in; `host` is decoded.
+    if egress is not None:
+        from felix.security.host_allowlist import check_host
+
+        check_host(egress, request.url.raw_host.decode("ascii", errors="replace"))
+    # Only after the host is allowed: the key goes to a request already permitted to go there,
+    # and each redirect hop arrives here as a request of its own, judged again.
+    if credentials is not None:
+        credentials.attach(request, allow_http=allow_http)
+
+
+# Every one of these dials somewhere the backend never sees. A proxied connection dials the proxy
+# and lets *it* choose the destination, which is a bypass by construction, and `mounts` takes
+# precedence over the transport entirely. One list for both HTTP stacks (httpx and the MCP SDK's
+# httpx2): a route found and closed on one is closed on the other.
+ROUTES_AROUND_THE_PIN = ("proxy", "mounts", "uds")
+
+
+def refuse_bypass_kwargs(kwargs: dict[str, Any]) -> None:
+    """Refuse a client or transport argument that would route around the pinned backend."""
+    for name in ROUTES_AROUND_THE_PIN:
+        if kwargs.get(name) is not None:
+            raise TypeError(
+                f"{name}= would bypass the egress guard; a guarded client cannot proxy or use a unix socket"
+            )
+
+
+def install_pin(pool: Any, backend: Any) -> None:
+    """Swap ``backend`` in as the connection pool's network backend.
+
+    httpcore (and httpcore2) build their own pool and do not expose `network_backend`, so it is
+    set on the constructed pool: one private attribute, pinned by a test per stack, and a rename
+    fails loudly here rather than returning a client with no egress guard at all.
+    """
+    if not hasattr(pool, "_network_backend"):  # pragma: no cover - guarded by test
+        raise RuntimeError(
+            "connection pool has no _network_backend; the egress guard cannot be installed "
+            "and an unguarded client must not be returned"
+        )
+    pool._network_backend = backend
+
+
 class _PinningBackend(AutoBackend):
     """Resolves, validates, and connects to the address it validated."""
 
@@ -119,29 +209,15 @@ class _PinningBackend(AutoBackend):
         local_address: str | None = None,
         socket_options: Any = None,
     ) -> httpcore.AsyncNetworkStream:
-        try:
-            approved = await approved_addresses(host, allow_http=self._allow_http, timeout=timeout)
-        except TimeoutError:
-            _refuse(host, "", "resolution timed out")
-
-        # Try each approved address in turn. anyio races the addresses a name resolves to —
-        # Happy Eyeballs — which is what lets a host with an AAAA record work from a
-        # container that has no IPv6 egress. Pinning a single address throws that fallback
-        # away; every address here has already been validated, so trying them in order keeps
-        # the security property and the reachability.
-        last: OSError | None = None
-        for addr in approved:
-            try:
-                return await super().connect_tcp(
-                    addr,
-                    port,
-                    timeout=timeout,
-                    local_address=local_address,
-                    socket_options=socket_options,
-                )
-            except OSError as exc:
-                last = exc
-        raise last if last is not None else EgressBlocked(_BLOCKED_MESSAGE)
+        return await connect_pinned(
+            super().connect_tcp,
+            host,
+            port,
+            allow_http=self._allow_http,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
 
     async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> httpcore.AsyncNetworkStream:
         # A unix socket has no address to validate, and the one a container gateway would
@@ -159,10 +235,7 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
     than silently returning an unguarded client.
     """
 
-    # Every one of these dials somewhere the backend never sees. A proxied connection
-    # dials the proxy and lets *it* choose the destination, which is a bypass by
-    # construction, and `mounts` takes precedence over the transport entirely.
-    _ROUTES_AROUND_THE_PIN = ("proxy", "mounts", "uds")
+    _ROUTES_AROUND_THE_PIN = ROUTES_AROUND_THE_PIN
 
     def __init__(
         self,
@@ -172,39 +245,17 @@ class GuardedAsyncTransport(httpx.AsyncHTTPTransport):
         credentials: CredentialSet | None = None,
         **kwargs: Any,
     ) -> None:
-        for name in self._ROUTES_AROUND_THE_PIN:
-            if kwargs.get(name) is not None:
-                raise TypeError(
-                    f"{name}= would bypass the egress guard; a guarded client cannot proxy "
-                    "or use a unix socket"
-                )
+        refuse_bypass_kwargs(kwargs)
         super().__init__(**kwargs)
-        if not hasattr(self._pool, "_network_backend"):  # pragma: no cover - guarded by test
-            raise RuntimeError(
-                "httpcore connection pool has no _network_backend; the egress guard cannot "
-                "be installed and an unguarded client must not be returned"
-            )
         self._allow_http = allow_http
         self._egress = egress
         self._credentials = credentials
-        self._pool._network_backend = _PinningBackend(allow_http=allow_http)
+        install_pin(self._pool, _PinningBackend(allow_http=allow_http))
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        # The backend only sees resolved addresses, so it enforces the IP half of the guard
-        # and nothing else. Running the syntactic half here rather than at each call site
-        # means a new caller cannot get half a guard by forgetting a line, and a redirect
-        # target is checked on the same terms as the original URL.
-        ssrf.assert_safe_outbound_url(str(request.url), allow_http=self._allow_http, resolve=False)
-        # The agent's own hosts (`spec.network.allow_hosts`), on the same terms: each hop, here.
-        # `raw_host` is the ASCII (punycode) name the patterns are written in; `host` is decoded.
-        if self._egress is not None:
-            from felix.security.host_allowlist import check_host
-
-            check_host(self._egress, request.url.raw_host.decode("ascii", errors="replace"))
-        # Only after the host is allowed: the key goes to a request already permitted to go there,
-        # and each redirect hop arrives here as a request of its own, judged again.
-        if self._credentials is not None:
-            self._credentials.attach(request, allow_http=self._allow_http)
+        guard_request(
+            request, allow_http=self._allow_http, egress=self._egress, credentials=self._credentials
+        )
         return await super().handle_async_request(request)
 
 
@@ -230,11 +281,7 @@ def safe_async_client(
     # Checked here as well as on the transport: `proxy` and `mounts` are client-level
     # arguments, so the transport never sees them and would return a guarded object wired
     # into an unguarded path.
-    for name in GuardedAsyncTransport._ROUTES_AROUND_THE_PIN:
-        if kwargs.get(name) is not None:
-            raise TypeError(
-                f"{name}= would bypass the egress guard; a guarded client cannot proxy or use a unix socket"
-            )
+    refuse_bypass_kwargs(kwargs)
     kwargs.setdefault("follow_redirects", False)
     if credentials is not None and kwargs["follow_redirects"]:
         # httpx copies headers onto the next hop itself. The transport strips a credential a hop is

@@ -172,6 +172,8 @@ FAILURE_CONTENT_PREFIXES: tuple[str, ...] = (
     "[plan mode]",
     # `manifest_hooks.py`: a `pre_tool_use` hook refused the call.
     "[hook denied]",
+    # `mcp/client.py`: a remote MCP tool's error result, or a call that failed on the way there.
+    "[mcp_error]",
 )
 
 

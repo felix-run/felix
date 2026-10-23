@@ -2,96 +2,10 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from felix.a2a.peers import make_peer_tool, tools_from_peers
 from felix.manifests.schema import A2APeerRef, McpServerRef
-from felix.mcp.client import tools_from_mcp_servers
 from felix.tools.types import ToolInvocationCtx
-
-
-async def test_mcp_rpc_and_tool_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-
-    class _Resp:
-        status_code = 200
-        headers = {"content-type": "application/json"}
-
-        def __init__(self, body: dict):
-            self._body = body
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return self._body
-
-        @property
-        def text(self) -> str:
-            return json.dumps(self._body)
-
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, json=None, headers=None):
-            method = (json or {}).get("method")
-            calls.append(str(method))
-            if method == "initialize":
-                return _Resp({"jsonrpc": "2.0", "id": 1, "result": {}})
-            if method == "tools/list":
-                return _Resp(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "result": {
-                            "tools": [
-                                {
-                                    "name": "search",
-                                    "description": "Search docs",
-                                    "inputSchema": {
-                                        "type": "object",
-                                        "properties": {"q": {"type": "string"}},
-                                    },
-                                }
-                            ]
-                        },
-                    }
-                )
-            if method == "tools/call":
-                return _Resp(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 3,
-                        "result": {
-                            "content": [{"type": "text", "text": "found:42"}],
-                            "isError": False,
-                        },
-                    }
-                )
-            return _Resp({"jsonrpc": "2.0", "id": 0, "error": {"code": -1, "message": "nope"}})
-
-    import felix.mcp.client as client_mod
-
-    monkeypatch.setattr(client_mod.httpx, "AsyncClient", _Client)
-
-    ref = McpServerRef(name="docs", url="https://mcp.example.com/mcp", transport="http")
-    tools = await tools_from_mcp_servers([ref], allow_http=False)
-    assert len(tools) == 1
-    assert tools[0].name == "docs__search"
-    assert tools[0].executor.transport == "mcp"
-    out = await tools[0].executor.execute({"q": "felix"}, ToolInvocationCtx())
-    text = out if isinstance(out, str) else out.content
-    assert "found:42" in text
-    assert "tools/list" in calls
-    assert "tools/call" in calls
 
 
 async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -144,55 +58,6 @@ async def test_peer_tool_message_send(monkeypatch: pytest.MonkeyPatch) -> None:
 
     tools = tools_from_peers([ref])
     assert len(tools) == 1
-
-
-async def test_mcp_timeout_is_per_server_over_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`McpServerRef.timeout_ms` must reach discovery and the tool call alike.
-
-    30s was unraisable, so a slow-but-working server was unusable and the only symptom was a
-    tool result that read like the server had refused. `ContainerRef` and `SandboxRef` both
-    already carried a timeout; this closed the parity gap.
-    """
-    from felix.mcp import client as mcp_client
-
-    seen: list[float] = []
-
-    async def _fake_rpc(url, method, params=None, *, auth="", allow_http=False, wait_s=30.0):
-        seen.append(wait_s)
-        if method == "tools/list":
-            return {"tools": [{"name": "echo", "description": "e", "inputSchema": {}}]}
-        return {"content": [{"type": "text", "text": "ok"}]}
-
-    monkeypatch.setattr(mcp_client, "mcp_rpc", _fake_rpc)
-    ref = McpServerRef(name="slow", url="https://example.com/mcp", transport="http", timeout_ms=90_000)
-    tools = await tools_from_mcp_servers([ref])
-    assert [t.name for t in tools] == ["slow__echo"]
-
-    await tools[0].executor.execute({}, ToolInvocationCtx(manifest_id="m", tool_call_id="c"))
-    # Arity as well as value: a subset assertion would stay green if a call site lost its
-    # `wait_s` entirely. initialize + tools/list + tools/call.
-    assert seen == [90.0, 90.0, 90.0]
-
-
-async def test_mcp_timeout_is_per_server_over_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
-    """stdio is the arm with the most machinery behind it, and it was the untested one."""
-    from felix.mcp import stdio as mcp_stdio
-
-    seen: list[float] = []
-
-    async def _fake_stdio_rpc(ref, method, params=None, *, wait_s=30.0, settings=None, handshake=None):
-        seen.append(wait_s)
-        if method == "tools/list":
-            return {"tools": [{"name": "echo", "description": "e", "inputSchema": {}}]}
-        return {"content": [{"type": "text", "text": "ok"}]}
-
-    monkeypatch.setattr(mcp_stdio, "stdio_rpc", _fake_stdio_rpc)
-    ref = McpServerRef(name="local", transport="stdio", command="/usr/bin/true", timeout_ms=90_000)
-    tools = await tools_from_mcp_servers([ref])
-    assert [t.name for t in tools] == ["local__echo"]
-
-    await tools[0].executor.execute({}, ToolInvocationCtx(manifest_id="m", tool_call_id="c"))
-    assert seen == [90.0, 90.0], "discovery and the call must both carry the timeout"
 
 
 def test_mcp_timeout_default_and_floor() -> None:

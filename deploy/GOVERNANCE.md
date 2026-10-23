@@ -860,6 +860,13 @@ exactly as it covers a fetched page. A manifest binding any of the four without
 `content_screening.enabled` is warned at compile time and counted in
 `felix_untrusted_tools_unscreened`.
 
+Outbound MCP (`spec.mcp_servers`) is the official SDK's client, whose HTTP stack is httpx2 rather
+than httpx. It is handed `safe_httpx2_client` (`security/egress_httpx2.py`): the same pin
+(`connect_pinned`) and the same per-hop checks (`guard_request`) installed on httpx2's own pool, so an
+MCP server URL is resolved once, validated, and dialled at the address that was checked. A failed
+MCP call comes back as `[mcp_error] …` tool output rather than an exception, because its text is
+usually the server's: content screening and secret masking read output, not exceptions.
+
 `spec.http_tools` goes through `safe_async_client` like every other outbound call, so it
 inherits the pin for free, on the first request and on each redirect hop: the fetch tool
 drives redirects by hand rather than letting httpx follow them, so every hop re-enters the

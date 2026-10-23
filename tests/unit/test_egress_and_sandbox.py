@@ -668,3 +668,42 @@ async def test_browser_needs_no_rule_for_a_literal(monkeypatch: pytest.MonkeyPat
 
     ex = _BrowserExecutor(op="content", timeout_ms=1000, path_prefix="", allow_http=False, binding="chromium")
     assert await ex._pin_args("https://93.184.216.34/") == []
+
+
+# --- the same guard on httpx2, the MCP SDK's HTTP stack -----------------------------------
+
+
+def test_the_httpx2_guard_cannot_be_installed_silently_unguarded() -> None:
+    """The MCP client's HTTP goes through httpx2's own httpcore2 pool, not httpx's; the backend
+    swap is pinned there too, so a rename fails loudly instead of returning an unguarded client."""
+    from felix.security.egress_httpx2 import GuardedAsyncTransport2, _PinningBackend2, safe_httpx2_client
+
+    assert isinstance(GuardedAsyncTransport2()._pool._network_backend, _PinningBackend2)
+    client = safe_httpx2_client(timeout=1.0)
+    assert isinstance(client._transport, GuardedAsyncTransport2)
+    assert client._mounts == {}, "an environment proxy mount would route around the guard"
+    for kwargs in ({"proxy": "http://p:3128"}, {"uds": "/var/run/docker.sock"}):
+        with pytest.raises(TypeError):
+            GuardedAsyncTransport2(**kwargs)
+
+
+async def test_an_httpx2_request_to_a_name_resolving_privately_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through the whole httpx2 client, as the MCP SDK sends it: the pin, not a pre-check."""
+    from felix.security import ssrf
+    from felix.security.egress_httpx2 import safe_httpx2_client
+    from felix.security.ssrf import EgressBlocked
+
+    monkeypatch.setattr(ssrf, "resolve_host", lambda host: ["10.0.0.5"])
+    async with safe_httpx2_client(timeout=2.0) as client:
+        with pytest.raises(EgressBlocked):
+            await client.post("https://internal.example.com/mcp", json={})
+
+
+async def test_an_httpx2_request_is_held_to_the_url_rules_per_hop() -> None:
+    from felix.security.egress_httpx2 import safe_httpx2_client
+
+    async with safe_httpx2_client(timeout=2.0) as client:
+        with pytest.raises(ValueError, match="http urls blocked"):
+            await client.post("http://example.com/mcp", json={})
