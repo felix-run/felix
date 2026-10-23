@@ -156,13 +156,14 @@ async def test_an_oversized_expression_is_refused_as_invalid_arguments() -> None
 async def test_mcp_reports_a_failed_calculation_as_an_error() -> None:
     """`isError` was set only for a governance deny, so an MCP client read a tool's own failure
     as a success: the same misreading as the runner's, on the other surface."""
-    from felix.mcp.server import handle_rpc
     from felix_api.composition import compose
+
+    from tests.support.mcp_server import mcp_rpc
 
     settings = Settings(
         auth_mode="none", allow_insecure=True, object_store="memory", database_url="memory://t"
     )
-    called = await handle_rpc(
+    called = await mcp_rpc(
         settings=settings,
         tools=compose(settings),
         method="tools/call",

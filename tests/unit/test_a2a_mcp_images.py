@@ -243,13 +243,14 @@ async def test_the_mcp_client_handler_returns_a_servers_images(monkeypatch: pyte
 
 
 async def _call_snap(images: Any, *, tenant: str = "default") -> list[dict[str, Any]]:
-    """`tools/call` on Felix's MCP server for a tool returning `images()`, through `handle_rpc`."""
+    """`tools/call` on Felix's MCP server for a tool returning `images()`, through the SDK server (`mcp_rpc`)."""
     from felix.context import AuthContext
     from felix.manifests.loader import parse_manifest
     from felix.manifests.store import put_version
-    from felix.mcp.server import handle_rpc
     from felix.tools.types import define_tool
     from felix_api.composition import compose
+
+    from tests.support.mcp_server import mcp_rpc
 
     settings = make_settings()
 
@@ -270,7 +271,7 @@ async def _call_snap(images: Any, *, tenant: str = "default") -> list[dict[str, 
             {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "snapmcp"}, "spec": spec}
         ),
     )
-    resp = await handle_rpc(
+    resp = await mcp_rpc(
         settings=settings,
         tools=tools,
         method="tools/call",
@@ -282,7 +283,7 @@ async def _call_snap(images: Any, *, tenant: str = "default") -> list[dict[str, 
 
 
 async def test_the_mcp_server_returns_an_image_the_call_stored_as_image_content() -> None:
-    """Through `handle_rpc`: the tenant context `_image_blocks` reads under is the call's own."""
+    """Through the SDK server (`mcp_rpc`): the tenant context `_image_blocks` reads under is the call's own."""
     from felix.tools.tool_images import store_image_bytes
 
     async def stored() -> list[ImageAttachment]:

@@ -304,11 +304,12 @@ async def test_mcp_server_uses_compiled_tools(tmp_path) -> None:
         data_dir=str(tmp_path),
         default_manifest="quick",
     )
-    from felix.mcp.server import handle_rpc
     from felix.tools.builtins import default_tool_provider
 
+    from tests.support.mcp_server import mcp_rpc
+
     auth = AuthContext(tenant_id="default", anonymous=True)
-    listed = await handle_rpc(
+    listed = await mcp_rpc(
         settings=settings,
         tools=default_tool_provider(),
         method="tools/list",

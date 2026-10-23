@@ -451,10 +451,17 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Session fork / rewind | `POST /chat/fork`, `POST /chat/rewind` |
 | OpenAI-compatible | `POST /v1/chat/completions`, `GET /v1/models` |
 | A2A JSON-RPC | `POST /a2a` |
-| MCP | `POST /mcp` |
+| MCP | `POST /mcp` (the default manifest), `POST /mcp/{manifest}` |
 | Agent card | `GET /.well-known/agent-card.json` |
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 | Metrics | `GET /metrics` — **authenticated**, see below |
+
+`/mcp` is the official `mcp` Python SDK's stateless Streamable HTTP transport, serving a manifest's
+governed tools compiled as the caller. It speaks both protocol eras: a `2026-07-28` client (per-request
+`_meta`, `server/discover`, the `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers) and a
+legacy `initialize` client (2025-11-25 and earlier). Point an MCP host at `/mcp/{manifest}` to reach a
+given agent; a legacy client may instead name one in `params.manifest`. Every exchange is one POST, so
+there is no session and a `GET` is answered 405.
 
 **Felix serves an API, not a web UI, and browsers on another origin cannot call it directly, by
 design.** The chat UI and docs live in felix-run/web; `test_invariants.py` fails on any static

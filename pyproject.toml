@@ -26,7 +26,6 @@ Documentation = "https://docs.felix.run"
 aws = ["felix-harness[aws]"]
 gcp = ["felix-harness[gcp]"]
 otel = ["felix-harness[otel]"]
-mcp = ["felix-harness[mcp]"]
 a2a = ["felix-harness[a2a]"]
 oidc = ["felix-harness[oidc]"]
 granian = ["felix-harness[granian]"]
@@ -42,7 +41,7 @@ pii = ["felix-harness[pii]"]
 # core never imports it -- so it is its own distribution, installed by naming it.
 channels = ["felix-channels"]
 full = [
-    "felix-harness[aws,gcp,otel,mcp]",
+    "felix-harness[aws,gcp,otel]",
 ]
 
 [dependency-groups]
