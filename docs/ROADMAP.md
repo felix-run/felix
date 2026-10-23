@@ -769,8 +769,8 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       JWT writer's job keeps its grant with no expiry, and each firing lends it for 24 hours.
       A trigger naming a workflow maps payload fields to typed inputs by JSON Pointer; the
       sender's text is recorded as `untrusted_inputs` and fenced as data in every agent prompt of
-      the run. Open: per-value taint instead of per-run fencing; `revision` pinning in config is
-      manual (an unpinned trigger refuses a workflow an agent holds, and the boot warns of each).
+      the run. Open: per-value taint instead of per-run fencing. Every workflow trigger pins a
+      `revision` (required; boot fails without it), re-pinned by hand after each save.
 - [x] **Console.** felix-web's Workflows page: the list, the graph with a definition and a run
       view, the editor (web#519–#525), each step's transcript read under its run (#645) and the run
       watched over `GET /workflows/{id}/runs/{run_id}/stream` (#646). The instrument's compact graph
@@ -781,8 +781,8 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       of them until one is made.
       - **A trigger's `revision` pin.** A trigger naming a workflow runs its current revision unless
         the operator pins one in config, so an edit changes what an inbound sender can start.
-        Require the pin, or keep it optional? *Partly decided (2026-10-23):* optional, except for
-        a workflow an agent still holds, which an unpinned trigger refuses; the boot warns of each.
+        Require the pin, or keep it optional? *Decided (2026-10-23):* required for every workflow
+        trigger; a config without one fails the boot.
       - **An outside IdP's job grant.** A job written with a GitHub, Google or Actions sign-in is
         now re-checked at each firing against the account entry or org grant that admitted its
         writer (the sign-in audit, 2026-10-17). One written with a token another issuer signed still
@@ -811,9 +811,8 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       *Done:* `run_approval` (`auto` | `always` | `never`, default `auto`): `run_workflow` waits for
       the person when a supplied input can reach a `tool_call` step whose tool is not read-only,
       through `Tool.approval_condition` on a harness-marked conditional rule. Waivable by `bypass`.
-      *Done:* a trigger with no `revision` pin refuses to start a workflow an agent still holds
-      (`503 trigger_unavailable`, audited `workflow_run_refused`), and the API warns at boot for
-      each workflow trigger without a pin.
+      *Done:* every workflow trigger must pin a `revision`, so an agent's save never changes what
+      a trigger starts (this replaced #680's refusal of unpinned triggers on agent-held workflows).
       *Done:* the unwaivable built-in approval (`schedule_task`, `notify`, `save_workflow`) is one
       table, `permission_mode.BUILTIN_APPROVALS`. The rule ids, both unwaivable sets and the rules
       the builder adds are derived from it, and `test_builtin_approvals.py` compiles every row.

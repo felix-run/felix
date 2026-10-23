@@ -1222,8 +1222,6 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
   and the 422 is kept as that delivery's answer. A workflow that is missing, does not parse,
   declares inputs the trigger does not map, or is no longer at a pinned `revision` is the
   operator's problem: `503 trigger_unavailable`, not kept, so a redelivery after the fix runs.
-  So is a workflow an agent still holds (`spec.workflow_authoring`) when the trigger pins no
-  `revision`, audited as `workflow_run_refused` with reason `unpinned_agent_workflow`.
   **A string, object or array from the payload, and `$delivery`, are the sender's text** and are
   listed on the run as `untrusted_inputs`. **Every agent step of a trigger-started run fences what
   it is given** — a later step's output included, since an agent that read the sender's text can
@@ -1235,10 +1233,11 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
   screening on manifests a triggered workflow reaches, and give the trigger only the `scopes` its
   steps need. A tool step receives mapped values as arguments, screened as every tool step's are.
   The run is `trigger:<id>`'s with the trigger's `scopes`, its manifests checked and pinned at the
-  start; it is audited as `workflow_run_started` with trigger `trigger:<id>`. **The workflow's
-  current definition runs**: anyone with `workflows:write` can change what a trigger's scopes
-  reach, so an operator granting those scopes pins the workflow with `revision`. The API logs a
-  warning at boot for each workflow trigger without one.
+  start; it is audited as `workflow_run_started` with trigger `trigger:<id>`. **A workflow trigger
+  must pin the `revision` it runs** (boot fails without one): anyone with `workflows:write`, or an
+  agent saving for its person (`spec.workflow_authoring`), can save the workflow again, and an
+  unpinned trigger would hand an outside sender whatever was saved last, under the trigger's
+  scopes. After each save the trigger refuses until the operator reads the new revision and pins it.
 
 ### Chat channels: Slack (`felix-channels` plugin)
 
@@ -2574,14 +2573,10 @@ from an operator's gate. Unlike the save's, this approval can be waived by a per
 tenant's run quota.
 
 A saved workflow also runs as whoever else starts it: anyone holding `workflows:write`, from the
-console, with their own authority. A job is pinned to the revision its writer saw. A trigger is
-pinned only if its config names a revision, and **an unpinned trigger refuses to start a workflow
-an agent still holds** (`authored_via` `agent:<manifest>`): `503 trigger_unavailable`, audited as
-`workflow_run_refused` (after the trigger's rate limit, so a replayed delivery is counted), until
-the operator pins the revision they read or the person saves over the workflow. Otherwise the person's
-approval of a save would decide what an outside sender starts under the trigger's scopes, and that
-approval never asked about the trigger. A workflow its person has saved over
-(`owner:agent:<manifest>`) or a person made runs unpinned as before.
+console, with their own authority. A job is pinned to the revision its writer saw, and a
+trigger to the `revision` its config names, which every workflow trigger must: an agent's later
+save starts neither until someone pins it again. The person's approval of a save never decides
+what an outside sender starts.
 
 `workflow_catalog` relays other manifests' tool descriptions and schemas, which is third-party text,
 and is marked `relays_untrusted` so content screening reads it.

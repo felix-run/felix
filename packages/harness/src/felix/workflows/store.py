@@ -112,7 +112,7 @@ OWNER_EDIT_PREFIX = "owner:"
 
 def agent_holds(authored_via: str) -> bool:
     """Whether an agent may still change the workflow: it saved the revision there now, and no
-    person has saved over it since. What it holds can change under anything that runs it unpinned."""
+    person has saved over it since."""
     return authored_via.startswith(AGENT_VIA_PREFIX)
 
 
@@ -394,7 +394,6 @@ __all__ = [
     "WorkflowConflict",
     "WorkflowLimitReached",
     "WorkflowNotOwned",
-    "agent_holds",
     "delete_workflow",
     "get_workflow",
     "list_workflows",

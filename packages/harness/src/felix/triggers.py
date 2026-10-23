@@ -7,7 +7,8 @@
                  "events": ["push", "pull_request"], "scopes": [], "rate_limit": 60},
      "gh-issue": {"tenant": "acme", "workflow": "triage", "scheme": "github",
                   "secret": "secret:GH_HOOK", "events": ["issues"],
-                  "inputs": {"number": "/issue/number", "title": "/issue/title"}}}
+                  "inputs": {"number": "/issue/number", "title": "/issue/title"},
+                  "revision": "<the workflow's `revision`, from GET /workflows/triage>"}}
 
 `POST /triggers/{id}` (`felix_api/routes/triggers.py`) carries no bearer: the sender signs the body,
 and the route verifies it with this module before parsing anything in it. What reaches the model
@@ -139,11 +140,13 @@ class WorkflowTarget:
     """A trigger that starts a run of a workflow, its inputs mapped from the delivery."""
 
     workflow: str
+    # The workflow revision this trigger runs, and no other: anyone who saves the workflow again --
+    # a person, or an agent through `spec.workflow_authoring` -- would otherwise change what an
+    # outside sender starts under the trigger's scopes.
+    revision: str
     # Workflow input -> where in the delivery it comes from: a JSON Pointer into the payload (`""`
     # is the whole of it), `$event` or `$delivery`. Read-only: triggers are parsed once and shared.
     input_sources: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}), hash=False)
-    # The workflow revision this trigger runs, if the operator pinned one.
-    revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,7 +289,7 @@ def _text(spec: dict[str, Any], key: str, *, name: str) -> str:
 
 def _parse_target(spec: dict[str, Any], *, name: str) -> ManifestTarget | WorkflowTarget:
     """What the trigger starts: exactly one of `manifest` (with `prompt`) or `workflow` (with
-    `inputs` and an optional `revision`), each refusing the other's keys rather than ignoring them."""
+    `inputs` and the `revision` it runs), each refusing the other's keys rather than ignoring them."""
     from felix.workflows.ports import PORT_NAME_PATTERN
 
     if ("manifest" in spec) == ("workflow" in spec):
@@ -320,13 +323,17 @@ def _parse_target(spec: dict[str, Any], *, name: str) -> ManifestTarget | Workfl
             raise ValueError(
                 f"trigger {name!r} input {input_name!r} maps {EVENT_SOURCE}, which needs `events`"
             )
+    workflow = _text(spec, "workflow", name=name).strip()
     revision = spec.get("revision")
-    if revision is not None and not (isinstance(revision, str) and revision.strip()):
-        raise ValueError(f"trigger {name!r} `revision` must be a workflow revision")
+    if not isinstance(revision, str) or not revision.strip():
+        raise ValueError(
+            f"trigger {name!r} must pin the workflow `revision` it runs: the `revision` "
+            "GET /workflows/{id} returns for the definition you have read"
+        )
     return WorkflowTarget(
-        workflow=_text(spec, "workflow", name=name).strip(),
+        workflow=workflow,
+        revision=revision.strip(),
         input_sources=MappingProxyType(dict(raw)),
-        revision=revision.strip() if isinstance(revision, str) else None,
     )
 
 
@@ -370,7 +377,7 @@ def _parse_one(name: str, spec: dict[str, Any], *, allow_literal: bool) -> Trigg
 
 @lru_cache(maxsize=4)
 def _parse(raw: str, allow_literal: bool) -> dict[str, Trigger]:
-    shape = "{tenant, manifest or workflow, scheme, secret, prompt}"
+    shape = "{tenant, manifest and prompt or workflow and revision, scheme, secret}"
     return {
         name: _parse_one(name, spec, allow_literal=allow_literal)
         for name, spec in parse_registry(raw, kind="trigger", shape=shape).items()
@@ -389,17 +396,6 @@ def parse_triggers(settings: Any) -> dict[str, Trigger]:
 
 def triggers_configured(settings: Any) -> bool:
     return bool(_raw(settings).strip())
-
-
-def unpinned_workflow_triggers(settings: Any) -> list[tuple[str, str]]:
-    """`(trigger, workflow)` for each trigger that starts a workflow with no `revision` pin: it
-    runs whatever revision is saved when an event arrives, and refuses to start one an agent
-    still holds (`workflows.store.agent_holds`)."""
-    return sorted(
-        (name, t.target.workflow)
-        for name, t in parse_triggers(settings).items()
-        if isinstance(t.target, WorkflowTarget) and t.target.revision is None
-    )
 
 
 async def resolved_keys(settings: Any, trigger: Trigger) -> tuple[bytes, ...]:
@@ -608,7 +604,6 @@ __all__ = [
     "shown_event",
     "signing_keys",
     "triggers_configured",
-    "unpinned_workflow_triggers",
     "verifier_for",
     "verify_github",
     "verify_standard",
