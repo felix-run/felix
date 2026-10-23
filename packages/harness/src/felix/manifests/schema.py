@@ -936,6 +936,41 @@ class NotifySpec(_Strict):
     approval: bool = False
 
 
+class WorkflowAuthoringSpec(_Strict):
+    """Let the agent build workflows for the person it acts for: binds `workflow_catalog`,
+    `check_workflow`, `save_workflow`, `list_my_workflows` and `run_workflow`
+    (`felix/workflows/agent_tools.py`).
+
+    A workflow the agent saves is an ordinary one (`/workflows`), owned by that person and marked
+    as this agent's (`authored_via: agent:<manifest>`). The agent sees, changes and runs only those,
+    never an operator's or another person's, and a person's own save through the routes takes one
+    over. Saving needs `workflows:write`, reading `workflows:read`; a run starts as the person, who
+    must be admitted by every manifest its steps name. Nothing here saves or runs from a scheduled
+    or triggered run, or from inside a workflow. Unset binds nothing.
+    """
+
+    #: Workflows one person may hold from this agent at once, so a looping agent cannot fill the
+    #: tenant's (`workflows/store.py:MAX_PER_TENANT`).
+    max_workflows: int = Field(default=10, ge=1, le=100)
+    #: The most steps one workflow the agent saves may have.
+    max_steps: int = Field(default=30, ge=1, le=200)
+    #: The manifests its agent and tool steps may name. Empty: this manifest only.
+    manifests: list[str] = Field(default_factory=list, max_length=50)
+    #: Hold every `save_workflow` call for a person's approval -- one-shot, bound to the caller --
+    #: unless `spec.approvals` has a rule naming `save_workflow` literally that gates every call. No
+    #: permission mode waives it: a saved workflow runs later as whoever starts it, a job or a
+    #: trigger included, so a person reads it first. `false` adds no rule.
+    approval: bool = True
+
+    @field_validator("manifests")
+    @classmethod
+    def _manifest_names(cls, v: list[str]) -> list[str]:
+        for name in v:
+            if not name or len(name) > 200:
+                raise ValueError("workflow_authoring.manifests: each name is 1-200 characters")
+        return v
+
+
 class HeartbeatSpec(_Strict):
     """A periodic check-in each person may turn on for themselves (`PUT /heartbeats/{manifest}`,
     `felix/jobs/heartbeat.py`): on `schedule`, the agent works through `checklist` as that person
@@ -1511,6 +1546,8 @@ class Spec(_Strict):
     scheduling: SchedulingSpec | None = None
     # Binds `notify`. Unset binds nothing.
     notify: NotifySpec | None = None
+    # Binds the workflow authoring tools. Unset binds nothing.
+    workflow_authoring: WorkflowAuthoringSpec | None = None
     # A check-in each person may turn on for themselves (`/heartbeats`). Needs `notify`.
     heartbeat: HeartbeatSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)

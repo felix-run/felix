@@ -89,8 +89,8 @@ class WorkflowOut(CheckOut):
     created_at: int
     updated_at: int
     updated_by: str
-    # Who created it and through what: `agent:<manifest>` for a workflow an agent wrote for
-    # `created_by`, empty for one made through these routes or before this was recorded.
+    # Who created it, and what made its latest save: `agent:<manifest>` while the agent that wrote
+    # it for `created_by` still holds it, empty once a person saves it through these routes.
     created_by: str
     authored_via: str
 
@@ -448,8 +448,8 @@ async def put_workflow(
             spec,
             precondition=precondition,
             updated_by=who,
-            # Kept only if this creates it. No `authored_via`: a person through the routes, so
-            # never one an agent may change (`spec.workflow_authoring`).
+            # Kept only if this creates it. No `authored_via`: a person's save through the routes,
+            # which takes over a workflow an agent made (`spec.workflow_authoring`).
             created_by=who,
         )
     except workflow_store.WorkflowConflict as conflict:

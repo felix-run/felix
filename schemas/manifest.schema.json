@@ -2705,6 +2705,17 @@
           ],
           "default": null
         },
+        "workflow_authoring": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkflowAuthoringSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "heartbeat": {
           "anyOf": [
             {
@@ -2994,6 +3005,41 @@
         }
       },
       "title": "ToolsRetrievalSpec",
+      "type": "object"
+    },
+    "WorkflowAuthoringSpec": {
+      "additionalProperties": false,
+      "description": "Let the agent build workflows for the person it acts for: binds `workflow_catalog`,\n`check_workflow`, `save_workflow`, `list_my_workflows` and `run_workflow`\n(`felix/workflows/agent_tools.py`).\n\nA workflow the agent saves is an ordinary one (`/workflows`), owned by that person and marked\nas this agent's (`authored_via: agent:<manifest>`). The agent sees, changes and runs only those,\nnever an operator's or another person's, and a person's own save through the routes takes one\nover. Saving needs `workflows:write`, reading `workflows:read`; a run starts as the person, who\nmust be admitted by every manifest its steps name. Nothing here saves or runs from a scheduled\nor triggered run, or from inside a workflow. Unset binds nothing.",
+      "properties": {
+        "max_workflows": {
+          "default": 10,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Workflows",
+          "type": "integer"
+        },
+        "max_steps": {
+          "default": 30,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "manifests": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Manifests",
+          "type": "array"
+        },
+        "approval": {
+          "default": true,
+          "title": "Approval",
+          "type": "boolean"
+        }
+      },
+      "title": "WorkflowAuthoringSpec",
       "type": "object"
     },
     "WorkspaceSpec": {
