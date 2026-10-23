@@ -426,6 +426,7 @@ class AnthropicMessagesClient(HttpModelClient):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         system = ""
         converted: list[dict[str, Any]] = []
@@ -483,6 +484,8 @@ class AnthropicMessagesClient(HttpModelClient):
                 }
                 for t in tools
             ]
+            if tool_choice == "none":
+                body["tool_choice"] = {"type": "none"}
         apply_anthropic_thinking_cache(body, self.spec, self.route.model, isolate_cache=isolate_cache)
         # After the thinking pass, which is what decides whether a forced tool choice is legal
         # and has already put `effort` into the `output_config` a native format joins.
@@ -501,6 +504,7 @@ class AnthropicMessagesClient(HttpModelClient):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> ModelChatResult:
         body = self._body(
             messages,
@@ -509,6 +513,7 @@ class AnthropicMessagesClient(HttpModelClient):
             max_tokens,
             isolate_cache=isolate_cache,
             output_schema=output_schema,
+            tool_choice=tool_choice,
         )
         headers = self._headers(
             {
@@ -575,6 +580,7 @@ class AnthropicMessagesClient(HttpModelClient):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         body = self._body(
             messages,
@@ -583,6 +589,7 @@ class AnthropicMessagesClient(HttpModelClient):
             max_tokens,
             isolate_cache=isolate_cache,
             output_schema=output_schema,
+            tool_choice=tool_choice,
         )
         body["stream"] = True
         headers = self._headers(

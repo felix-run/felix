@@ -20,6 +20,11 @@ metadata:
 spec:
   pattern: react
 
+  # Steps the react loop may take. The default of 10 is too few for a docs search followed by
+  # a page fetch or two per sub-question: a troubleshooting answer ran out mid-research and
+  # ended on "Stopped at the step limit (10) with tool calls still pending".
+  recursion_limit: 25
+
   model:
     temperature: 0
     cache: true
