@@ -141,6 +141,16 @@ def workflow_run_key(tenant_id: str, run_id: str) -> str | None:
     return _compose(tenant_id, "workflow", tail=run_id)
 
 
+def is_workflow_thread(tenant_id: str, thread_id: str | None) -> bool:
+    """Whether ``thread_id`` is one of a workflow run's: a step's (`workflow_thread_id`) or the
+    run's own key. What lets a tool tell that it is running inside a workflow, where starting or
+    rewriting a workflow would let one run beget another."""
+    if not thread_id or not _usable_tenant(tenant_id):
+        return False
+    # Spelled out: `_compose` refuses an empty tail, and this is the prefix both composers share.
+    return thread_id.startswith(f"{tenant_id}:workflow:")
+
+
 def thread_belongs_to_tenant(tenant_id: str, thread_id: str) -> bool:
     """True when ``thread_id`` is one ``tenant_id`` may address.
 

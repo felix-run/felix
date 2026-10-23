@@ -89,8 +89,9 @@ class Workflow(Base):
     generation: Mapped[str] = mapped_column(Text, nullable=False)
     definition_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     updated_by: Mapped[str] = mapped_column(Text, server_default="", default="")
-    # Who created it and through what (`agent:<manifest>`, empty for the routes), fixed at creation
-    # and kept on every replace, so an agent changes only what it made for that person (0045).
+    # Who created it, fixed at creation, and what made its latest save (`agent:<manifest>`, empty
+    # for the routes), so an agent changes only what it made for that person and a person's own
+    # save takes it over (0045; `workflows/store.py:put_workflow`).
     created_by: Mapped[str] = mapped_column(Text, server_default="", default="")
     authored_via: Mapped[str] = mapped_column(Text, server_default="", default="")
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)

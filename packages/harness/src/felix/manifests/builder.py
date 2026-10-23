@@ -1819,6 +1819,25 @@ def _bind_scheduling(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_
     )
 
 
+def _bind_workflow_authoring(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """The workflow authoring tools for `spec.workflow_authoring`, refused like `_bind_scheduling`
+    when a tool of one of their names is already bound: the first of a name wins."""
+    if m.spec.workflow_authoring is None or deps.settings is None:
+        return
+    from felix.workflows.agent_tools import WORKFLOW_AUTHORING_TOOL_NAMES, make_workflow_authoring_tools
+
+    for taken in sorted(t.name for t in resolved if t.name in WORKFLOW_AUTHORING_TOOL_NAMES):
+        raise ValueError(
+            f"spec.workflow_authoring binds a tool named '{taken}', and '{m.metadata.name}' already has "
+            f"one. Remove the other tool or the workflow_authoring block."
+        )
+    resolved.extend(
+        make_workflow_authoring_tools(
+            deps.settings, tenant_id=tenant_id, manifest_id=m.metadata.name, spec=m.spec.workflow_authoring
+        )
+    )
+
+
 def _bind_notify(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
     """`notify` for `spec.notify`, refused like `_bind_scheduling` when a tool of that name is
     already bound: the first of a name wins, and a provider's `notify` would stand in silently."""
@@ -2229,6 +2248,8 @@ async def build_agent(
         _bind_scheduling(resolved, m, deps, tenant_id)
         # `spec.notify` -> `notify`, on the same terms.
         _bind_notify(resolved, m, deps, tenant_id)
+        # `spec.workflow_authoring` -> the workflow authoring tools, on the same terms.
+        _bind_workflow_authoring(resolved, m, deps, tenant_id)
 
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
@@ -2452,6 +2473,13 @@ async def build_agent(
             notify_rule = default_notify_rule(m.spec.notify, list(m.spec.approvals))
             if notify_rule is not None:
                 approval_rules.append(notify_rule)
+        if m.spec.workflow_authoring is not None and m.spec.workflow_authoring.approval:
+            # A saved workflow runs later as whoever starts it, so a person reads it first.
+            from felix.workflows.agent_tools import default_workflow_save_rule
+
+            save_rule = default_workflow_save_rule(m.spec.workflow_authoring, list(m.spec.approvals))
+            if save_rule is not None:
+                approval_rules.append(save_rule)
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions

@@ -2398,7 +2398,7 @@ approved plan (`exit_plan_mode`), which needs whoever answers it to hold `approv
 | `default` | Every control runs as the manifest says. |
 | `plan` | Only read-only tools run (`Tool.read_only` — the workspace's reads, search, recall, `todo_write`, `ask_user`, foreground `task` — plus `permissions.read_only_tools`); every other call is refused as `[plan mode] …` before an approval is asked, and a background `task` is refused (a worker run would not inherit the mode). **Every agent honours a stored `plan`**, whatever its `allowed_modes`, because it only narrows; `allowed_modes` decides whether the agent offers `exit_plan_mode`. MCP read-only annotations are **not** trusted: the server wrote them. |
 | `accept_edits` | **Opt-in** (`allowed_modes` must list it). Approvals are waived for `write_file`, `edit_file`, `delete_file`, `rename_file` and `permissions.edit_tools`; every other gate asks as written. |
-| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's and any on `schedule_task` or `notify`. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
+| `bypass` | **Opt-in**, never a `default_mode`. Every approval is waived except a plan's and any on `schedule_task`, `notify` or `save_workflow`. Setting it needs `approvals:bypass` (`approvals:write` is not enough), and every run checks the scope again for whoever drives the thread then, so a thread left in bypass is not bypassed for the next caller. Under `auth_mode=none` scope checks pass, so anyone may set it — development only. |
 
 `allowed_modes` defaults to `[default, plan]`: each waiver mode waives approvals an author already
 wrote, so allowing one is that author's decision. A stored waiver mode an agent does not allow
@@ -2422,6 +2422,65 @@ rule. A task belongs to its writer's subject, so a subject that names no person 
 sub-less API key's `api_key`, an inbound trigger's `trigger:<id>`, a machine actor acting for no
 one. A plugin authenticator that gives many people one subject is not detectable here; avoiding
 that is the operator's responsibility.
+
+**Agent-authored workflows.** `spec.workflow_authoring` binds `workflow_catalog`, `check_workflow`,
+`save_workflow`, `list_my_workflows` and `run_workflow`. A workflow the agent saves is an ordinary
+one, owned by the person the conversation acts for. The owner is their issuer-qualified key
+(`issuer|subject`, `AuthContext.skill_owner`), so the same subject at another issuer is someone
+else. `authored_via` records `agent:<manifest>`. The agent sees, changes and runs only workflows
+holding both, never an operator's or another person's. The store checks the pair under the same row
+lock as the revision (and before it), so a save cannot land on a workflow taken over in between.
+
+A person's save through `PUT /workflows/{id}` takes the workflow over, and the agent can no longer
+change it. Whether the agent may still run it depends on whose save it was, decided under the same
+lock (`store._replaced_via`):
+- The person it was made for (their issuer-qualified key matches `created_by`): it becomes
+  `owner:agent:<manifest>`, and the agent may still run it for them. They wrote what it now holds.
+- Anyone else: `authored_via` is cleared, and the agent may neither change nor run it. Otherwise
+  that person's edit would run as the owner, through the owner's agent, without the owner having
+  seen it. Once cleared, the owner's later saves do not bring the mark back.
+
+New workflows get an id minted by the tool (`wf-<hex>`), so an agent cannot
+re-create a deleted id that a job or trigger still names.
+
+`save_workflow` is gated by the built-in `workflow_authoring.save_workflow` rule (`one_shot`,
+`bind_principal`). It is displaced only by a manifest rule that names `save_workflow` literally and
+gates every call, and no permission mode waives it: a saved workflow runs later as whoever starts
+it, a job or a trigger included. The approver reads the whole definition, every field, as escaped
+JSON. Text the model wrote sits inside quoted strings, so it cannot draw a line of the preview's
+layout, and an agent step's prompt is capped at 4,000 characters so nothing is cut off. The tool's
+own checks run first, so a call it would refuse never asks anyone. Those checks cover:
+- the definition's problems;
+- more than `max_steps` steps;
+- a step kind outside `kinds` (an allowlist: `agent_turn`, `tool_call`, `approval`, `branch`);
+- a step naming a manifest outside `manifests` (default: this one);
+- a step naming a manifest whose inbound rules refuse the person (the same check a run's start makes,
+  `engine.admitted_manifests`);
+- the `max_workflows` cap. It is counted outside the store's lock, so separately approved saves racing
+  at the cap can pass it; the tenant's 500 is the hard bound.
+
+Saving and running refuse:
+- a caller who is anonymous, uses a shared subject, or has no owner key;
+- a scheduled or triggered run (`RequestContext.unattended`);
+- any call made on a workflow's own thread, so a workflow cannot write or start another.
+
+A run starts as the person through `engine.start_run`, which checks each step's manifest against
+them. The run's trigger is `agent:<manifest>`, and every input is treated as untrusted, so each
+agent step reads the inputs fenced as data.
+
+`run_workflow` asks no one: once a workflow's shape is approved, the agent may start it with any
+inputs. A `tool_call` step receives its inputs as tool arguments, which only that manifest's own
+policies, screening and approvals govern; fencing applies to agent steps alone. `max_active_runs`
+(default 3) bounds the runs one person's agent can hold going, so a looping agent cannot fill the
+tenant's run quota.
+
+A saved workflow also runs as whoever else starts it: anyone holding `workflows:write`, from the
+console, with their own authority. A job is pinned to the revision its writer saw. A trigger is
+pinned only if its config names a revision, so an unpinned trigger aimed at an agent's workflow
+runs whatever the agent saves next, under the trigger's scopes. Pin such triggers.
+
+`workflow_catalog` relays other manifests' tool descriptions and schemas, which is third-party text,
+and is marked `relays_untrusted` so content screening reads it.
 
 **Notices.** `spec.notify` binds `notify`, which sends a title (80 characters) and a message (500) as
 a Web Push to the person the run acts for (`acting_for`) — only to browsers that person subscribed

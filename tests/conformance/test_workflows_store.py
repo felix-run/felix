@@ -57,22 +57,60 @@ async def test_a_save_round_trips_and_counts_versions(
 
 @parametrized
 async def test_who_created_a_workflow_survives_every_replace(store_settings: Any) -> None:
-    # An agent may change only the workflows it made for that person, so a replace -- by anyone,
-    # through anything -- must never move `created_by` or `authored_via`.
+    # `created_by` never moves; `authored_via` is what made the latest save, so a person's save
+    # through the routes (`""`) takes over a workflow an agent made.
     first = await _put(
         store_settings, "triage", updated_by="ada", created_by="ada", authored_via="agent:quick"
     )
     assert (first["created_by"], first["authored_via"]) == ("ada", "agent:quick")
-    replaced = await _put(
-        store_settings, "triage", "Triage v2", updated_by="op", created_by="op", authored_via=""
-    )
-    assert (replaced["created_by"], replaced["authored_via"]) == ("ada", "agent:quick")
-    assert replaced["updated_by"] == "op"
+    again = await _put(store_settings, "triage", created_by="op", authored_via="agent:quick")
+    assert (again["created_by"], again["authored_via"]) == ("ada", "agent:quick")
+    adopted = await _put(store_settings, "triage", "Triage v2", updated_by="op", created_by="op")
+    assert (adopted["created_by"], adopted["authored_via"], adopted["updated_by"]) == ("ada", "", "op")
     stored = await workflows.get_workflow(store_settings, TENANT, "triage")
     assert stored is not None
-    assert (stored["created_by"], stored["authored_via"]) == ("ada", "agent:quick")
+    assert (stored["created_by"], stored["authored_via"]) == ("ada", "")
     listed = await workflows.list_workflows(store_settings, TENANT)
-    assert [(r["created_by"], r["authored_via"]) for r in listed] == [("ada", "agent:quick")]
+    assert [(r["created_by"], r["authored_via"]) for r in listed] == [("ada", "")]
+
+
+@parametrized
+async def test_a_save_conditional_on_its_owner_lands_only_on_their_row(store_settings: Any) -> None:
+    mine = ("ada", "agent:quick")
+    first = await _put(store_settings, "triage", created_by="ada", authored_via="agent:quick", owner=mine)
+    second = await _put(store_settings, "triage", "Mine v2", authored_via="agent:quick", owner=mine)
+    assert second["version"] == 2
+    for owner in (("bob", "agent:quick"), ("ada", "agent:other"), ("ada", "")):
+        with pytest.raises(workflows.WorkflowNotOwned):
+            await _put(store_settings, "triage", "Not theirs", authored_via=owner[1], owner=owner)
+    # A person's save adopts it: the agent's next save, under the same condition, is refused.
+    await _put(store_settings, "triage", "Reviewed", updated_by="op")
+    with pytest.raises(workflows.WorkflowNotOwned):
+        await _put(store_settings, "triage", "Agent again", authored_via="agent:quick", owner=mine)
+    stored = await workflows.get_workflow(store_settings, TENANT, "triage")
+    assert stored is not None
+    assert stored["definition"]["name"] == "Reviewed", "a refused save writes nothing"
+    assert stored["version"] == first["version"] + 2
+
+
+@parametrized
+async def test_a_persons_own_save_keeps_their_agents_workflow_runnable(store_settings: Any) -> None:
+    # Decided under the row lock, on both arms: only the creator's own save keeps the agent's mark.
+    await _put(store_settings, "triage", created_by="iss|ada", authored_via="agent:quick")
+    own = await _put(store_settings, "triage", writer_owner="iss|ada")
+    assert own["authored_via"] == "owner:agent:quick"
+    again = await _put(store_settings, "triage", writer_owner="iss|ada")
+    assert again["authored_via"] == "owner:agent:quick", "a second own save keeps it"
+    other = await _put(store_settings, "triage", writer_owner="iss|bob")
+    assert other["authored_via"] == ""
+    assert (await _put(store_settings, "triage", writer_owner="iss|ada"))["authored_via"] == "", (
+        "once another person has saved it, the creator's save does not bring the mark back"
+    )
+    # A route-made workflow never gains one, whoever saves it.
+    await _put(store_settings, "ops", created_by="iss|ada")
+    assert (await _put(store_settings, "ops", writer_owner="iss|ada"))["authored_via"] == ""
+    stored = await workflows.get_workflow(store_settings, TENANT, "triage")
+    assert stored is not None and stored["authored_via"] == ""
 
 
 @parametrized
