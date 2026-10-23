@@ -910,6 +910,19 @@ one member act with another's authority.
 
 ### Harness
 
+- [ ] **Memory is per agent, not per person (prod audit, 2026-10-22).** A pool is
+      `(tenant, manifest_id)`; `thread_id` is provenance only. So `assistant` and `cowork` each
+      learn `user.birthday` separately, and in a tenant with several members `user.*` means
+      whoever said it last. `memory_vectors` has no column for whose fact it is. The shape: a
+      principal column (migration, both arms, RLS unchanged) and `spec.memory.scope: principal |
+      manifest`, with `principal` sharing `user.*` facts across a person's agents. Blocked in
+      part on linking a person's GitHub and Google sign-ins, which are two principals today.
+      This is W4's "memory scoped per user". The same audit fixed the double write (`remember`
+      then capture of one fact in one turn) and the prelude spending its limit on repeats; still
+      open is whether an agent's newer value may retire an agent's older one on the same topic
+      (`memory_store._may_retire_by_topic`), which the injection guard refuses today.
+      The ten duplicate rows already on prod stay until an operator forgets them.
+
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
       Read, not measured — each step below carries its own before/after. In landing order:
       - [x] *Model wire.* Every model call opened its own `httpx.AsyncClient`, so each turn,

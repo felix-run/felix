@@ -38,6 +38,11 @@ SUPERSEDED = "superseded"
 FORGOTTEN = "forgotten"
 
 
+def normalize_topic_key(topic_key: str | None) -> str | None:
+    """A topic key as stored: stripped, capped, stripped again; `None` when empty."""
+    return (topic_key or "").strip()[:MAX_TOPIC_KEY_CHARS].strip() or None
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -160,7 +165,7 @@ async def put_memory(
     # turns 250 leading spaces plus content into "" while the gate still sees content
     # -- a presence disagreement, the exact thing the test below pins -- and
     # strip-then-cut leaves an over-long key ending in whitespace after the cut.
-    topic_key = (topic_key or "").strip()[:MAX_TOPIC_KEY_CHARS].strip() or None
+    topic_key = normalize_topic_key(topic_key)
     mem_id = memory_id(manifest_id, content)
     ts = now_ms()
     row: dict[str, Any] = {
@@ -1218,6 +1223,7 @@ __all__ = [
     "list_memory_pools",
     "memory_id",
     "merge_duplicates",
+    "normalize_topic_key",
     "plan_merges",
     "put_memory",
     "reset_memory_for_tests",
