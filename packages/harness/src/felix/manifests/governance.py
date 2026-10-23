@@ -92,6 +92,11 @@ def assert_stdio_env_allowed(manifest: Manifest) -> None:
         raise GovernanceError("; ".join(errors))
 
 
+def _extract_models(manifest: Manifest) -> list[str]:
+    """`http_tools[].extract_model` routes: a page and a model-written prompt go to each one."""
+    return [ref.extract_model for ref in manifest.spec.http_tools if ref.extract_model]
+
+
 def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None = None) -> None:
     """Enforce ``spec.auth.outbound.providers``.
 
@@ -113,6 +118,7 @@ def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None =
     spec = manifest.spec.model
     wanted = [getattr(spec, "id", None) or settings.default_model_id]
     wanted += list(getattr(spec, "fallbacks", None) or [])
+    wanted += _extract_models(manifest)
 
     errors: list[str] = []
     for logical_id in wanted:
@@ -161,6 +167,7 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
     routes = parse_model_routes(settings)
     wanted = [getattr(spec, "id", None) or settings.default_model_id]
     wanted += list(getattr(spec, "fallbacks", None) or [])
+    wanted += _extract_models(manifest)
 
     unpriced: list[str] = []
     for logical_id in wanted:

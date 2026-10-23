@@ -2077,13 +2077,26 @@ async def build_agent(
 
         # Fetch tools: the model names the URL, the egress guard pins the address.
         if m.spec.http_tools:
+            from felix.config import get_settings
+            from felix.tools.http_fetch import assert_extract_routes
+
+            # Production always has settings; a bare compile falls back to the process's.
+            fetch_settings = deps.settings if deps.settings is not None else get_settings()
+            # Outside the `try`, like credentials above: an unrouted `extract_model` refuses the
+            # compile rather than unbinding every fetch tool behind a log line.
+            assert_extract_routes(list(m.spec.http_tools), fetch_settings)
             try:
                 from felix.tools.http_fetch import tools_from_http_fetch_refs
 
                 _append_unique_tools(
                     resolved,
                     tools_from_http_fetch_refs(
-                        list(m.spec.http_tools), allow_http=allow_http, egress=egress, credentials=credentials
+                        list(m.spec.http_tools),
+                        allow_http=allow_http,
+                        egress=egress,
+                        credentials=credentials,
+                        settings=fetch_settings,
+                        prescreen=m.spec.content_screening.enabled,
                     ),
                 )
             except Exception:

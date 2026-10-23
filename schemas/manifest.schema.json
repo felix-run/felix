@@ -1099,6 +1099,25 @@
           "default": false,
           "title": "Allow Any Host",
           "type": "boolean"
+        },
+        "extract_model": {
+          "default": "",
+          "title": "Extract Model",
+          "type": "string"
+        },
+        "extract_max_tokens": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 8192,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extract Max Tokens"
         }
       },
       "required": [
