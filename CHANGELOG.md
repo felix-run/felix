@@ -10,6 +10,36 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-10-23
+
+### Added
+
+- Claude Haiku 5.5 (`claude-haiku-5-5`) is in the model catalog: 1M context, priced at $0.10 / $0.50 per MTok for prompts up to 100K tokens and $0.50 / $2.50 above (cache tokens count toward the threshold). Before, it was unpriced, so its spend recorded as zero and `limits.max_cost_usd` did not stop it. (#682)
+
+### Changed
+
+- **Breaking:** a `FELIX_TRIGGERS` entry that names a `workflow` must now pin its `revision`, or
+  the API and worker refuse to boot. Before upgrading, add `"revision"` to each workflow trigger,
+  using the `revision` that `GET /workflows/{id}` returns (`felix doctor` reports any you missed).
+  After any later save to the workflow, the trigger answers `503 trigger_unavailable` until you pin
+  the new revision. (#681)
+
+- The built-in model routes point at the current releases: `claude-opus` → `claude-opus-5-5`, `claude-sonnet` → `claude-sonnet-5-5`, `claude-haiku` → `claude-haiku-5-5`, `claude-fable` → `claude-fable-5-1`; the legacy `claude-sonnet-4` and `claude-haiku-4` move with them. Haiku routes now think by default. Routes set in `FELIX_MODEL_ROUTES` are unaffected. (#682)
+
+- `spec.workflow_authoring.run_approval: auto` now also waits for the person when a run's inputs
+  can reach an agent step, or a step of any kind but `approval` and `branch`; before, only a
+  `tool_call` step whose tool changes things counted. `run_approval: never` keeps no rule. (#683)
+
+### Fixed
+
+- Claude Sonnet 5.5's cache reads are metered at $0.10 per MTok (0.05x input), not $0.20. (#682)
+
+### Security
+
+- Lock `filelock` 4.2.4 (was 3.32.3, CVE-2026-112940; the `embeddings` extra, via
+  huggingface-hub) and `setuptools` 84.2.1 (was 84.0.0, GHSA-xmj3-9gf7-h52w; the `pii` extra,
+  via spacy). (#683)
+
 ## [0.17.0] — 2026-10-23
 
 ### Added
@@ -5138,3 +5168,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.16.0]: https://github.com/felix-run/felix/releases/tag/v0.16.0
 [0.16.1]: https://github.com/felix-run/felix/releases/tag/v0.16.1
 [0.17.0]: https://github.com/felix-run/felix/releases/tag/v0.17.0
+[0.18.0]: https://github.com/felix-run/felix/releases/tag/v0.18.0

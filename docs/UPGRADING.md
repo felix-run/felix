@@ -31,7 +31,7 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
-## Unreleased: workflow triggers pin a revision, and agent steps count toward a run's approval
+## 0.18.0: workflow triggers pin a revision, agent steps count toward a run's approval, and the Claude routes move to 5.5
 
 **Every workflow trigger must pin `revision`** (#681). A `FELIX_TRIGGERS` entry that names a
 `workflow` without one stops the API and the worker at boot. Before the roll, read each workflow's
@@ -43,6 +43,16 @@ agent's, makes the trigger answer `503 trigger_unavailable` until you pin the ne
 now waits for the person, as it already did for a `tool_call` step whose tool changes things; so
 does a step of a plugin's kind. Only `approval` and `branch` steps are passed over.
 `run_approval: never` keeps no rule at all.
+
+**The built-in Claude routes move to the 5.5 releases** (#682): `claude-sonnet` and the legacy
+`claude-sonnet-4` to `claude-sonnet-5-5`, `claude-opus` to `claude-opus-5-5`, `claude-haiku` and
+`claude-haiku-4` to `claude-haiku-5-5`, `claude-fable` to `claude-fable-5-1`. A route you set in
+`FELIX_MODEL_ROUTES` wins, so check it before the roll: a deployment that pinned these ids to older
+models keeps them, and `GET /v1/models` now shows each agent's `wireModel`, so the agent picker will
+say so. `claude-opus-4` is not a built-in id; route it yourself or rename it to `claude-opus`. Haiku
+5.5 thinks unless told not to and counts the same text as about 30% more tokens than Haiku 4.5, so
+a short Haiku route's `max_tokens` may need room. Its spend is now metered (it recorded as zero),
+and Sonnet 5.5's cache reads at half what they were.
 
 ## 0.17.0: memory belongs to the person, and agent workflow runs ask first
 
