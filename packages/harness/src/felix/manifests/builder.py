@@ -18,6 +18,7 @@ from felix.governance.image_screening import ImageScreener
 from felix.governance.inbound import tool_image_screener
 from felix.governance.judges import judge_calls_out, judge_score
 from felix.governance.permission_mode import (
+    CONDITIONAL_APPROVAL_RULE_IDS,
     EXIT_PLAN_TOOL_NAME,
     apply_permission_mode,
     builtin_approval_rules,
@@ -1232,6 +1233,19 @@ def apply_approvals(
             # cover.
             if rule.when_args and not all(_arg_present(args, name) for name in rule.when_args):
                 return await inner.execute(args, ctx)
+            # A rule the harness marks conditional asks the tool whether this call needs it
+            # (`Tool.approval_condition`): `auto` run approval gates only the runs whose inputs
+            # reach a tool that can change something. A condition that fails gates the call.
+            if rule.id in CONDITIONAL_APPROVAL_RULE_IDS and tool.approval_condition is not None:
+                try:
+                    needed = await tool.approval_condition(args)
+                except Exception:
+                    logger.warning(
+                        "approval condition for %s failed; gating the call", tool.name, exc_info=True
+                    )
+                    needed = True
+                if not needed:
+                    return await inner.execute(args, ctx)
 
             req = try_get_context()
             # The thread's permission mode may waive this approval (`accept_edits` for an edit
@@ -2464,6 +2478,13 @@ async def build_agent(
         # `save_workflow` -- unless the manifest's own rule already gates every call
         # (`permission_mode.BUILTIN_APPROVALS`). No mode waives them.
         approval_rules.extend(builtin_approval_rules(m.spec, list(m.spec.approvals)))
+        if m.spec.workflow_authoring is not None:
+            # `run_approval`: waivable, and under `auto` conditional on the call (see the rule ids).
+            from felix.workflows.agent_tools import workflow_run_rule
+
+            run_rule = workflow_run_rule(m.spec.workflow_authoring, list(m.spec.approvals))
+            if run_rule is not None:
+                approval_rules.append(run_rule)
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions

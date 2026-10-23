@@ -222,6 +222,12 @@ anyone else's leaves `""`. A create mints `wf-<hex>` with `precondition=ABSENT`;
 (`thread_ids.is_workflow_thread`). `admit` also runs in the approval preview. `run_workflow` calls
 `engine.start_run(trigger="agent:<manifest>", untrusted_inputs=<every input>)`, and `StartRefused.message`
 is relayed. `max_active_runs` counts the non-terminal runs of the person's workflows from this agent.
+`run_approval` adds `workflow_run_rule`: under `auto` its id is in
+`permission_mode.CONDITIONAL_APPROVAL_RULE_IDS`. `apply_approvals` then asks
+`Tool.approval_condition` (`_AgentWorkflows.run_needs_approval`, which walks the edges from the
+supplied inputs to `tool_call` steps and checks `read_only` through `step_tools`), and gates when
+the condition fails. `admit_run` holds the run's checks for the call, the condition and
+`run_preview`. The rule is waivable and not in `BUILTIN_APPROVALS`.
 The preview shows the whole definition as escaped JSON and maps a non-refusal failure to
 `unavailable`. With `approval: true` the builder adds the `permission_mode.WORKFLOW_SAVE_APPROVAL` rule, unless a manifest
 rule without `when_args` names `save_workflow` literally. `UNWAIVABLE_TOOLS` and `UNWAIVABLE_RULE_IDS`

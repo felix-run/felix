@@ -50,6 +50,16 @@ PLAN_APPROVAL_RULE_ID = "plan-approval"
 SCHEDULE_TASK_TOOL_NAME = "schedule_task"
 NOTIFY_TOOL_NAME = "notify"
 SAVE_WORKFLOW_TOOL_NAME = "save_workflow"
+RUN_WORKFLOW_TOOL_NAME = "run_workflow"
+# The rules `spec.workflow_authoring.run_approval` adds over `run_workflow` (`workflows/agent_tools.py`):
+# `always` gates every call; `auto` only the calls the tool's `approval_condition` says reach a tool
+# that can change something. Not in `BUILTIN_APPROVALS`: a run starts now, in front of the person, so
+# a mode they chose for the thread (`bypass`) may waive it -- unlike a save, which outlives the turn.
+WORKFLOW_RUN_APPROVAL_RULE_ID = "workflow_authoring.run_workflow"
+WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID = "workflow_authoring.run_workflow.auto"
+# Rules `apply_approvals` applies only to the calls whose tool's `approval_condition` says so. Only
+# rules the harness adds: a manifest's own rule gates every call it matches.
+CONDITIONAL_APPROVAL_RULE_IDS = frozenset({WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID})
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,17 +431,21 @@ async def in_plan_mode(req: RequestContext) -> bool:
 __all__ = [
     "BUILTIN_APPROVALS",
     "BYPASS_SCOPE",
+    "CONDITIONAL_APPROVAL_RULE_IDS",
     "EXIT_PLAN_TOOL_NAME",
     "NOTIFY_APPROVAL",
     "NOTIFY_APPROVAL_RULE_ID",
     "NOTIFY_TOOL_NAME",
     "PLAN_APPROVAL_RULE_ID",
+    "RUN_WORKFLOW_TOOL_NAME",
     "SAVE_WORKFLOW_TOOL_NAME",
     "SCHEDULE_TASK_TOOL_NAME",
     "SCHEDULING_APPROVAL",
     "SCHEDULING_APPROVAL_RULE_ID",
     "UNWAIVABLE_RULE_IDS",
     "UNWAIVABLE_TOOLS",
+    "WORKFLOW_RUN_APPROVAL_RULE_ID",
+    "WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID",
     "WORKFLOW_SAVE_APPROVAL",
     "WORKFLOW_SAVE_APPROVAL_RULE_ID",
     "WORKSPACE_EDIT_TOOLS",

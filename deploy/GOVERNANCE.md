@@ -2471,9 +2471,24 @@ A run starts as the person through `engine.start_run`, which checks each step's 
 them. The run's trigger is `agent:<manifest>`, and every input is treated as untrusted, so each
 agent step reads the inputs fenced as data.
 
-`run_workflow` asks no one: once a workflow's shape is approved, the agent may start it with any
-inputs. A `tool_call` step receives its inputs as tool arguments, which only that manifest's own
-policies, screening and approvals govern; fencing applies to agent steps alone. `max_active_runs`
+A run's inputs are the model's choice, and a `tool_call` step receives them as tool arguments,
+unfenced. Fencing applies to agent steps alone; otherwise only that manifest's own policies,
+screening and approvals govern them. `run_approval` decides when `run_workflow` waits for the
+person:
+- **`auto`** (the default): only when a value the call supplies can reach, through any chain of
+  edges, a `tool_call` step whose tool is not `read_only`. The rule
+  (`workflow_authoring.run_workflow.auto`) is one the harness marks conditional
+  (`permission_mode.CONDITIONAL_APPROVAL_RULE_IDS`). Two things make it ask instead of guessing: a
+  tool the step's manifest no longer binds counts as one that changes things, and a condition that
+  fails gates the call.
+- **`always`**: every run (`workflow_authoring.run_workflow`).
+- **`never`**: no rule.
+
+The approver reads the inputs as escaped JSON and every tool they reach. A manifest rule naming
+`run_workflow` literally replaces the built-in rule and gates every call: `Tool.approval_condition`
+is consulted only for a harness rule, so a tool cannot exempt itself from an operator's gate.
+Unlike the save's, this approval can be waived by a permission mode (`bypass`), because a run
+starts now, in front of the person. `max_active_runs`
 (default 3) bounds the runs one person's agent can hold going, so a looping agent cannot fill the
 tenant's run quota.
 

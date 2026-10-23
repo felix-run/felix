@@ -39,7 +39,7 @@ from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 if TYPE_CHECKING:
     from felix.context import AuthContext
-    from felix.manifests.schema import WorkflowAuthoringSpec
+    from felix.manifests.schema import ApprovalRule, WorkflowAuthoringSpec
     from felix.workflows.check import Problem
     from felix.workflows.schema import WorkflowSpec
 
@@ -118,6 +118,34 @@ class _RunArgs(BaseModel):
             "has changed since, so it runs exactly what was approved."
         ),
         json_schema_extra={"maxLength": 100},
+    )
+
+
+def workflow_run_rule(
+    authoring: WorkflowAuthoringSpec | None, approvals: list[ApprovalRule]
+) -> ApprovalRule | None:
+    """The rule `run_approval` adds over `run_workflow`, or None: none for `never`, and none when one
+    of the manifest's own rules names `run_workflow` literally and gates every call (the policy
+    `permission_mode.default_builtin_rule` holds for the unwaivable ones). One-shot and bound to
+    the person, like theirs; under `auto` conditional on the call (`run_needs_approval`)."""
+    from felix.governance.permission_mode import (
+        RUN_WORKFLOW_TOOL_NAME,
+        WORKFLOW_RUN_APPROVAL_RULE_ID,
+        WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID,
+    )
+    from felix.manifests.schema import ApprovalRule
+
+    if authoring is None or authoring.run_approval == "never":
+        return None
+    if any(RUN_WORKFLOW_TOOL_NAME in r.tools and not r.when_args for r in approvals):
+        return None
+    auto = authoring.run_approval == "auto"
+    return ApprovalRule(
+        id=WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID if auto else WORKFLOW_RUN_APPROVAL_RULE_ID,
+        description="Approve running this workflow with these inputs",
+        tools=[RUN_WORKFLOW_TOOL_NAME],
+        one_shot=True,
+        bind_principal=True,
     )
 
 
@@ -480,8 +508,11 @@ class _AgentWorkflows:
             going += sum(1 for r in runs if r["status"] not in run_store.RUN_TERMINAL)
         return going
 
-    async def run(self, args: _RunArgs, tool_ctx: ToolInvocationCtx | None) -> str:
-        from felix.workflows import engine
+    async def admit_run(
+        self, args: _RunArgs, tool_ctx: ToolInvocationCtx | None
+    ) -> tuple[AuthContext, str, dict[str, Any]]:
+        """Every check `run_workflow` makes before it starts a run: run by the call, by its approval
+        condition and by its approval preview, so none of them can disagree about a refusal."""
         from felix.workflows import store as workflow_store
 
         auth, owner = self.caller(SCOPE_WORKFLOWS_WRITE, acting=True, tool_ctx=tool_ctx)
@@ -504,6 +535,12 @@ class _AgentWorkflows:
                 f"this person already has {self.spec.max_active_runs} runs going from this agent's "
                 "workflows, the most allowed; wait for one to finish. Nothing was run",
             )
+        return auth, owner, workflow
+
+    async def run(self, args: _RunArgs, tool_ctx: ToolInvocationCtx | None) -> str:
+        from felix.workflows import engine
+
+        auth, _owner, workflow = await self.admit_run(args, tool_ctx)
         try:
             run = await engine.start_run(
                 self.settings,
@@ -528,6 +565,95 @@ class _AgentWorkflows:
                 "revision": run["revision"],
             }
         )
+
+    async def run_reach(
+        self, args: _RunArgs, auth: AuthContext, workflow: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """The `tool_call` steps a value this call supplies can reach, through any chain of edges,
+        each with whether its tool can change something. A tool the step's manifest no longer
+        binds, or a manifest that does not compile, counts as one that can: the run would fail
+        there, and an approval costs less than guessing it would."""
+        from felix.workflows.schema import TRIGGER, WorkflowSpec
+        from felix.workflows.tool_step import step_tools
+
+        spec = WorkflowSpec.model_validate(workflow["definition"])
+        supplied = set(args.inputs)
+        reached: set[str] = set()
+        frontier = {
+            e.target.step for e in spec.edges if e.source.step == TRIGGER and e.source.port in supplied
+        }
+        while frontier:
+            step = frontier.pop()
+            if step in reached:
+                continue
+            reached.add(step)
+            frontier |= {e.target.step for e in spec.edges if e.source.step == step}
+        tools_by_manifest: dict[str, dict[str, bool] | None] = {}
+        found = []
+        for step in spec.steps:
+            if step.id not in reached or step.kind != "tool_call":
+                continue
+            manifest, tool = str(step.config.get("manifest", "")), str(step.config.get("tool", ""))
+            if manifest not in tools_by_manifest:
+                try:
+                    bound = await step_tools(self.settings, self.tenant_id, manifest, auth)
+                    tools_by_manifest[manifest] = {t.name: bool(t.read_only) for t in bound}
+                except Exception:
+                    logger.warning("run_workflow: step tools of a manifest did not resolve", exc_info=True)
+                    tools_by_manifest[manifest] = None
+            read_only = (tools_by_manifest[manifest] or {}).get(tool, False)
+            found.append(
+                {"step": step.id, "manifest": manifest, "tool": tool, "changes_things": not read_only}
+            )
+        return found
+
+    async def run_needs_approval(self, args: ToolInput) -> bool:
+        """`auto` run approval's condition: whether a value this call supplies can reach a tool
+        that can change something. A call the tool would refuse needs none -- it changes nothing."""
+        try:
+            parsed = _RunArgs.model_validate(args)
+            auth, _owner, workflow = await self.admit_run(parsed, None)
+        except ValidationError, ToolRefused:
+            return False
+        return any(hit["changes_things"] for hit in await self.run_reach(parsed, auth, workflow))
+
+    async def run_preview(self, args: ToolInput) -> str:
+        """What an approver reads before a run: the workflow, the values the model chose, and every
+        tool those values reach. Runs `admit_run` first, so a refused call asks no one. Every value
+        the model wrote is shown as escaped JSON, so none can draw a line of this layout."""
+        try:
+            parsed = _RunArgs.model_validate(args)
+        except ValidationError:
+            raise ToolRefused(
+                "invalid_arguments", "the arguments do not match run_workflow's schema"
+            ) from None
+        try:
+            auth, _owner, workflow = await self.admit_run(parsed, None)
+            reach = await self.run_reach(parsed, auth, workflow)
+        except ToolRefused:
+            raise
+        except Exception:
+            logger.warning("run_workflow preview failed manifest=%s", self.manifest_id, exc_info=True)
+            raise ToolRefused(
+                "unavailable", "the run could not be checked just now; nothing was run"
+            ) from None
+        name = str((workflow.get("definition") or {}).get("name", ""))
+        lines = [
+            f"run_workflow on {self.manifest_id}: {json.dumps(name, ensure_ascii=True)} ({workflow['id']})",
+            f"Revision {workflow['revision']}. Runs now, as the person this conversation is for.",
+            "",
+            "--- inputs, as the agent chose them ---",
+            json.dumps(parsed.inputs, indent=2, sort_keys=True, ensure_ascii=True, default=str),
+        ]
+        if reach:
+            lines += ["", "--- tools those inputs reach ---"]
+            lines += [
+                json.dumps(
+                    {**hit, "changes_things": hit["changes_things"]}, sort_keys=True, ensure_ascii=True
+                )
+                for hit in reach
+            ]
+        return "\n".join(lines)
 
     async def preview(self, args: ToolInput) -> str:
         """What an approver reads: every field of the workflow as it would be saved.
@@ -639,7 +765,7 @@ def make_workflow_authoring_tools(
         handler=_answered(flows.list_mine),
         read_only=True,
     )
-    run = define_tool(
+    run_tool = define_tool(
         name="run_workflow",
         description=(
             "Start a run of a workflow you saved for this person, with a value for each of its "
@@ -649,11 +775,14 @@ def make_workflow_authoring_tools(
         args=_RunArgs,
         handler=_answered(flows.run),
     )
-    return [catalog, check, save, listing, run]
+    run_tool.approval_preview = flows.run_preview
+    run_tool.approval_condition = flows.run_needs_approval
+    return [catalog, check, save, listing, run_tool]
 
 
 __all__ = [
     "SAVE_WORKFLOW",
     "WORKFLOW_AUTHORING_TOOL_NAMES",
     "make_workflow_authoring_tools",
+    "workflow_run_rule",
 ]
