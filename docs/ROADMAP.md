@@ -810,7 +810,8 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       caller with no `skill_owner` cannot author.
       *Done:* `run_approval` (`auto` | `always` | `never`, default `auto`): `run_workflow` waits for
       the person when a supplied input can reach a `tool_call` step whose tool is not read-only,
-      through `Tool.approval_condition` on a harness-marked conditional rule. Waivable by `bypass`.
+      any agent step, or a step of a kind other than `approval` and `branch`, through `Tool.approval_condition` on a harness-marked conditional rule.
+      Waivable by `bypass`, and `auto` stays the default (both decided 2026-10-23).
       *Done:* every workflow trigger must pin a `revision`, so an agent's save never changes what
       a trigger starts (this replaced #680's refusal of unpinned triggers on agent-held workflows).
       *Done:* the unwaivable built-in approval (`schedule_task`, `notify`, `save_workflow`) is one
