@@ -64,7 +64,7 @@ Use ReadWriteMany, pin both to one node, or use `s3`/`gcs`.
 
 Each Felix process holds its own Postgres pool, so the ceiling is
 
-```
+```text
 (api replicas + worker replicas + 1 scheduler) × (FELIX_DB_POOL_SIZE + FELIX_DB_MAX_OVERFLOW)
 ```
 

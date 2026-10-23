@@ -1428,7 +1428,6 @@ The recurring failure in the *fixes*, worth remembering: testing the helper inst
 site. It happened five or six times, and a mutation is only evidence when the test **fails** —
 two runs reported red with zero failed tests, which were collection errors.
 
-
 ### RLS opt-out coherence (Aug 2026, v0.2.1)
 
 `0006_tenant_rls` applies `ENABLE` *and* `FORCE ROW LEVEL SECURITY`

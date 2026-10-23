@@ -96,10 +96,12 @@ The default install and the default Docker image must stay small enough for a 2â
    single line in `composition.py` if it ships in this repo.
 4. Gate any settings behind `FELIX_` config with an off-by-default value.
 5. Verify:
+
    ```bash
    ./scripts/test.sh tests/unit/test_plugin_boundary.py tests/unit/test_invariants.py
    uv sync --locked --no-dev && uv run --no-sync python scripts/lean-import-check.py
    ```
+
    The lean check imports every module with no extras installed â€” the same thing CI's `lean`
    job does, and the only way a module-scope optional import is caught before an operator hits it.
 

@@ -6,6 +6,15 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  # Rules live in .markdownlint.yaml; `make lint-md` runs this hook alone.
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.3
+    hooks:
+      - id: markdownlint-cli2
+        # CHANGELOG.md is written by `scripts/changelog.py cut` from merged PR descriptions, which
+        # are never edited after the fact. tests/fixtures holds third-party skills kept verbatim.
+        exclude: ^(CHANGELOG\.md|tests/fixtures/)
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:

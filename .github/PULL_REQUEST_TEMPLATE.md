@@ -25,7 +25,7 @@ nothing here is user-visible: `none: <reason>`. Do not edit CHANGELOG.md. -->
 
 <!-- Each gate with the literal tail of its output. Never describe a gate you did not run as passed. -->
 
-```
+```text
 ```
 
 ## Not verified

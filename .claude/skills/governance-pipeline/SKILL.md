@@ -25,7 +25,7 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
 5. **The wrapper stack** — applied to the resolved tool list in this exact order:
 
    <!-- toolkit:enum wrapper-order -->
-   ```
+   ```text
    secret masking
      → policies
        → command screening

@@ -20,7 +20,7 @@ work before lifespan runs), then mounts the route modules and any plugin routers
 
 The chat path every surface shares:
 
-```
+```text
 route → runtime.resolve_tenant_manifest()      # DB manifest store, else bundled YAML
       → runtime.prepare_tenant_invoke()        # enforce_inbound_auth + ensure_thread_pin
       → runtime.build_tenant_agent()           # session store + strategy + build_agent()

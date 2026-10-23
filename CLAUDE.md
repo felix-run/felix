@@ -23,6 +23,7 @@ make contract           # regenerate the wire contract: schemas/openapi.json + s
 make e2e                # tests/e2e only: the real app over HTTP, scripted model
 make conformance        # store contract vs Postgres (needs FELIX_CONFORMANCE_DATABASE_URL; + _REDIS_URL as CI)
 make lint / fmt / type / test
+make lint-md            # markdownlint every tracked .md (pre-commit hook; rules in .markdownlint.yaml)
 make dev                # API on :8080 with FELIX_AUTH_MODE=none, fs object store
 make db                 # only Postgres + Valkey in Docker on localhost — `make db migrate dev`
 make cli                # felix chat: a chat REPL against a running API

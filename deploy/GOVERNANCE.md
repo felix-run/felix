@@ -866,7 +866,6 @@ these values: reaching a host takes seconds or never, so a raised request ceilin
 also let an unreachable host park a socket. `FELIX_MODEL_TIMEOUT_SECONDS` (default 120)
 bounds each model-provider request the same way.
 
-
 Every manifest-supplied or model-supplied URL is checked before it is dialled.
 
 **The guard is enforcing, not advisory.** Outbound HTTP goes through a transport that
@@ -2152,7 +2151,6 @@ name, globs and `when_args` rules included. Gating the delete and not the write 
 not reported. Every bundled manifest is held to it by
 `tests/unit/test_workspace_delete_rename_tools.py`, through the same check.
 
-
 | Field | Behaviour |
 |-------|-----------|
 | `ttl_seconds` | How long the run waits for a decision before failing closed. |
@@ -2353,7 +2351,7 @@ an approval rule without `allow_unattended` is refused in it at once, and nothin
 **It speaks only through `notify`**, with every `notify` control: to the person and no one else,
 secrets redacted, links stripped, screened, `max_per_run` and `max_per_hour`. The notice is also
 left in the person's own heartbeat conversation (`{tenant}:hb-<hex>`, created at enrolment and
-titled "Heartbeat: <manifest>") as an entry for the person that no model prompt carries. Each run
+titled `Heartbeat: <manifest>`) as an entry for the person that no model prompt carries. Each run
 record says whether the firing was `quiet` (sent no notice) and keeps the first 500 characters of
 its answer.
 
@@ -2436,6 +2434,7 @@ lock as the revision (and before it), so a save cannot land on a workflow taken 
 A person's save through `PUT /workflows/{id}` takes the workflow over, and the agent can no longer
 change it. Whether the agent may still run it depends on whose save it was, decided under the same
 lock (`store._replaced_via`):
+
 - The person it was made for (their issuer-qualified key matches `created_by`): it becomes
   `owner:agent:<manifest>`, and the agent may still run it for them. They wrote what it now holds.
 - Anyone else: `authored_via` is cleared, and the agent may neither change nor run it. Otherwise
@@ -2452,6 +2451,7 @@ it, a job or a trigger included. The approver reads the whole definition, every 
 JSON. Text the model wrote sits inside quoted strings, so it cannot draw a line of the preview's
 layout, and an agent step's prompt is capped at 4,000 characters so nothing is cut off. The tool's
 own checks run first, so a call it would refuse never asks anyone. Those checks cover:
+
 - the definition's problems;
 - more than `max_steps` steps;
 - a step kind outside `kinds` (an allowlist: `agent_turn`, `tool_call`, `approval`, `branch`);
@@ -2462,6 +2462,7 @@ own checks run first, so a call it would refuse never asks anyone. Those checks 
   at the cap can pass it; the tenant's 500 is the hard bound.
 
 Saving and running refuse:
+
 - a caller who is anonymous, uses a shared subject, or has no owner key;
 - a scheduled or triggered run (`RequestContext.unattended`);
 - any call made on a workflow's own thread, so a workflow cannot write or start another.

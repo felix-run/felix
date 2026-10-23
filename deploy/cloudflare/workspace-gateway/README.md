@@ -4,7 +4,7 @@ The Worker the harness's **hosted** workspace backend reaches each workspace sco
 through (`docs/WORKSPACE.md`, phase 3). Off unless the harness sets `FELIX_WORKSPACE_BACKEND=hosted`;
 a deployment that never does needs none of this.
 
-```
+```text
 harness ──HTTPS, bearer──▶ gateway Worker ──getByName(tenant/key)──▶ Durable Object ──exec──▶ Container
                                                                                             (felix-fs helper)
 ```

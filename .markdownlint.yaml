@@ -1,0 +1,19 @@
+# markdownlint rules, read by the pre-commit hook (so by CI's pre-commit job and `make check-ci`),
+# by `make lint-md`, and by editor extensions. Defaults except the ones below. Files the lint
+# skips are the hook's `exclude:` in .pre-commit-config.yaml.
+
+# Prose wraps at about 100 columns, but tables, URLs and inline JSON cannot, and a
+# rule that fires on every one of them would be switched off line by line.
+MD013: false
+# Keep a Changelog repeats `### Added` / `### Fixed` under every release; a repeat is
+# only a mistake among siblings.
+MD024:
+  siblings_only: true
+# Agent and skill files open with front matter and a prompt, the PR template with
+# `## Summary`: fragments, not documents with a title.
+MD041: false
+# Docs quote literal markers with their trailing space — `- ` and `## ` in the changelog
+# rules — and the space is the point.
+MD038: false
+# Tables are written `|---|---|` without padding; aligning every pipe is churn on each edit.
+MD060: false

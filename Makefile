@@ -1,4 +1,4 @@
-.PHONY: help bootstrap install install-full install-warehouse test test-cov e2e conformance lint fmt type check check-ci bundle schema-check contract-check toolkit eval lock-check deps-age compose-check helm-lint schema contract dev db migrate seed doctor cli dev-key metrics-token up up-lite up-gcp up-full up-pooled up-replicas up-observability up-self down down-all docker-build
+.PHONY: help bootstrap install install-full install-warehouse test test-cov e2e conformance lint lint-md fmt type check check-ci bundle schema-check contract-check toolkit eval lock-check deps-age compose-check helm-lint schema contract dev db migrate seed doctor cli dev-key metrics-token up up-lite up-gcp up-full up-pooled up-replicas up-observability up-self down down-all docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
@@ -70,6 +70,10 @@ conformance:  ## store contract vs a real Postgres (FELIX_CONFORMANCE_DATABASE_U
 
 lint:  ## ruff check over the repo
 	uv run ruff check .
+
+# Through pre-commit, so the version pinned in .pre-commit-config.yaml is the only one.
+lint-md:  ## markdownlint every tracked .md (config: .markdownlint.yaml)
+	uv run pre-commit run markdownlint-cli2 --all-files
 
 fmt:  ## ruff format the repo in place
 	uv run ruff format .
