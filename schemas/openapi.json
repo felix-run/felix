@@ -7481,9 +7481,17 @@
       },
       "WorkflowOut": {
         "properties": {
+          "authored_via": {
+            "title": "Authored Via",
+            "type": "string"
+          },
           "created_at": {
             "title": "Created At",
             "type": "integer"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
           },
           "definition": {
             "additionalProperties": true,
@@ -7541,7 +7549,9 @@
           "definition",
           "created_at",
           "updated_at",
-          "updated_by"
+          "updated_by",
+          "created_by",
+          "authored_via"
         ],
         "title": "WorkflowOut",
         "type": "object"
@@ -7604,6 +7614,14 @@
       },
       "WorkflowSummary": {
         "properties": {
+          "authored_via": {
+            "title": "Authored Via",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -7645,7 +7663,9 @@
           "revision",
           "step_count",
           "updated_at",
-          "updated_by"
+          "updated_by",
+          "created_by",
+          "authored_via"
         ],
         "title": "WorkflowSummary",
         "type": "object"

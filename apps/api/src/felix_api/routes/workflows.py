@@ -89,6 +89,10 @@ class WorkflowOut(CheckOut):
     created_at: int
     updated_at: int
     updated_by: str
+    # Who created it and through what: `agent:<manifest>` for a workflow an agent wrote for
+    # `created_by`, empty for one made through these routes or before this was recorded.
+    created_by: str
+    authored_via: str
 
 
 class WorkflowSummary(BaseModel):
@@ -100,6 +104,8 @@ class WorkflowSummary(BaseModel):
     step_count: int
     updated_at: int
     updated_by: str
+    created_by: str
+    authored_via: str
 
 
 class WorkflowList(BaseModel):
@@ -208,7 +214,17 @@ def _present(row: dict[str, Any]) -> dict[str, Any]:
     """
     out = {
         k: row[k]
-        for k in ("id", "version", "revision", "definition", "created_at", "updated_at", "updated_by")
+        for k in (
+            "id",
+            "version",
+            "revision",
+            "definition",
+            "created_at",
+            "updated_at",
+            "updated_by",
+            "created_by",
+            "authored_via",
+        )
     }
     try:
         spec = WorkflowSpec.model_validate(row["definition"])
@@ -241,6 +257,8 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
         "step_count": len(steps) if isinstance(steps, list) else 0,
         "updated_at": row["updated_at"],
         "updated_by": row["updated_by"],
+        "created_by": row["created_by"],
+        "authored_via": row["authored_via"],
     }
 
 
@@ -424,7 +442,15 @@ async def put_workflow(
     who = subject_from_request(request)
     try:
         row = await workflow_store.put_workflow(
-            settings, tenant_id, workflow_id, spec, precondition=precondition, updated_by=who
+            settings,
+            tenant_id,
+            workflow_id,
+            spec,
+            precondition=precondition,
+            updated_by=who,
+            # Kept only if this creates it. No `authored_via`: a person through the routes, so
+            # never one an agent may change (`spec.workflow_authoring`).
+            created_by=who,
         )
     except workflow_store.WorkflowConflict as conflict:
         raise _changed(conflict, conditional=precondition is not None) from None
