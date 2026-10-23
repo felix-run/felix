@@ -797,10 +797,21 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
 - [~] **Agent-authored workflows** (`spec.workflow_authoring`). An agent drafts, checks, saves and
       runs workflows for the person it acts for, each save held for that person's approval.
       *Landed:* each workflow records `created_by` and `authored_via` (`0045_workflow_owner`), set at
-      creation and kept on every replace, and shown on `/workflows`; an agent may change only the
-      ones it made for that person (`authored_via = agent:<manifest>`). *Next:* the tools
+      creation and kept on every replace, and shown on `/workflows` (#667). The tools
       (`workflow_catalog`, `check_workflow`, `save_workflow`, `list_my_workflows`, `run_workflow`),
-      the spec block and its unwaivable approval rule.
+      the spec block and its unwaivable approval rule. The owner is the issuer-qualified
+      `skill_owner`, checked under the store's row lock. A person's save through the routes adopts
+      the workflow: their own keeps it runnable by the agent (`owner:agent:<manifest>`), anyone
+      else's takes it away entirely. The tools refuse unattended runs and workflow threads, and mint `wf-<hex>` ids.
+      *Open:* the console marking agent-written workflows (felix-web); a Slack or other channel
+      caller with no `skill_owner` cannot author.
+      *Decisions for the maintainer:* whether `run_workflow` should take an optional per-run
+      approval (inputs reach `tool_call` steps as raw arguments); whether to refuse replacing a
+      workflow an unpinned trigger targets, or list attached triggers and jobs in the preview.
+      *Deferred:* the unwaivable built-in approval (`schedule_task`, `notify`, `save_workflow`) is
+      written three times: rule and tool constants, two frozensets, a rule factory, a
+      `default_*_rule` and a builder block each. One declarative `BuiltinApproval` in
+      `permission_mode.py` should derive them all.
 - [ ] Open: whether a workflow can call another; per-step retry and timeout. (A tool schema that
       drifted since a `tool_call` step was wired fails the step at run, #640.)
 
