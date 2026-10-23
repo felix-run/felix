@@ -831,13 +831,6 @@ async def test_auto_asks_only_when_a_supplied_value_reaches_a_tool_that_changes_
     assert await _needs(settings, "writes", {}) is False
 
 
-async def test_auto_follows_a_value_through_other_steps(settings: Settings) -> None:
-    steps = [_agent_step(step_id="think"), _tool_step("act", "activate_skill")]
-    edges = [_edge("trigger", "value", "think", "value"), _edge("think", "text", "act")]
-    await _held(settings, "chain", steps, edges)
-    assert await _needs(settings, "chain", {"value": "x"}) is True
-
-
 async def test_auto_counts_a_tool_it_cannot_find_as_one_that_changes_things(settings: Settings) -> None:
     await _held(settings, "gone", [_tool_step("old", "no_such_tool")], [_edge("trigger", "value", "old")])
     assert await _needs(settings, "gone", {"value": 1}) is True
@@ -868,6 +861,82 @@ async def test_a_task_step_counts_as_changing_things_whatever_plan_mode_calls_it
     monkeypatch.setattr(tool_step, "step_tools", _bound)
     await _held(settings, "delegates", [_tool_step("hand", "task")], [_edge("trigger", "value", "hand")])
     assert await _needs(settings, "delegates", {"value": "write the file"}) is True
+
+
+async def test_auto_asks_when_a_value_reaches_an_agent_step(settings: Settings) -> None:
+    """The value becomes the agent's prompt, and its model chooses the calls -- through its
+    sub-agents' tools too, and it may remember what it read -- so an agent step always counts."""
+    steps = [_agent_step(step_id="think")]
+    await _held(settings, "thinks", steps, [_edge("trigger", "value", "think", "value")])
+    assert await _needs(settings, "thinks", {"value": "x"}) is True
+    assert await _needs(settings, "thinks", {"other": "x"}) is False, "no supplied value reaches it"
+
+
+def _gate(kind: str) -> dict[str, Any]:
+    return {"id": "gate", "kind": kind, "config": {}}
+
+
+@pytest.mark.parametrize(
+    ("kind", "into", "out"), [("branch", "value", "true"), ("approval", "payload", "approved")]
+)
+async def test_auto_follows_a_value_past_a_step_that_changes_nothing(
+    settings: Settings, kind: str, into: str, out: str
+) -> None:
+    """A branch or an approval gate acts on nothing outside the run, so it never asks itself; what
+    it leads to does, as far down the edges as the value goes."""
+    for workflow_id, tool in [("reads", "calculator"), ("writes", "activate_skill")]:
+        edges = [_edge("trigger", "value", "gate", into), _edge("gate", out, "act")]
+        await _held(settings, workflow_id, [_gate(kind), _tool_step("act", tool)], edges)
+    assert await _needs(settings, "reads", {"value": True}) is False
+    assert await _needs(settings, "writes", {"value": True}) is True
+
+
+async def test_auto_counts_a_step_kind_it_does_not_know(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Step kinds are an open registry, so a plugin's kind could do anything."""
+    from felix.workflows import kinds
+    from felix.workflows.ports import Port
+    from pydantic import BaseModel
+
+    class _Hook(BaseModel):
+        pass
+
+    monkeypatch.setitem(
+        kinds._kinds,
+        "webhook",
+        kinds.StepKind(config=_Hook, ports=lambda _c: ([Port("x", {})], []), label="Webhook"),
+    )
+    await _held(
+        settings,
+        "posts",
+        [{"id": "hook", "kind": "webhook", "config": {}}],
+        [_edge("trigger", "value", "hook")],
+    )
+    assert await _needs(settings, "posts", {"value": "x"}) is True
+
+
+async def test_the_run_preview_lists_each_step_the_inputs_reach(settings: Settings) -> None:
+    from felix.workflows.agent_tools import _AgentWorkflows
+
+    steps = [_agent_step(step_id="think"), _tool_step("calc", "calculator")]
+    edges = [_edge("trigger", "value", "think", "value"), _edge("think", "text", "calc")]
+    await _held(settings, "both", steps, edges)
+    flows = _AgentWorkflows(settings, tenant_id=TENANT, manifest_id=MANIFEST, spec=WorkflowAuthoringSpec())
+    req = RequestContext(settings=settings, auth=_auth(), manifest_id=MANIFEST, thread_id=f"{TENANT}:t1")
+    async with async_run_with_context(req):
+        preview = await flows.run_preview({"workflow_id": "both", "inputs": {"value": "x", "other": ""}})
+    reach = [json.loads(line) for line in preview.split("--- steps those inputs reach ---\n")[1].splitlines()]
+    assert reach == [
+        {"changes_things": True, "kind": "agent_turn", "manifest": MANIFEST, "step": "think"},
+        {
+            "changes_things": False,
+            "kind": "tool_call",
+            "manifest": MANIFEST,
+            "step": "calc",
+            "tool": "calculator",
+        },
+    ]
 
 
 @pytest.mark.parametrize(

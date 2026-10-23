@@ -2539,23 +2539,33 @@ them. The run's trigger is `agent:<manifest>`, and every input is treated as unt
 agent step reads the inputs fenced as data.
 
 A run's inputs are the model's choice, and a `tool_call` step receives them as tool arguments,
-unfenced. Fencing applies to agent steps alone; otherwise only that manifest's own policies,
-screening and approvals govern them. `run_approval` decides when `run_workflow` waits for the
+unfenced. Fencing applies to agent steps alone, and a fence is a convention the model is told to
+honour: an agent step's model still picks its own tool calls from text the agent chose. Otherwise
+only that manifest's own policies, screening and approvals govern them. `run_approval` decides when `run_workflow` waits for the
 person:
 
 - **`auto`** (the default): only when a value the call supplies can reach, through any chain of
-  edges, a `tool_call` step whose tool changes things.
+  edges, a step that can change something:
+  - a `tool_call` step whose tool changes things;
+  - any `agent_turn` step. The value becomes its prompt and its model chooses the calls, through
+    its sub-agents' tools as well as its own, and memory capture can keep what it read. A tool
+    list read before the run cannot vouch for all of that, so no agent step is passed over;
+  - a step of any kind but `approval` and `branch`. Step kinds are an open registry, so a plugin's
+    kind counts as able to act.
   - A tool counts as changing nothing only if it is `read_only` and is not a peer. `task` and A2A
-    agents act on what they are told, whatever plan mode makes of them.
-  - Two things make it ask instead of guessing: a tool the step's manifest no longer binds counts as
-    one that changes things, and a condition that fails, or a call it cannot admit yet, gates.
+    agents act on what they are told, whatever plan mode makes of them. `read_only` does not mean
+    nothing leaves: a `tool_call` step on `web_search` sends the value to the search backend
+    without asking. Use `always` when that matters.
+  - Two things make it ask instead of guessing: a tool the step's manifest no longer binds, or a
+    manifest that does not resolve, counts as one that changes things, and a condition that fails,
+    or a call it cannot admit yet, gates.
   - The rule (`workflow_authoring.run_workflow.auto`) is conditional because the compile hands that
     rule *object* to `apply_approvals(conditional=)`. A manifest rule cannot become conditional by
     copying its id.
 - **`always`**: every run (`workflow_authoring.run_workflow`).
 - **`never`**: no rule.
 
-The approver reads the inputs as escaped JSON and every tool they reach. The approval is bound to
+The approver reads the inputs as escaped JSON and every step they reach. The approval is bound to
 the workflow's revision (`approval_binding`), and the run starts that revision, so a save landing
 during the wait needs a new approval.
 

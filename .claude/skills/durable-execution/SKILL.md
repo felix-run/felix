@@ -227,8 +227,11 @@ is relayed. `max_active_runs` counts the non-terminal runs of the person's workf
 `run_approval` adds `workflow_run_rule`. Under `auto` the builder passes that rule object to
 `apply_approvals(conditional=)`, matched by identity, so no manifest rule can copy its id. The
 wrapper asks `Tool.approval_condition` (`_AgentWorkflows.run_needs_approval`) and gates when it
-raises. The condition walks the edges from the supplied inputs to `tool_call` steps, and a tool
-counts as non-writing only if it is `read_only and not is_peer` (so `task` counts as writing). A
+raises. The condition (`run_reach`) walks the edges from the supplied inputs. A reached `tool_call`
+step counts by its tool (`_changes_by_tool`, through `step_tools`); every other kind outside
+`_INERT_STEP_KINDS` (`approval`, `branch`) always counts, `agent_turn` included: `step_tools` sees
+neither a composite's sub-agents nor a tool that failed to bind, nor memory capture. A tool counts as
+non-writing only if it is `read_only and not is_peer` (so `task` counts as writing). A
 call `admit_run` refuses also gates. `run_binding` binds an approval to the revision, and `run`
 starts that revision. Under `auto` any manifest rule matching `run_workflow` suppresses the harness
 rule. `admit_run` holds the run's checks. The rule is waivable and not in `BUILTIN_APPROVALS`.
