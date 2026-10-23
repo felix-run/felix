@@ -613,14 +613,15 @@ async def _agent_saves(app: Any, *, adopted: bool = False) -> str:
     from felix.workflows.schema import WorkflowSpec
 
     spec = WorkflowSpec.model_validate(TRIAGE_FLOW)
+    via = workflow_store.AGENT_VIA_PREFIX + "e2e-agent"
     row = await workflow_store.put_workflow(
-        app.settings, "default", "triage", spec, created_by=PERSON, authored_via="agent:e2e-agent"
+        app.settings, "default", "triage", spec, created_by=PERSON, authored_via=via
     )
     if adopted:
         row = await workflow_store.put_workflow(
             app.settings, "default", "triage", spec, created_by=PERSON, writer_owner=PERSON
         )
-        assert row["authored_via"] == "owner:agent:e2e-agent", row
+        assert row["authored_via"] == workflow_store.OWNER_EDIT_PREFIX + via, row
     return str(row["revision"])
 
 
@@ -629,7 +630,7 @@ async def _refusals(app: Any) -> list[tuple[str, dict[str, Any]]]:
 
     await audit_store.flush_pending(app.settings)
     events, _ = await audit_store.list_events(app.settings, "default", event_type="workflow_run_refused")
-    return [(e["principal_subj"], e["payload_json"]) for e in events]
+    return [(e["principal_subj"], e["status"], e["payload_json"]) for e in events]
 
 
 async def test_an_unpinned_trigger_refuses_a_workflow_an_agent_holds_until_pinned(boot: Any) -> None:
@@ -641,10 +642,13 @@ async def test_an_unpinned_trigger_refuses_a_workflow_an_agent_holds_until_pinne
         # The operator pins what they read: the refusal was not kept as the delivery's answer.
         app.settings.triggers = _flow_env(revision=current)["FELIX_TRIGGERS"]
         pinned = await _post(app, ISSUE)
+        runs = await _workflow_runs(app)
+        assert len(await _refusals(app)) == 1
     assert (unpinned.status_code, unpinned.json()["detail"]) == (503, "trigger_unavailable")
     assert refusals == [
         (
             "trigger:gh",
+            "denied",
             {
                 "workflow_id": "triage",
                 "revision": current,
@@ -654,6 +658,7 @@ async def test_an_unpinned_trigger_refuses_a_workflow_an_agent_holds_until_pinne
         )
     ]
     assert pinned.status_code == 202, pinned.text
+    assert [r["revision"] for r in runs] == [current]
 
 
 async def test_a_refused_delivery_spends_the_limit_so_replays_cannot_flood_the_audit(boot: Any) -> None:
@@ -693,6 +698,9 @@ async def test_the_boot_names_each_trigger_that_starts_a_workflow_unpinned(
     with caplog.at_level("WARNING", logger="felix_api.app"):
         async with boot([], env=env, manifests={"e2e-agent": AGENT, "e2e-triage": TRIAGE}):
             pass
-    warned = [r.getMessage() for r in caplog.records if "no revision pin" in r.getMessage()]
-    assert len(warned) == 1, warned
-    assert warned[0].startswith("trigger loose starts workflow triage with no revision pin")
+    warned = [
+        r.args
+        for r in caplog.records
+        if r.name == "felix_api.app" and r.levelname == "WARNING" and "revision pin" in str(r.msg)
+    ]
+    assert warned == [("loose", "triage")]

@@ -205,11 +205,16 @@ async def _admitted(settings: Any, trigger: Trigger, target: ManifestTarget, thr
     return resolved
 
 
+def _principal(trigger: Trigger) -> str:
+    """`trigger:<id>`: whom the trigger's runs are started as, audited and recorded by."""
+    return f"{TRIGGER_RUN_PREFIX}{trigger.id}"
+
+
 def _trigger_auth(trigger: Trigger) -> AuthContext:
     from felix.context import AuthContext
 
     return AuthContext(
-        principal_sub=f"{TRIGGER_RUN_PREFIX}{trigger.id}",
+        principal_sub=_principal(trigger),
         tenant_id=trigger.tenant,
         scopes=trigger.scopes,
         anonymous=False,
@@ -258,12 +263,12 @@ def _refuse_unpinned(settings: Any, trigger: Trigger, workflow: dict[str, Any]) 
         settings,
         trigger.tenant,
         "workflow_run_refused",
-        principal_subj=f"{TRIGGER_RUN_PREFIX}{trigger.id}",
+        principal_subj=_principal(trigger),
         status="denied",
         payload={
             "workflow_id": workflow["id"],
             "revision": workflow["revision"],
-            "trigger": f"{TRIGGER_RUN_PREFIX}{trigger.id}",
+            "trigger": _principal(trigger),
             "reason": "unpinned_agent_workflow",
         },
     )
@@ -284,7 +289,7 @@ async def _start_workflow_run(
         # never asked about this trigger: unpinned, a sender would start whatever it wrote last.
         # After the limit, so a replayed delivery cannot write refusals faster than runs could start.
         _refuse_unpinned(settings, trigger, prepared.workflow)
-    who = f"{TRIGGER_RUN_PREFIX}{trigger.id}"
+    who = _principal(trigger)
     async with async_run_with_context(RequestContext(settings=settings, auth=_trigger_auth(trigger))):
         try:
             run = await engine.start_run(
