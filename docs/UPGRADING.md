@@ -31,6 +31,38 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.17.0: memory belongs to the person, and agent workflow runs ask first
+
+Migration `0046_memory_principal` adds `memory_vectors.principal` and two indexes, built
+concurrently; it runs with the image as usual.
+
+**Memory is per person by default** (#677). `spec.memory.scope: person` gives each signed-in person
+(`issuer|subject`) one pool shared by every agent acting for them; `scope: agent` keeps the old
+per-agent pool. Four things to do or know before the roll:
+
+- **Move existing memories, or they stop reaching anyone.** Every row written before 0.17.0 sits in
+  an agent pool, and a person now sees only the *operator-written* rows of it. For each agent with
+  memory, move its rows to the person they belong to, counting first:
+  `felix memory assign --tenant T --manifest M --to PERSON --dry-run`, then without `--dry-run`.
+  `--to` takes `github:70701` for a Felix sign-in, or a full `issuer|subject`. Operator-written
+  rows stay shared unless you add `--include-operator`. In a tenant several people used, the old
+  rows are a mix of everyone's facts: forget them instead of assigning them to one person.
+- **Link a person's sign-ins** with `FELIX_PRINCIPAL_ALIASES`, e.g.
+  `{"google:<sub>": "github:<id>"}`, or each sign-in keeps its own memory.
+- **Requests that name no person write no memory**: anonymous, an API key with no `sub`, a trigger,
+  a GitHub Actions workflow, a Slack channel message. A local `make dev` runs with
+  `FELIX_AUTH_MODE=none`, so capture stores nothing there under the default scope: use
+  `scope: agent` on a manifest you develop memory against. Jobs and durable runs recorded before
+  0.17.0 carry no person and write no memory until they are saved again.
+- **`memory:read` / `memory:write` span every person in the tenant.** Grant them to operators, not
+  to every member through an org grant. See `deploy/GOVERNANCE.md` § Memory: whose memory an
+  agent reads.
+
+**Agent workflow runs ask before writing** (#676). A manifest using `spec.workflow_authoring` now
+waits for the person's approval when a run's inputs can reach a tool that changes things
+(`run_approval: auto`, the default). Set `run_approval: never` to keep the previous behaviour. A
+save through `PUT /workflows/{id}` now takes over an agent-written workflow (#671).
+
 ## 0.16.1: old task memories expire, and Compose passes the embedder through
 
 Migration `0045` adds the workflow author columns (#667); it runs with the image as usual.
