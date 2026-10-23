@@ -2475,6 +2475,7 @@ A run's inputs are the model's choice, and a `tool_call` step receives them as t
 unfenced. Fencing applies to agent steps alone; otherwise only that manifest's own policies,
 screening and approvals govern them. `run_approval` decides when `run_workflow` waits for the
 person:
+
 - **`auto`** (the default): only when a value the call supplies can reach, through any chain of
   edges, a `tool_call` step whose tool changes things.
   - A tool counts as changing nothing only if it is `read_only` and is not a peer. `task` and A2A
@@ -2492,6 +2493,7 @@ the workflow's revision (`approval_binding`), and the run starts that revision, 
 during the wait needs a new approval.
 
 A manifest's own rule over `run_workflow` always wins:
+
 - Under `auto`, any manifest rule that matches `run_workflow` (literal or glob, with or without
   `when_args`) means the harness adds no rule, so an existing gate is never loosened.
 - Under `always`, a literal rule without `when_args` replaces the harness rule.
