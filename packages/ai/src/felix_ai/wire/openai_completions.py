@@ -334,6 +334,7 @@ class OpenAICompletionsClient(HttpModelClient):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.route.model,
@@ -344,6 +345,8 @@ class OpenAICompletionsClient(HttpModelClient):
             body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = _tools_to_openai(tools)
+            if tool_choice == "none":
+                body["tool_choice"] = "none"
         if output_schema:
             from felix_ai.providers import provider_spec
 
@@ -368,6 +371,7 @@ class OpenAICompletionsClient(HttpModelClient):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> ModelChatResult:
         body = self._body(
             messages,
@@ -376,6 +380,7 @@ class OpenAICompletionsClient(HttpModelClient):
             max_tokens,
             isolate_cache=isolate_cache,
             output_schema=output_schema,
+            tool_choice=tool_choice,
         )
         headers = self._headers(self._auth_headers())
         async with model_http_client(self._timeout()) as client:
@@ -413,6 +418,7 @@ class OpenAICompletionsClient(HttpModelClient):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         body = self._body(
             messages,
@@ -421,6 +427,7 @@ class OpenAICompletionsClient(HttpModelClient):
             max_tokens,
             isolate_cache=isolate_cache,
             output_schema=output_schema,
+            tool_choice=tool_choice,
         )
         body["stream"] = True
         # Usage is omitted from a streamed response unless it is asked for, and without

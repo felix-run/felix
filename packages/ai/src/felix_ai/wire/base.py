@@ -376,6 +376,7 @@ class HttpModelClient(ABC):
                 max_tokens,
                 isolate_cache=opts.isolate_cache,
                 output_schema=opts.output_schema,
+                tool_choice=opts.tool_choice,
             )
 
     async def stream_turn(
@@ -406,6 +407,7 @@ class HttpModelClient(ABC):
                 max_tokens,
                 isolate_cache=opts.isolate_cache,
                 output_schema=opts.output_schema,
+                tool_choice=opts.tool_choice,
             ):
                 yield item
 
@@ -427,6 +429,7 @@ class HttpModelClient(ABC):
                 max_tokens,
                 isolate_cache=opts.isolate_cache,
                 output_schema=opts.output_schema,
+                tool_choice=opts.tool_choice,
             ):
                 yield chunk
 
@@ -445,6 +448,7 @@ class HttpModelClient(ABC):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -458,6 +462,7 @@ class HttpModelClient(ABC):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> ModelChatResult:
         raise NotImplementedError
 
@@ -471,6 +476,7 @@ class HttpModelClient(ABC):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> AsyncIterator[StreamDelta | ModelChatResult]:
         raise NotImplementedError
 
@@ -483,6 +489,7 @@ class HttpModelClient(ABC):
         *,
         isolate_cache: bool = False,
         output_schema: dict[str, Any] | None = None,
+        tool_choice: str = "auto",
     ) -> AsyncIterator[str]:
         """Text-only view of `_stream_turn`, so no wire format implements streaming twice.
 
@@ -503,6 +510,7 @@ class HttpModelClient(ABC):
             max_tokens,
             isolate_cache=isolate_cache,
             output_schema=output_schema,
+            tool_choice=tool_choice,
         ):
             if isinstance(item, StreamDelta) and item.kind == "text" and item.text:
                 yield item.text
