@@ -997,7 +997,7 @@ wheels = [
 
 [[package]]
 name = "felix"
-version = "0.15.1"
+version = "0.16.0"
 source = { virtual = "." }
 dependencies = [
     { name = "felix-ai" },
@@ -1117,7 +1117,7 @@ dev = [
 
 [[package]]
 name = "felix-ai"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "packages/ai" }
 dependencies = [
     { name = "httpx" },
@@ -1128,7 +1128,7 @@ requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
 
 [[package]]
 name = "felix-api"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "apps/api" }
 dependencies = [
     { name = "felix-harness" },
@@ -1143,7 +1143,7 @@ requires-dist = [
 
 [[package]]
 name = "felix-channels"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "packages/channels" }
 dependencies = [
     { name = "felix-harness" },
@@ -1154,7 +1154,7 @@ requires-dist = [{ name = "felix-harness", editable = "packages/harness" }]
 
 [[package]]
 name = "felix-cli"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "apps/cli" }
 dependencies = [
     { name = "felix-harness" },
@@ -1171,7 +1171,7 @@ requires-dist = [
 
 [[package]]
 name = "felix-client"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "packages/client" }
 dependencies = [
     { name = "httpx" },
@@ -1182,7 +1182,7 @@ requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
 
 [[package]]
 name = "felix-harness"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "packages/harness" }
 dependencies = [
     { name = "alembic" },
@@ -1314,7 +1314,7 @@ provides-extras = ["sandbox", "browser", "image", "a2a", "otel", "embeddings", "
 
 [[package]]
 name = "felix-worker"
-version = "0.15.1"
+version = "0.16.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "felix-harness" },

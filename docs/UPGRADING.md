@@ -31,6 +31,40 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.16.0: unattended runs refuse approvals, MCP speaks the SDK, heartbeats need a scope
+
+**Check three things before the roll.** No migration is needed for any of them.
+
+**Jobs and triggers that waited for an approval now refuse.** A scheduled job's run, an inbound
+trigger's run, and everything either starts, are unattended (#658). A tool gated by an approval
+rule without `allow_unattended: true` is refused at once with `[approval unavailable]`, where it
+used to write a pending row and wait out the rule's ttl. Before upgrading, look for rules in the
+manifests your jobs and triggers run (`GET /jobs`, the trigger config) that someone used to
+approve by hand. Set `allow_unattended: true` on any such rule that should keep waiting. A
+manifest under `eu_ai_act` with `risk_tier: high` cannot set it, by design. The self-build
+stack's scheduled triage and implement jobs now read and draft only (`docs/SELF.md`). After the
+roll, `felix_approval_unattended_refused` counts what is refused. Each refused call is also a
+`policy_deny` audit row.
+
+**MCP moved to the official Python SDK, on both sides** (#657, #659, #660, #662):
+- `mcp` is a core dependency, so `felix[mcp]` is no longer an extra; drop it from install lines.
+- `/mcp` clients must send `Content-Type: application/json` and an `Accept` that includes it.
+- A stdio server must speak newline-delimited JSON; `Content-Length` framing no longer works.
+- A stdio server whose `env` sets `PATH`, or any variable that makes it run code (git, bash,
+  JVM), binds no tools.
+- A git MCP server can no longer use a credential helper; pass its token through a `secret:`
+  env key.
+
+Check each `spec.mcp_servers` entry still binds after the roll: its tools appear, or the compile
+log names why not.
+
+**Heartbeats need `heartbeats:read` / `heartbeats:write`.** People turn on their own heartbeats
+through `/heartbeats/{manifest}` (#661). Grant the scopes wherever people get theirs: API key
+entries, `FELIX_GITHUB_ORG_TENANTS`, `FELIX_GOOGLE_ACCOUNTS`. Nothing fires until a manifest
+defines `spec.heartbeat` and someone enrols. `FELIX_JOB_RUNS_KEEP` (default 200) starts trimming
+every job's run history on its next run. `FELIX_TIMEZONE` (#652) sets the zone the model is told
+the date in.
+
 ## `/metrics` needs `metrics:read`, and `deployment` scope is opt-in
 
 **Two configuration edits, before the roll, if either applies.**
