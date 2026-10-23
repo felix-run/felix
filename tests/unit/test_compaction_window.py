@@ -94,9 +94,9 @@ def test_a_logical_route_id_resolves_to_the_wire_models_window() -> None:
     from felix.config import Settings
     from felix.patterns.model import parse_model_routes
 
-    # `claude-sonnet` is a route key, not a wire id; it resolves to claude-sonnet-5 (1M).
+    # `claude-sonnet` is a route key, not a wire id; it resolves to claude-sonnet-5-5 (1M).
     route = parse_model_routes(Settings(database_url="memory://cw")).get("claude-sonnet")
-    assert route is not None and route.model == "claude-sonnet-5"
+    assert route is not None and route.model == "claude-sonnet-5-5"
     assert _context_window_for_manifest(_Manifest("claude-sonnet"), SessionSpec()) == 1_000_000
 
 

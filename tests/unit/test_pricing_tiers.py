@@ -9,7 +9,7 @@ control reading that number, so a budget cap silently over-admits.
 from __future__ import annotations
 
 import pytest
-from felix.usage.pricing import estimate_cost
+from felix.usage.pricing import _lookup_price, estimate_cost
 
 TIERED = {
     "input": 3.0,
@@ -65,6 +65,34 @@ def test_highest_matching_tier_wins() -> None:
 
 
 def test_untiered_prices_are_unaffected() -> None:
-    """No bundled entry sets tiers; flat pricing must behave exactly as before."""
+    """An entry without tiers prices every request at its one rate card."""
     cost = estimate_cost(model_id="claude-haiku-4-5", tokens_input=1_000_000)
     assert cost["input"] == 1.0
+
+
+def test_haiku_5_5_reprices_a_whole_prompt_over_100k_tokens() -> None:
+    """Claude Haiku 5.5 has two rate cards, chosen by prompt length with cache tokens counted.
+
+    Under the `claude-haiku` family key it was unpriced, so its spend recorded as zero and
+    `limits.max_cost_usd` failed open for it.
+    """
+    short = estimate_cost(model_id="claude-haiku-5-5", tokens_input=100_000, tokens_output=1_000_000)
+    assert short["input"] == pytest.approx(0.01)
+    assert short["output"] == pytest.approx(0.5)
+
+    # 60K uncached + 50K read from the cache is a 110K prompt: every token pays the higher card.
+    long = estimate_cost(
+        model_id="claude-haiku-5-5",
+        tokens_input=60_000,
+        cache_read=50_000,
+        tokens_output=1_000_000,
+    )
+    assert long["input"] == pytest.approx(60_000 / 1_000_000 * 0.5)
+    assert long["cacheRead"] == pytest.approx(50_000 / 1_000_000 * 0.05)
+    assert long["output"] == pytest.approx(2.5)
+
+
+def test_sonnet_5_5_reads_its_cache_at_a_twentieth_of_input() -> None:
+    """Sonnet 5.5 shares Sonnet 5's input and output rates but not its 0.1x cache reads."""
+    assert _lookup_price("claude-sonnet-5-5")["cache_read"] == pytest.approx(0.1)
+    assert _lookup_price("claude-sonnet-5")["cache_read"] == pytest.approx(0.2)
