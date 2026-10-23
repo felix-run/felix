@@ -260,9 +260,9 @@ def _bind_remote_tool(
         except ToolError, httpx2.TimeoutException:
             raise  # a timeout, kept a timeout for `infer_error_code`
         except Exception as exc:
-            # Returned, not raised: the text of a failed call is often the server's (its JSON-RPC
-            # message, a result that failed its own schema), and content screening and secret
-            # masking read a tool's output, never its exceptions.
+            # Returned, not raised: a failed call reads as `[mcp_error]` output, which audit and
+            # eval count as a failure (`FAILURE_CONTENT_PREFIXES`) and screening and masking read
+            # like any output. Timeouts above stay raised so the runner's TIMEOUT handling sees them.
             return f"[mcp_error] {exc}"
 
     async def call(args: dict[str, Any]) -> ToolOutput:
