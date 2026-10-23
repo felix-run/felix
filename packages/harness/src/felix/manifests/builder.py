@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -1185,7 +1185,11 @@ def apply_approvals(
     manifest_id: str,
     *,
     permissions: PermissionsSpec | None = None,
+    conditional: Sequence[ApprovalRule] = (),
 ) -> list[Tool]:
+    """Wrap each gated tool in its approval. ``conditional`` names rules -- by identity, the objects
+    the compile built, so a manifest rule cannot become one by copying an id -- that apply only to
+    the calls whose tool's `approval_condition` says so."""
     if not any(r.tools for r in rules):
         return tools
     from felix.manifests.approval_args import warn_unknown_when_args
@@ -1232,6 +1236,19 @@ def apply_approvals(
             # cover.
             if rule.when_args and not all(_arg_present(args, name) for name in rule.when_args):
                 return await inner.execute(args, ctx)
+            # A rule the harness marks conditional asks the tool whether this call needs it
+            # (`Tool.approval_condition`): `auto` run approval gates only the runs whose inputs
+            # reach a tool that can change something. A condition that fails gates the call.
+            if tool.approval_condition is not None and any(rule is c for c in conditional):
+                try:
+                    needed = await tool.approval_condition(args)
+                except Exception:
+                    logger.warning(
+                        "approval condition for %s failed; gating the call", tool.name, exc_info=True
+                    )
+                    needed = True
+                if not needed:
+                    return await inner.execute(args, ctx)
 
             req = try_get_context()
             # The thread's permission mode may waive this approval (`accept_edits` for an edit
@@ -2456,6 +2473,8 @@ async def build_agent(
         if judges_enabled(m.spec.guardrails):
             resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name, decider=decider)
         approval_rules = list(m.spec.approvals)
+        # Rules that gate only the calls their tool's `approval_condition` says need it.
+        conditional_rules: list[ApprovalRule] = []
         if "plan" in m.spec.permissions.allowed_modes:
             # The plan is approved through the same flow as any gated call -- the row, the
             # `approval_required` frame, `GET /approvals` -- and no mode waives it.
@@ -2464,9 +2483,22 @@ async def build_agent(
         # `save_workflow` -- unless the manifest's own rule already gates every call
         # (`permission_mode.BUILTIN_APPROVALS`). No mode waives them.
         approval_rules.extend(builtin_approval_rules(m.spec, list(m.spec.approvals)))
+        if m.spec.workflow_authoring is not None:
+            # `run_approval`: waivable, and under `auto` conditional on the call (see the rule ids).
+            from felix.workflows.agent_tools import workflow_run_rule
+
+            run_rule = workflow_run_rule(m.spec.workflow_authoring, list(m.spec.approvals))
+            if run_rule is not None:
+                approval_rules.append(run_rule)
+                if m.spec.workflow_authoring.run_approval == "auto":
+                    conditional_rules.append(run_rule)
         if approval_rules:
             resolved = apply_approvals(
-                resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions
+                resolved,
+                approval_rules,
+                m.metadata.name,
+                permissions=m.spec.permissions,
+                conditional=conditional_rules,
             )
         # Outside approvals, so plan mode refuses a change before anyone is asked to approve it,
         # and so the mode it resolves is there when approvals asks whether it waives a call.

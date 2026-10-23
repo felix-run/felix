@@ -969,6 +969,13 @@ class WorkflowAuthoringSpec(_Strict):
     #: permission mode waives it: a saved workflow runs later as whoever starts it, a job or a
     #: trigger included, so a person reads it first. `false` adds no rule.
     approval: bool = True
+    #: When `run_workflow` waits for the person's approval. `auto`: only when a value the call
+    #: supplies can reach a `tool_call` step whose tool is not `read_only` -- the one place a
+    #: model-chosen input lands unfenced, as a tool argument. `always`: every run. `never`: no rule.
+    #: Closed on purpose: each value is a different rule the harness adds, not an implementation to
+    #: swap. A manifest rule naming `run_workflow` literally replaces it and gates every call; unlike
+    #: the save's, a permission mode (`bypass`) may waive it, since a run starts in front of the person.
+    run_approval: Literal["auto", "always", "never"] = "auto"
 
     @field_validator("manifests")
     @classmethod

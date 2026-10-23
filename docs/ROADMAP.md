@@ -806,9 +806,10 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       else's takes it away entirely. The tools refuse unattended runs and workflow threads, and mint `wf-<hex>` ids.
       *Open:* the console marking agent-written workflows (felix-web); a Slack or other channel
       caller with no `skill_owner` cannot author.
-      *Decisions for the maintainer:* whether `run_workflow` should take an optional per-run
-      approval (inputs reach `tool_call` steps as raw arguments); whether to refuse replacing a
-      workflow an unpinned trigger targets, or list attached triggers and jobs in the preview.
+      *Done:* `run_approval` (`auto` | `always` | `never`, default `auto`): `run_workflow` waits for
+      the person when a supplied input can reach a `tool_call` step whose tool is not read-only,
+      through `Tool.approval_condition` on a harness-marked conditional rule. Waivable by `bypass`.
+      *Next:* a trigger with no `revision` pin refuses to start a workflow an agent still holds.
       *Done:* the unwaivable built-in approval (`schedule_task`, `notify`, `save_workflow`) is one
       table, `permission_mode.BUILTIN_APPROVALS`. The rule ids, both unwaivable sets and the rules
       the builder adds are derived from it, and `test_builtin_approvals.py` compiles every row.
