@@ -939,9 +939,14 @@ one member act with another's authority.
       rather than the manifest so two agents storing one fact converge on one row. GitHub and
       Google sign-ins link through `FELIX_PRINCIPAL_ALIASES` (one hop, memory only). Existing
       agent-written rows reach no person until `felix memory assign` moves them. Not carried: a
-      Slack channel message names no verified person, so it writes no memory under `scope: person`. Still open: whether an agent's newer value may retire an agent's older one on
-      the same topic (`memory_store._may_retire_by_topic`), which the injection guard refuses
-      today; and the ten duplicate rows already on prod stay until an operator forgets them.
+      Slack channel message names no verified person, so it writes no memory under `scope: person`.
+      Still open: whether an agent's newer value may retire an agent's older one on the same topic
+      (`memory_store._may_retire_by_topic`), which the injection guard refuses today.
+- [ ] **Threads belong to the tenant, not a person.** Person memory isolation stops at thread
+      access: a member who posts into another member's thread runs with their own pool, but their
+      facts land in that thread and capture learns from its history (security re-review of #677,
+      `deploy/GOVERNANCE.md` § Memory: whose memory an agent reads). Person-bound threads —
+      an owner on `thread_state`, checked on continue — would close it.
 
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
       Read, not measured — each step below carries its own before/after. In landing order:

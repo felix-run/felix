@@ -135,7 +135,26 @@ def _recorded_person(record: Mapping[str, Any], on_behalf_of: str | None) -> str
         require_owner(person)
     except InvalidSkillOwner:
         return ""
-    return person if person.partition("|")[2] == who else ""
+    issuer, _, subject = person.partition("|")
+    if subject != who or not _issuer_fits_scheme(issuer, str(record.get("scheme") or "")):
+        return ""
+    return person
+
+
+def _issuer_fits_scheme(issuer: str, scheme: str) -> bool:
+    """Whether a recorded key's issuer is one the recorded scheme could have produced.
+
+    The subject check alone let an edit of the stored issuer move a run between sign-ins that
+    share a subject string -- `api_key|github:1` to `felix-self|github:1` -- since both name the
+    same `principal_sub`. The two issuers Felix spells itself are bound to their schemes; any
+    other scheme (a remote verifier, a plugin) may not claim either of them.
+    """
+    from felix.auth.jwt import SELF_ISSUER
+
+    fixed = {"api_key": "api_key", "self": SELF_ISSUER}
+    if scheme in fixed:
+        return issuer == fixed[scheme]
+    return issuer not in fixed.values()
 
 
 def is_shared_subject(subject: str) -> bool:

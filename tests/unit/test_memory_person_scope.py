@@ -134,6 +134,21 @@ def test_a_recorded_caller_replays_the_same_person_key() -> None:
     assert replay_caller(record, tenant_id=TENANT, actor="cron", on_behalf_of="github:2").person == ""
     assert replay_caller({**record, "person": BOB}, tenant_id=TENANT, actor="fiber").person == ""
     assert replay_caller({**record, "person": "no-bar"}, tenant_id=TENANT, actor="fiber").person == ""
+    # Same subject, another issuer: an edited key may not move the run to a different sign-in.
+    assert (
+        replay_caller({**record, "person": "api_key|github:1"}, tenant_id=TENANT, actor="fiber").person == ""
+    )
+    keyed = record_caller(
+        AuthContext(
+            tenant_id=TENANT,
+            principal_sub="github:1",
+            anonymous=False,
+            scheme="api_key",
+            person="api_key|github:1",
+        )
+    )
+    assert replay_caller(keyed, tenant_id=TENANT, actor="fiber").person == "api_key|github:1"
+    assert replay_caller({**keyed, "person": ALICE}, tenant_id=TENANT, actor="fiber").person == ""
     # Recorded before persons were: no key, so the run writes no one's memory.
     assert (
         replay_caller(

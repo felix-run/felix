@@ -2154,6 +2154,17 @@ in two ways keeps one memory: a JSON object, `{"google:123": "github:70701"}`, w
 no `|` means Felix's own sign-in issuer (`felix-self`). One hop — a target may not itself be an
 alias — and neither side may be a shared credential or a machine actor; the boot refuses either.
 Memory alone reads the map; approvals, `bind_principal`, jobs and push keep the raw principal.
+A subject that itself contains `|` (an Auth0-style `auth0|5f7c`) must be written in full
+`issuer|subject` form in the map, in `--to` and in `principal`: written bare, its first `|` is read
+as the issuer's end, and the key names no one. A replayed run's recorded key must match both its
+subject and the issuer its recorded scheme produces (`api_key`, `felix-self`), so an edited key
+cannot move a run between two sign-ins that share a subject string.
+
+Two things the person key trusts. A **plugin authenticator** chooses its principals' issuer, so
+one that claims `felix-self` or `api_key` would share those people's pools (and personal skill
+libraries); a plugin must issue under its own issuer. A **JWT without `sub`** takes its subject
+from `email` (`auth/jwt.py`), which some identity providers let users edit: point a verifier only
+at an issuer whose tokens carry `sub`.
 
 **Person isolation is an application filter inside the tenant**, not a database policy. Row-level
 security isolates tenants, as it always has; inside one tenant the memory store's own predicate
@@ -2162,7 +2173,15 @@ read and every retirement — a `forget` by id, a supersession by `topic_key`, a
 merge, an upsert onto an id another pool holds (refused) all stay in the writer's pool.
 `memory:read` and `memory:write` are **operator** grants and span every person in the tenant:
 `GET /memory` lists everyone's pools (`?principal=` narrows to one), and `POST /memory` writes any
-of them (`principal` names the pool; a credential many callers share is refused, 422).
+of them (`principal` names the pool; a credential many callers share is refused, 422). Grant
+them to operators, not to every member: an org grant (`FELIX_GITHUB_ORG_TENANTS`) that includes
+`memory:read` lets each member read every other member's memory.
+
+Person isolation goes as far as **thread access** and no further. Threads belong to the tenant,
+not to a person, so a member who posts into another member's thread runs with *their own* pool —
+none of the owner's memory reaches them — but their facts appear in that thread's replies, and
+capture learns from a turn shaped by its history. Keep threads unguessable and unshared where
+that matters; person-bound threads are on the roadmap.
 
 One channel crosses people on purpose: **procedural memory** is the agent's, whatever the scope.
 `remember_procedure` writes the agent pool and every caller's turn retrieves from it, so a how-to
