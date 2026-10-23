@@ -110,6 +110,7 @@ def catalog_from_manifest(
         entry = model_catalog_entry(model_id=name)
         entry["felix"].update(
             providerModel=None,
+            wireModel=None,
             description=None,
             starters=[],
             commands=[],
@@ -145,6 +146,10 @@ def catalog_from_manifest(
     # still the manifest's name, which is what a client sends back as `model`.
     entry["id"] = name
     entry["felix"]["providerModel"] = route_name or None
+    # The provider's own id for what that route serves: a route name is the operator's label
+    # and can outlive the model it once named (`claude-sonnet-4` serves `claude-sonnet-5`).
+    # Null for a route the deployment does not define, which cannot run at all.
+    entry["felix"]["wireModel"] = route.model if route is not None else None
     entry["felix"]["description"] = getattr(meta, "description", "") or None
     # Always a list, empty when the manifest declares none, so a client can tell "this
     # harness lists starters" from an older one that has no key.
