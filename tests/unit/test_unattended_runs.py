@@ -55,15 +55,15 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _firing() -> AuthContext:
-    """A job's firing, built by the scheduler's own `_job_auth`: `cron` for alice, `scheduled`."""
-    from felix.jobs.scheduler import _job_auth
+    """A job's firing, built by the scheduler's own `job_auth`: `cron` for alice, `scheduled`."""
+    from felix.jobs.scheduler import job_auth
 
     job = {
         "name": "nightly",
         "created_by": "alice",
         "created_auth": {"principal_sub": "alice", "scopes": ["jobs:write"], "scheme": "jwt"},
     }
-    return _job_auth(make_settings(), TENANT, job)
+    return job_auth(make_settings(), TENANT, job)
 
 
 def _person() -> AuthContext:

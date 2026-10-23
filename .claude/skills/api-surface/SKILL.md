@@ -48,6 +48,7 @@ pinning — that is a security bug, not a shortcut.
 | `auth_github.py` | GitHub login under `/auth/github` (device, token, actions, authorize/callback/exchange), `/auth` methods, `/github/connection` (the caller's own) and `/github/connections` (`github:admin`) |
 | `repos.py` | `GET /github/repos` (the caller's repos, grouped by installation); a thread's repo checkout under `/chat/sessions` |
 | `push.py` | `/push` web-push subscriptions and the VAPID key (gated on `approvals:read`) |
+| `heartbeats.py` | `/heartbeats`: the caller's own heartbeats (`felix/jobs/heartbeat.py`) -- list, enrol/turn off (`PUT`, body `{enabled}` only), remove, run now (409 `heartbeat_running`); a named non-shared person; `heartbeats:read` / `heartbeats:write` |
 | `auth_google.py` | Google sign-in by redirect under `/auth/google` (authorize/callback/exchange), for the accounts on `FELIX_GOOGLE_ACCOUNTS` only |
 | `_login_redirect.py` | no routes: what GitHub's and Google's redirect sign-ins share — the return target, the sealed cookies, PKCE, the fragment back to the app |
 | `_sse.py`, `_streaming.py` | no routes: the SSE envelope and the session-log tail both stream loops share — never spell a frame by hand elsewhere |

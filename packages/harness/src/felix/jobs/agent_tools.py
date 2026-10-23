@@ -6,7 +6,7 @@ holds each `schedule_task` call until a person has read the prompt it would leav
 
 A task is an ordinary scheduled job (`jobs/store.py`) on the compiling manifest, written as the
 caller: `created_by` is who the turn acts for and `created_auth` their authority, so a firing runs
-as `cron` on their behalf (`jobs/scheduler.py:_job_auth`) and reaches nothing they could not reach
+as `cron` on their behalf (`jobs/scheduler.py:job_auth`) and reaches nothing they could not reach
 by asking. What marks it as a task is its payload's `scheduled_by`, and that is what `list_scheduled`
 and `cancel_scheduled` filter on -- with the writer and the manifest -- so a caller sees and cancels
 only the tasks they scheduled from this agent, never an operator's job or another person's task.
@@ -45,9 +45,6 @@ MAX_PROMPT_CHARS = 8000
 MAX_TITLE_CHARS = 200
 # How far ahead a one-shot may be set. A task a year out outlives most reasons to have set it.
 MAX_AHEAD_MS = 366 * 86_400_000
-# How many of a cron's next firings `_shortest_gap_ms` walks. Enough to cross a week of a
-# weekday-only schedule many times over; cheap, since each step jumps whole days or hours.
-_GAP_SAMPLES = 200
 
 _WHEN_DESCRIPTION = (
     "When the task runs, in UTC. One of: at:<ISO-8601 timestamp with offset> to run once "
@@ -143,29 +140,6 @@ def default_scheduling_rule(
     return scheduling_approval_rule()
 
 
-def _shortest_gap_ms(parsed: Schedule, now: int) -> int | None:
-    """The shortest gap between firings of a recurring schedule, or None for one that does not
-    recur (manual only, or a one-shot). A cron's gaps are uneven (`0 9,10 * * *`), so its next
-    firings from now are walked and the smallest gap taken."""
-    if parsed.one_shot:
-        return None
-    if parsed.interval_ms is not None:
-        return parsed.interval_ms
-    if parsed.cron is None:
-        return None
-    gaps: list[int] = []
-    at = parsed.next_after(now)
-    for _ in range(_GAP_SAMPLES):
-        if at is None:
-            break
-        following = parsed.next_after(at)
-        if following is None:
-            break
-        gaps.append(following - at)
-        at = following
-    return min(gaps) if gaps else None
-
-
 class _AgentTasks:
     """One manifest's task calls, bound to its tenant and `spec.scheduling`. Every refusal raises
     `ToolRefused`; the tool wrappers in `make_scheduling_tools` turn it into the result."""
@@ -205,22 +179,17 @@ class _AgentTasks:
         """The tasks ``writer`` scheduled from this manifest -- and nothing else in the tenant."""
         from felix.jobs import store as jobs_store
 
-        found = []
-        for job in await jobs_store.list_jobs(self.settings, self.tenant_id):
-            by = (job.get("payload") or {}).get("scheduled_by")
-            if (
-                isinstance(by, dict)
-                and by.get("tool") == SCHEDULE_TASK
-                and by.get("manifest") == self.manifest_id
-                and job.get("manifest_id") == self.manifest_id
-                and job.get("created_by") == writer
-            ):
-                found.append(job)
-        return found
+        return [
+            job
+            for job in await jobs_store.list_jobs(self.settings, self.tenant_id)
+            if jobs_store.scheduled_by(job, SCHEDULE_TASK) is not None
+            and job.get("manifest_id") == self.manifest_id
+            and job.get("created_by") == writer
+        ]
 
     def check_when(self, when: str, now: int) -> Schedule:
         from felix.errors import client_safe_message
-        from felix.jobs.schedule import ScheduleError, parse_schedule
+        from felix.jobs.schedule import ScheduleError, parse_schedule, shortest_gap_ms
 
         try:
             parsed = parse_schedule(when)
@@ -241,7 +210,7 @@ class _AgentTasks:
                 "never_fires",
                 "a task must have a time to run: give at:<timestamp>, an interval, or a cron expression",
             )
-        gap = _shortest_gap_ms(parsed, now)
+        gap = shortest_gap_ms(parsed, now)
         floor = self.spec.min_interval_minutes
         if gap is not None and gap < floor * 60_000:
             raise ToolRefused(
@@ -399,11 +368,12 @@ def _check_text(args: _ScheduleTaskArgs) -> None:
 def is_fired_task(job: dict[str, Any]) -> bool:
     """A task `schedule_task` wrote that will not run again -- a one-shot that has fired, or any
     task disabled when its writer's credential expired -- and has run: what retention may delete.
-    Never an operator's job, whatever its schedule or state."""
-    by = (job.get("payload") or {}).get("scheduled_by")
+    Never an operator's job, whatever its schedule or state, nor a task its writer re-saved onto
+    another manifest -- that is an ordinary job of theirs now (`jobs_store.scheduled_by`)."""
+    from felix.jobs.store import scheduled_by
+
     return (
-        isinstance(by, dict)
-        and by.get("tool") == SCHEDULE_TASK
+        scheduled_by(job, SCHEDULE_TASK) is not None
         and job.get("last_run_at") is not None
         and not _is_live(job)
     )

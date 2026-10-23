@@ -125,6 +125,11 @@ SCOPE_APPROVALS_READ = "approvals:read"
 SCOPE_APPROVALS_WRITE = "approvals:write"
 SCOPE_JOBS_READ = "jobs:read"
 SCOPE_JOBS_WRITE = "jobs:write"
+# A person turning their own heartbeat on or off (`/heartbeats`). Its own grant rather than part of
+# `jobs:write`: it writes a job only of the operator's design (`spec.heartbeat`), for the caller
+# alone, so an operator can hand it to people who may not write arbitrary jobs.
+SCOPE_HEARTBEATS_READ = "heartbeats:read"
+SCOPE_HEARTBEATS_WRITE = "heartbeats:write"
 SCOPE_PLANS_READ = "plans:read"
 SCOPE_PLANS_WRITE = "plans:write"
 # Authored workflows (`/workflows`). Writing one names manifests and tools its runs will call, so
@@ -175,6 +180,8 @@ __all__ = [
     "SCOPE_EVAL_WRITE",
     "SCOPE_FILES_READ",
     "SCOPE_FILES_WRITE",
+    "SCOPE_HEARTBEATS_READ",
+    "SCOPE_HEARTBEATS_WRITE",
     "SCOPE_JOBS_READ",
     "SCOPE_JOBS_WRITE",
     "SCOPE_MANIFESTS_READ",

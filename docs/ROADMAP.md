@@ -702,8 +702,22 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       *Follow-ups:* the sweep still awaits each firing in turn, so one long run delays the jobs
       after it (fan out per job, bounded); `accept_edits` on a job's thread still waives its edit-tool
       approvals unattended (only `bypass` is re-checked); a job run record does not list the calls it refused
-      (they are `policy_deny` audit rows). *Next:* heartbeat core -- heartbeat jobs, which `notify`
-      exists for; memory scoped per user, plus an agent-editable `USER.md` and `SOUL.md`.
+      (they are `policy_deny` audit rows). *Landed (this PR):* heartbeat core. The operator
+      defines `spec.heartbeat` (checklist, recurring schedule held to `min_interval_minutes` >= 15,
+      a firing `model` route, `max_turns`, `keep_threads`; needs `spec.notify`), and a person turns
+      their own on or off over `/heartbeats` (`heartbeats:read` / `heartbeats:write`, a named
+      non-shared caller, the manifest's inbound auth checked at enrolment as the firing will run
+      it). Enrolling writes an ordinary job as the person (`hb-<manifest>-<sha256(person)[:12]>`;
+      an API key or Felix sign-in is re-checked at each firing and never expires, any other
+      credential's `exp` is recorded and ends it) and their heartbeat conversation
+      (`{tenant}:hb-<hex>`, where `notify` leaves each notice). A firing builds its prompt from the
+      manifest's current checklist, never the job payload, runs on the heartbeat's model and step
+      bound, records `quiet` (no notice sent) and the answer cut to 500, and prunes its firing
+      threads to `keep_threads` (`session/prune.py`, both store arms); a manifest that drops its
+      heartbeat turns it off. *Next for heartbeats:* a per-person firings/day cap; trimming
+      `job_runs` (a heartbeat adds one per firing, forever); the chat-ui toggle and a
+      heartbeat-aware rendering of the conversation (felix-web). *Next:* memory scoped per user, plus
+      an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,
       with office-document skills; installable bundles through the skill-import gate; a stock

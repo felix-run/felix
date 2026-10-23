@@ -11,6 +11,7 @@ from typing import Any, TypedDict
 from felix.auth.actors import CRON
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
+from felix.jobs import heartbeat as hb
 from felix.jobs import store as jobs_store
 from felix.jobs.schedule import ScheduleError, parse_schedule
 from felix.logging_setup import loggable
@@ -18,7 +19,7 @@ from felix.patterns.types import ChatMessage, InvokeInput
 
 logger = logging.getLogger("felix.jobs.scheduler")
 
-# The machine actor a firing runs as, on behalf of the job's writer (`_job_auth`), which also
+# The machine actor a firing runs as, on behalf of the job's writer (`job_auth`), which also
 # marks it `scheduled` -- what `jobs/agent_tools.py` reads to refuse scheduled work scheduling more.
 CRON_ACTOR = CRON
 # On a task's firing, `RequestContext.extras[SCHEDULED_FROM_EXTRA]` is `{"thread_id", "created_by"}`:
@@ -63,7 +64,7 @@ def creator_auth(auth: AuthContext) -> dict[str, Any]:
 _warned_unrecorded: set[tuple[str, str]] = set()
 
 
-def _job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthContext:
+def job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthContext:
     """The caller a firing runs as: `cron`, on behalf of whoever last wrote the job.
 
     `principal_sub` stays the machine, as a resumed fiber's does, so an audit row never says a
@@ -105,6 +106,20 @@ def _job_auth(settings: Settings, tenant_id: str, job: dict[str, Any]) -> AuthCo
     return replay_caller(
         recorded, tenant_id=tenant_id, actor=CRON_ACTOR, on_behalf_of=creator, scheduled=True
     )
+
+
+def rechecks_at_firing(settings: Settings, tenant_id: str, subject: str, recorded: dict[str, Any]) -> bool:
+    """Whether each firing can re-check this writer's credential against today's configuration
+    (`job_auth`): an API key, or a Felix sign-in whose grant for the tenant is configured here. A
+    token from another issuer, or a sign-in to a personal tenant, has nothing to be re-checked
+    against, and fires on the grant recorded at the write."""
+    scheme = str(recorded.get("scheme") or "")
+    if scheme in {"api_key", "apikey"}:
+        return True
+    if scheme == "self":
+        idp = str(recorded.get("idp") or subject.split(":", 1)[0])
+        return _signin_grant(settings, tenant_id, subject, idp, str(recorded.get("email") or "")) is not None
+    return False
 
 
 def _current_api_key_scopes(
@@ -242,7 +257,7 @@ async def _invoke_job_manifest(
     prompt = str(payload.get("prompt") or payload.get("message") or "ping")
     provider = default_tool_provider()
 
-    auth = _job_auth(settings, tenant_id, job)
+    auth = job_auth(settings, tenant_id, job)
     # One thread per job by default, so a digest job keeps its own history. `fresh_thread`
     # gives each firing a thread of its own: a job that works a *different* ticket every run
     # must not carry ticket N's transcript into ticket N+1's context.
@@ -252,36 +267,59 @@ async def _invoke_job_manifest(
         # a test — would share a thread again, which is the one thing this exists to prevent.
         thread = f"{thread}:{uuid.uuid4().hex[:16]}"
     req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
-    by = payload.get("scheduled_by")
-    if isinstance(by, dict) and isinstance(by.get("thread_id"), str) and by["thread_id"]:
+    by = jobs_store.scheduled_by(job)
+    if by is not None and isinstance(by.get("thread_id"), str) and by["thread_id"]:
         req_ctx.extras[SCHEDULED_FROM_EXTRA] = ScheduledFrom(
             thread_id=by["thread_id"], created_by=str(job.get("created_by") or "")
         )
     async with async_run_with_context(req_ctx):
         # Resolved inside the context, as a fiber's is: that is what binds the tenant for RLS.
-        resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
+        try:
+            resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
+        except LookupError:
+            gone = await hb.manifest_missing(settings, tenant_id, job)
+            if gone is None:
+                raise
+            return gone
+        # A firing of a kind with its own prompt, manifest adjustments and record (a heartbeat's),
+        # or None for a plain job, which runs its payload's prompt as it always has.
+        firing = await hb.begin_firing(settings, tenant_id, job, resolved.manifest)
+        if firing is not None:
+            if firing.refusal is not None:
+                return firing.refusal
+            prompt = firing.prompt
         # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
         # credential's manifest pin -- and the thread's compile pin, as every other way into a
         # run checks them. A job used to compile straight past both, so `jobs:write` reached any
         # manifest in the tenant. A refusal raises, and is recorded as the run's error.
         await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
+        if firing is not None:
+            # After the checks above, which judged the manifest as stored.
+            resolved.manifest = firing.adjust(resolved.manifest)
         # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
         # it like any user turn; a refusal raises and is recorded as an error run.
         messages = [ChatMessage(role="user", content=prompt)]
-        agent = await build_tenant_agent(
-            settings,
-            manifest=resolved.manifest,
-            sub_agents=resolved.sub_agents,
-            tools=provider,
-            tenant_id=tenant_id,
-            # The tenant's library only: a writer's personal skills are not recorded with the
-            # job, and a job running on them would follow instructions its readers cannot see.
-            skill_owner=None,
-        )
-        result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
+        try:
+            agent = await build_tenant_agent(
+                settings,
+                manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
+                tools=provider,
+                tenant_id=tenant_id,
+                # The tenant's library only: a writer's personal skills are not recorded with the
+                # job, and a job running on them would follow instructions its readers cannot see.
+                skill_owner=None,
+            )
+            result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
+        finally:
+            if firing is not None:
+                await firing.after()
+    answer = result.final.content if result.final else ""
+    if firing is not None:
+        return firing.result(str(answer or ""), req_ctx.extras, thread)
     return {
         "status": "ok",
-        "answer": result.final.content if result.final else "",
+        "answer": answer,
     }
 
 
@@ -306,7 +344,7 @@ async def _start_job_workflow(settings: Settings, *, tenant_id: str, job: dict[s
 
     workflow_id = str(job["workflow_id"])
     shown = workflow_id[:64]
-    auth = _job_auth(settings, tenant_id, job)
+    auth = job_auth(settings, tenant_id, job)
     if not holds_mgmt_scopes(settings, auth.scopes, SCOPE_WORKFLOWS_WRITE):
         return {"status": "error", "error": "the job's writer may not start workflow runs (workflows:write)"}
     inputs = (job.get("payload") or {}).get("inputs", {})
@@ -352,8 +390,9 @@ CREDENTIAL_EXPIRED = "the credential that scheduled this task has expired; sched
 
 
 def _credential_expired(job: dict[str, Any], at: int) -> bool:
-    """Whether the token that wrote this job had expired by `at`. Only a task records one
-    (`created_auth.expires_at`, `jobs/agent_tools.py`); a job written any other way never has."""
+    """Whether the token that wrote this job had expired by `at`. Only a task (`jobs/agent_tools.py`)
+    and a heartbeat whose credential no firing can re-check (`jobs/heartbeat.py:enrol`) record one
+    (`created_auth.expires_at`); a job written any other way never has."""
     recorded = job.get("created_auth")
     expires_at = recorded.get("expires_at") if isinstance(recorded, dict) else None
     return isinstance(expires_at, int) and at >= expires_at
@@ -363,6 +402,7 @@ async def _record_expired(
     settings: Settings, tenant_id: str, job: dict[str, Any], started_at: int, trigger: str
 ) -> dict[str, Any]:
     """The run record of a firing refused because its writer's credential has expired."""
+    message = hb.expired_message(job) or CREDENTIAL_EXPIRED
     run = await jobs_store.record_run(
         settings,
         tenant_id,
@@ -370,8 +410,8 @@ async def _record_expired(
         status="error",
         started_at=started_at,
         finished_at=now_ms(),
-        error=CREDENTIAL_EXPIRED,
-        result={"status": "error", "error": CREDENTIAL_EXPIRED, "trigger": trigger},
+        error=message,
+        result={"status": "error", "error": message, "trigger": trigger},
     )
     # Over this firing's own claim only, as every run's end is (`jobs_store.finish_run`).
     await jobs_store.finish_run(
@@ -380,7 +420,7 @@ async def _record_expired(
         job["name"],
         started_at=started_at,
         last_status="error",
-        last_error=CREDENTIAL_EXPIRED,
+        last_error=message,
     )
     return run
 
@@ -587,7 +627,9 @@ __all__ = [
     "ScheduledFrom",
     "creator_auth",
     "fire_job",
+    "job_auth",
     "next_run_at_ms",
+    "rechecks_at_firing",
     "run_due_jobs",
     "run_due_jobs_all_tenants",
 ]

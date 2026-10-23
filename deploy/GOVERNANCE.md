@@ -2245,6 +2245,66 @@ takes the replica out of rotation — and is logged at warning once per subsyste
 again when a command fails on a client that had connected, rather than silently degraded.
 The same channel carries UI prompts and client-tool answers.
 
+## Heartbeats
+
+A heartbeat is a periodic check-in a person turns on for themselves, on a manifest whose operator
+defined one (`spec.heartbeat`). The split of who decides what is the control:
+
+| Who | Decides |
+|-----|---------|
+| The operator (`manifests:write`) | Everything a firing does: the `checklist` the agent works through, the `schedule` (recurring only, never faster than `min_interval_minutes`, itself at least 15), the `model` route firings use, `max_turns`, and `keep_threads`. A manifest with a heartbeat must also bind `notify` (refused at write otherwise). |
+| The person (`heartbeats:write`) | Only on or off, for themselves: `PUT /heartbeats/{manifest}` with `{enabled}`, `DELETE`, and `POST .../run` to fire it now (`409 heartbeat_running` while a firing is in flight). `GET /heartbeats` (`heartbeats:read`) lists their own and no one else's. |
+
+**It runs as the person.** Enrolling writes an ordinary job (`hb-<manifest>-<sha256(person)[:12]>`,
+listed in `GET /jobs`) recording the person and their authority exactly as a job write does, so
+each firing runs as `cron` on their behalf with their scopes, through the manifest's inbound auth.
+That check also runs at enrolment, before anything about the manifest's heartbeat is answered, so
+a heartbeat that could never run is refused at once with the same written message, and a caller
+the manifest refuses cannot tell whether it offers one. Enrolling needs a named person: anonymous,
+a sub-less API key and other shared subjects are refused (`403 shared_subject` / `no_caller`).
+
+**How long it lasts depends on the credential that enrolled it.** An API key and a Felix sign-in
+whose grant for the tenant is configured here (Google accounts, GitHub org grants, GitHub Actions
+repositories) are re-checked at every firing, as every job firing re-checks them -- the scopes cut
+to what the key or grant holds today, none left refuses the run -- so those heartbeats record no
+expiry and run until turned off. Any other credential -- a token from another issuer, a sign-in
+to a personal tenant -- leaves Felix nothing to re-check, so enrolment records its token's `exp`
+and the heartbeat stops there: the first firing past it is refused, recorded as an error ("the
+credential that turned this heartbeat on has expired; turn it on again") and the job disabled, as
+an expired agent task is. `GET /heartbeats` shows that end as `expires_at` (null when there is
+none).
+
+**Nobody writes its instructions but the operator.** A firing's prompt is built from the manifest's
+*current* `checklist`, inside a fixed frame (reply `HEARTBEAT_OK` when nothing needs the person,
+else call `notify` once); the job's payload is never read for it, so a holder of `jobs:write`
+re-saving the job puts no words in a firing, and an operator's edit applies at the next one. The
+stored schedule is brought back to the manifest's at each firing, by a conditional update that
+never re-creates or re-enables a heartbeat deleted or turned off meanwhile. A manifest that no
+longer defines a heartbeat, or no longer exists, turns it off: the firing is recorded as an error
+and the job disabled. `max_turns` only ever narrows: a firing runs at the lower of it and the
+manifest's own `recursion_limit` / `max_turns`.
+
+**It is unattended**, like every job firing (see [Unattended runs](#unattended-runs)): a tool behind
+an approval rule without `allow_unattended` is refused in it at once, and nothing waits.
+
+**It speaks only through `notify`**, with every `notify` control: to the person and no one else,
+secrets redacted, links stripped, screened, `max_per_run` and `max_per_hour`. The notice is also
+left in the person's own heartbeat conversation (`{tenant}:hb-<hex>`, created at enrolment and
+titled "Heartbeat: <manifest>") as an entry for the person that no model prompt carries. Each run
+record says whether the firing was `quiet` (sent no notice) and keeps the first 500 characters of
+its answer.
+
+**Firing transcripts are the tenant's to read**, like an agent task's and any job's: each firing's
+thread (`{tenant}:job:hb-…:<hex>`) is an ordinary thread of the tenant, so whoever may read the
+tenant's sessions reads what a heartbeat checked on the person's behalf. Write a checklist with
+that in mind; the notice itself goes to the person alone.
+
+**Retention.** Each firing runs in a fresh thread; after it, all but the newest `keep_threads`
+firing threads of that heartbeat are deleted whole (events and metadata), on every store. The
+person's conversation is never among them. `DELETE /heartbeats/{manifest}` removes the job, its run
+history and its firing threads, and keeps the conversation, which holds the notices the person was
+sent and is theirs to delete. Job run records are not yet trimmed.
+
 ## Permission modes
 
 A thread is in one of four modes, set with `POST /chat/mode` (or by an approved plan) and kept in
@@ -2785,6 +2845,7 @@ implies the matching `*:read`.
 | `jobs:read` / `jobs:write` | `/jobs`. A job runs as principal `cron` on behalf of whoever last wrote it (`PUT`), with that writer's scopes, scheme and manifest pin as recorded then; `GET /jobs` shows `created_by` and `recorded_at`. Every firing goes through the manifest's inbound auth and the thread's compile pin, so writing a job reaches no manifest its writer could not run; a refusal is the run's error. For a writer who authenticated with an API key, each firing re-reads `FELIX_AUTH_API_KEYS`: the scopes are cut to what that key (by `sub`, in the job's tenant) holds now, and a key no longer configured refuses the run. A writer who signed in through Felix is re-checked the same way: a Google writer's `FELIX_GOOGLE_ACCOUNTS` entry (by the email recorded at the write, matching its `sub` pin) must still name the job's tenant, a GitHub writer's tenant must still have an org grant in `FELIX_GITHUB_ORG_TENANTS` (org membership itself is not asked at firing), and a GitHub Actions writer's repository must still be let in; the scopes are cut to what that entry or grant holds, and none left refuses the run. A writer whose token another issuer signed keeps the grant recorded at the write — Felix keeps nothing of that token to re-check, so re-save or delete the job when such a person leaves. `POST /jobs/{name}/run` runs a job now and needs `jobs:write` *and* to be the job's writer or an operator (`admin`/`*`): the run carries the writer's authority, so someone else asking would choose when the writer's run happens — including a job the writer disabled. Rewriting the job instead makes it theirs, with their scopes. The caller's subject is recorded on a manual run as `requested_by`. A job written before writers were recorded runs with no scopes and only an operator may run it by hand. A job may name a workflow (`workflow_id`) instead of a manifest: each firing starts a run with `payload.inputs`, as `cron` for the writer, and the run records the writer as its starter (`started_by`, trigger `job:<name>`). Writing one needs `workflows:write` beside `jobs:write`, and each firing checks the recorded scopes still hold it — the same grant starting a run over HTTP needs — and every manifest its steps name against the writer, as at any start. **The job is held to the workflow revision current when it was written** — or the one the writer names as `workflow_revision`, which an editor should send (412 `workflow_changed` if it is no longer current): once anyone saves the workflow again, each firing is refused until the writer re-saves the job, so a `workflows:write` holder cannot put steps of their choosing in front of someone else's scopes. A job-started run is not clamped to a token's `exp` (the job keeps no token): it has the full 24 hours, with the writer's grant as recorded or, for an API key, as that key holds it at the firing |
 | `plans:read` / `plans:write` | `/plans` |
 | `workflows:read` / `workflows:write` | `/workflows` — authored workflow definitions. Its own grant rather than part of `manifests:write` or `jobs:write`: a workflow names the manifests and tools its runs will call. `/-/check` (check a definition without saving) is a read, and so is `/-/tools?manifest=` — the tools a `tool_call` step may name, which **compiles that manifest as the caller under its inbound rules** (401/403 `not_permitted` otherwise), so it lists only what the caller could run, and never a client tool (`spec.client_tools`), which a run refuses too: nobody is there to answer it. A tenant keeps at most 500 workflows (409 `workflow_limit` past it; replacing one never counts), a definition is capped at 256 KiB however it is built, and a check lists at most 200 problems (then `too_many_problems` with the count left out), each quoting an author's names cut short — so a definition cannot make its own error report large. Every save and delete is audited (`workflow_saved`, `workflow_deleted`) to the caller. Starting and cancelling a run (`POST /workflows/{id}/runs`, `.../cancel`) need `workflows:write`: each agent step runs as a child durable run **as the person who started the workflow, with their scopes** — recorded once at start like a durable chat's, never widened, and dead with the run, whose deadline is 24 hours clamped to the starter's token `exp` (a job-started run has no token to clamp to; see `jobs:*`). A run started with no caller in context runs its steps with no scopes. **Each manifest a step names is checked against the starter's inbound rules and pinned when the run starts** (401/403 `not_permitted` otherwise): a step that starts hours later refuses a version published since, as a durable chat does, so the starter's scopes never run code nobody checked. Each child is also held to its manifest's own `execution` TTL. A tenant may have 50 runs going and a run 8 agent and tool steps in flight. A step may hand on 128 KiB of output, and a run's record — its inputs, and each step's inputs and outputs — holds at most 4 MiB; a step whose inputs or outputs would pass either fails with none of them kept, and a step's error is cut to 500 characters. **When a run ends, the run's record of its starter (scopes, pin) and manifest pins is cleared** — they start no more steps; each step's child run keeps its own copy until `FELIX_FIBER_RETENTION_DAYS` — and the run's record is swept `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30; 0 keeps every run) after it finished. Approval steps open ordinary `/approvals` rows; one nobody decides fails the step rather than counting as a denial, and cancelling closes them. A `tool_call` step calls one tool from its step's `manifest` with no model, **through that manifest's governed tool set and the agent loop's own dispatch** — every governance wrapper (policies, screening, limits, approvals, …), the plugin `before_tool` / `after_tool` hooks and the manifest's `pre_tool_use` / `post_tool_use` apply as they would to the agent's call, the `tool_call` audit row is written, and the arguments are screened as a direct MCP call's are. Limits count per step, not per run: each step is a fresh compile, as a direct MCP call is. The step's author chooses the tool and its fixed arguments, and the person who starts the run lends their scopes to it; the tool must still be bound and its input schema must still take what the step sends, or the step fails. A call whose worker died mid-way is repeated only for a tool marked `replay_safe`. Two things to know: anyone with `workflows:read` sees every step's inputs and outputs, which were produced with the starter's scopes; and one step's output becomes the next step's prompt, so text an earlier step read (a web page, an issue body) reaches a later step's tools — turn on `spec.inbound` screening on manifests that take workflow input from untrusted sources. Audited as `workflow_run_started` (every start, a job's included, with its `trigger`) and `workflow_run_cancelled` |
+| `heartbeats:read` / `heartbeats:write` | `/heartbeats` — the caller's own heartbeats only (see [Heartbeats](#heartbeats)): list, turn on or off, remove, run now. Its own grant rather than part of `jobs:write`: it writes a job only of the operator's design, for the caller alone |
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
 | `metrics:read` | `GET /metrics`. Its label values (manifest ids, remote MCP tool names) span every tenant, so it is an operator grant: give it to the scrape credential (`scripts/metrics-token.sh`, the Helm `serviceMonitor.bearerTokenSecret`), in a tenant of its own (`metrics`), and to nothing a tenant holds |

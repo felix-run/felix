@@ -58,16 +58,16 @@ def _auth(sub: str = "alice", scopes: frozenset[str] = ALICE_SCOPES, **kw: Any) 
 
 
 def _firing() -> AuthContext:
-    """A job's firing, built the way the scheduler builds it (`_job_auth`): `cron` for alice, and
+    """A job's firing, built the way the scheduler builds it (`job_auth`): `cron` for alice, and
     marked `scheduled` -- which is what the refusal reads."""
-    from felix.jobs.scheduler import _job_auth
+    from felix.jobs.scheduler import job_auth
 
     job = {
         "name": "j",
         "created_by": "alice",
         "created_auth": {"principal_sub": "alice", "scopes": ["jobs:write"], "scheme": "jwt"},
     }
-    return _job_auth(make_settings(), TENANT, job)
+    return job_auth(make_settings(), TENANT, job)
 
 
 async def _call(

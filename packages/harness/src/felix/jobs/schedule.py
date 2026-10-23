@@ -204,4 +204,33 @@ def parse_schedule(schedule: str) -> Schedule:
     return Schedule(cron=_parse_cron(_MACROS.get(s, s)))
 
 
-__all__ = ["SCHEDULE_GRAMMAR", "Schedule", "ScheduleError", "parse_schedule"]
+# How many of a cron's next firings `shortest_gap_ms` walks. Enough to cross a week of a
+# weekday-only schedule many times over; cheap, since each step jumps whole days or hours.
+_GAP_SAMPLES = 200
+
+
+def shortest_gap_ms(parsed: Schedule, now: int) -> int | None:
+    """The shortest gap between firings of a recurring schedule, or None for one that does not
+    recur (manual only, or a one-shot). A cron's gaps are uneven (`0 9,10 * * *`), so its next
+    firings from now are walked and the smallest gap taken. The floor `schedule_task` and
+    `spec.heartbeat` each hold a recurring schedule to."""
+    if parsed.one_shot:
+        return None
+    if parsed.interval_ms is not None:
+        return parsed.interval_ms
+    if parsed.cron is None:
+        return None
+    gaps: list[int] = []
+    at = parsed.next_after(now)
+    for _ in range(_GAP_SAMPLES):
+        if at is None:
+            break
+        following = parsed.next_after(at)
+        if following is None:
+            break
+        gaps.append(following - at)
+        at = following
+    return min(gaps) if gaps else None
+
+
+__all__ = ["SCHEDULE_GRAMMAR", "Schedule", "ScheduleError", "parse_schedule", "shortest_gap_ms"]

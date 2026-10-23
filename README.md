@@ -486,7 +486,7 @@ An agent deletes and renames workspace files with the `delete_file` (`{path}`) a
 
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
 
-Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting — see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back to. `/workflows` holds authored workflow definitions — typed steps wired port to port — and answers each save with the ports and problems the editor draws, conditional on `If-Match`; `POST /workflows/{id}/runs` runs one durably — each agent step a child durable run on its own thread, tool steps through their manifest's governed tools, approval steps through `/approvals` — and `GET /workflows/{id}/runs/{run}` shows every step; a job naming a `workflow_id` starts one on its schedule. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`; `?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/heartbeats`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting — see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back to. `/workflows` holds authored workflow definitions — typed steps wired port to port — and answers each save with the ports and problems the editor draws, conditional on `If-Match`; `POST /workflows/{id}/runs` runs one durably — each agent step a child durable run on its own thread, tool steps through their manifest's governed tools, approval steps through `/approvals` — and `GET /workflows/{id}/runs/{run}` shows every step; a job naming a `workflow_id` starts one on its schedule. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`; `?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
 
 Python client (**experimental**): the `felix-client` package — `from felix_client import
 FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `workspace_edited`, `fork`, `rewind`,
@@ -906,6 +906,15 @@ Storage and execution:
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to
   `FELIX_PUSH_ALLOWED_HOSTS`, and a push carries the kind of wait and the thread, never the call
+- A heartbeat is a periodic check-in a person turns on for themselves: the operator writes
+  `spec.heartbeat` (what to check, a recurring `schedule`, a `model` route and `max_turns` for
+  firings, `keep_threads`; it needs `spec.notify`), and a person holding `heartbeats:write` turns
+  theirs on or off with `PUT /heartbeats/{manifest}` (`{enabled}` and nothing else), removes it with
+  `DELETE`, or fires it now with `POST /heartbeats/{manifest}/run`; `GET /heartbeats`
+  (`heartbeats:read`) lists their own, with `expires_at` when the credential that enrolled it is one
+  no firing can re-check. Each firing runs as that person, unattended, from the
+  manifest's current checklist, and either answers `HEARTBEAT_OK` quietly or calls `notify` once --
+  a push to them and an entry in their heartbeat conversation. See `deploy/GOVERNANCE.md`.
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
   calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.

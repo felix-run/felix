@@ -17,7 +17,7 @@ from felix_api.errors import client_safe_message
 
 router = APIRouter(tags=["Jobs"])
 
-# Written only by `jobs/agent_tools.py:schedule_task`; never taken from a caller's payload.
+# Written only by `schedule_task` and a heartbeat's enrolment; never taken from a caller's payload.
 TRUSTED_ORIGIN_KEY = "scheduled_by"
 
 
@@ -106,7 +106,7 @@ async def _payload_to_store(
     payload = {k: v for k, v in sent.items() if k != TRUSTED_ORIGIN_KEY}
     existing = await jobs_store.get_job(settings, tenant_id, name)
     if existing is not None and writer and existing.get("created_by") == writer:
-        origin = (existing.get("payload") or {}).get(TRUSTED_ORIGIN_KEY)
+        origin = jobs_store.scheduled_by(existing)
         if origin is not None:
             payload[TRUSTED_ORIGIN_KEY] = origin
     return payload

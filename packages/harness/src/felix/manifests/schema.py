@@ -936,6 +936,65 @@ class NotifySpec(_Strict):
     approval: bool = False
 
 
+class HeartbeatSpec(_Strict):
+    """A periodic check-in each person may turn on for themselves (`PUT /heartbeats/{manifest}`,
+    `felix/jobs/heartbeat.py`): on `schedule`, the agent works through `checklist` as that person
+    and tells them, through `notify`, only when something needs them.
+
+    The operator writes all of it -- what to check, how often, on which model, how far a firing
+    may go. A person only turns it on or off; they never write its instructions, and each firing
+    reads this block afresh, so an edit here applies from the next one. A firing is unattended, so
+    a tool behind an approval is refused in it rather than waited on. Needs `spec.notify`: a
+    heartbeat speaks only through a notice. Unset, nobody can enrol.
+    """
+
+    #: When it fires, in the jobs grammar (`felix/jobs/schedule.py`), recurring only: no `at:`,
+    #: and never empty. Held to `min_interval_minutes` at its shortest gap.
+    schedule: str = Field(default="every:60m", max_length=200)
+    #: The shortest gap `schedule` may fire at. Every firing is a model run on someone's behalf.
+    min_interval_minutes: int = Field(default=30, ge=15)
+    #: What to check, as the operator's instructions to the agent. Each firing wraps it in a fixed
+    #: frame: reply `HEARTBEAT_OK` when nothing needs the person, else call `notify` once.
+    checklist: str = Field(min_length=1, max_length=4000)
+    #: A model route for firings only (`FELIX_MODEL_ROUTES`); unset runs on `spec.model.id`.
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    #: Steps one firing may take: its `recursion_limit` (and `max_turns` for a multi-agent pattern).
+    max_turns: int = Field(default=6, ge=1, le=20)
+    #: Firing conversations kept per person; older ones are deleted with their events after each
+    #: firing. The person's own heartbeat conversation, where notices land, is never among them.
+    keep_threads: int = Field(default=20, ge=1, le=200)
+
+    @field_validator("checklist")
+    @classmethod
+    def _checklist_says_something(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("heartbeat.checklist must say what to check")
+        return v
+
+    @model_validator(mode="after")
+    def _schedule_recurs_no_faster_than_the_floor(self) -> HeartbeatSpec:
+        import time
+
+        from felix.jobs.schedule import ScheduleError, parse_schedule, shortest_gap_ms
+
+        try:
+            parsed = parse_schedule(self.schedule)
+        except ScheduleError as exc:
+            raise ValueError(f"heartbeat.{exc}") from None
+        if parsed.one_shot:
+            raise ValueError("heartbeat.schedule must recur: at: fires once")
+        now = int(time.time() * 1000)
+        gap = shortest_gap_ms(parsed, now)
+        if gap is None:
+            raise ValueError("heartbeat.schedule must recur: give an interval or a cron expression")
+        if gap < self.min_interval_minutes * 60_000:
+            raise ValueError(
+                f"heartbeat.schedule fires every {max(gap // 60_000, 1)} minute(s) at its shortest; "
+                f"a heartbeat may fire at most once every {self.min_interval_minutes} minutes"
+            )
+        return self
+
+
 class DeciderSpec(_Strict):
     """A decision model — one that answers typed questions (choose one, score, true/false)
     with calibrated probabilities instead of generating text. Off unless `id` is set.
@@ -1446,6 +1505,8 @@ class Spec(_Strict):
     scheduling: SchedulingSpec | None = None
     # Binds `notify`. Unset binds nothing.
     notify: NotifySpec | None = None
+    # A check-in each person may turn on for themselves (`/heartbeats`). Needs `notify`.
+    heartbeat: HeartbeatSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
     output_styles: OutputStylesSpec = Field(default_factory=OutputStylesSpec)
     network: NetworkSpec = Field(default_factory=NetworkSpec)
@@ -1562,6 +1623,14 @@ class Spec(_Strict):
                 "personal_skills: write needs skill_authoring.enabled: it is where the agent's "
                 "create_skill and update_skill save"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _a_heartbeat_speaks_through_notify(self) -> Spec:
+        """A firing tells its person something only through `notify`; without it a heartbeat
+        would run on someone's behalf and have no way to say what it found."""
+        if self.heartbeat is not None and self.notify is None:
+            raise ValueError("heartbeat needs spec.notify: a heartbeat speaks only through a notice")
         return self
 
     @model_validator(mode="after")

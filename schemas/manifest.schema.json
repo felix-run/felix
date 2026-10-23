@@ -895,6 +895,63 @@
       "title": "Guardrails",
       "type": "object"
     },
+    "HeartbeatSpec": {
+      "additionalProperties": false,
+      "description": "A periodic check-in each person may turn on for themselves (`PUT /heartbeats/{manifest}`,\n`felix/jobs/heartbeat.py`): on `schedule`, the agent works through `checklist` as that person\nand tells them, through `notify`, only when something needs them.\n\nThe operator writes all of it -- what to check, how often, on which model, how far a firing\nmay go. A person only turns it on or off; they never write its instructions, and each firing\nreads this block afresh, so an edit here applies from the next one. A firing is unattended, so\na tool behind an approval is refused in it rather than waited on. Needs `spec.notify`: a\nheartbeat speaks only through a notice. Unset, nobody can enrol.",
+      "properties": {
+        "schedule": {
+          "default": "every:60m",
+          "maxLength": 200,
+          "title": "Schedule",
+          "type": "string"
+        },
+        "min_interval_minutes": {
+          "default": 30,
+          "minimum": 15,
+          "title": "Min Interval Minutes",
+          "type": "integer"
+        },
+        "checklist": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Checklist",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "max_turns": {
+          "default": 6,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Turns",
+          "type": "integer"
+        },
+        "keep_threads": {
+          "default": 20,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Keep Threads",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "checklist"
+      ],
+      "title": "HeartbeatSpec",
+      "type": "object"
+    },
     "HookRule": {
       "additionalProperties": false,
       "description": "One manifest hook: on `event`, ask the operator-registered `endpoint` (an id from\n`FELIX_WEBHOOK_ENDPOINTS`, never a URL) with a signed request, and act on its answer.",
@@ -2627,6 +2684,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/NotifySpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "heartbeat": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeartbeatSpec"
             },
             {
               "type": "null"

@@ -191,7 +191,7 @@ compiling manifest as the caller (`created_by` = `acting_for`, `created_auth` = 
 `jobs:write`, a shared subject (a sub-less API key's `api_key`, a trigger run's `trigger:<id>`, a
 machine actor acting for no one; a plugin authenticator handing out a shared subject is the operator's
 problem, since the list cannot know it),
-scheduled work (`AuthContext.scheduled`: set by `_job_auth`, recorded by `auth/recorded.py`, so a
+scheduled work (`AuthContext.scheduled`: set by `job_auth`, recorded by `auth/recorded.py`, so a
 workflow a job starts carries it into its agent steps), the `max_tasks` cap, a recurring
 gap under `min_interval_minutes` (a cron's next 200 firings walked), an `at:` over 366 days out. The
 same checks (`_AgentTasks.admit`) run in `schedule_task`'s approval preview, so a refused call is denied
@@ -202,6 +202,31 @@ no mode waives an approval on it, whichever rule asked. A task records its write
 re-reading each before the delete; a disabled task holds no place under `max_tasks`. With
 `approval: true` the builder adds `scheduling_approval_rule` unless a manifest rule without `when_args`
 names `schedule_task` literally (a glob does not count).
+
+**Heartbeats** (`jobs/heartbeat.py`, `routes/heartbeats.py`). `spec.heartbeat` is the operator's;
+`PUT /heartbeats/{manifest}` (`heartbeats:write`, `require_person`) resolves the manifest (404), runs
+its inbound auth as the firing's caller (`scheduler.job_auth` over the would-be job) and only then
+answers `no_heartbeat` (422), so a refused caller learns nothing. `enrol` writes job
+`hb-<manifest>-<sha256(person)[:12]>` as the person (`creator_auth`; `expires_at` = the token's `exp`
+only when `scheduler.rechecks_at_firing` says no firing can re-check the credential -- not an API
+key, not a configured Felix sign-in), `first_run_at` the next slot, payload `{"scheduled_by": {"tool":
+"heartbeat", "manifest", "thread_id"}, "fresh_thread": true}` -- the thread the person's conversation
+`{tenant}:hb-<16 hex>`, made by `thread_state.claim_thread` (titled, kept across re-enrols while it
+exists). `jobs_store.scheduled_by(job, tool)` is the one reader of that record (it must name the
+job's own manifest), used by heartbeats, `schedule_task`'s listing, `is_fired_task`, the firing's
+`SCHEDULED_FROM_EXTRA` and `PUT /jobs`' carry-forward. `_invoke_job_manifest` asks
+`hb.begin_firing` for a `Firing` (None for a plain job): its `prompt` is the *current* checklist,
+never the payload; `refusal` when the manifest dropped its heartbeat (disabled, `NO_HEARTBEAT`) --
+and `hb.manifest_missing` disables one whose manifest no longer resolves (`NO_MANIFEST`); `adjust`
+applies `model` and the lower of `max_turns` and the manifest's own bounds after
+`prepare_tenant_invoke`; `after` prunes; `result` records `quiet` (`extras[SENT_THIS_RUN_EXTRA] == 0`)
+and the answer cut to 500. `keep_schedule_current` moves a drifted schedule with
+`jobs_store.set_schedule` (one conditional UPDATE, never an upsert). Firing-thread retention is
+`prune_firing_threads` over `session/prune.py` (`threads_under`, `delete_threads` -- the one
+definition of deleting a thread whole, which retention's memory arm also uses; contract in
+`tests/conformance/test_session_prune.py`), keeping the newest `keep_threads` firing-minted threads
+and never the conversation. An expired enrolment takes `fire_job`'s credential-expired path with
+`hb.CREDENTIAL_EXPIRED`. e2e: `tests/e2e/test_heartbeat.py`.
 
 ## Workflows
 
