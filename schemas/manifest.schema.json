@@ -3053,6 +3053,16 @@
           "default": true,
           "title": "Approval",
           "type": "boolean"
+        },
+        "run_approval": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "title": "Run Approval",
+          "type": "string"
         }
       },
       "title": "WorkflowAuthoringSpec",
