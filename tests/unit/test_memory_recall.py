@@ -12,6 +12,7 @@ from felix.config import Settings
 from felix.memory import store as memory_store
 from felix.memory.embedder import NullEmbedder, build_embedder
 from felix.memory.recall import RRF_K, recall, rrf_fuse
+from felix.memory.store import MemoryFilter, MemoryPool
 
 TENANT = "t-recall"
 MANIFEST = "m"
@@ -27,7 +28,9 @@ def _settings(**kw: object) -> Settings:
 
 
 async def _put(content: str, **kw: object):
-    return await memory_store.put_memory(_settings(), TENANT, content=content, manifest_id=MANIFEST, **kw)
+    return await memory_store.put_memory(
+        _settings(), TENANT, pool=MemoryPool.agent(MANIFEST), content=content, **kw
+    )
 
 
 # --- fusion ---------------------------------------------------------------------
@@ -63,7 +66,7 @@ async def test_recall_finds_by_content_not_recency() -> None:
     await _put("The deployment runbook lives in the ops repository.")
     await _put("Lunch was pleasant.")  # newer, irrelevant
 
-    hits = await recall(_settings(), TENANT, "where is the runbook", manifest_id=MANIFEST)
+    hits = await recall(_settings(), TENANT, "where is the runbook", scope=MemoryFilter(manifest_id=MANIFEST))
     assert hits
     assert "runbook" in hits[0].content
 
@@ -71,7 +74,7 @@ async def test_recall_finds_by_content_not_recency() -> None:
 async def test_topic_key_channel_finds_a_dotted_identifier() -> None:
     """ "what timezone" has no literal overlap with the content, only the topic key."""
     await _put("CET.", topic_key="user.timezone")
-    hits = await recall(_settings(), TENANT, "what timezone", manifest_id=MANIFEST)
+    hits = await recall(_settings(), TENANT, "what timezone", scope=MemoryFilter(manifest_id=MANIFEST))
     assert hits
     assert hits[0].topic_key == "user.timezone"
     assert "topic" in hits[0].channels
@@ -84,21 +87,23 @@ async def test_superseded_memories_are_not_recalled() -> None:
         "Timezone is CET.", topic_key="user.timezone", origin_seq=2, metadata={"source": "management_api"}
     )
 
-    hits = await recall(_settings(), TENANT, "timezone", manifest_id=MANIFEST)
+    hits = await recall(_settings(), TENANT, "timezone", scope=MemoryFilter(manifest_id=MANIFEST))
     assert [h.content for h in hits] == ["Timezone is CET."]
 
 
 async def test_forgotten_memories_are_not_recalled() -> None:
     row = await _put("Please forget the staging password hint.")
     await memory_store.forget(_settings(), TENANT, row["id"])
-    assert await recall(_settings(), TENANT, "staging password", manifest_id=MANIFEST) == []
+    assert (
+        await recall(_settings(), TENANT, "staging password", scope=MemoryFilter(manifest_id=MANIFEST)) == []
+    )
 
 
 async def test_recall_is_scoped_to_the_manifest() -> None:
     await memory_store.put_memory(
-        _settings(), TENANT, content="Agent A knows the runbook.", manifest_id="agent-a"
+        _settings(), TENANT, pool=MemoryPool.agent("agent-a"), content="Agent A knows the runbook."
     )
-    hits = await recall(_settings(), TENANT, "runbook", manifest_id="agent-b")
+    hits = await recall(_settings(), TENANT, "runbook", scope=MemoryFilter(manifest_id="agent-b"))
     assert hits == []
 
 
@@ -106,25 +111,29 @@ async def test_kind_filter() -> None:
     await _put("A stable fact about the runbook.", kind="fact")
     await _put("A procedure about the runbook.", kind="procedure")
 
-    hits = await recall(_settings(), TENANT, "runbook", manifest_id=MANIFEST, kinds=["procedure"])
+    hits = await recall(
+        _settings(), TENANT, "runbook", kinds=["procedure"], scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert [h.kind for h in hits] == ["procedure"]
 
 
 async def test_empty_query_returns_nothing() -> None:
     await _put("Something.")
-    assert await recall(_settings(), TENANT, "   ", manifest_id=MANIFEST) == []
+    assert await recall(_settings(), TENANT, "   ", scope=MemoryFilter(manifest_id=MANIFEST)) == []
 
 
 async def test_limit_is_respected() -> None:
     for i in range(10):
         await _put(f"Runbook note number {i}.")
-    hits = await recall(_settings(), TENANT, "runbook note", manifest_id=MANIFEST, limit=3)
+    hits = await recall(
+        _settings(), TENANT, "runbook note", limit=3, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert len(hits) == 3
 
 
 async def test_hits_report_which_channels_found_them() -> None:
     await _put("CET is the timezone.", topic_key="user.timezone")
-    hits = await recall(_settings(), TENANT, "timezone", manifest_id=MANIFEST)
+    hits = await recall(_settings(), TENANT, "timezone", scope=MemoryFilter(manifest_id=MANIFEST))
     assert set(hits[0].channels) >= {"fts", "topic"}
 
 
@@ -134,14 +143,14 @@ async def test_hits_report_which_channels_found_them() -> None:
 async def test_kind_weighting_breaks_a_tie_toward_facts() -> None:
     await _put("The runbook matters.", kind="event")
     await _put("The runbook matters too.", kind="fact")
-    hits = await recall(_settings(), TENANT, "runbook matters", manifest_id=MANIFEST)
+    hits = await recall(_settings(), TENANT, "runbook matters", scope=MemoryFilter(manifest_id=MANIFEST))
     assert hits[0].kind == "fact"
 
 
 async def test_importance_lifts_an_otherwise_equal_memory() -> None:
     await _put("The runbook is here.", importance=0.1)
     await _put("The runbook is there.", importance=1.0)
-    hits = await recall(_settings(), TENANT, "runbook", manifest_id=MANIFEST)
+    hits = await recall(_settings(), TENANT, "runbook", scope=MemoryFilter(manifest_id=MANIFEST))
     assert hits[0].importance == 1.0
 
 
@@ -155,7 +164,9 @@ async def test_recall_works_with_no_embedder_at_all() -> None:
     assert embedder.enabled is False
 
     await _put("The deployment runbook lives in the ops repository.")
-    hits = await recall(_settings(), TENANT, "runbook", manifest_id=MANIFEST, embedder=embedder)
+    hits = await recall(
+        _settings(), TENANT, "runbook", embedder=embedder, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert hits
     assert "vector" not in hits[0].channels
 
@@ -183,7 +194,7 @@ async def test_vector_channel_finds_a_paraphrase_full_text_cannot() -> None:
     await _put("The automobile is red.", embedding=vectors[0])
     await _put("The soup is cold.", embedding=vectors[1])
 
-    hits = await recall(_settings(), TENANT, "my car", manifest_id=MANIFEST, embedder=emb)
+    hits = await recall(_settings(), TENANT, "my car", embedder=emb, scope=MemoryFilter(manifest_id=MANIFEST))
     assert hits
     assert "automobile" in hits[0].content
     assert "vector" in hits[0].channels
@@ -198,7 +209,9 @@ async def test_a_failing_embedder_loses_a_channel_not_the_turn() -> None:
             raise RuntimeError("embedding service is down")
 
     await _put("The deployment runbook lives in the ops repository.")
-    hits = await recall(_settings(), TENANT, "runbook", manifest_id=MANIFEST, embedder=_Broken())
+    hits = await recall(
+        _settings(), TENANT, "runbook", embedder=_Broken(), scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert hits, "a dead embedding endpoint must not take out full-text recall"
     assert "vector" not in hits[0].channels
 

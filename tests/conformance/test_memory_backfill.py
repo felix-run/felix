@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from felix.memory import backfill
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryPool
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=True)
@@ -86,7 +87,9 @@ def column_width(memory_settings: Any, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _put(settings: Any, content: str, *, tenant: str = TENANT, **kw: Any) -> dict[str, Any]:
-    return await memory_store.put_memory(settings, tenant, content=content, manifest_id=MANIFEST, **kw)
+    return await memory_store.put_memory(
+        settings, tenant, pool=MemoryPool.agent(MANIFEST), content=content, **kw
+    )
 
 
 async def _row(settings: Any, mem_id: str, *, tenant: str = TENANT) -> dict[str, Any]:

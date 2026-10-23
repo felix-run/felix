@@ -2109,6 +2109,12 @@
             "title": "Manifest Id",
             "type": "string"
           },
+          "principal": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Principal",
+            "type": "string"
+          },
           "topic_key": {
             "default": "",
             "maxLength": 200,
@@ -15263,6 +15269,25 @@
               "title": "Status",
               "type": "string"
             }
+          },
+          {
+            "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+              "title": "Principal"
+            }
           }
         ],
         "responses": {
@@ -15295,7 +15320,7 @@
         ]
       },
       "post": {
-        "description": "Store a memory directly.\n\nThis is a prompt-injection ingress: whatever is written here is text the model\nwill later read. It is gated on `memory:write` and the content is length-bounded;\nneutralisation happens on the render path, where every source of recalled text is\ntreated the same.",
+        "description": "Store a memory directly.\n\nThis is a prompt-injection ingress: whatever is written here is text the model\nwill later read. It is gated on `memory:write` and the content is length-bounded;\nneutralisation happens on the render path, where every source of recalled text is\ntreated the same.\n\n`principal` writes that person's pool, where every agent working for them reads it; empty\nwrites the agent pool `manifest_id` names. The id follows the pool (`MemoryPool.id_for`).",
         "operationId": "write_memory_memory_post",
         "requestBody": {
           "content": {
@@ -15411,6 +15436,25 @@
               "title": "Status",
               "type": "string"
             }
+          },
+          {
+            "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+              "title": "Principal"
+            }
           }
         ],
         "responses": {
@@ -15443,7 +15487,7 @@
         ]
       },
       "post": {
-        "description": "Store a memory directly.\n\nThis is a prompt-injection ingress: whatever is written here is text the model\nwill later read. It is gated on `memory:write` and the content is length-bounded;\nneutralisation happens on the render path, where every source of recalled text is\ntreated the same.",
+        "description": "Store a memory directly.\n\nThis is a prompt-injection ingress: whatever is written here is text the model\nwill later read. It is gated on `memory:write` and the content is length-bounded;\nneutralisation happens on the render path, where every source of recalled text is\ntreated the same.\n\n`principal` writes that person's pool, where every agent working for them reads it; empty\nwrites the agent pool `manifest_id` names. The id follows the pool (`MemoryPool.id_for`).",
         "operationId": "write_memory_memory__post",
         "requestBody": {
           "content": {
@@ -15554,6 +15598,25 @@
               "description": "The thread suffix; empty for rows written outside any thread.",
               "title": "Thread Id"
             }
+          },
+          {
+            "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+              "title": "Principal"
+            }
           }
         ],
         "responses": {
@@ -15639,6 +15702,25 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this person's pool; empty for agent pools. Absent: every pool.",
+              "title": "Principal"
             }
           }
         ],

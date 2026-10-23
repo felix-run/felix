@@ -46,6 +46,10 @@ def record_caller(auth: AuthContext, *, skill_owner: bool = False) -> dict[str, 
     }
     if skill_owner:
         recorded["skill_owner"] = auth.skill_owner
+    if auth.person:
+        # Always, unlike the skill library: a job's firing writes the person's memory the way the
+        # request would have, and only the request knew the issuer the key is qualified by.
+        recorded["person"] = auth.person
     if auth.scheduled:
         # Work a scheduled firing starts stays scheduled work (`AuthContext.scheduled`).
         recorded["scheduled"] = True
@@ -105,12 +109,33 @@ def replay_caller(
         anonymous=bool(record.get("anonymous", False)),
         scheme=str(record.get("scheme") or "anonymous"),
         skill_owner=skill_owner,
+        person=_recorded_person(record, on_behalf_of),
         # Never cleared by a replay: `scheduled` here only adds it, for a job's own firing.
         scheduled=scheduled or record.get("scheduled") is True,
         # Likewise only ever added by a replay.
         trigger_run=record.get("trigger_run") is True,
         raw_claims={MANIFESTS_CLAIM: record[MANIFESTS_CLAIM]} if MANIFESTS_CLAIM in record else {},
     )
+
+
+def _recorded_person(record: Mapping[str, Any], on_behalf_of: str | None) -> str:
+    """The person key recorded beside the caller, or "" when it is absent or does not fit.
+
+    Read back from storage, so it is checked rather than trusted: it must be a well-formed key
+    whose subject is the person this replay acts for -- the recorded one, or the job's own
+    `created_by` -- or it names someone else's memory, and is dropped (the run then writes none).
+    """
+    from felix.skills.library_keys import InvalidSkillOwner, require_owner
+
+    person = record.get("person")
+    who = str(on_behalf_of if on_behalf_of is not None else record.get("principal_sub") or "")
+    if not isinstance(person, str) or not person or not who:
+        return ""
+    try:
+        require_owner(person)
+    except InvalidSkillOwner:
+        return ""
+    return person if person.partition("|")[2] == who else ""
 
 
 def is_shared_subject(subject: str) -> bool:

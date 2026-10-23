@@ -24,6 +24,7 @@ from felix.auth.context import (
 )
 from felix.auth.github import AUTH_METHODS_PATH
 from felix.auth.jwt import parse_verifiers, verify_jwt
+from felix.auth.persons import caller_person
 from felix.config import Settings, get_settings
 from felix.context import AuthContext as CtxAuth
 from felix.context import LimitState, RequestContext, async_run_with_context
@@ -361,6 +362,9 @@ class AuthMiddleware:
             raw_claims=auth.raw_claims,
             scheme=getattr(auth.principal, "scheme", "anonymous"),
             skill_owner=caller_skill_owner(auth),
+            person=caller_person(
+                issuer=auth.principal.issuer, subject=auth.principal.subject, anonymous=auth.anonymous
+            ),
         )
         req_ctx = RequestContext(
             settings=settings,

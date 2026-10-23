@@ -52,6 +52,7 @@ PASSED_THROUGH = {
     "FELIX_MEMORY_EMBEDDER": "memory_embedder",
     "FELIX_MEMORY_EMBEDDING_DIM": "memory_embedding_dim",
     "FELIX_MEMORY_TASK_RETENTION_DAYS": "memory_task_retention_days",
+    "FELIX_PRINCIPAL_ALIASES": "principal_aliases",
     # Not FELIX_MEMORY_EMBEDDING_MODEL: Compose passes it empty on purpose, so a hosted
     # embedder falls through to its provider's model rather than receiving the Settings
     # default, a local model name. `test_hosted_providers.py` pins that fall-through.

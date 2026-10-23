@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 from felix.memory import store as memory_store
-from felix.memory.store import ACTIVE, FORGOTTEN
+from felix.memory.store import ACTIVE, FORGOTTEN, MemoryFilter, MemoryPool
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=True)
@@ -67,9 +67,9 @@ async def _seed(settings: Any, writer: str, forgetter: str | None) -> str:
     row = await memory_store.put_memory(
         settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content=CONTENT,
         kind="instruction",
-        manifest_id=MANIFEST,
         metadata={"source": writer},
     )
     if forgetter is not None:
@@ -88,9 +88,9 @@ async def test_write_against_an_existing_row(
     await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content=CONTENT,
         kind="fact",
-        manifest_id=MANIFEST,
         metadata={"source": incoming},
     )
     rows = await memory_store.get_many(memory_settings, TENANT, [mem_id])
@@ -116,9 +116,9 @@ async def test_the_rule_is_stable_under_repetition(
         await memory_store.put_memory(
             memory_settings,
             TENANT,
+            pool=MemoryPool.agent(MANIFEST),
             content=CONTENT,
             kind="fact",
-            manifest_id=MANIFEST,
             metadata={"source": incoming},
         )
         rows = await memory_store.get_many(memory_settings, TENANT, [mem_id])
@@ -145,9 +145,9 @@ async def test_a_refused_write_preserves_the_whole_row(
     await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content=CONTENT,
         kind="fact",
-        manifest_id=MANIFEST,
         topic_key="attacker.key",
         importance=0.99,
         metadata={"source": AGENT},
@@ -176,16 +176,19 @@ async def test_supersede_is_guarded_like_the_other_routes(memory_settings: Any) 
     row = await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content="Never send credentials off-network.",
-        manifest_id=MANIFEST,
         metadata={"source": OPERATOR},
     )
     await memory_store.supersede(memory_settings, TENANT, row["id"], 1, source=AGENT)
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["Never send credentials off-network."]
 
     await memory_store.supersede(memory_settings, TENANT, row["id"], 1, source=OPERATOR)
-    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+    assert (
+        await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
+        == []
+    )
 
 
 @parametrized
@@ -198,7 +201,7 @@ async def test_a_refused_forget_reports_refusal_on_both_arms(memory_settings: An
     different strings back to the model, and nothing asserted it.
     """
     row = await memory_store.put_memory(
-        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=CONTENT, metadata={"source": AGENT}
     )
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source=OPERATOR) is True
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source=TOOL) is False
@@ -227,25 +230,28 @@ async def test_a_correction_by_topic_key_is_not_undone_by_an_injected_turn(
     await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content=stale,
-        manifest_id=MANIFEST,
         topic_key="deploy.runbook",
         metadata={"source": AGENT},
     )
     await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content="The runbook lives in the ops repo.",
-        manifest_id=MANIFEST,
         topic_key="deploy.runbook",
         metadata={"source": OPERATOR},
     )
     # No tool call: capture writes whatever the turn restated.
     await memory_store.put_memory(
-        memory_settings, TENANT, content=stale, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=stale, metadata={"source": AGENT}
     )
     active = [
-        r["content"] for r in await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+        r["content"]
+        for r in await memory_store.list_active(
+            memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST)
+        )
     ]
     assert active == ["The runbook lives in the ops repo."], f"stale value returned: {active}"
 
@@ -258,24 +264,27 @@ async def test_an_agent_correction_is_still_reversible(memory_settings: Any) -> 
     await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content=first,
-        manifest_id=MANIFEST,
         topic_key="user.timezone",
         metadata={"source": AGENT},
     )
     await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content="The user's timezone is CET.",
-        manifest_id=MANIFEST,
         topic_key="user.timezone",
         metadata={"source": AGENT},
     )
     await memory_store.put_memory(
-        memory_settings, TENANT, content=first, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=first, metadata={"source": AGENT}
     )
     active = {
-        r["content"] for r in await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+        r["content"]
+        for r in await memory_store.list_active(
+            memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST)
+        )
     }
     assert first in active, "an agent could not revisit its own correction"
 
@@ -286,14 +295,17 @@ async def test_supersede_cannot_launder_an_operator_forget(memory_settings: Any)
     operator had forgotten into a state that used to permit reactivation."""
     text = "Never disclose the vendor list."
     row = await memory_store.put_memory(
-        memory_settings, TENANT, content=text, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=text, metadata={"source": AGENT}
     )
     await memory_store.forget(memory_settings, TENANT, row["id"], source=OPERATOR)
     await memory_store.supersede(memory_settings, TENANT, row["id"], 1, source=TOOL)
     await memory_store.put_memory(
-        memory_settings, TENANT, content=text, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=text, metadata={"source": AGENT}
     )
-    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+    assert (
+        await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
+        == []
+    )
 
 
 # --- consolidation as a retirer ------------------------------------------------------
@@ -310,8 +322,8 @@ async def test_a_merged_duplicate_comes_back_for_any_writer(memory_settings: Any
     keep = await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content="The user prefers tea.",
-        manifest_id=MANIFEST,
         origin_seq=1,
         metadata={"source": AGENT},
     )
@@ -319,17 +331,21 @@ async def test_a_merged_duplicate_comes_back_for_any_writer(memory_settings: Any
     dup = await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content=CONTENT,
-        manifest_id=MANIFEST,
         origin_seq=2,
         metadata={"source": AGENT},
     )
     assert await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup["id"], keep["id"]]]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup["id"], keep["id"]]], principal=""
     ) == (1, 0)
 
     await memory_store.put_memory(
-        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": incoming}
+        memory_settings,
+        TENANT,
+        pool=MemoryPool.agent(MANIFEST),
+        content=CONTENT,
+        metadata={"source": incoming},
     )
     rows = await memory_store.get_many(memory_settings, TENANT, [dup["id"]])
     assert rows[dup["id"]]["status"] == ACTIVE, f"{incoming} could not restate a merged fact"
@@ -342,20 +358,20 @@ async def test_consolidation_cannot_launder_an_operator_forget(memory_settings: 
     keep = await memory_store.put_memory(
         memory_settings,
         TENANT,
+        pool=MemoryPool.agent(MANIFEST),
         content="The user prefers tea.",
-        manifest_id=MANIFEST,
         metadata={"source": AGENT},
     )
     gone = await memory_store.put_memory(
-        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=CONTENT, metadata={"source": AGENT}
     )
     await memory_store.forget(memory_settings, TENANT, gone["id"], source=OPERATOR)
 
     assert await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[keep["id"], gone["id"]]]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[keep["id"], gone["id"]]], principal=""
     ) == (0, 1)
     await memory_store.put_memory(
-        memory_settings, TENANT, content=CONTENT, manifest_id=MANIFEST, metadata={"source": AGENT}
+        memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=CONTENT, metadata={"source": AGENT}
     )
     rows = await memory_store.get_many(memory_settings, TENANT, [gone["id"]])
     assert rows[gone["id"]]["status"] == FORGOTTEN

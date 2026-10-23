@@ -92,12 +92,16 @@ async def recall(
     tenant_id: str,
     query: str,
     *,
-    manifest_id: str = "",
+    scope: memory_store.ReadScope,
     limit: int = 8,
     kinds: list[str] | None = None,
     embedder: Any | None = None,
 ) -> list[RecallHit]:
-    """The most relevant active memories for ``query``."""
+    """The most relevant active memories for ``query``.
+
+    Scoped as `memory_store.list_active` is: an agent passes its pool and sees what that pool
+    sees; the operator's search passes a `MemoryFilter`.
+    """
     query = (query or "").strip()
     if not query:
         return []
@@ -112,7 +116,7 @@ async def recall(
             settings,
             tenant_id,
             query,
-            manifest_id=manifest_id,
+            scope=scope,
             per_channel=per_channel,
             kinds=kinds,
             embedder=embedder,
@@ -122,7 +126,7 @@ async def recall(
             settings,
             tenant_id,
             query,
-            manifest_id=manifest_id,
+            scope=scope,
             per_channel=per_channel,
             kinds=kinds,
             embedder=embedder,
@@ -240,7 +244,7 @@ async def _channels_in_memory(
     tenant_id: str,
     query: str,
     *,
-    manifest_id: str,
+    scope: memory_store.ReadScope,
     per_channel: int,
     kinds: list[str] | None,
     embedder: Any | None,
@@ -255,7 +259,7 @@ async def _channels_in_memory(
         for (t, _), row in memory_store._memory_rows.items()
         if t == tenant_id
         and str(row.get("status") or memory_store.ACTIVE) == memory_store.ACTIVE
-        and (not manifest_id or row.get("manifest_id") == manifest_id)
+        and memory_store._in_scope(scope, row)
         # `kinds` here rather than only in `_rank`: the channel is cut to `per_channel`
         # *before* fusion, so filtering afterwards could discard every matching row and
         # return nothing while the memory is stored and active. Reproduced with twenty
@@ -316,7 +320,7 @@ async def _channels_in_memory(
 _FTS_SQL = """
     SELECT id FROM memory_vectors
      WHERE tenant_id = :tenant AND status = 'active'
-       AND (:manifest = '' OR manifest_id = :manifest)
+       AND {scope}
        AND content_tsv @@ to_tsquery('english', :tsq)
        AND (cardinality(CAST(:kinds AS text[])) = 0 OR kind = ANY(CAST(:kinds AS text[])))
      ORDER BY ts_rank_cd(content_tsv, to_tsquery('english', :tsq)) DESC,
@@ -327,7 +331,7 @@ _FTS_SQL = """
 _TOPIC_SQL = """
     SELECT id FROM memory_vectors
      WHERE tenant_id = :tenant AND status = 'active' AND topic_key IS NOT NULL
-       AND (:manifest = '' OR manifest_id = :manifest)
+       AND {scope}
        AND topic_tsv @@ to_tsquery('simple', :tsq)
        AND (cardinality(CAST(:kinds AS text[])) = 0 OR kind = ANY(CAST(:kinds AS text[])))
      ORDER BY ts_rank(topic_tsv, to_tsquery('simple', :tsq)) DESC,
@@ -349,7 +353,7 @@ def _tsquery_or(query: str) -> str | None:
 _VECTOR_SQL = """
     SELECT id FROM memory_vectors
      WHERE tenant_id = :tenant AND status = 'active' AND embedding IS NOT NULL
-       AND (:manifest = '' OR manifest_id = :manifest)
+       AND {scope}
        AND (cardinality(CAST(:kinds AS text[])) = 0 OR kind = ANY(CAST(:kinds AS text[])))
      ORDER BY embedding <=> CAST(:vec AS vector),
               importance DESC, created_at DESC, id COLLATE "C" DESC
@@ -362,7 +366,7 @@ async def _channels_in_postgres(
     tenant_id: str,
     query: str,
     *,
-    manifest_id: str,
+    scope: memory_store.ReadScope,
     per_channel: int,
     kinds: list[str] | None,
     embedder: Any | None,
@@ -380,9 +384,12 @@ async def _channels_in_postgres(
     # And a `None` here would make the predicate NULL for every row, so every channel would
     # return nothing: the silent-empty failure this filter was moved here to remove, back
     # again from the other direction.
+    # Which rows a channel may return: the store's own fixed fragment for this scope, so the
+    # pool predicate has one SQL spelling for `text()` (`memory_store.scope_fragment`).
+    clause, scope_params = memory_store.scope_fragment(scope)
     params = {
+        **scope_params,
         "tenant": tenant_id,
-        "manifest": manifest_id,
         "tsq": tsq,
         "lim": per_channel,
         "kinds": list(kinds or []),
@@ -391,11 +398,11 @@ async def _channels_in_postgres(
 
     statements: list[tuple[str, str, dict[str, Any]]] = []
     if tsq is not None:
-        statements.append(("fts", _FTS_SQL, params))
-        statements.append(("topic", _TOPIC_SQL, params))
+        statements.append(("fts", _FTS_SQL.format(scope=clause), params))
+        statements.append(("topic", _TOPIC_SQL.format(scope=clause), params))
     if qvec is not None:
         literal = "[" + ",".join(repr(float(v)) for v in qvec) + "]"
-        statements.append(("vector", _VECTOR_SQL, {**params, "vec": literal}))
+        statements.append(("vector", _VECTOR_SQL.format(scope=clause), {**params, "vec": literal}))
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:

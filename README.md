@@ -148,9 +148,13 @@ curl -s http://localhost:8080/v1/chat/completions \
 
 `quick` is stateless. For an assistant that remembers across sessions, send the same request to
 `assistant`: it captures durable facts from each turn, shows them to the next session, and has
-`recall` / `remember` / `forget` tools (`forget` waits for an approval). Memory is shared across a
-tenant rather than per caller, so `assistant` refuses anonymous requests — under `make dev`
-(`FELIX_AUTH_MODE=none`) it answers 401; use the Compose stack and `$FELIX_KEY`.
+`recall` / `remember` / `forget` tools (`forget` waits for an approval). Memory is per person: each
+caller (`issuer|subject` — the dev key is `api_key|local-dev`) has a pool of their own, shared by
+every agent that works for them, and also sees what an operator wrote for the agent through
+`/memory` (`spec.memory.scope: agent` keeps an agent to its own pool instead). A request that
+names no person — anonymous, or a key with no `sub` — remembers nothing, so `assistant` refuses
+anonymous requests — under `make dev` (`FELIX_AUTH_MODE=none`) it answers 401; use the Compose
+stack and `$FELIX_KEY`.
 
 ### Local development without Compose
 
@@ -308,6 +312,17 @@ zero cloud SDKs.
   `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` caps the content kept, 256 MiB;
   `FELIX_FILE_CHECKPOINTS=false` records none); a manifest's `governance.retention_days` shortens
   the audit TTL for its own rows
+- Memory per person: a person is `issuer|subject`, so an API key's `sub` and a sign-in's subject
+  are different people even when the strings match. `FELIX_PRINCIPAL_ALIASES` (empty) maps one
+  person to the person they belong to, as JSON (`{"google:123":"github:70701"}`; a value with no
+  `|` is Felix's own sign-in issuer, `felix-self`), so one person signing in two ways keeps one
+  memory; one hop, and a target that is itself an alias, or a shared credential on either side,
+  refuses the boot. Memory alone reads it. A person's agents see only *operator-written* rows of
+  an agent's own pool, so what an agent learnt before people had pools reaches no one until
+  `felix memory assign --tenant T --manifest M --to PERSON [--include-operator] [--dry-run]`
+  moves it into the person's; a row they already hold is merged, not overwritten, and a re-run
+  moves nothing. Isolation between people is the memory store's filter inside the tenant;
+  `memory:read`/`memory:write` span everyone (see [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md))
 - Approvals: `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` (false) refuses an approval's answer from the
   person whose run asked for it, so a second person (or an `admin`) must decide; see
   [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
@@ -562,7 +577,8 @@ and `GET /workflows/{id}/runs/{run}` shows every step; a job naming a `workflow_
 its schedule. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels
 (`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number
 orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`;
-`?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across
+`?status=forgotten` lists what was forgotten) long-term memories; `?principal=` narrows a read to
+one person's pool (empty for agent pools), and a write's `principal` puts it in that person's — an agent that remembers across
 sessions otherwise accumulates a store nobody can inspect.
 
 Python client (**experimental**): the `felix-client` package —

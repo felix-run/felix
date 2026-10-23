@@ -5,8 +5,9 @@ Two passes, both run by the worker's `consolidate_memory` cron.
 **Exact-hash dedupe** (`consolidate_pools`) — every pool, no model, cheap and largely
 vestigial since ids became content hashes; kept because it is harmless.
 
-**Duplicate merging** (`consolidate_all_pools`) — only for a `(tenant, manifest)` pool whose
-governing manifest sets `spec.memory.consolidate.enabled`. The `consolidate.model` route is
+**Duplicate merging** (`consolidate_all_pools`) — only for a `(tenant, manifest, principal)` pool
+(`memory.store.ConsolidationSlice`: one agent's own rows, or the rows it wrote into one person's
+pool) whose governing manifest sets `spec.memory.consolidate.enabled`. The `consolidate.model` route is
 shown the pool's newest agent-written facts, fenced as untrusted data, and asked which of
 them state the same thing. It answers with **groups of ids only**; the store, not the model,
 picks which member of a group survives — the oldest — and supersedes the rest by it. No memory
@@ -180,8 +181,8 @@ MAX_POOLS_PER_TICK = 50
 # Per worker process, deliberately: no migration, and the cost of forgetting is bounded --
 # a restarted worker asks each enabled pool once more, then settles again. Two overlapping
 # ticks are data-safe (the store re-plans under a row lock) but may each pay for one call.
-_last_fingerprint: dict[tuple[str, str], str] = {}
-_resume_after: list[tuple[str, str]] = []
+_last_fingerprint: dict[memory_store.ConsolidationSlice, str] = {}
+_resume_after: list[memory_store.ConsolidationSlice] = []
 
 
 def reset_for_tests() -> None:
@@ -202,10 +203,10 @@ def batch_fingerprint(rows: list[dict[str, Any]], spec: Any) -> str:
 
 
 async def _shown_batch(
-    settings: Settings, tenant_id: str, manifest_id: str, spec: Any
+    settings: Settings, tenant_id: str, manifest_id: str, spec: Any, principal: str
 ) -> tuple[int, list[dict[str, Any]]]:
     eligible, rows = await memory_store.consolidation_batch(
-        settings, tenant_id, manifest_id=manifest_id, limit=int(spec.max_facts)
+        settings, tenant_id, manifest_id=manifest_id, limit=int(spec.max_facts), principal=principal
     )
     return eligible, [r for r in rows if len(r.get("content") or "") <= MAX_FACT_CHARS]
 
@@ -217,9 +218,12 @@ async def consolidate_pool(
     spec: Any,
     model: Any,
     *,
+    principal: str,
     previous: str = "",
 ) -> PoolResult:
     """One duplicate-merging pass over one pool, with `model` as the judge.
+
+    The pool is `(tenant_id, manifest_id, principal)`; `principal=""` is the agent's own rows.
 
     The caller has installed a `RequestContext` for the tenant, which is what the metering
     and the RLS binding read. `previous` is the fingerprint of this pool's last clean pass:
@@ -228,7 +232,7 @@ async def consolidate_pool(
     from felix.patterns.model import ModelChatOptions, record_model_usage
     from felix.patterns.types import ChatMessage
 
-    eligible, rows = await _shown_batch(settings, tenant_id, manifest_id, spec)
+    eligible, rows = await _shown_batch(settings, tenant_id, manifest_id, spec, principal)
     result = PoolResult(eligible=eligible)
     if eligible <= int(spec.after_facts) or len(rows) < 2:
         return result
@@ -264,14 +268,14 @@ async def consolidate_pool(
 
     groups, dropped = within_batch(groups, {r["id"] for r in rows})
     superseded, refused = await memory_store.merge_duplicates(
-        settings, tenant_id, manifest_id=manifest_id, groups=groups
+        settings, tenant_id, manifest_id=manifest_id, groups=groups, principal=principal
     )
     result.superseded = superseded
     result.rejected = dropped + refused
     # The batch as it stands *after* this pass, so a pool that just merged is not asked again
     # next tick about the rows it has already settled.
     if superseded:
-        _, rows = await _shown_batch(settings, tenant_id, manifest_id, spec)
+        _, rows = await _shown_batch(settings, tenant_id, manifest_id, spec, principal)
         fingerprint = batch_fingerprint(rows, spec)
     result.fingerprint = fingerprint
     if result.rejected:
@@ -303,7 +307,7 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
     with rls_bypass():
         pools = await memory_store.list_memory_pools(settings)
 
-    pools = [p for p in pools if p[1]]
+    pools = [p for p in pools if p.manifest_id]
     # Resume after the last pool the previous tick reached, wrapping, so the cap defers the
     # *rest* rather than always the same tail.
     if _resume_after:
@@ -320,7 +324,8 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
         "failed": 0,
         "unresolved": 0,
     }
-    for tenant_id, manifest_id in pools:
+    for pool in pools:
+        tenant_id, manifest_id = pool.tenant_id, pool.manifest_id
         if totals["ran"] + totals["failed"] >= MAX_POOLS_PER_TICK:
             totals["deferred"] += 1
             continue
@@ -345,11 +350,12 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
                     manifest_id,
                     spec,
                     model,
-                    previous=_last_fingerprint.get((tenant_id, manifest_id), ""),
+                    principal=pool.principal,
+                    previous=_last_fingerprint.get(pool, ""),
                 )
         except Exception:
             totals["failed"] += 1
-            _resume_after[:] = [(tenant_id, manifest_id)]
+            _resume_after[:] = [pool]
             logger.exception(
                 "memory consolidation failed tenant=%s manifest=%s",
                 loggable(tenant_id, limit=64),
@@ -357,11 +363,11 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
             )
             continue
         if result.fingerprint:
-            _last_fingerprint[(tenant_id, manifest_id)] = result.fingerprint
+            _last_fingerprint[pool] = result.fingerprint
         else:
-            _last_fingerprint.pop((tenant_id, manifest_id), None)
+            _last_fingerprint.pop(pool, None)
         if result.ran:
-            _resume_after[:] = [(tenant_id, manifest_id)]
+            _resume_after[:] = [pool]
         totals["ran"] += int(result.ran)
         totals["skipped"] += int(result.skipped)
         totals["superseded"] += result.superseded

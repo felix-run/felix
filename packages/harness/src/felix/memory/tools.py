@@ -128,27 +128,43 @@ class _Binding:
 
     settings: Settings
     tenant_id: str
-    manifest_id: str
+    # Whose memory these tools serve (`memory.scope.memory_pool`): a person's, or the agent's.
+    pool: memory_store.MemoryPool
     default_limit: int
     thread_id: str
 
 
+# What `remember` answers when the store refuses the write. Fixed text: the model reads it, and it
+# must say the memory was not kept, not that it was.
+_NOT_STORED = {
+    "read_only": (
+        "not stored: this conversation is not tied to a person, so there is no one to remember it for"
+    ),
+    "other_pool": "not stored: that memory is held by another pool and cannot be written from here",
+}
+
+
 def _remember_tool(b: _Binding) -> Tool:
     async def handler(args: RememberArgs, _ctx: ToolInvocationCtx | None = None) -> str:
+        if not b.pool.writable:
+            return _NOT_STORED["read_only"]
         thread_id, origin_seq = await _provenance(b.settings, tenant_id=b.tenant_id)
-        row = await memory_store.put_memory(
-            b.settings,
-            b.tenant_id,
-            content=args.content,
-            kind=args.kind if args.kind in _KINDS else "fact",
-            manifest_id=b.manifest_id,
-            topic_key=args.topic_key or None,
-            importance=args.importance,
-            thread_id=thread_id or b.thread_id,
-            origin_seq=origin_seq,
-            metadata={"source": "remember_tool"},
-        )
-        note_remembered(b.manifest_id, row.get("topic_key"))
+        try:
+            row = await memory_store.put_memory(
+                b.settings,
+                b.tenant_id,
+                pool=b.pool,
+                content=args.content,
+                kind=args.kind if args.kind in _KINDS else "fact",
+                topic_key=args.topic_key or None,
+                importance=args.importance,
+                thread_id=thread_id or b.thread_id,
+                origin_seq=origin_seq,
+                metadata={"source": "remember_tool"},
+            )
+        except memory_store.MemoryNotStored as refused:
+            return _NOT_STORED[refused.reason]
+        note_remembered(b.pool, row.get("topic_key"))
         return f"remembered:{row['id']}"
 
     return define_tool(
@@ -175,7 +191,7 @@ def _recall_tool(b: _Binding) -> Tool:
             b.settings,
             b.tenant_id,
             args.query,
-            manifest_id=b.manifest_id,
+            scope=b.pool,
             limit=min(args.limit, b.default_limit * 4),
             kinds=[args.kind] if args.kind in _KINDS else None,
             embedder=build_embedder(b.settings),
@@ -198,8 +214,10 @@ def _recall_tool(b: _Binding) -> Tool:
 def _forget_tool(b: _Binding) -> Tool:
     async def handler(args: ForgetArgs, _ctx: ToolInvocationCtx | None = None) -> str:
         # Names itself, so the store can refuse an operator-curated row. This tool
-        # is reachable by a prompt injection: list_memories prints every id.
-        ok = await memory_store.forget(b.settings, b.tenant_id, args.id, source="remember_tool")
+        # is reachable by a prompt injection: list_memories prints every id. And names its pool,
+        # so an id from another person's pool -- or the agent pool every person shares -- is a
+        # miss: an id is a content hash, computable by anyone who can guess the sentence.
+        ok = await memory_store.forget(b.settings, b.tenant_id, args.id, source="remember_tool", pool=b.pool)
         return f"forgot:{args.id}" if ok else f"no such memory: {args.id}"
 
     return define_tool(
@@ -220,7 +238,7 @@ def _list_tool(b: _Binding) -> Tool:
         rows = await memory_store.list_active(
             b.settings,
             b.tenant_id,
-            manifest_id=b.manifest_id,
+            scope=b.pool,
             kind=args.kind if args.kind in _KINDS else None,
             limit=args.limit,
         )
@@ -242,15 +260,15 @@ def make_memory_tools(
     *,
     settings: Settings,
     tenant_id: str,
-    manifest_id: str,
+    pool: memory_store.MemoryPool,
     default_limit: int = 5,
     thread_id: str = "",
 ) -> list[Tool]:
-    """The four memory tools, bound to one tenant and manifest."""
+    """The four memory tools, bound to one tenant and one pool (`memory.scope.memory_pool`)."""
     binding = _Binding(
         settings=settings,
         tenant_id=tenant_id,
-        manifest_id=manifest_id,
+        pool=pool,
         default_limit=default_limit,
         thread_id=thread_id,
     )

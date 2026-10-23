@@ -2125,6 +2125,52 @@ passes through no wrapper at all:
 (`when_args: [topic_key]`). With the store refusing agent retirements that gate no longer
 prevents a deletion; it keeps a human seeing a key-changing write, which is what it is for now.
 
+### Memory: whose memory an agent reads
+
+Memory is kept in **pools** (`memory_vectors.principal`, migration `0046`). An *agent pool* is one
+manifest's own rows (`principal` empty); a *person pool* is one person's rows, whichever of their
+agents wrote them. `spec.memory.scope` chooses which an agent uses:
+
+- **`person` (the default).** The agent writes the person the request acts for
+  (`AuthContext.acting_for`) and reads their pool plus the **operator-written** rows of its own
+  agent pool — what an operator curated for the agent through `/memory`, which every person's
+  agent sees. Agent-written rows in an agent pool reach no person's prompt: they are the agent's
+  learning from before person pools, or from runs that named no one, and whose they are is not
+  known. `felix memory assign --tenant T --manifest M --to PERSON` moves them into the person
+  they belong to (agent-written rows only unless `--include-operator`; `--dry-run` counts).
+- **A request that names no person writes nothing** under `person` scope: anonymous, an API key
+  with no `sub` of its own, an inbound trigger's run, a machine actor working for no one, a
+  GitHub Actions workflow, a Slack channel message (its user is not a verified sign-in). Capture
+  does not run and `remember` answers that nothing was stored; reads see the curated rows only.
+- **`agent`.** The agent's own pool, read and written, every row of it — the behaviour before
+  person pools. Use it for an agent that serves a shared purpose rather than a person.
+
+**The person key is `issuer|subject`** — the form a personal skill library takes — worked out by
+the auth middleware from the verified credential, and recorded with a durable run or a job so a
+resume or a firing writes the same person's memory. A subject is unique only within its issuer:
+an API key configured with `sub: github:70701` is not the person who signed in with GitHub as
+`github:70701`. `FELIX_PRINCIPAL_ALIASES` maps one person key to another, so one person signing
+in two ways keeps one memory: a JSON object, `{"google:123": "github:70701"}`, where a value with
+no `|` means Felix's own sign-in issuer (`felix-self`). One hop — a target may not itself be an
+alias — and neither side may be a shared credential or a machine actor; the boot refuses either.
+Memory alone reads the map; approvals, `bind_principal`, jobs and push keep the raw principal.
+
+**Person isolation is an application filter inside the tenant**, not a database policy. Row-level
+security isolates tenants, as it always has; inside one tenant the memory store's own predicate
+(`memory/store.py:_sees`, `_owns`) is what keeps one person's rows from another's agent, on every
+read and every retirement — a `forget` by id, a supersession by `topic_key`, a consolidation
+merge, an upsert onto an id another pool holds (refused) all stay in the writer's pool.
+`memory:read` and `memory:write` are **operator** grants and span every person in the tenant:
+`GET /memory` lists everyone's pools (`?principal=` narrows to one), and `POST /memory` writes any
+of them (`principal` names the pool; a credential many callers share is refused, 422).
+
+One channel crosses people on purpose: **procedural memory** is the agent's, whatever the scope.
+`remember_procedure` writes the agent pool and every caller's turn retrieves from it, so a how-to
+an agent learnt while working for one person is offered while it works for another. It is
+agent-written, so it never reaches a person's *fact* reads (prelude, `recall`, `list_memories`).
+A manifest whose procedures must not travel between people should leave
+`spec.procedural_memory` off.
+
 ## Approval semantics
 
 **Precedence.** Approvals is the only control that selects *one* rule — policies and judges
@@ -2856,7 +2902,9 @@ changed is that the tenant itself is not listed anywhere in configuration. Organ
 still configured.
 
 `tenant_id` is the isolation boundary and, in the default `claim` mode, it arrives in a
-token claim. Constrain it:
+token claim. Inside a tenant, long-term memory keeps each person's facts from another person's
+agents by the store's own filter on the person key (`issuer|subject`), not by RLS — see
+[Memory: whose memory an agent reads](#memory-whose-memory-an-agent-reads). Constrain it:
 
 ```bash
 FELIX_ALLOWED_TENANTS=acme,globex     # empty = accept any claimed tenant
@@ -2989,7 +3037,7 @@ implies the matching `*:read`.
 | `eval:read` / `eval:write` | `/eval` |
 | `usage:read` | `/usage` |
 | `metrics:read` | `GET /metrics`. Its label values (manifest ids, remote MCP tool names) span every tenant, so it is an operator grant: give it to the scrape credential (`scripts/metrics-token.sh`, the Helm `serviceMonitor.bearerTokenSecret`), in a tenant of its own (`metrics`), and to nothing a tenant holds |
-| `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered |
+| `memory:read` / `memory:write` | `/memory` — inspect, search, correct and prune what an agent has remembered. Spans **every person's** memory in the tenant, not only the caller's: person pools are kept apart from each other's *agents*, not from the operator (see [Memory: whose memory an agent reads](#memory-whose-memory-an-agent-reads)). `?principal=` narrows a read to one pool (empty for agent pools); `POST`'s `principal` writes a person's pool, and is refused (422 `principal_not_a_person`) for a credential many callers share; 409 `memory_held_by_another_pool` when the content's id belongs to another pool |
 | `documents:read` / `documents:write` | `/documents` — ingest, search, inspect and remove the corpus an agent retrieves from |
 | `skills:read` | `/skills`, and the read routes of `/skill-library` (the library, the review queue at `/-/review`, each version's review record, digest-checked and redacted files, a read-only gate preview, the policy at `/-/policy`, feedback at `/{name}/feedback` and the `/-/feedback` inbox, evaluations at `/{name}/evals`). `/skills` — list the Agent Skills a manifest can reach, read the body `activate_skill` hands the model (secret-redacted, as `manifests:read` redacts a manifest), and see which skill activated on which turn. Separate from `manifests:read` because a skill body is **prompt content**: `activate_skill` hands it to the model as instructions, so reading one is reading instructions the agent will follow. Read-only; activation is the model's decision mid-turn. By default a manifest's `spec.skills` *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue rather than restricting it, so the model is offered every skill on the host; `spec.skills_declared_only: true` makes the declared names the whole set. The `declared` field on each item says which ones this manifest named, and `declared_only` on the response says which rule is in force. Where the manifest sets `spec.personal_skills: read`, the listing includes the caller's own skills, as the caller's turn would, and its `active` field — like what `activate_skill` reports back — names only skills in the caller's own catalog. Activation *history* (`/activations/recent`) is the audit trail and shows every caller's activations, personal skill names included, each with a `library` field (`org`, or a personal library's digest — never the subject) so an investigator can tell whose instructions ran. Personal is not private: an `activate_skill` result, body and all, is in the thread's session log like any tool result, readable by whoever can read the thread. `pin_compile` covers neither the tenant's library nor a caller's. Worth setting on any manifest that has to be reviewable: a skill body reaches the model as instructions, so an ambient skill is an instruction the agent follows that `pin_compile` does not cover — the hash is over the manifest, and the drift is on the host's disk |
 | `skills:write` | `/skill-library` writes — save a skill or a new version as an operator draft, publish, roll back, reject a draft with a note, archive; file, accept (which queues an AI rewrite into a draft) and reject feedback; queue an evaluation; set or drop the tenant's publish policy. Implies `skills:read`. Its own scope because publishing puts the skill's instructions in front of every manifest in the tenant: a published library skill joins every catalogue there, and `activate_skill` hands its body to the model as instructions. Every change is audited to the caller, and a publish passes the same gate an agent's does (a failing security scan blocks whoever asks) |

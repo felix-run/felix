@@ -1517,6 +1517,15 @@
         },
         "recall": {
           "$ref": "#/$defs/MemoryRecall"
+        },
+        "scope": {
+          "default": "person",
+          "enum": [
+            "person",
+            "agent"
+          ],
+          "title": "Scope",
+          "type": "string"
         }
       },
       "title": "MemorySpec",

@@ -138,6 +138,7 @@ async def test_build_agent_applies_the_wrapper_outermost() -> None:
             tools=default_tool_provider(),
             tenant_id="acme",
             skill_owner=None,
+            person="",
         )
         plain = await build_tenant_agent(
             settings,
@@ -152,6 +153,7 @@ async def test_build_agent_applies_the_wrapper_outermost() -> None:
             tools=default_tool_provider(),
             tenant_id="acme",
             skill_owner=None,
+            person="",
         )
     assert isinstance(agent, InboundScreeningAgent)
     assert not isinstance(plain, InboundScreeningAgent)

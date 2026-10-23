@@ -380,6 +380,8 @@ async def start_run(
                         tenant_id=tenant_id,
                         # An eval scores the agent as the tenant ships it, so no one's own skills.
                         skill_owner=None,
+                        # Nor anyone's memory: an eval item is no person.
+                        person="",
                     )
                     result = await agent.invoke(InvokeInput(messages=messages, thread_id=req_ctx.thread_id))
                 answer = result.final.content if result.final else ""

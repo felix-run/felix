@@ -16,6 +16,7 @@ from felix.manifests.schema import MemoryCapture
 from felix.memory import store as memory_store
 from felix.memory.capture import active_facts_prompt, capture_from_turn
 from felix.memory.extraction import EXTRACT_SYSTEM, extract_memories
+from felix.memory.store import MemoryFilter, MemoryPool
 from felix.memory.tools import make_memory_tools
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
@@ -54,7 +55,7 @@ async def _capture(settings, model, *, manifest_id: str = MANIFEST) -> list[str]
     return await capture_from_turn(
         settings,
         TENANT,
-        manifest_id=manifest_id,
+        pool=MemoryPool.agent(manifest_id),
         user_text="my birthday is January 14, 1980",
         assistant_text="Noted.",
         capture=CAPTURE,
@@ -65,7 +66,7 @@ async def _capture(settings, model, *, manifest_id: str = MANIFEST) -> list[str]
 async def _remember(settings, content: str, topic_key: str, *, manifest_id: str = MANIFEST) -> None:
     remember = next(
         t
-        for t in make_memory_tools(settings=settings, tenant_id=TENANT, manifest_id=manifest_id)
+        for t in make_memory_tools(pool=MemoryPool.agent(manifest_id), settings=settings, tenant_id=TENANT)
         if t.name == "remember"
     )
     await remember.executor.execute({"content": content, "topic_key": topic_key})  # type: ignore[attr-defined]
@@ -89,7 +90,9 @@ async def test_capture_skips_a_topic_the_agent_remembered_this_request() -> None
 
     assert stored == ["The user lives in Jerome, Arizona."]
     birthdays = [
-        r for r in await memory_store.list_active(settings, TENANT) if r["topic_key"] == "user.birthday"
+        r
+        for r in await memory_store.list_active(settings, TENANT, scope=MemoryFilter())
+        if r["topic_key"] == "user.birthday"
     ]
     assert [r["content"] for r in birthdays] == ["User's birthday is January 14, 1980."]
 
@@ -178,8 +181,8 @@ async def test_the_prelude_shows_limit_distinct_facts_despite_repeats() -> None:
         await memory_store.put_memory(
             settings,
             TENANT,
+            pool=MemoryPool.agent(MANIFEST),
             content=f"The user's birthday is day {value}.",
-            manifest_id=MANIFEST,
             topic_key="user.birthday",
             origin_seq=value,
             metadata={"source": "assistant"},
@@ -188,13 +191,13 @@ async def test_the_prelude_shows_limit_distinct_facts_despite_repeats() -> None:
         await memory_store.put_memory(
             settings,
             TENANT,
+            pool=MemoryPool.agent(MANIFEST),
             content=f"Distinct fact number {n}.",
-            manifest_id=MANIFEST,
             importance=0.1,
             metadata={"source": "assistant"},
         )
 
-    prelude = await active_facts_prompt(settings, TENANT, manifest_id=MANIFEST, limit=4)
+    prelude = await active_facts_prompt(settings, TENANT, pool=MemoryPool.agent(MANIFEST), limit=4)
     lines = [line for line in prelude.splitlines() if line.startswith("- ")]
     assert len(lines) == 4
     assert sum("birthday" in line for line in lines) == 1

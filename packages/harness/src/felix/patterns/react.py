@@ -230,6 +230,8 @@ class _ReactAgent:
     session_strategy: Any | None = None
     tenant_id: str = "default"
     memory_capture: Any | None = None
+    # The pool capture writes (`memory.store.MemoryPool`, from `spec.memory.scope`); None skips it.
+    memory_pool: Any | None = None
     tools_retrieval: Any | None = None
     # `spec.skill_suggestion`, built: suggests one skill per turn as a transient hint.
     skill_suggester: Any | None = None
@@ -828,7 +830,7 @@ class _ReactAgent:
         capture = self.memory_capture
         if capture is None or not getattr(capture, "enabled", False):
             return
-        if self.settings is None:
+        if self.settings is None or self.memory_pool is None:
             return
         user_text = " ".join(m.content for m in input.messages if m.role == "user")
         assistant_text: str | None = final.content or ""
@@ -845,7 +847,7 @@ class _ReactAgent:
             await capture_from_turn(
                 self.settings,
                 input.tenant_id or self.tenant_id,
-                manifest_id=self.manifest_id,
+                pool=self.memory_pool,
                 user_text=user_text,
                 assistant_text=assistant_text,
                 capture=capture,
@@ -1676,6 +1678,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         session_strategy=ctx.get("session_strategy"),
         tenant_id=str(ctx.get("tenant_id") or "default"),
         memory_capture=ctx.get("memory_capture"),
+        memory_pool=ctx.get("memory_pool"),
         tools_retrieval=ctx.get("tools_retrieval"),
         decider=ctx.get("decider"),
         skill_suggester=ctx.get("skill_suggester"),

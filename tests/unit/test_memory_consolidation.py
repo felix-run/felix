@@ -19,6 +19,7 @@ from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.schema import MemoryConsolidate
 from felix.memory import consolidation
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryFilter, MemoryPool
 from felix.usage import store as usage_store
 from felix_ai.providers.scripted import ScriptedClient, ScriptedTurn
 from felix_ai.types import ModelRoute
@@ -67,13 +68,14 @@ async def _put(
     topic: str | None = None,
     metadata: dict[str, str] | None = None,
     tenant: str = TENANT,
+    pool: MemoryPool | None = None,
 ) -> str:
     row = await memory_store.put_memory(
         settings,
         tenant,
+        pool=pool or MemoryPool.agent(MANIFEST),
         content=content,
         kind=kind,
-        manifest_id=MANIFEST,
         origin_seq=seq,
         topic_key=topic,
         metadata=dict(metadata or AGENT),
@@ -100,7 +102,9 @@ async def _run(settings: Settings, model: _Spy, **spec: Any) -> consolidation.Po
         settings=settings, auth=AuthContext(tenant_id=TENANT, anonymous=False), manifest_id=MANIFEST
     )
     async with async_run_with_context(ctx):
-        return await consolidation.consolidate_pool(settings, TENANT, MANIFEST, _spec(**spec), model)
+        return await consolidation.consolidate_pool(
+            settings, TENANT, MANIFEST, _spec(**spec), model, principal=""
+        )
 
 
 async def _row(settings: Settings, mem_id: str) -> dict[str, Any]:
@@ -131,7 +135,7 @@ async def test_duplicates_are_superseded_by_the_kept_fact_at_their_own_turn() ->
         assert row["metadata"]["retired_by"] == memory_store.CONSOLIDATION_SOURCE
     after = {k: v for k, v in (await _row(s, keep)).items() if k != "last_used_at"}
     assert after == before, "the kept fact must be left exactly as it was"
-    active = await memory_store.list_active(s, TENANT, manifest_id=MANIFEST, limit=500)
+    active = await memory_store.list_active(s, TENANT, limit=500, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(active) == 12, "consolidation wrote a row, or retired one it was not asked to"
 
 
@@ -195,7 +199,9 @@ async def test_the_store_refuses_an_operator_row_whoever_names_it(operator_as: s
     agent = await _put(s, "Deploys to production require two approvals.")
     group = [agent, curated] if operator_as == "duplicate" else [curated, agent]
 
-    superseded, refused = await memory_store.merge_duplicates(s, TENANT, manifest_id=MANIFEST, groups=[group])
+    superseded, refused = await memory_store.merge_duplicates(
+        s, TENANT, manifest_id=MANIFEST, groups=[group], principal=""
+    )
 
     assert (superseded, refused) == (0, 1)
     for mem_id in (curated, agent):
@@ -327,7 +333,7 @@ async def test_a_malformed_answer_writes_nothing(reply: str) -> None:
     result = await _run(s, _spy(reply))
 
     assert result.malformed and result.superseded == 0
-    active = await memory_store.list_active(s, TENANT, manifest_id=MANIFEST, limit=500)
+    active = await memory_store.list_active(s, TENANT, limit=500, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(active) == 15
 
 
@@ -418,6 +424,28 @@ async def test_the_sweep_reads_each_pools_own_manifest_and_meters_to_its_tenant(
     assert rows[0]["meta_json"] == {"kind": "memory_consolidation"}
     assert rows[0]["model_id"] == "consolidator"
     assert (await usage_store.query(s, "default"))[0] == [], "metered to the default tenant"
+
+
+async def test_the_sweep_merges_within_a_person_pool_and_keeps_it_there(routed: Any) -> None:
+    """A person's rows written by an opted-in agent are a consolidation slice of their own: the
+    sweep finds it, merges inside it, and the survivor is still the person's."""
+    from felix.manifests import store as manifest_store
+
+    s, _built, script = routed
+    alice = MemoryPool.person(MANIFEST, "felix-self|github:1")
+    await manifest_store.put_version(s, TENANT, MANIFEST, _manifest(enabled=True))
+    for i in range(11):
+        await _put(s, f"Alice filler fact number {i} about topic {i}.", seq=100 + i, pool=alice)
+    keep = await _put(s, "Alice prefers dark mode.", seq=2, pool=alice)
+    dup = await _put(s, "Alice likes the dark theme.", seq=3, pool=alice)
+    script.append(_answer([dup, keep]))
+
+    totals = await consolidation.consolidate_all_pools(s)
+
+    assert totals["superseded"] == 1, totals
+    rows = await memory_store.get_many(s, TENANT, [keep, dup])
+    assert rows[dup]["superseded_by"] == keep
+    assert (rows[keep]["status"], rows[keep]["principal"]) == (memory_store.ACTIVE, alice.principal)
 
 
 async def test_a_disabled_manifest_never_reaches_the_model(routed: Any) -> None:

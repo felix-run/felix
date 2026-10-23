@@ -100,6 +100,10 @@ class BuildDeps:
     # Whose personal skill library this compile may load (`spec.personal_skills`), or None for
     # the tenant's alone. Sub-agents compile with these deps, so they inherit it.
     skill_owner: str | None = None
+    # The person this compile is for (`AuthContext.person`, "" for none), whose memory pool a
+    # `spec.memory.scope: person` agent uses (`memory/scope.py`). Passed by `build_tenant_agent`
+    # from the `auth` it compiles for; never read from ambient context. Sub-agents inherit it.
+    memory_person: str = ""
     workspace_root: str | None = None
     load_agents_md: bool = False
     # Manifests whose sub-agents are being compiled right now, outermost first. A router that
@@ -2225,10 +2229,29 @@ async def build_agent(
             except Exception:
                 logger.warning("procedural memory tool binding failed", exc_info=True)
 
+        # Whose long-term memory this compile uses (`spec.memory.scope`), resolved once for the person
+        # it is compiled for (`deps.memory_person`, passed in, never read from ambient context): the
+        # prelude, the memory tools and capture all take this one pool.
+        memory_pool = None
+        if deps.settings is not None:
+            from felix.memory.scope import memory_pool as resolve_memory_pool
+
+            memory_pool = resolve_memory_pool(
+                deps.settings,
+                manifest_id=m.metadata.name,
+                scope=m.spec.memory.scope,
+                person=deps.memory_person,
+            )
+
         # Memory tools. Bound here, before the governance block below, so a recalled
         # memory passes through content screening like any other tool output — the
         # automatic fact prelude bypasses the stack entirely.
-        if m.spec.memory.recall.tools and m.spec.memory.store != "none" and deps.settings is not None:
+        if (
+            m.spec.memory.recall.tools
+            and m.spec.memory.store != "none"
+            and deps.settings is not None
+            and memory_pool is not None
+        ):
             try:
                 from felix.memory.tools import make_memory_tools
 
@@ -2237,7 +2260,7 @@ async def build_agent(
                     make_memory_tools(
                         settings=deps.settings,
                         tenant_id=tenant_id,
-                        manifest_id=m.metadata.name,
+                        pool=memory_pool,
                         default_limit=m.spec.memory.recall.limit,
                     ),
                 )
@@ -2334,6 +2357,7 @@ async def build_agent(
         memory_capture = m.spec.memory.capture
         if (
             deps.settings is not None
+            and memory_pool is not None
             and m.spec.memory.store != "none"
             and (memory_capture.enabled or m.spec.memory.store in {"pgvector", "memory"})
         ):
@@ -2352,11 +2376,7 @@ async def build_agent(
                 #    reference material, and none of it is meant to be followed — an
                 #    attempt to give user-stated rules an obeyable tier was withdrawn
                 #    because the provenance behind it could not be established.
-                context_prelude = await active_facts_prompt(
-                    deps.settings,
-                    tenant_id,
-                    manifest_id=m.metadata.name,
-                )
+                context_prelude = await active_facts_prompt(deps.settings, tenant_id, pool=memory_pool)
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
 
@@ -2572,6 +2592,8 @@ async def build_agent(
                 "settings": deps.settings,
                 "tenant_id": tenant_id,
                 "memory_capture": m.spec.memory.capture,
+                # The pool capture writes (`memory.scope.memory_pool`); None with no settings.
+                "memory_pool": memory_pool,
                 "tools_retrieval": m.spec.tools_retrieval,
                 "decider": decider,
                 "skill_suggester": skill_suggester,

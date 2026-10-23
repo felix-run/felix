@@ -2,8 +2,8 @@
 
 It is the manifest the README points at for an assistant that remembers, so what is under test
 is the promise made there — a fact stored in one session reaches the next session's prompt, the
-memory tools are offered, and an anonymous caller is refused, because memory is shared across a
-tenant and an anonymous caller could read another's facts.
+memory tools are offered, and an anonymous caller is refused, because a caller who names no
+person has no memory of their own to keep.
 """
 
 from __future__ import annotations

@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryFilter, MemoryPool
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=True)
@@ -36,9 +37,9 @@ async def _put(
     row = await memory_store.put_memory(
         settings,
         TENANT,
+        pool=MemoryPool.agent(manifest),
         content=content,
         kind=kind,
-        manifest_id=manifest,
         origin_seq=seq,
         topic_key=topic,
         metadata=dict(metadata or AGENT),
@@ -65,7 +66,7 @@ async def test_the_batch_is_agent_rows_of_this_pool_counted_before_the_limit(
     await memory_store.forget(memory_settings, TENANT, gone, source="assistant")
 
     count, rows = await memory_store.consolidation_batch(
-        memory_settings, TENANT, manifest_id=MANIFEST, limit=3
+        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, principal=""
     )
 
     assert count == 4
@@ -81,7 +82,7 @@ async def test_a_merge_supersedes_at_the_duplicates_own_turn_and_stamps_the_reti
     dup = await _put(memory_settings, "User likes the dark theme.", seq=5)
 
     result = await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup, keep]]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[dup, keep]], principal=""
     )
 
     assert result == (1, 0)
@@ -94,9 +95,12 @@ async def test_a_merge_supersedes_at_the_duplicates_own_turn_and_stamps_the_reti
     assert rows[dup]["metadata"]["source"] == "assistant", "the writer's provenance was overwritten"
     # The interval closes at turn 5, in turn time: a clock value here would keep the
     # duplicate "current" in every as-of view for the next few billion turns.
-    assert {r["id"] for r in await memory_store.as_of(memory_settings, TENANT, 6, manifest_id=MANIFEST)} == {
-        keep
-    }
+    assert {
+        r["id"]
+        for r in await memory_store.as_of(
+            memory_settings, TENANT, 6, scope=MemoryFilter(manifest_id=MANIFEST)
+        )
+    } == {keep}
 
 
 @parametrized
@@ -107,7 +111,7 @@ async def test_an_operator_row_is_refused_in_either_role(memory_settings: Any, o
     group = [curated, agent] if operator_as == "keep" else [agent, curated]
 
     assert await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[group]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[group], principal=""
     ) == (0, 1)
     assert await _status(memory_settings, curated) == memory_store.ACTIVE
     assert await _status(memory_settings, agent) == memory_store.ACTIVE
@@ -127,6 +131,7 @@ async def test_a_bad_group_is_refused_whole_and_a_good_one_beside_it_applies(mem
         TENANT,
         manifest_id=MANIFEST,
         groups=[[keep, dup, other_kind], [a, b], [loose, a], [dup, keep]],
+        principal="",
     )
 
     # The last group is valid on its own; the first three are refused whole, so it applies.
@@ -140,13 +145,17 @@ async def test_a_bad_group_is_refused_whole_and_a_good_one_beside_it_applies(mem
 async def test_the_store_keeps_the_oldest_member_whatever_order_it_is_given(memory_settings: Any) -> None:
     """Oldest by turn, an unknown turn counting as newest; then by clock, then by id."""
     unknown = await memory_store.put_memory(
-        memory_settings, TENANT, content="Tea, not coffee.", manifest_id=MANIFEST, metadata=dict(AGENT)
+        memory_settings,
+        TENANT,
+        pool=MemoryPool.agent(MANIFEST),
+        content="Tea, not coffee.",
+        metadata=dict(AGENT),
     )
     newer = await _put(memory_settings, "The user drinks tea rather than coffee.", seq=9)
     oldest = await _put(memory_settings, "The user prefers tea to coffee.", seq=4)
 
     assert await memory_store.merge_duplicates(
-        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[unknown["id"], newer, oldest]]
+        memory_settings, TENANT, manifest_id=MANIFEST, groups=[[unknown["id"], newer, oldest]], principal=""
     ) == (2, 0)
     rows = await memory_store.get_many(memory_settings, TENANT, [unknown["id"], newer, oldest])
     assert rows[oldest]["status"] == memory_store.ACTIVE
@@ -162,5 +171,5 @@ async def test_pools_are_listed_across_tenants(memory_settings: Any) -> None:
     await _put(memory_settings, "B fact.", manifest="other")
     with rls_bypass():
         pools = await memory_store.list_memory_pools(memory_settings)
-    assert (TENANT, MANIFEST) in pools and (TENANT, "other") in pools
+    assert (TENANT, MANIFEST, "") in pools and (TENANT, "other", "") in pools
     assert pools == sorted(pools)

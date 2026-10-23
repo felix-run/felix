@@ -14,6 +14,7 @@ from felix.config import Settings
 from felix.manifests.builder import _is_untrusted_tool, apply_content_screening
 from felix.manifests.schema import ContentScreening
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryPool
 from felix.memory.tools import make_memory_tools
 
 SETTINGS = Settings(database_url="memory://memory-untrusted")
@@ -25,15 +26,15 @@ def _content(out: Any) -> str:
 
 
 def test_every_memory_tool_counts_as_untrusted() -> None:
-    tools = make_memory_tools(settings=SETTINGS, tenant_id="t", manifest_id="m")
+    tools = make_memory_tools(pool=MemoryPool.agent("m"), settings=SETTINGS, tenant_id="t")
     assert {t.name for t in tools} == {"remember", "recall", "forget", "list_memories"}
     assert all(_is_untrusted_tool(t) for t in tools)
 
 
 async def test_a_recalled_payload_is_quarantined_without_naming_the_tool() -> None:
     """`tools: []` — the configuration `governed.yaml` ships — used to leave recall unscreened."""
-    await memory_store.put_memory(SETTINGS, "t", content=PAYLOAD, kind="fact", manifest_id="m")
-    tools = make_memory_tools(settings=SETTINGS, tenant_id="t", manifest_id="m")
+    await memory_store.put_memory(SETTINGS, "t", pool=MemoryPool.agent("m"), content=PAYLOAD, kind="fact")
+    tools = make_memory_tools(pool=MemoryPool.agent("m"), settings=SETTINGS, tenant_id="t")
     wrapped = {t.name: t for t in apply_content_screening(tools, ContentScreening(enabled=True), "m")}
 
     recalled = _content(await wrapped["recall"].executor.execute({"query": "metric"}, None))

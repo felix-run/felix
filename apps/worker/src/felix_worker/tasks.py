@@ -224,7 +224,7 @@ async def consolidate_memory() -> None:
     """Exact content-hash dedupe, model-judged duplicate merging where a manifest opts in, then
     the embedding backfill (`memory.backfill.embed_missing`).
 
-    The second pass reads `spec.memory.consolidate` per (tenant, manifest) pool and supersedes
+    The second pass reads `spec.memory.consolidate` per (tenant, manifest, principal) pool and supersedes
     agent-written facts the consolidation model groups as saying the same thing; see
     `felix.memory.consolidation`. Its own failures are counted per pool, never raised, so one
     tenant's broken route cannot stop another's pass.

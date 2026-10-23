@@ -12,6 +12,7 @@ import pytest
 from felix.config import Settings
 from felix.manifests.schema import Manifest
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryFilter, MemoryPool
 from felix.memory.tools import MEMORY_TOOL_NAMES, make_memory_tools
 
 from tests.support.factories import make_settings
@@ -33,7 +34,7 @@ def _tools() -> dict[str, object]:
     return {
         t.name: t
         for t in make_memory_tools(
-            settings=_settings(), tenant_id=TENANT, manifest_id=MANIFEST, thread_id="th-1"
+            pool=MemoryPool.agent(MANIFEST), settings=_settings(), tenant_id=TENANT, thread_id="th-1"
         )
     }
 
@@ -81,13 +82,13 @@ async def test_forget_is_honest_about_a_miss() -> None:
 async def test_an_unknown_kind_falls_back_rather_than_failing() -> None:
     """The model supplies `kind`; a bad value must not fail the turn."""
     await _run("remember", content="Something.", kind="nonsense")
-    rows = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    rows = await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert rows[0]["kind"] == "fact"
 
 
 async def test_remember_records_the_thread_it_came_from() -> None:
     await _run("remember", content="Learned right here.")
-    rows = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    rows = await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert rows[0]["thread_id"] == "th-1"
 
 
@@ -233,7 +234,7 @@ async def test_remember_stamps_provenance_from_the_request_context() -> None:
     async with async_run_with_context(ctx):
         await _run("remember", content="Learned during a real request.")
 
-    rows = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST)
+    rows = await memory_store.list_active(settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert rows[0]["thread_id"] == "th-live"
     assert rows[0]["origin_seq"] == 2
 
@@ -241,7 +242,7 @@ async def test_remember_stamps_provenance_from_the_request_context() -> None:
 async def test_remember_without_a_request_context_still_stores() -> None:
     """No context is not an error — it is a memory with no provenance."""
     await _run("remember", content="Stored outside any request.")
-    rows = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    rows = await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert rows[0]["origin_seq"] is None
 
 
@@ -273,7 +274,7 @@ async def test_remember_ignores_a_colliding_thread_in_another_tenant() -> None:
     async with async_run_with_context(ctx):
         await _run("remember", content="Written while another tenant holds this thread id.")
 
-    rows = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST)
+    rows = await memory_store.list_active(settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     row = next(r for r in rows if r["thread_id"] == thread)
     # 3, this tenant's own depth — not 7, which is what reading "default" returns.
     assert row["origin_seq"] == 3

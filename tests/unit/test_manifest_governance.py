@@ -284,7 +284,12 @@ async def test_agent_loop_emits_audit(tmp_path, monkeypatch: pytest.MonkeyPatch)
     req = RequestContext(settings=settings, auth=auth, manifest_id="gov-test")
     async with async_run_with_context(req):
         agent = await build_tenant_agent(
-            settings, manifest=m, tools=default_tool_provider(), tenant_id="default", skill_owner=None
+            settings,
+            manifest=m,
+            tools=default_tool_provider(),
+            tenant_id="default",
+            skill_owner=None,
+            person="",
         )
         agent._resolve_model = lambda _input: _FakeModel()  # type: ignore[method-assign]
         await agent.invoke(

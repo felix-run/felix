@@ -180,12 +180,16 @@ async def test_reflect_quotes_its_draft_redacted(boot: Any, verdict: Any) -> Non
 # --- memory capture ------------------------------------------------------------------------
 
 CAPTURE = {"enabled": True, "min_chars": 0}
+# Every manifest below is `scope: agent`: these requests name no person (`FELIX_AUTH_MODE=none`),
+# and under the default `scope: person` a person-less request captures nothing.
 
 
 async def test_memory_is_captured_from_the_redacted_reply(boot: Any) -> None:
     """Capture runs inside the reply controls, on the pattern's own output: extracting from it
     stored a fact the controls redacted, and recall put it back into every later prompt."""
-    screened = governed_manifest("e2e-screened", guardrails=PII_GUARDRAILS, memory={"capture": CAPTURE})
+    screened = governed_manifest(
+        "e2e-screened", guardrails=PII_GUARDRAILS, memory={"capture": CAPTURE, "scope": "agent"}
+    )
     async with boot(
         [ScriptedTurn(content=PII), ScriptedTurn(content="[]")], manifests={"e2e-screened": screened}
     ) as app:
@@ -204,7 +208,10 @@ async def test_nothing_is_captured_from_a_denied_reply(boot: Any, verdict: Any) 
     from felix.manifests.loader import parse_manifest
 
     base = judged_manifest(final_response=True)
-    spec = {**base.spec.model_dump(exclude_defaults=True, mode="json"), "memory": {"capture": CAPTURE}}
+    spec = {
+        **base.spec.model_dump(exclude_defaults=True, mode="json"),
+        "memory": {"capture": CAPTURE, "scope": "agent"},
+    }
     m = parse_manifest(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "e2e-judged"}, "spec": spec}
     )
@@ -233,7 +240,7 @@ async def test_a_routers_child_captures_through_the_routers_screen(boot: Any) ->
         )
 
     manifests = {
-        "e2e-plain": agent("e2e-plain", memory={"capture": CAPTURE}),
+        "e2e-plain": agent("e2e-plain", memory={"capture": CAPTURE, "scope": "agent"}),
         "e2e-router": agent(
             "e2e-router", pattern="router", sub_agents=["e2e-plain"], guardrails=PII_GUARDRAILS
         ),
@@ -269,7 +276,7 @@ async def test_a_child_with_its_own_controls_still_owes_its_routers(boot: Any, v
             "e2e-judged-child",
             decider={"id": "e2e-decider"},
             guardrails={"judges": [judge]},
-            memory={"capture": CAPTURE},
+            memory={"capture": CAPTURE, "scope": "agent"},
         ),
         "e2e-router": agent(
             "e2e-router", pattern="router", sub_agents=["e2e-judged-child"], guardrails=PII_GUARDRAILS

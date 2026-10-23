@@ -4,7 +4,7 @@ description: Author, extend, and debug felix/v1 agent manifests and the schema-t
 compatibility: Requires the Felix repo checkout with uv and the felix CLI available.
 allowed-tools: Bash(uv run felix:*) Read Grep Glob
 metadata:
-  covers: felix/manifests/, felix/patterns/, felix/session/, felix/memory/, felix/plans/, felix/prompts/
+  covers: felix/manifests/, felix/runtime.py, felix/patterns/, felix/session/, felix/memory/, felix/plans/, felix/prompts/
 ---
 
 # Authoring felix/v1 manifests

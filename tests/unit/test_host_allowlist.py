@@ -307,7 +307,12 @@ async def test_a_background_childs_inherited_lists_bind_its_compile(lookups: lis
     fetcher = _manifest("child", http_tools=[{"name": "fetch", "allow_any_host": True}])
     async with async_run_with_context(ctx):
         agent = await build_tenant_agent(
-            settings, manifest=fetcher, tools=InMemoryToolProvider(), tenant_id="default", skill_owner=None
+            settings,
+            manifest=fetcher,
+            tools=InMemoryToolProvider(),
+            tenant_id="default",
+            skill_owner=None,
+            person="",
         )
     assert await _run(_tool(agent, "fetch"), {"url": "https://other.test/"}) == BLOCKED
 

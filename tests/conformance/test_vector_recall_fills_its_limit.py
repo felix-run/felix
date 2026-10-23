@@ -105,10 +105,14 @@ async def _without_iterative_scan(settings: Any, sql: str, params: dict[str, Any
 
 async def test_memory_recall_vector_channel_is_full(store_settings: Any) -> None:
     from felix.memory.recall import _VECTOR_SQL, _channels_in_postgres
+    from felix.memory.store import MemoryFilter, scope_fragment
 
     me = await _crowd(store_settings, "memory_vectors")
-    params = {"tenant": me, "manifest": "", "kinds": [], "lim": 16, "vec": _literal(QUERY)}
-    assert await _without_iterative_scan(store_settings, _VECTOR_SQL, params) < 16, (
+    # Every pool, as the operator's search reads: the same statement the channel runs.
+    clause, scope_params = scope_fragment(MemoryFilter())
+    params = {**scope_params, "tenant": me, "kinds": [], "lim": 16, "vec": _literal(QUERY)}
+    sql = _VECTOR_SQL.format(scope=clause)
+    assert await _without_iterative_scan(store_settings, sql, params) < 16, (
         "the statement fills its limit without iterative scan, so this test cannot fail"
     )
 
@@ -116,7 +120,7 @@ async def test_memory_recall_vector_channel_is_full(store_settings: Any) -> None
         _on_the_index(store_settings),
         me,
         "?",  # no lexical tokens: the vector channel alone
-        manifest_id="",
+        scope=MemoryFilter(),
         per_channel=16,
         kinds=None,
         embedder=_Axis(),
@@ -141,9 +145,10 @@ async def test_document_search_vector_channel_is_full(store_settings: Any) -> No
 
 async def _memory_vector_channel(settings: Any, tenant: str) -> list[str]:
     from felix.memory.recall import _channels_in_postgres
+    from felix.memory.store import MemoryFilter
 
     ranked = await _channels_in_postgres(
-        settings, tenant, "?", manifest_id="", per_channel=16, kinds=None, embedder=_Axis()
+        settings, tenant, "?", scope=MemoryFilter(), per_channel=16, kinds=None, embedder=_Axis()
     )
     return ranked.get("vector", [])
 

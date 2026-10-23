@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from felix.config import Settings
+from felix.memory.store import MemoryFilter, MemoryPool
 from felix_api.composition import compose
 
 from tests.support.factories import make_settings
@@ -49,15 +50,18 @@ async def test_memory_turn_versioning(settings: Settings) -> None:
     # memory for "default" (an e2e boot runs as "default") made this count 2 -- a flake on
     # whichever unrelated PR drew that split (#385).
     tenant = "protocols-memory-versioning"
-    a = await put_memory(settings, tenant, content="Felix is a harness", origin_seq=1)
+    a = await put_memory(
+        settings, tenant, pool=MemoryPool.agent(""), content="Felix is a harness", origin_seq=1
+    )
     await put_memory(
         settings,
         tenant,
+        pool=MemoryPool.agent(""),
         content="Felix is a harness",
         origin_seq=2,
         supersedes_id=a["id"],
     )
-    active = await list_active(settings, tenant)
+    active = await list_active(settings, tenant, scope=MemoryFilter())
     assert len(active) == 1
     n = await consolidate_pools(settings)
     assert n >= 0

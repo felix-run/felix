@@ -1,6 +1,14 @@
 # Session and memory internals
 
-`session/` holds one thread's history; `memory/` holds facts per `(tenant, manifest)` pool, across threads.
+`session/` holds one thread's history; `memory/` holds facts across threads, per pool
+(`memory/store.py:MemoryPool`): a person's `(tenant, principal)` or an agent's own
+`(tenant, manifest_id, principal='')`. `spec.memory.scope` picks which a compile uses, resolved once
+in `manifests/builder.py` by `memory/scope.py:memory_pool` from `BuildDeps.memory_person`
+(`AuthContext.person`, `issuer|subject`, passed by `runtime.build_tenant_agent(person=)`) through
+`FELIX_PRINCIPAL_ALIASES` (`auth/persons.py`). A person's reads see their pool plus the agent
+pool's operator-written rows; with no person, `MemoryPool.personless` reads those and writes
+nothing. Every store read takes a required `scope` (`MemoryPool` or the operator's `MemoryFilter`);
+moving an agent pool to a person is `memory/assign.py`.
 
 ## The session log: what is appended, what is derived
 
@@ -46,7 +54,8 @@ The strategies are listed in [spec-fields.md](spec-fields.md); `compacting` and
 | `memory.consolidate` | `memory/consolidation.py:consolidate_all_pools`, from the worker's `consolidate_memory` cron |
 | `procedural_memory` | `memory/procedural.py:make_remember_procedure_tool`; `retrieve_procedures` per turn in `patterns/react.py`, as transient guidance |
 
-Memory rows (`memory_vectors`) are content-addressed (`memory/store.py:memory_id`). An active row is
+Memory rows (`memory_vectors`) are content-addressed by pool (`memory/store.py:MemoryPool.id_for` —
+`memory_id` for an agent pool, `person_memory_id`, prefixed `p`, for a person's). An active row is
 never deleted, only superseded or forgotten; `superseded_seq` lets `memory/store.py:as_of` rebuild what
 was known at a turn, but `retention_sweep` deletes a superseded row after
 `jobs/retention.py:MEMORY_SUPERSEDED_GRACE_MS` (7 days), so that view only reaches back that far.
