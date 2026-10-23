@@ -200,7 +200,7 @@ no mode waives an approval on it, whichever rule asked. A task records its write
 `fire_job` refuses and disables a job past it (`CREDENTIAL_EXPIRED`). Retention
 (`retention._sweep_fired_tasks`, `FELIX_SCHEDULED_TASK_RETENTION_DAYS`) deletes agent tasks that will not run again (a fired one-shot, or disabled on expiry), per tenant,
 re-reading each before the delete; a disabled task holds no place under `max_tasks`. With
-`approval: true` the builder adds `scheduling_approval_rule` unless a manifest rule without `when_args`
+`approval: true` the builder adds the `permission_mode.SCHEDULING_APPROVAL` rule unless a manifest rule without `when_args`
 names `schedule_task` literally (a glob does not count).
 
 `spec.workflow_authoring` binds `workflows/agent_tools.py`: `workflow_catalog` (kinds, config
@@ -223,7 +223,7 @@ anyone else's leaves `""`. A create mints `wf-<hex>` with `precondition=ABSENT`;
 `engine.start_run(trigger="agent:<manifest>", untrusted_inputs=<every input>)`, and `StartRefused.message`
 is relayed. `max_active_runs` counts the non-terminal runs of the person's workflows from this agent.
 The preview shows the whole definition as escaped JSON and maps a non-refusal failure to
-`unavailable`. With `approval: true` the builder adds `workflow_save_approval_rule`, unless a manifest
+`unavailable`. With `approval: true` the builder adds the `permission_mode.WORKFLOW_SAVE_APPROVAL` rule, unless a manifest
 rule without `when_args` names `save_workflow` literally. `UNWAIVABLE_TOOLS` and `UNWAIVABLE_RULE_IDS`
 both hold it.
 
