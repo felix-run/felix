@@ -17,7 +17,7 @@ from typing import Any, TextIO
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from felix.manifests.schema import McpServerRef
-from felix.security.stdio_policy import resolve_stdio_command, stdio_child_env
+from felix.security.stdio_policy import git_disarmed, resolve_stdio_command, stdio_child_env
 
 
 def stdio_parameters(ref: McpServerRef, *, settings: Any | None = None) -> StdioServerParameters:
@@ -39,7 +39,12 @@ def stdio_parameters(ref: McpServerRef, *, settings: Any | None = None) -> Stdio
         settings = get_settings()
     command = resolve_stdio_command(ref.command, settings)
     return StdioServerParameters(
-        command=command, args=list(ref.args), env=stdio_child_env(ref.env), cwd=ref.cwd or None
+        command=command,
+        args=list(ref.args),
+        # Git disarmed as the shell tool's is: a server pointed at a repository runs whatever that
+        # repository's `.git/config` names (`core.fsmonitor`, hooks) on its first `git status`.
+        env=git_disarmed(stdio_child_env(ref.env)),
+        cwd=ref.cwd or None,
     )
 
 

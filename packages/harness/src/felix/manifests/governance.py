@@ -72,6 +72,26 @@ def assert_stdio_allowed(manifest: Manifest, settings: Any | None = None) -> Non
         raise GovernanceError("; ".join(errors))
 
 
+def assert_stdio_env_allowed(manifest: Manifest) -> None:
+    """Refuse a stdio MCP server whose ``env`` sets a variable that runs code (`env_key_refused`).
+
+    On write only. At spawn the same check drops that one server's tools; refusing it at compile
+    too would fail the whole agent of every manifest already stored with such a key, which is the
+    outage a narrowed field causes (see CLAUDE.md on `compat.RETIRED`).
+    """
+    from felix.security.stdio_policy import env_key_refused
+
+    errors = [
+        f"mcp_servers[{ref.name}]: env may not set {key}"
+        for ref in manifest.spec.mcp or []
+        if ref.transport == "stdio"
+        for key in ref.env
+        if env_key_refused(key)
+    ]
+    if errors:
+        raise GovernanceError("; ".join(errors))
+
+
 def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None = None) -> None:
     """Enforce ``spec.auth.outbound.providers``.
 
@@ -170,6 +190,7 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
     from felix.tools.sandboxes import SandboxImageNotAllowed, assert_sandbox_images_allowed
 
     assert_stdio_allowed(manifest, settings)
+    assert_stdio_env_allowed(manifest)
     if any(rule.when_args for rule in manifest.spec.approvals):
         from felix.config import get_settings
         from felix.manifests.approval_args import offline_tools, when_args_problems
@@ -295,6 +316,7 @@ __all__ = [
     "apply_transparency_notice",
     "assert_outbound_providers_allowed",
     "assert_stdio_allowed",
+    "assert_stdio_env_allowed",
     "manifest_warnings",
     "transparency_notice_text",
     "validate_for_write",
