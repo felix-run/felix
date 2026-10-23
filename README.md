@@ -219,13 +219,13 @@ built from the counters Felix actually emits — including a governance row for 
 spans carrying the OpenTelemetry **GenAI semantic conventions**, so any OTLP backend renders
 them as generations with token usage and cost rather than anonymous timing bars.
 
-`/metrics` is deliberately **not** public: its label values include tenant-supplied manifest
-ids and remote MCP tool names, so an anonymous scrape would disclose every tenant's manifests
-and tools — and since those span every tenant, it also needs the `metrics:read` scope (or
-`admin` / `*`). `scripts/metrics-token.sh` mints a scrape key holding `metrics:read` and nothing
-else, in a `metrics` tenant of its own, so it reads metrics and reaches no tenant's agents; run it
-again to upgrade a key it minted before the scope existed. In Kubernetes, set `serviceMonitor.enabled=true` and point it at a
-Secret holding the same kind of key.
+`/metrics` is deliberately **not** public: its label values include tenant-supplied manifest ids and
+remote MCP tool names, so an anonymous scrape would disclose every tenant's manifests and tools —
+and since those span every tenant, it also needs the `metrics:read` scope (or `admin` / `*`).
+`scripts/metrics-token.sh` mints a scrape key holding `metrics:read` and nothing else, in a
+`metrics` tenant of its own, so it reads metrics and reaches no tenant's agents; run it again to
+upgrade a key it minted before the scope existed. In Kubernetes, set `serviceMonitor.enabled=true`
+and point it at a Secret holding the same kind of key.
 
 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) is the metric catalog and span schema.
 
@@ -288,17 +288,26 @@ zero cloud SDKs.
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
 - Production JWT and api_key deploys need `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`
-- Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers`
-  and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
-  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30; finished workflow runs), `FELIX_SCHEDULED_TASK_RETENTION_DAYS` (30; one-shot agent-scheduled tasks that have fired, never an operator's job), `FELIX_MEMORY_TASK_RETENTION_DAYS` (30; agent-written `task` memories untouched this long are *forgotten*, not deleted — restorable with `POST /memory/{id}/restore`, and never an operator-written one), `FELIX_JOB_RUNS_KEEP` (200; run records kept per job, newest first, trimmed after each run rather than nightly — 0 keeps all; the current UTC day's runs stay until it ends, since a heartbeat's daily cap counts them), `FELIX_SESSION_RETENTION_DAYS`
-  (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
-  that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
-  sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix
-  nothing else collects), `FELIX_ARTIFACT_RETENTION_DAYS` (30; spilled tool outputs, bytes and
-  ledger row, the same way — on by default because spill is the harness's working copy),
+- Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers` and
+  `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
+  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7),
+  `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30; finished workflow runs),
+  `FELIX_SCHEDULED_TASK_RETENTION_DAYS` (30; one-shot agent-scheduled tasks that have fired, never
+  an operator's job), `FELIX_MEMORY_TASK_RETENTION_DAYS` (30; agent-written `task` memories
+  untouched this long are *forgotten*, not deleted — restorable with `POST /memory/{id}/restore`,
+  and never an operator-written one), `FELIX_JOB_RUNS_KEEP` (200; run records kept per job, newest
+  first, trimmed after each run rather than nightly — 0 keeps all; the current UTC day's runs stay
+  until it ends, since a heartbeat's daily cap counts them), `FELIX_SESSION_RETENTION_DAYS` (0 =
+  keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant that can
+  still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one sweep that
+  deletes *bytes* as well as rows, since `attachments/` is an object-store prefix nothing else
+  collects), `FELIX_ARTIFACT_RETENTION_DAYS` (30; spilled tool outputs, bytes and ledger row, the
+  same way — on by default because spill is the harness's working copy),
   `FELIX_FILE_CHECKPOINT_RETENTION_DAYS` (7; what the file tools changed, kept for `/chat/rewind`
-  with `restore_files`, bytes and ledger row, counted from each file's last change in its thread; `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` caps the content kept, 256 MiB; `FELIX_FILE_CHECKPOINTS=false` records none); a manifest's `governance.retention_days` shortens the audit TTL for its
-  own rows
+  with `restore_files`, bytes and ledger row, counted from each file's last change in its thread;
+  `FELIX_FILE_CHECKPOINT_MAX_BYTES_PER_TENANT` caps the content kept, 256 MiB;
+  `FELIX_FILE_CHECKPOINTS=false` records none); a manifest's `governance.retention_days` shortens
+  the audit TTL for its own rows
 - Approvals: `FELIX_APPROVALS_REQUIRE_SECOND_PERSON` (false) refuses an approval's answer from the
   person whose run asked for it, so a second person (or an `admin`) must decide; see
   [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
@@ -391,7 +400,7 @@ the other common roots) at one resolved commit, and `POST /skill-library/-/impor
 repository's own history, with its source, ref, commit and license on the version. An import is
 never published in the same request: a person reads the draft, then publishes it. A re-import
 saves a new version only when the skill's files changed. Imported text is third-party
-instructions, so it -- and every version built on it -- is held to a stricter gate (an advisory
+instructions, so it — and every version built on it — is held to a stricter gate (an advisory
 scan blocks its publish whatever the policy says), and what `activate_skill` returns of it is
 screened as untrusted tool output where the manifest enables content screening.
 `FELIX_SKILL_IMPORT_SOURCES` (empty = any GitHub source) limits which repositories may be named,
@@ -418,7 +427,7 @@ and the skill stops following its origin.
 spending at most half of each budget, so the listing and the library detail can answer without
 asking GitHub. `FELIX_SKILL_UPDATE_WEBHOOKS` (`acme=ops,acme=ci`, each id a
 `FELIX_WEBHOOK_ENDPOINTS` endpoint open to that tenant; no wildcard) announces each new upstream
-digest once as a signed `skill.update_available` event -- metadata only, sent by the worker with
+digest once as a signed `skill.update_available` event — metadata only, sent by the worker with
 the completion webhooks' signing and retries, never from the check itself. Give the API and the
 worker the same `FELIX_SKILL_UPDATE_WEBHOOKS` and `FELIX_WEBHOOK_ENDPOINTS`: both run checks, and
 only the worker sends.
@@ -476,27 +485,98 @@ felix-web's chat UI does this from a Worker (`FELIX_ORIGIN`, with an optional `x
 for its own clients), and any reverse proxy that adds the `Authorization` header works the same
 way. Non-browser clients — the CLI, `felix-client`, curl, other services — are unaffected.
 
-A failed send is safe to resend: `POST /chat` and `POST /chat/stream` take an `Idempotency-Key` header, and a resend under the same key never runs a second turn — `/chat` returns the stored response, `/chat/stream` replays what the first request wrote to its thread (see [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md)). Session leases are advisory by default; `FELIX_LEASE_ENFORCE=strict` refuses a driving request that presents no `X-Felix-Lease-Token` while another client holds the thread.
+A failed send is safe to resend: `POST /chat` and `POST /chat/stream` take an `Idempotency-Key`
+header, and a resend under the same key never runs a second turn — `/chat` returns the stored
+response, `/chat/stream` replays what the first request wrote to its thread (see
+[deploy/GOVERNANCE.md](deploy/GOVERNANCE.md)). Session leases are advisory by default;
+`FELIX_LEASE_ENFORCE=strict` refuses a driving request that presents no `X-Felix-Lease-Token` while
+another client holds the thread.
 
-An operator who edits, deletes or renames a workspace file directly can say so with `POST /chat/workspace/edited` (`{thread_id, path, op: write|delete|rename, bytes?, to_path?}` — structure only; the server writes the text the model reads). A run in flight reads it before its next model call without cancelling any tool call, unlike a steer, and its stream carries a `workspace_note` frame (`{path, op, bytes}`, plus `to_path` for a rename); with no run in flight it is appended for the next one. Either way the thread's log holds it once, as an in-context `custom` entry with `metadata.type: workspace_edit`. Lease-guarded like `/chat/steer`.
+An operator who edits, deletes or renames a workspace file directly can say so with
+`POST /chat/workspace/edited` (`{thread_id, path, op: write|delete|rename, bytes?, to_path?}` —
+structure only; the server writes the text the model reads). A run in flight reads it before its
+next model call without cancelling any tool call, unlike a steer, and its stream carries a
+`workspace_note` frame (`{path, op, bytes}`, plus `to_path` for a rename); with no run in flight it
+is appended for the next one. Either way the thread's log holds it once, as an in-context `custom`
+entry with `metadata.type: workspace_edit`. Lease-guarded like `/chat/steer`.
 
-A client can also show and edit the thread's workspace itself, in the same directory the agent's next turn works in. `GET /chat/workspace/tree?thread_id=` lists it recursively (`{root_kind: scoped|checkout, scope, manifest, entries: [{path, type: file|dir, bytes?}], truncated}`; `limit` defaults to 2,000, at most 5,000; no symlink is followed or listed, and `.git` and `.felix-scopes` are left out). `GET /chat/workspace/file?thread_id=&path=` returns one file whole (`{path, bytes, sha256, encoding: utf-8|base64, content}`), refusing one over the workspace tools' 512,000-byte read cap with `413 too_large`. `POST /chat/workspace/write` (`{thread_id, path, content, expected_sha256?}`) replaces a file atomically and folds in the same note `/chat/workspace/edited` sends; with `expected_sha256` it is refused with `409 {detail: workspace_changed, sha256, bytes}` when the file is no longer what was read, so an operator's save never silently overwrites the agent's. `POST /chat/workspace/delete` (`{thread_id, path, expected_sha256?}` → `{status, path, event_id}`) and `POST /chat/workspace/rename` (`{thread_id, path, to_path, expected_sha256?}` → `{status, path, to_path, sha256, event_id}`) act on regular files only (`400 not_a_file` for a directory, `404 not_found` for a missing file), compare the same way (`409 workspace_changed`), and fold in the `op: delete` / `op: rename` note; a rename makes the directories `to_path` needs and never replaces anything (`409 target_exists`). For folders, `POST /chat/workspace/delete_folder` (`{thread_id, path, expected_count?}` → `{status, path, files, event_id}`) removes a folder and everything in it, and `POST /chat/workspace/rename_folder` (`{thread_id, path, to_path}` → `{status, path, to_path, event_id}`) moves one; operator-only (the agent's tools stay files-only). Neither follows a symlink — one inside a deleted folder is removed as the link, never its target — and both refuse, before anything changes, the root (`400 invalid_path`), a file (`400 not_a_directory`), a folder that is or holds `.git` / `.felix-scopes` (`400 reserved_path`), and one over 2,000 entries (`409 {detail: too_many_entries, count}`). `expected_count` is the number of files the operator was shown: a folder that holds a different number now is `409 {detail: workspace_changed, count}` and nothing is deleted. A folder rename never replaces anything (`409 target_exists`) or moves a folder into itself (`400 invalid_path`). Each folds in a note with `kind: folder` (and `files` for a delete). The workspace is decided server-side: a thread's repository checkout when it has one, otherwise the `spec.workspace.scope` of the manifest the thread last ran under — or, for a thread that has never run, of the `manifest` the caller names (else `FELIX_DEFAULT_MANIFEST`). The caller never chooses a scope. Writes, deletes and renames are lease-guarded and audited as `workspace_write`, `workspace_delete`, `workspace_rename`, `workspace_delete_folder` and `workspace_rename_folder`. Each `/v1/models` entry says where its agent keeps files: `felix.workspace` is `{tools: server|client|both|none, scope}`.
+A client can also show and edit the thread's workspace itself, in the same directory the agent's
+next turn works in. `GET /chat/workspace/tree?thread_id=` lists it recursively
+(`{root_kind: scoped|checkout, scope, manifest, entries: [{path, type: file|dir, bytes?}], truncated}`;
+`limit` defaults to 2,000, at most 5,000; no symlink is followed or listed, and `.git` and
+`.felix-scopes` are left out). `GET /chat/workspace/file?thread_id=&path=` returns one file whole
+(`{path, bytes, sha256, encoding: utf-8|base64, content}`), refusing one over the workspace tools'
+512,000-byte read cap with `413 too_large`. `POST /chat/workspace/write`
+(`{thread_id, path, content, expected_sha256?}`) replaces a file atomically and folds in the same
+note `/chat/workspace/edited` sends; with `expected_sha256` it is refused with
+`409 {detail: workspace_changed, sha256, bytes}` when the file is no longer what was read, so an
+operator's save never silently overwrites the agent's. `POST /chat/workspace/delete`
+(`{thread_id, path, expected_sha256?}` → `{status, path, event_id}`) and
+`POST /chat/workspace/rename` (`{thread_id, path, to_path, expected_sha256?}` →
+`{status, path, to_path, sha256, event_id}`) act on regular files only (`400 not_a_file` for a
+directory, `404 not_found` for a missing file), compare the same way (`409 workspace_changed`), and
+fold in the `op: delete` / `op: rename` note; a rename makes the directories `to_path` needs and
+never replaces anything (`409 target_exists`). For folders, `POST /chat/workspace/delete_folder`
+(`{thread_id, path, expected_count?}` → `{status, path, files, event_id}`) removes a folder and
+everything in it, and `POST /chat/workspace/rename_folder` (`{thread_id, path, to_path}` →
+`{status, path, to_path, event_id}`) moves one; operator-only (the agent's tools stay files-only).
+Neither follows a symlink — one inside a deleted folder is removed as the link, never its target —
+and both refuse, before anything changes, the root (`400 invalid_path`), a file
+(`400 not_a_directory`), a folder that is or holds `.git` / `.felix-scopes` (`400 reserved_path`),
+and one over 2,000 entries (`409 {detail: too_many_entries, count}`). `expected_count` is the number
+of files the operator was shown: a folder that holds a different number now is
+`409 {detail: workspace_changed, count}` and nothing is deleted. A folder rename never replaces
+anything (`409 target_exists`) or moves a folder into itself (`400 invalid_path`). Each folds in a
+note with `kind: folder` (and `files` for a delete). The workspace is decided server-side: a
+thread's repository checkout when it has one, otherwise the `spec.workspace.scope` of the manifest
+the thread last ran under — or, for a thread that has never run, of the `manifest` the caller names
+(else `FELIX_DEFAULT_MANIFEST`). The caller never chooses a scope. Writes, deletes and renames are
+lease-guarded and audited as `workspace_write`, `workspace_delete`, `workspace_rename`,
+`workspace_delete_folder` and `workspace_rename_folder`. Each `/v1/models` entry says where its
+agent keeps files: `felix.workspace` is `{tools: server|client|both|none, scope}`.
 
-An agent deletes and renames workspace files with the `delete_file` (`{path}`) and `rename_file` (`{path, to_path}`) tools, on the same backend operations: files only, no symlink followed, nothing inside `.git` or `.felix-scopes`, and a rename never replaces anything. Neither is bound unless a manifest lists it; the bundled manifests that bind `write_file` bind both, gated no less than `write_file` is, since a delete has no undo. A client that runs the user's own folder declares the same pair as client tools; the bundled `cowork` manifest's are `local_delete` and `local_rename`, behind the same `workspace-write` approval as `local_write` and `local_edit`.
+An agent deletes and renames workspace files with the `delete_file` (`{path}`) and `rename_file`
+(`{path, to_path}`) tools, on the same backend operations: files only, no symlink followed, nothing
+inside `.git` or `.felix-scopes`, and a rename never replaces anything. Neither is bound unless a
+manifest lists it; the bundled manifests that bind `write_file` bind both, gated no less than
+`write_file` is, since a delete has no undo. A client that runs the user's own folder declares the
+same pair as client tools; the bundled `cowork` manifest's are `local_delete` and `local_rename`,
+behind the same `workspace-write` approval as `local_write` and `local_edit`.
 
-A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then tails the thread. The run itself is still torn down on disconnect, so what you get back is the thread, not the abandoned turn.
+A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do
+not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and
+`GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then
+tails the thread. The run itself is still torn down on disconnect, so what you get back is the
+thread, not the abandoned turn.
 
-Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/heartbeats`, `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting — see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back to. `/workflows` holds authored workflow definitions — typed steps wired port to port — and answers each save with the ports and problems the editor draws, conditional on `If-Match`; `POST /workflows/{id}/runs` runs one durably — each agent step a child durable run on its own thread, tool steps through their manifest's governed tools, approval steps through `/approvals` — and `GET /workflows/{id}/runs/{run}` shows every step; a job naming a `workflow_id` starts one on its schedule. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels (`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`; `?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across sessions otherwise accumulates a store nobody can inspect.
+Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/heartbeats`,
+`/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now
+instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are
+unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting
+— see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back
+to. `/workflows` holds authored workflow definitions — typed steps wired port to port — and answers
+each save with the ports and problems the editor draws, conditional on `If-Match`;
+`POST /workflows/{id}/runs` runs one durably — each agent step a child durable run on its own
+thread, tool steps through their manifest's governed tools, approval steps through `/approvals` —
+and `GET /workflows/{id}/runs/{run}` shows every step; a job naming a `workflow_id` starts one on
+its schedule. `/memory` lists, searches (the same hybrid ranking the agent sees), time-travels
+(`/memory/as-of/{turn_seq}`, narrowed to one conversation with `?thread_id=`, since a turn number
+orders one thread's log), writes, forgets and restores (`POST /memory/{id}/restore`;
+`?status=forgotten` lists what was forgotten) long-term memories — an agent that remembers across
+sessions otherwise accumulates a store nobody can inspect.
 
-Python client (**experimental**): the `felix-client` package — `from felix_client import
-FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`, `workspace_edited`, `fork`, `rewind`,
-`set_model`), the thread's workspace (`workspace_tree`, `workspace_read`, `workspace_write`, `workspace_delete`, `workspace_rename`, `workspace_delete_folder`, `workspace_rename_folder`), durable runs with their polling, and approvals. It depends on httpx and nothing in
-Felix, so installing it does not install the server; its surface may change between releases
-without a deprecation period. Not yet on PyPI — install it from the repository:
+Python client (**experimental**): the `felix-client` package —
+`from felix_client import FelixClient` — covering chat (`prompt`, `stream`, `steer`, `follow_up`,
+`workspace_edited`, `fork`, `rewind`, `set_model`), the thread's workspace (`workspace_tree`,
+`workspace_read`, `workspace_write`, `workspace_delete`, `workspace_rename`,
+`workspace_delete_folder`, `workspace_rename_folder`), durable runs with their polling, and
+approvals. It depends on httpx and nothing in Felix, so installing it does not install the server;
+its surface may change between releases without a deprecation period. Not yet on PyPI — install it
+from the repository:
 `pip install "felix-client @ git+https://github.com/felix-run/felix#subdirectory=packages/client"`.
 For everything else, and as the contract, use the HTTP API: each release attaches its
-`openapi.json`, from which a client in any language can be generated. `from felix.sdk import
-FelixClient` still works inside the harness.
+`openapi.json`, from which a client in any language can be generated.
+`from felix.sdk import FelixClient` still works inside the harness.
 
 ### Models
 
@@ -511,7 +591,6 @@ at 10s so raising this does not also let an unreachable provider hang.
 Outbound integrations carry their own ceilings: `spec.mcp_servers[].timeout_ms` (default 30s),
 `spec.peers[].timeout_ms` (default 60s), and the existing `timeout_ms` on sandboxes and
 containers.
-
 
 Providers Felix ships, all speaking one of two wire formats:
 
@@ -548,18 +627,18 @@ built-in providers have named settings, but a provider added by a plugin cannot 
 ignores unknown env vars — so this is how an installed provider is given a key. An entry
 also overrides the named field, which is how a built-in is pointed at a gateway:
 
-```
+```bash
 FELIX_MODEL_PROVIDER_OPTIONS={"anthropic":{"base_url":"https://gateway.internal/v1"}}
 ```
 
-Every option value is added to the redaction list **except** the ones the provider consumes
-as addressing — `base_url`, any `{placeholder}` its endpoint templates, and its header
-options — so a credential cannot reach tool output whatever the option is called. The
-converse is worth knowing: an unrecognised option is redacted, so a long, non-secret value
-there will be masked out of tool results. Keep credentials out of `base_url`, which is
-exempt by definition and also reaches server logs through connection errors. Providers named in `FELIX_MODEL_ROUTES` are resolved
-against the registry at startup, so a typo fails immediately rather than on the first
-request that happens to take that route.
+Every option value is added to the redaction list **except** the ones the provider consumes as
+addressing — `base_url`, any `{placeholder}` its endpoint templates, and its header options — so a
+credential cannot reach tool output whatever the option is called. The converse is worth knowing: an
+unrecognised option is redacted, so a long, non-secret value there will be masked out of tool
+results. Keep credentials out of `base_url`, which is exempt by definition and also reaches server
+logs through connection errors. Providers named in `FELIX_MODEL_ROUTES` are resolved against the
+registry at startup, so a typo fails immediately rather than on the first request that happens to
+take that route.
 
 Manifests reference **logical** model ids, mapped to wire ids by `FELIX_MODEL_ROUTES` (a JSON
 override) or by the built-in defaults:
@@ -585,11 +664,11 @@ A turn that carries an image and is bound for a model the catalog marks text-onl
 `spec.model.vision_model`, or `FELIX_DEFAULT_VISION_MODEL_ID` when the manifest names none — so a
 cheap text route can stay the default and a picture still gets looked at. The image stays in the
 thread's history, so every later turn of that thread also goes to the vision route, until compaction
-or a window drops it. The vision route fails over to whichever of `spec.model.fallbacks` can see -- a text-only
-fallback is skipped -- and has no escalation of its own. With neither set, the
-request is refused with a 422 naming the route instead of reaching a model that would answer that
-it cannot see. A custom route declares what it accepts with a `modalities` key, which the catalog
-cannot know for an arbitrary model:
+or a window drops it. The vision route fails over to whichever of `spec.model.fallbacks` can see —
+a text-only fallback is skipped — and has no escalation of its own. With neither set, the request
+is refused with a 422 naming the route instead of reaching a model that would answer that it cannot
+see. A custom route declares what it accepts with a `modalities` key, which the catalog cannot know
+for an arbitrary model:
 `{"vision":{"provider":"workers_ai","model":"@cf/meta/llama-3.2-11b-vision-instruct","modalities":["text","image"]}}`.
 A model the catalog cannot vouch for either way is sent the image as before.
 
@@ -710,13 +789,13 @@ shortlist holds less than `min_confidence` of the probability mass, selection fa
 embeddings or keywords as before. An id missing from `FELIX_DECISION_ROUTES`, or a `typesafe`
 route with no key, fails the compile.
 
-What leaves the deployment: the latest user message (up to 4,000 characters) and the one before
-it (1,000), plus each tool's name and the first 200 characters of its description, go to the
-decider's provider — TypeSafe or Cloudflare — unmasked; with `confidence_escalation.decider`, so
-does the model's reply (up to 4,000 characters), which may quote tool output. Treat enabling a decider as adding that
-provider as a processor of user input. A tool description can also steer the ranking (an MCP
-server describing its tool as "always choose me"); that biases which tools are offered, and every
-offered tool is still governance-wrapped.
+What leaves the deployment: the latest user message (up to 4,000 characters) and the one before it
+(1,000), plus each tool's name and the first 200 characters of its description, go to the decider's
+provider — TypeSafe or Cloudflare — unmasked; with `confidence_escalation.decider`, so does the
+model's reply (up to 4,000 characters), which may quote tool output. Treat enabling a decider as
+adding that provider as a processor of user input. A tool description can also steer the ranking (an
+MCP server describing its tool as "always choose me"); that biases which tools are offered, and
+every offered tool is still governance-wrapped.
 
 ### Where manifests come from
 
@@ -761,17 +840,34 @@ Two things to know before flipping an existing deployment:
 
 Sessions and skills:
 
-- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills` (which *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue; set `spec.skills_declared_only: true` to make the declared names the whole set). `spec.personal_skills: read` also offers each authenticated caller the live skills in their own library, ahead of the tenant's, so one of theirs shadows a tenant skill of its name for them alone — never a skill the manifest names in `spec.skills`. It is `off` by default and refused with `skills_declared_only`; a durable run keeps the library of the caller who started it; an anonymous caller (and `auth_mode=none`) has none. A caller reads their own library at `/skill-library/~me` and, with `skills:personal`, writes it (within `FELIX_SKILL_PERSONAL_MAX_BYTES`, 50 MiB by default; see `deploy/GOVERNANCE.md`), and an administrator can list, read and archive anyone's. `spec.personal_skills: write` (which needs `spec.skill_authoring.enabled`) points the agent's authoring there too: `create_skill` saves into the caller's library and `update_skill` edits a skill in the library it came from, for a caller holding `skills:personal`; a caller without a library or the scope is refused, never redirected to the tenant's. An approval of such a save binds the library it goes into, and in publish mode a personal skill that would replace a tenant skill waits for its owner to publish it.
-  Bundled, in every install's catalogue: `calculator-help`. The developer set the self-build
-  `contributor` and `triage` manifests use — `felix-architecture`, `felix-conventions`,
-  `felix-testing`, `felix-contributing`, `felix-self` — lives in `manifests/self/skills/` and is
-  served only by that stack (`FELIX_SKILLS_DIR` in `compose.self.yml`).
+- **Skills** live under `skills/` as Agent Skills `SKILL.md` files; declare them with `spec.skills`
+  (which *adds to* the bundled and `FELIX_SKILLS_DIR` catalogue; set
+  `spec.skills_declared_only: true` to make the declared names the whole set).
+  `spec.personal_skills: read` also offers each authenticated caller the live skills in their own
+  library, ahead of the tenant's, so one of theirs shadows a tenant skill of its name for them alone
+  — never a skill the manifest names in `spec.skills`. It is `off` by default and refused with
+  `skills_declared_only`; a durable run keeps the library of the caller who started it; an anonymous
+  caller (and `auth_mode=none`) has none. A caller reads their own library at `/skill-library/~me`
+  and, with `skills:personal`, writes it (within `FELIX_SKILL_PERSONAL_MAX_BYTES`, 50 MiB by
+  default; see `deploy/GOVERNANCE.md`), and an administrator can list, read and archive anyone's.
+  `spec.personal_skills: write` (which needs `spec.skill_authoring.enabled`) points the agent's
+  authoring there too: `create_skill` saves into the caller's library and `update_skill` edits a
+  skill in the library it came from, for a caller holding `skills:personal`; a caller without a
+  library or the scope is refused, never redirected to the tenant's. An approval of such a save
+  binds the library it goes into, and in publish mode a personal skill that would replace a tenant
+  skill waits for its owner to publish it. Bundled, in every install's catalogue: `calculator-help`.
+  The developer set the self-build `contributor` and `triage` manifests use — `felix-architecture`,
+  `felix-conventions`, `felix-testing`, `felix-contributing`, `felix-self` — lives in
+  `manifests/self/skills/` and is served only by that stack (`FELIX_SKILLS_DIR` in
+  `compose.self.yml`).
 <!-- toolkit:enum session-strategies -->
-- **Session strategies**: `compacting` (token-threshold), `windowed:N`, `summarizing:N` (compacting that keeps at least N turns), `semantic:N`, `full_replay`<!-- /toolkit:enum -->
-  — `compacting` sizes itself to the model's context window unless `spec.session.context_window_tokens` says otherwise, and compacts once more if the provider
-  rejects a request for length anyway. When the kept window starts mid-turn, that turn's opening
-  user message is kept verbatim (up to 16,000 characters) and its earlier steps get a separate,
-  smaller summary, so the request a long turn is working on is never reduced to a paraphrase
+- **Session strategies**: `compacting` (token-threshold), `windowed:N`, `summarizing:N` (compacting
+  that keeps at least N turns), `semantic:N`, `full_replay`<!-- /toolkit:enum --> — `compacting`
+  sizes itself to the model's context window unless `spec.session.context_window_tokens` says
+  otherwise, and compacts once more if the provider rejects a request for length anyway. When the
+  kept window starts mid-turn, that turn's opening user message is kept verbatim (up to 16,000
+  characters) and its earlier steps get a separate, smaller summary, so the request a long turn is
+  working on is never reduced to a paraphrase
 - **Clearing stale tool results**: `spec.session.clear_tool_results: {keep_turns: 10, min_chars: 1000}`
   (off by default) stubs, in what the model is sent, each older tool result over `min_chars` or
   carrying an image. The newest `keep_turns` to `2 × keep_turns − 1` user messages stay whole: the
@@ -802,11 +898,12 @@ Outbound integrations, all declared on the manifest:
 > **stdio MCP is disabled** unless `FELIX_MCP_STDIO_ALLOWED_COMMANDS` names the exact commands
 > allowed (a bare name runs the binary the API's own `PATH` finds, and a manifest may not set the
 > child's `PATH`; allowlisting an interpreter or package runner such as `uvx`/`npx` lets a manifest
-> run anything through its arguments), and **shell tools are disabled** unless `FELIX_SHELL_ALLOWED_COMMANDS` names the argv
-> prefixes allowed. Manifest-supplied argv is arbitrary code execution. A shell tool's command
-> runs as the API's user and can read the API's environment unless `FELIX_SHELL_RUNNER_URL` points
-> it at a `felix-shell-runner` (with `FELIX_SHELL_RUNNER_TOKEN`), which the builder stack runs in
-> a container holding no secrets — see [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md#shell-tools).
+> run anything through its arguments), and **shell tools are disabled** unless
+> `FELIX_SHELL_ALLOWED_COMMANDS` names the argv prefixes allowed. Manifest-supplied argv is
+> arbitrary code execution. A shell tool's command runs as the API's user and can read the API's
+> environment unless `FELIX_SHELL_RUNNER_URL` points it at a `felix-shell-runner` (with
+> `FELIX_SHELL_RUNNER_TOKEN`), which the builder stack runs in a container holding no secrets — see
+> [deploy/GOVERNANCE.md](deploy/GOVERNANCE.md#shell-tools).
 
 Structured output — `spec.output_schema` is a JSON Schema the agent's answer must match, and the
 model provider is what enforces it rather than the prompt:
@@ -904,20 +1001,21 @@ Storage and execution:
   thread, and the worker posts the answer back when the run ends (the `register_run_finished`
   plugin hook). Requests are verified with the app's signing secret; retries are claimed once.
   See `deploy/GOVERNANCE.md`.
-- Web Push wakes a subscribed browser -- an installed phone app, a backgrounded tab -- when a new
+- Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to
   `FELIX_PUSH_ALLOWED_HOSTS`, and a push carries the kind of wait and the thread, never the call
 - A heartbeat is a periodic check-in a person turns on for themselves: the operator writes
   `spec.heartbeat` (what to check, a recurring `schedule`, a `model` route and `max_turns` for
-  firings, `keep_threads`, an optional `max_firings_per_day` — past it a UTC day's firings, manual ones
-  included, are recorded `skipped` with no model call; it needs `spec.notify`), and a person holding `heartbeats:write` turns
-  theirs on or off with `PUT /heartbeats/{manifest}` (`{enabled}` and nothing else), removes it with
-  `DELETE`, or fires it now with `POST /heartbeats/{manifest}/run`; `GET /heartbeats`
-  (`heartbeats:read`) lists their own, with `expires_at` when the credential that enrolled it is one
-  no firing can re-check. Each firing runs as that person, unattended, from the
-  manifest's current checklist, and either answers `HEARTBEAT_OK` quietly or calls `notify` once --
-  a push to them and an entry in their heartbeat conversation. See `deploy/GOVERNANCE.md`.
+  firings, `keep_threads`, an optional `max_firings_per_day` — past it a UTC day's firings, manual
+  ones included, are recorded `skipped` with no model call; it needs `spec.notify`), and a person
+  holding `heartbeats:write` turns theirs on or off with `PUT /heartbeats/{manifest}` (`{enabled}`
+  and nothing else), removes it with `DELETE`, or fires it now with
+  `POST /heartbeats/{manifest}/run`; `GET /heartbeats` (`heartbeats:read`) lists their own, with
+  `expires_at` when the credential that enrolled it is one no firing can re-check. Each firing runs
+  as that person, unattended, from the manifest's current checklist, and either answers
+  `HEARTBEAT_OK` quietly or calls `notify` once — a push to them and an entry in their heartbeat
+  conversation. See `deploy/GOVERNANCE.md`.
 - `POST /chat/stream` on a durable manifest streams the run instead: `run_accepted` → `run_status`
   → `final`, interleaved with `session_event` frames tailed from the thread's session log, so tool
   calls and assistant turns arrive as they land, across replicas, with a resumable `id:` cursor.
