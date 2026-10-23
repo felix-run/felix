@@ -48,7 +48,7 @@ from felix.security.shell_policy import (
     local_exec_refusal,
     split_prefix,
 )
-from felix.security.stdio_policy import stdio_child_env
+from felix.security.stdio_policy import git_disarmed, stdio_child_env
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S, timeout_seconds
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
@@ -98,55 +98,11 @@ class ShellArgs(BaseModel):
         return v
 
 
-# `.git/config` and `.git/hooks` are in the workspace, which the agent writes; a setting there
-# that makes git run a program turns an allowlisted `git commit` into running anything. These
-# override it for every git the command starts -- named in argv or run by a script -- through
-# git's own environment (`GIT_CONFIG_COUNT`, git 2.31+), which outranks every config file. As
-# `github_publish._GIT_PRELUDE` and the gateway helper do for the git they run.
-#
-# Not covered: a `filter.<name>.clean`/`smudge` driver the repository names in `.gitattributes`,
-# since its name is the repository's choice and cannot be switched off by a fixed key. A
-# repository that needs no filters can be held to that by the operator's `.gitattributes`; see
-# `deploy/GOVERNANCE.md`.
-_GIT_DISARMED: tuple[tuple[str, str], ...] = (
-    ("core.hooksPath", "/dev/null"),
-    ("core.fsmonitor", "false"),
-    ("core.pager", "cat"),
-    ("core.editor", "true"),
-    ("sequence.editor", "true"),
-    ("core.sshCommand", "ssh"),
-    ("credential.helper", ""),
-    ("commit.gpgSign", "false"),
-    ("tag.gpgSign", "false"),
-    # `git commit -S` signs whatever `commit.gpgSign` says, and `-S` is an argument the model
-    # chooses: the programs themselves are pinned to the system's, not the repository's.
-    ("gpg.program", "gpg"),
-    ("gpg.ssh.program", "ssh-keygen"),
-    ("gpg.x509.program", "gpgsm"),
-    ("log.showSignature", "false"),
-    ("diff.external", ""),
-)
-
-
-def _git_disarmed(env: dict[str, str]) -> dict[str, str]:
-    """`env` with every git it starts unable to run a program the repository's config names."""
-    out = {k: v for k, v in env.items() if not k.startswith(("GIT_CONFIG_", "GIT_EXTERNAL_DIFF"))}
-    out["GIT_CONFIG_COUNT"] = str(len(_GIT_DISARMED))
-    for n, (key, value) in enumerate(_GIT_DISARMED):
-        out[f"GIT_CONFIG_KEY_{n}"] = key
-        out[f"GIT_CONFIG_VALUE_{n}"] = value
-    # The environment's own names for three of them, which outrank even `GIT_CONFIG_*`.
-    out["GIT_EDITOR"] = "true"
-    out["GIT_SEQUENCE_EDITOR"] = "true"
-    out["GIT_PAGER"] = "cat"
-    return out
-
-
 def _child_env() -> dict[str, str]:
-    """The stdio child environment with git disarmed (`_GIT_DISARMED`). Its `PATH` keeps only
+    """The stdio child environment with git disarmed (`stdio_policy.GIT_DISARMED`). Its `PATH` keeps only
     absolute entries (`stdio_policy.absolute_path_entries`): a relative one resolves against the
     child's cwd, which the model chose."""
-    return _git_disarmed(stdio_child_env({}))
+    return git_disarmed(stdio_child_env({}))
 
 
 class _Stream:
