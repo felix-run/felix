@@ -141,11 +141,29 @@ FELIX_MCP_STDIO_ALLOWED_COMMANDS=/usr/local/bin/uvx,/usr/bin/npx
 ```
 
 Matching is exact on the string the manifest supplies or its resolved absolute path —
-allowlisting `/usr/bin/npx` does not allow a bare `npx` resolved through `PATH`. The
-child process does **not** inherit the API environment; it receives
-`PATH`/`HOME`/`LANG`/`LC_ALL`/`TZ` plus the keys declared in `mcp_servers[].env` (with
-`secret:NAME` refs resolved), and loader variables such as `LD_PRELOAD` and `PYTHONPATH`
-are rejected. Prefer `transport: http`/`sse` where you can.
+allowlisting `/usr/bin/npx` does not allow a bare `npx` resolved through `PATH`. What is spawned
+is decided by the operator's environment, never the manifest's:
+
+- A bare name (`uvx`) is resolved on the **API's own** `PATH` and spawned by that absolute path.
+  A manifest path that matched only through its realpath spawns the realpath, the file the
+  operator listed, not the manifest's link to it.
+- The child's `PATH` is the API's, with relative entries (`.`, an empty entry,
+  `node_modules/.bin`) dropped, since those resolve against the `cwd` a manifest sets. A
+  manifest may not set `PATH`, so an interpreter a server starts through `#!/usr/bin/env` comes
+  from the operator's directories too.
+
+The child process does **not** inherit the API environment; it receives
+`PATH`/`HOME`/`LANG`/`LC_ALL`/`TZ` (plus the SDK's `LOGNAME`/`SHELL`/`TERM`/`USER`) and the keys
+declared in `mcp_servers[].env` (with `secret:NAME` refs resolved). Loader variables such as
+`LD_PRELOAD`, `PYTHONPATH` and `PATH` are rejected.
+
+**Allowlisting an interpreter or a package runner is code execution for `manifests:write`.**
+`uvx --from git+…`, `npx -y <package>`, `node -e`, `python -c` and an index URL in the arguments
+all run whatever the manifest names; the allowlist decides *which binary* runs, not what it runs.
+Allowlist fixed server binaries where you can. The environment denylist does not cover every
+variable that steers a program (`GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` among them —
+tracked in `docs/ROADMAP.md`), so even a fixed binary is only as safe as the manifests allowed to
+configure it. Prefer `transport: http`/`sse` where you can.
 
 `FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment. Where it is
 accepted, every boot logs a warning that the API is unauthenticated. The loopback check reads
