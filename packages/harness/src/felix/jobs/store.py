@@ -27,6 +27,27 @@ class BothTargets(ValueError):
         super().__init__("a job names a manifest or a workflow, not both")
 
 
+# `payload.scheduled_by`: what marks a job as written by an agent tool (`schedule_task`) or a
+# heartbeat enrolment, with the manifest and the conversation it came from. Only those two writers
+# set it; `PUT /jobs` drops a caller's and carries the stored one only for the job's own writer.
+SCHEDULED_BY = "scheduled_by"
+
+
+def scheduled_by(job: dict[str, Any], tool: str | None = None) -> dict[str, Any] | None:
+    """The job's `scheduled_by` record, or None -- the one reader of it.
+
+    Only a record naming the manifest the job runs counts: a writer re-saving a task or heartbeat
+    over `PUT /jobs` with another `manifest_id` keeps the record (it is theirs) but the job is no
+    longer the thing it describes. ``tool`` narrows it to one writer (`schedule_task`,
+    `heartbeat`); None takes either."""
+    by = (job.get("payload") or {}).get(SCHEDULED_BY)
+    if not isinstance(by, dict) or by.get("manifest") != job.get("manifest_id"):
+        return None
+    if tool is not None and by.get("tool") != tool:
+        return None
+    return by
+
+
 def reset_jobs_for_tests() -> None:
     """Clear the in-memory jobs and their run history."""
     _memory_jobs.clear()
@@ -467,6 +488,41 @@ async def finish_run(
         return bool(getattr(result, "rowcount", 0))
 
 
+async def set_schedule(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    *,
+    schedule: str,
+    next_run_at: int | None,
+    expected_schedule: str,
+) -> bool:
+    """Move an existing job to `schedule`, due at `next_run_at` -- only if it still holds
+    `expected_schedule`. Nothing else about it changes: not `enabled`, not its writer.
+
+    One `UPDATE ... WHERE`, never an upsert: a firing refreshing its own schedule must not
+    re-create a job deleted meanwhile, nor overwrite one someone re-saved since it was read.
+    False when the job is gone or its schedule moved. The caller validates `schedule`."""
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None or row.get("schedule") != expected_schedule:
+            return False
+        row.update(schedule=schedule, next_run_at=next_run_at)
+        return True
+
+    from sqlalchemy import update
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Job)
+            .where(Job.tenant_id == tenant_id, Job.name == name, Job.schedule == expected_schedule)
+            .values(schedule=schedule, next_run_at=next_run_at)
+        )
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
 async def disable_job(settings: Settings, tenant_id: str, name: str) -> None:
     """Stop a job being swept, leaving everything else about it -- its writer, its history -- as
     it was. A no-op for a job that is gone."""
@@ -589,6 +645,7 @@ async def record_run(
 __all__ = [
     "RUNNING",
     "RUNNING_STALE_MS",
+    "SCHEDULED_BY",
     "BothTargets",
     "claim_manual_run",
     "claim_run",
@@ -601,5 +658,7 @@ __all__ = [
     "put_job",
     "record_run",
     "reset_jobs_for_tests",
+    "scheduled_by",
+    "set_schedule",
     "touch_run",
 ]

@@ -1,4 +1,4 @@
-"""Who a scheduled job's firing runs as, read off the job row (`jobs.scheduler._job_auth`).
+"""Who a scheduled job's firing runs as, read off the job row (`jobs.scheduler.job_auth`).
 
 The whole `AuthContext`, compared field for field: a firing that dropped the pin, kept the
 writer's personal library, or turned a stored string into five one-letter scopes would each pass
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from felix.context import AuthContext
-from felix.jobs.scheduler import _job_auth
+from felix.jobs.scheduler import job_auth
 from felix.manifests.inbound_auth import InboundAuthError
 
 from tests.support.factories import make_settings
@@ -31,7 +31,7 @@ def test_a_jwt_writer_s_job_runs_as_cron_for_them_with_their_recorded_grant() ->
         "felix_manifests": ["quick"],
         "recorded_at": 1,
     }
-    assert _job_auth(make_settings(), "acme", _job("alice", recorded)) == AuthContext(
+    assert job_auth(make_settings(), "acme", _job("alice", recorded)) == AuthContext(
         tenant_id="acme",
         principal_sub="cron",
         on_behalf_of="alice",
@@ -46,7 +46,7 @@ def test_a_jwt_writer_s_job_runs_as_cron_for_them_with_their_recorded_grant() ->
 
 
 def test_a_scope_string_is_not_read_as_its_letters() -> None:
-    auth = _job_auth(make_settings(), "acme", _job("alice", {"scopes": "admin", "scheme": "access"}))
+    auth = job_auth(make_settings(), "acme", _job("alice", {"scopes": "admin", "scheme": "access"}))
     assert auth.scopes == frozenset()
 
 
@@ -54,7 +54,7 @@ def test_a_scope_string_is_not_read_as_its_letters() -> None:
     ("created_by", "created_auth"), [(None, None), ("alice", None), (None, {"scopes": ["x"]})]
 )
 def test_a_job_with_no_recorded_writer_runs_holding_nothing(created_by: Any, created_auth: Any) -> None:
-    assert _job_auth(make_settings(), "acme", _job(created_by, created_auth)) == AuthContext(
+    assert job_auth(make_settings(), "acme", _job(created_by, created_auth)) == AuthContext(
         tenant_id="acme", principal_sub="cron", anonymous=False, scheduled=True
     )
 
@@ -73,7 +73,7 @@ def test_an_api_key_writer_keeps_only_what_their_key_holds_now() -> None:
         }
     )
     recorded = {"scopes": ["jobs:write", "ops:run", "b:read"], "scheme": "api_key"}
-    auth = _job_auth(settings, "acme", _job("alice", recorded))
+    auth = job_auth(settings, "acme", _job("alice", recorded))
     assert auth.scopes == frozenset({"jobs:write", "b:read"})
     assert auth.acting_for == "alice"
 
@@ -88,7 +88,7 @@ def test_an_api_key_writer_keeps_only_what_their_key_holds_now() -> None:
 )
 def test_an_api_key_writer_whose_key_is_gone_is_refused(settings: Any) -> None:
     with pytest.raises(InboundAuthError, match="no longer configured"):
-        _job_auth(settings, "acme", _job("alice", {"scopes": ["jobs:write"], "scheme": "api_key"}))
+        job_auth(settings, "acme", _job("alice", {"scopes": ["jobs:write"], "scheme": "api_key"}))
 
 
 # --- a writer who signed in through Felix ---------------------------------------------------------
@@ -112,7 +112,7 @@ ORG = {"felix-run": {"id": 7, "tenant": "acme", "scopes": ["jobs:read", "memory:
 
 def test_a_google_writer_keeps_only_what_their_entry_grants_now() -> None:
     recorded = _signin("google:1", ["jobs:read", "jobs:write"], idp="google", email="Blake@Example.com")
-    auth = _job_auth(_signin_settings(google_accounts=GOOGLE), "acme", _job("google:1", recorded))
+    auth = job_auth(_signin_settings(google_accounts=GOOGLE), "acme", _job("google:1", recorded))
     assert auth.scopes == frozenset({"jobs:read"})
     assert auth.on_behalf_of == "google:1"
 
@@ -129,12 +129,12 @@ def test_a_google_writer_keeps_only_what_their_entry_grants_now() -> None:
 def test_a_google_writer_the_configuration_no_longer_admits_is_refused(accounts: dict[str, Any]) -> None:
     recorded = _signin("google:1", ["jobs:read"], idp="google", email="blake@example.com")
     with pytest.raises(InboundAuthError, match="no longer grants this tenant"):
-        _job_auth(_signin_settings(google_accounts=accounts), "acme", _job("google:1", recorded))
+        job_auth(_signin_settings(google_accounts=accounts), "acme", _job("google:1", recorded))
 
 
 def test_a_google_writer_recorded_before_emails_were_is_found_by_their_sub_pin() -> None:
     accounts = {"blake@example.com": {"tenant": "acme", "scopes": ["jobs:read"], "sub": "1"}}
-    auth = _job_auth(
+    auth = job_auth(
         _signin_settings(google_accounts=accounts),
         "acme",
         _job("google:1", _signin("google:1", ["jobs:read"])),
@@ -144,15 +144,15 @@ def test_a_google_writer_recorded_before_emails_were_is_found_by_their_sub_pin()
 
 def test_a_github_writer_keeps_only_what_their_org_grants_now_and_is_refused_once_it_grants_nothing() -> None:
     recorded = _signin("github:42", ["jobs:read", "jobs:write"], idp="github")
-    auth = _job_auth(_signin_settings(github_org_tenants=ORG), "acme", _job("github:42", recorded))
+    auth = job_auth(_signin_settings(github_org_tenants=ORG), "acme", _job("github:42", recorded))
     assert auth.scopes == frozenset({"jobs:read"})
     with pytest.raises(InboundAuthError, match="no longer grants this tenant"):
-        _job_auth(_signin_settings(github_org_tenants={}), "acme", _job("github:42", recorded))
+        job_auth(_signin_settings(github_org_tenants={}), "acme", _job("github:42", recorded))
 
 
 def test_a_github_writer_s_personal_tenant_is_their_own_and_keeps_its_record() -> None:
     recorded = _signin("github:42", ["jobs:write"], idp="github")
-    auth = _job_auth(make_settings(), "gh-42", _job("github:42", recorded))
+    auth = job_auth(make_settings(), "gh-42", _job("github:42", recorded))
     assert auth.scopes == frozenset({"jobs:write"})
 
 
@@ -163,15 +163,15 @@ def test_a_github_actions_writer_is_refused_once_its_repository_is_let_in_no_mor
         "github-actions:555:felix-run/felix/.github/workflows/x.yml@main", ["jobs:read"], idp="github-actions"
     )
     job = _job(recorded["principal_sub"], recorded)
-    assert _job_auth(_signin_settings(github_org_tenants=org), "acme", job).scopes == frozenset({"jobs:read"})
+    assert job_auth(_signin_settings(github_org_tenants=org), "acme", job).scopes == frozenset({"jobs:read"})
     with pytest.raises(InboundAuthError):
-        _job_auth(_signin_settings(github_org_tenants=ORG), "acme", job)
+        job_auth(_signin_settings(github_org_tenants=ORG), "acme", job)
 
 
 def test_a_writer_whose_token_another_issuer_signed_keeps_their_record() -> None:
     """Nothing in Felix's configuration says what an outside IdP grants, so there is nothing to check."""
     recorded = {"principal_sub": "alice", "scopes": ["jobs:write"], "scheme": "access"}
-    assert _job_auth(make_settings(), "acme", _job("alice", recorded)).scopes == frozenset({"jobs:write"})
+    assert job_auth(make_settings(), "acme", _job("alice", recorded)).scopes == frozenset({"jobs:write"})
 
 
 def test_a_sign_in_s_idp_and_email_are_recorded_and_no_other_issuer_s_are() -> None:

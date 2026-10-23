@@ -1313,6 +1313,117 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HeartbeatList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HeartbeatOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "HeartbeatList",
+        "type": "object"
+      },
+      "HeartbeatOut": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "last_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Status"
+          },
+          "manifest": {
+            "title": "Manifest",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "schedule": {
+            "title": "Schedule",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "manifest",
+          "name",
+          "enabled",
+          "schedule"
+        ],
+        "title": "HeartbeatOut",
+        "type": "object"
+      },
+      "HeartbeatUpsert": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "title": "HeartbeatUpsert",
+        "type": "object"
+      },
       "ImportIn": {
         "additionalProperties": false,
         "properties": {
@@ -14041,6 +14152,169 @@
         "summary": "Health",
         "tags": [
           "System"
+        ]
+      }
+    },
+    "/heartbeats": {
+      "get": {
+        "description": "The caller's own heartbeats, on every manifest.",
+        "operationId": "list_heartbeats_heartbeats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Heartbeats",
+        "tags": [
+          "Heartbeats"
+        ]
+      }
+    },
+    "/heartbeats/{manifest}": {
+      "delete": {
+        "description": "Turn the caller's heartbeat off for good: its job, run history and firing threads go. Its\nconversation stays -- it holds the notices the person was sent, and is theirs to delete.",
+        "operationId": "delete_heartbeat_heartbeats__manifest__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "manifest",
+            "required": true,
+            "schema": {
+              "title": "Manifest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Delete Heartbeat Heartbeats  Manifest  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Heartbeat",
+        "tags": [
+          "Heartbeats"
+        ]
+      },
+      "put": {
+        "description": "Turn the caller's heartbeat on `manifest` on (or off, keeping it and its conversation).\n\nThe manifest must define `spec.heartbeat` (422 `no_heartbeat`), and the caller must pass its\ninbound rules as each firing will run them -- `cron` on their behalf, with their scopes -- so a\nheartbeat that could never run is refused here, with the same written message. The first\nfiring waits for the schedule. The caller's heartbeat conversation is created on first enrol\nand kept across later ones while it exists.",
+        "operationId": "put_heartbeat_heartbeats__manifest__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "manifest",
+            "required": true,
+            "schema": {
+              "title": "Manifest",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatUpsert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Heartbeat",
+        "tags": [
+          "Heartbeats"
+        ]
+      }
+    },
+    "/heartbeats/{manifest}/run": {
+      "post": {
+        "description": "Fire the caller's heartbeat now and return the run, exactly as a scheduled firing runs.\n409 `heartbeat_running` while a firing of it is in flight.",
+        "operationId": "run_heartbeat_heartbeats__manifest__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "manifest",
+            "required": true,
+            "schema": {
+              "title": "Manifest",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Run Heartbeat Heartbeats  Manifest  Run Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Heartbeat",
+        "tags": [
+          "Heartbeats"
         ]
       }
     },

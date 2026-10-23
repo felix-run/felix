@@ -518,31 +518,25 @@ def _sweep_memory_sessions(cutoff_ms: int) -> int:
     first night. `thread_state.updated_at` moves on every write to the thread, so a thread
     is idle only when both say so.
     """
-    from felix.session import search as session_search
     from felix.session import store as session_store
-    from felix.session import thread_state, tree
+    from felix.session import thread_state
+    from felix.session.prune import drop_memory_threads
 
     cutoff_s = cutoff_ms / 1000
     dropped = 0
-    for store in session_store._memory_session_stores.values():
-        sessions = store._sessions
+    for store in list(session_store._memory_session_stores.values()):
         idle = [
             tid
-            for tid, s in sessions.items()
+            for tid, s in store._sessions.items()
             if s._events
             and max(float(ev.ts) for ev in s._events) < cutoff_s
             # The memory twin stamps `updated_at` in ms (the Postgres row uses seconds).
             and int(thread_state._meta_by_thread.get(tid, {}).get("updated_at") or 0) < cutoff_ms
         ]
-        for thread_id in idle:
-            dropped += len(sessions[thread_id]._events)
-            sessions.pop(thread_id, None)
-            thread_state._meta_by_thread.pop(thread_id, None)
-            tree._leaf_by_thread.pop(thread_id, None)
-            # The search index holds a copy of the content, so a purged thread that stayed
-            # searchable would defeat the retention this sweep exists to enforce. On Postgres
-            # the generated `content_tsv` goes with the deleted row.
-            session_search.drop_thread_index(tenant_id=store.tenant_id, thread_id=thread_id)
+        # Whole, as `session/prune.py` defines a thread -- events, metadata, leaf, head, and the
+        # search index, which holds a copy of the content: a purged thread that stayed searchable
+        # would defeat the retention this sweep exists to enforce.
+        dropped += drop_memory_threads(store.tenant_id, idle)[1]
     return dropped
 
 
@@ -700,6 +694,10 @@ async def _delete_audit(db: Any, cutoffs: Cutoffs, per_manifest: ManifestCutoffs
 
 async def _delete_idle_threads(db: Any, cutoff_ms: int) -> int:
     """Whole threads whose last event predates the cutoff, with their `thread_state` row.
+
+    What a thread owns is `session/prune.py:delete_threads`'s list; this is its set-wise form, for
+    a sweep over every tenant at once. A change to that list belongs here too. The per-process
+    leaf and head caches it also clears are not this worker's to clear for the API's replicas.
 
     Set-wise, so a first sweep over years of threads is one statement rather than a bound
     parameter per thread (Postgres caps a statement at 65535). A thread whose metadata was

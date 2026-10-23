@@ -48,6 +48,7 @@ from felix_api.routes import (
     chat,
     documents,
     files,
+    heartbeats,
     internal,
     jobs,
     manifests,
@@ -341,6 +342,7 @@ def create_app(
     app.include_router(push.router, prefix="/push")
     app.include_router(plans.router, prefix="/plans")
     app.include_router(jobs.router, prefix="/jobs")
+    app.include_router(heartbeats.router, prefix="/heartbeats")
     app.include_router(workflows.router, prefix="/workflows")
     app.include_router(workflow_runs.router, prefix="/workflows")
     app.include_router(triggers.router, prefix=TRIGGER_PATH_PREFIX.rstrip("/"))

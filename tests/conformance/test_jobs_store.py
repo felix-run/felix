@@ -538,3 +538,35 @@ async def test_first_run_at_sets_a_new_recurring_jobs_due_time_and_a_rewrite_ign
     rewritten = await _put(store_settings, schedule="@daily", first_run_at=9_000)
     assert rewritten["next_run_at"] == 5_000
     assert (await jobs.get_job(store_settings, TENANT, JOB))["next_run_at"] == 5_000
+
+
+# --- set_schedule: a conditional move, never an upsert ---------------------------------------
+
+
+@parametrized
+async def test_set_schedule_moves_only_the_schedule_it_was_told_it_would_find(store_settings: Any) -> None:
+    await _put(store_settings, schedule="every:60m", enabled=False, created_by="alice")
+    assert await jobs.set_schedule(
+        store_settings, TENANT, JOB, schedule="every:2h", next_run_at=123, expected_schedule="every:60m"
+    )
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert fetched is not None
+    assert (fetched["schedule"], fetched["next_run_at"]) == ("every:2h", 123)
+    assert (fetched["enabled"], fetched["created_by"]) == (False, "alice"), "nothing else moves"
+
+    # Moved since it was read: left alone.
+    assert not await jobs.set_schedule(
+        store_settings, TENANT, JOB, schedule="every:3h", next_run_at=456, expected_schedule="every:60m"
+    )
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert fetched is not None and fetched["schedule"] == "every:2h"
+
+
+@parametrized
+async def test_set_schedule_never_brings_back_a_deleted_job(store_settings: Any) -> None:
+    await _put(store_settings, schedule="every:60m")
+    assert await jobs.delete_job(store_settings, TENANT, JOB)
+    assert not await jobs.set_schedule(
+        store_settings, TENANT, JOB, schedule="every:2h", next_run_at=1, expected_schedule="every:60m"
+    )
+    assert await jobs.get_job(store_settings, TENANT, JOB) is None

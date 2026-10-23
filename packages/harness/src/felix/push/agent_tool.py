@@ -351,11 +351,12 @@ class _Notices:
         return (call.thread_id if call is not None else None) or ctx.thread_id or ""
 
     def thread_for(self, ctx: RequestContext, auth: AuthContext, call: ToolInvocationCtx | None) -> str:
-        """The conversation the person can open from the notice. A scheduled task's firing runs in
-        a thread of its own; the task recorded where it was scheduled from, and that is the one --
-        only `schedule_task` writes that record (`PUT /jobs` strips a caller's), only for a task
-        this person wrote, and only a chat thread id of this tenant's (`_openable_thread`).
-        Otherwise the run's own."""
+        """The conversation the person can open from the notice. A scheduled task's or a heartbeat's
+        firing runs in a thread of its own; the job recorded where it belongs -- the thread a task
+        was scheduled from, a heartbeat's own conversation -- and that is the one. Only
+        `schedule_task` and a heartbeat's enrolment (`jobs/heartbeat.py:enrol`) write that record
+        (`PUT /jobs` strips a caller's), it is used only for a job this person wrote, and only a
+        chat thread id of this tenant's (`_openable_thread`). Otherwise the run's own."""
         from felix.jobs.scheduler import SCHEDULED_FROM_EXTRA
 
         origin = ctx.extras.get(SCHEDULED_FROM_EXTRA)

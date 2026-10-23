@@ -53,14 +53,14 @@ def _auth(sub: str = "alice", tenant: str = TENANT, **kw: Any) -> AuthContext:
 
 def _firing(created_by: str = "alice") -> AuthContext:
     """A scheduled job's firing, built the way the scheduler builds it: `cron` for the writer."""
-    from felix.jobs.scheduler import _job_auth
+    from felix.jobs.scheduler import job_auth
 
     job = {
         "name": "j",
         "created_by": created_by,
         "created_auth": {"principal_sub": created_by, "scheme": "jwt"},
     }
-    return _job_auth(make_settings(), TENANT, job)
+    return job_auth(make_settings(), TENANT, job)
 
 
 def _manifest(name: str = MANIFEST, **spec: Any) -> Any:
