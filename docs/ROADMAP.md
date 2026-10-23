@@ -761,6 +761,38 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
 - [ ] Open: whether a workflow can call another; per-step retry and timeout. (A tool schema that
       drifted since a `tool_call` step was wired fails the step at run, #640.)
 
+### MCP on the official SDK, and Skills over MCP (2026-10-22)
+
+An audit of the MCP Skills extension (SEP-2640, `io.modelcontextprotocol/skills`, Final) found it
+exists only on protocol revision `2026-07-28`, while `/mcp` was hand-rolled JSON-RPC on `2025-06-18`
+with the agent chosen by a non-standard `params.manifest`. Decision: adopt the official `mcp` SDK in
+both directions, then serve the skill library over MCP. Loading remote skills live into an unattended
+agent is out: the extension's safety model is a person approving each skill's digest set, which maps
+onto the library's import gate instead.
+
+- [~] **Server on the SDK.** `/mcp` and `/mcp/{manifest}` are `StreamableHTTPSessionManager`
+      (stateless, JSON responses) over a lowlevel `Server`; both eras, `server/discover`, header
+      validation and status codes are the SDK's. `mcp` became a core dependency.
+- [ ] **Refuse a request carrying `Origin`, app-wide.** `2026-07-28` says an MCP server MUST validate
+      `Origin`; Felix has no browser surface and no CORS layer, so a request with any `Origin` can be
+      refused (403) in the middleware stack. The gap it closes is DNS rebinding against a loopback
+      `make dev` (`auth_mode=none`), and it is not MCP's alone: `/chat` and `/v1` are equally reachable.
+      The SDK's own `TransportSecuritySettings` also imposes a Host allowlist, so a plain Felix
+      middleware is the better fit. Found in the SDK-server security review.
+- [ ] **SDK legacy-path parse errors echo the client's input.** On a request without a modern version
+      header the SDK answers a malformed body with pydantic's text (`Validation error: …`), which
+      quotes the client's own `input_value`. No server data, but not `client_safe_message` either;
+      accepted for now as SDK behaviour, revisit if the SDK changes or a pre-validation is cheap.
+- [ ] **Outbound client on the SDK.** Replace `mcp/client.py` and `mcp/stdio.py` with `mcp.Client`
+      over the SDK's Streamable HTTP and stdio transports, keeping `safe_async_client` egress, the
+      stdio allowlist and the scrubbed child env.
+- [ ] **Skills extension on the server.** `skills/list`, `skills/get` and skill files over
+      `resources/read` from the manifest's own catalog (one helper shared with `build_agent`),
+      manifests of sha256 and size computed from the redacted bytes served. Blocked on an SDK release
+      containing python-sdk#3485 (merged 2026-10-11, after v2.3.0).
+- [ ] **MCP servers as a skill-import source.** `mcp:` sources into library drafts, each file
+      verified against the entry's digest, size and frontmatter, lineage keyed on the digest set.
+
 ### Auth audit (2026-10-12)
 
 A read of authentication, per-route authorization and tenancy against v0.14.1, landed as four PRs.
@@ -1062,8 +1094,8 @@ so under the meta-work budget only the first is exempt as a security defect; the
       naming the removed `test_temporal_backend.py`. Candidates for the **dead-code-audit** skill:
       `Settings.webhook_secret` (hydrated, apparently unread — run webhooks sign per endpoint),
       `SummarizingSessionStrategy` (exported, never built: `summarizing:N` builds the compacting
-      strategy), `EchoExecutor`, `client_bridge.prepare_waiter`, and the `mcp` extra (the MCP
-      client is hand-rolled JSON-RPC over httpx).
+      strategy), `EchoExecutor`, and `client_bridge.prepare_waiter`. (The `mcp` extra is gone: the SDK is a core dependency
+      since the MCP SDK program below.)
 
 #### From the governance mutation audit (Sep 2026, #141–#150)
 

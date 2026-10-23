@@ -45,7 +45,6 @@ OPTIONAL_DISTRIBUTIONS = {
     "docker",
     "duckdb",
     "google",
-    "mcp",
     "opentelemetry",
     "PIL",
     "playwright",

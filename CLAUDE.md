@@ -14,7 +14,7 @@ Granian (API), Taskiq (worker/scheduler), Postgres+pgvector, Valkey/Redis, plugg
 ```bash
 make bootstrap          # fresh clone: tools check, .env with generated passwords, install, pre-commit
 make install            # uv sync --dev (lean core; CI lint/type jobs use --all-extras)
-make install-full       # uv sync --all-extras --dev (aws/gcp/mcp/browser/embeddings/…)
+make install-full       # uv sync --all-extras --dev (aws/gcp/browser/embeddings/…)
 make check              # ruff check + ty check + pytest w/ coverage floor + ruff format --check
 make test-cov           # the suite with coverage against the floor; `check` and CI both run this
 make check-ci           # check + bundle, schema-check, contract-check, toolkit, eval, lock-check, deps-age, SRI, pre-commit
