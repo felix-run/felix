@@ -945,6 +945,14 @@ time — a review question, not a silent default. What to check when reviewing o
 - **Is `max_bytes` sized for your context window?** The far end chooses the length; the body
   is streamed and truncated, counted **after** decompression, so a gzip bomb is capped at
   what the model would actually see.
+- **Does it set `extract_model`?** Then the tool returns a model's answer to a `prompt`, not the
+  page. That saves context and cost; it is not a security boundary. Screening sees the
+  extractor's *answer*, which a hostile page can steer, so with screening enabled the marker scan
+  also runs over the page as served and a marked page is refused before the extractor reads it.
+  The paid `model` scorer still sees only the answer. Extraction failure returns an error, never
+  the page. The route is checked against `auth.outbound.providers` and, under a declared
+  `max_cost_usd`, must be priced; the call is metered as `kind: web_fetch_extract`. It has its own
+  deadline, `FELIX_MODEL_TIMEOUT_SECONDS`, separate from `timeout_ms`.
 
 A fetch tool is **not** replay-safe. A resumed run will not re-issue it, because the model
 names the endpoint and a GET that mutates is ordinary on the open web.

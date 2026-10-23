@@ -107,6 +107,19 @@ def test_fallback_models_are_checked_too() -> None:
         assert_outbound_providers_allowed(m, _settings())
 
 
+def test_fetch_extraction_models_are_checked_too() -> None:
+    """A fetched page and a model-written prompt go to `extract_model`, so the pin covers it."""
+    m = _manifest(
+        {
+            "auth": {"outbound": {"providers": ["anthropic"]}},
+            "model": {"id": "claude-sonnet-4"},
+            "http_tools": [{"name": "web_fetch", "allow_any_host": True, "extract_model": "gpt-4.1"}],
+        }
+    )
+    with pytest.raises(GovernanceError, match=re.escape("gpt-4.1")):
+        assert_outbound_providers_allowed(m, _settings())
+
+
 def test_empty_providers_allows_anything() -> None:
     assert_outbound_providers_allowed(_manifest({"model": {"id": "gpt-4.1"}}), _settings())
 

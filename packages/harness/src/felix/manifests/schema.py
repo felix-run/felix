@@ -489,6 +489,12 @@ class HttpFetchToolRef(_Strict):
     fatal: bool = False
     # Unrestricted egress has to be typed out. See `_require_a_boundary`.
     allow_any_host: bool = False
+    # A `FELIX_MODEL_ROUTES` id. Set, the tool takes a `prompt` beside the `url`, runs this model
+    # over the fetched page and returns its answer instead of the page — the agent's own model
+    # never reads the raw document. Empty returns the page, as before.
+    extract_model: str = ""
+    # Cap on the extraction answer; `None` is the tool's default.
+    extract_max_tokens: int | None = Field(default=None, gt=0, le=8192)
 
     @model_validator(mode="after")
     def _require_a_boundary(self) -> HttpFetchToolRef:
@@ -506,6 +512,8 @@ class HttpFetchToolRef(_Strict):
                 f"http_tools[{self.name!r}]: set a path_prefix to confine the tool, "
                 "or allow_any_host: true to permit any address the egress guard allows"
             )
+        if self.extract_max_tokens is not None and not self.extract_model:
+            raise ValueError(f"http_tools[{self.name!r}]: extract_max_tokens needs extract_model")
         return self
 
 
