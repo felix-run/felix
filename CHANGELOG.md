@@ -10,6 +10,52 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-23
+
+### Added
+
+- `spec.workflow_authoring`: an agent builds and runs workflows for the person it acts for, through `workflow_catalog`, `check_workflow`, `save_workflow`, `list_my_workflows` and `run_workflow`. Each save waits for that person's approval, and no permission mode waives it. (#671)
+
+- Markdown is linted by markdownlint-cli2 as a pre-commit hook (so in CI's pre-commit job and
+  `make check-ci`); `make lint-md` runs it alone, with rules in `.markdownlint.yaml`. (#672)
+
+- `GET /v1/models`: `felix.wireModel` is the provider's model id the manifest's route serves (for example `claude-sonnet-5` for the `claude-sonnet-4` route). It is `null` when the route is not defined. `felix.providerModel` is still the route name. (#675)
+
+- `spec.workflow_authoring.run_approval` (`auto` | `always` | `never`): `run_workflow` waits for the person's approval when the run's inputs can reach a tool that changes things (`auto`, the default), on every run, or never. (#676)
+
+- `ModelChatOptions.tool_choice` (`"auto"` | `"none"`), honoured by the OpenAI and Anthropic wire formats. (#678)
+
+- Long-term memory is per person: `spec.memory.scope: person` (the default) gives each person (`issuer|subject`, carried into durable runs and jobs) a pool shared by every agent acting for them, read beside the operator-written rows of the agent's own pool; `scope: agent` keeps the previous per-agent pool. A request that names no person (anonymous, a key with no `sub`, a trigger, a GitHub Actions workflow, a Slack channel message) writes no memory. (#677)
+
+- `FELIX_PRINCIPAL_ALIASES` maps one person to the person they belong to (JSON; a bare value is Felix's own sign-in issuer; one hop; a chain or a shared credential refuses the boot). (#677)
+
+- `felix memory assign --tenant T --manifest M --to PERSON [--include-operator] [--dry-run]` moves an agent's existing memory into a person's pool, merging rather than overwriting what they already hold. (#677)
+
+- `/memory` reads take `?principal=`; `POST /memory` takes `principal` (422 for a shared credential, 409 when the content's id belongs to another pool). (#677)
+
+### Changed
+
+- A workflow's `authored_via` now names what made its latest save, not its creation. A save through `PUT /workflows/{id}` takes over a workflow an agent wrote. By the person it was made for, it becomes `owner:agent:<manifest>`, which that agent may still run but not change; by anyone else, it is cleared. (#671)
+
+- Manifests that already use `spec.workflow_authoring` now ask before a run whose inputs reach a writing tool, because `auto` is the default. A manifest rule that already covers `run_workflow` is left as it was. Set `run_approval: never` to keep the previous behaviour. (#676)
+
+- A person's agent no longer sees agent-written rows of the agent's own pool; run `felix memory assign` to move them to the person they belong to. (#677)
+
+- The `forget` memory tool reaches only its own pool's rows. (#677)
+
+- Migration `0046_memory_principal` adds `memory_vectors.principal` and two indexes, built concurrently. (#677)
+
+### Fixed
+
+- `deploy/docker/README.md` no longer renders its opening usage notes as twelve headings. (#672)
+
+- `deploy/GOVERNANCE.md` shows the heartbeat conversation title `Heartbeat: <manifest>` instead of
+  dropping `<manifest>` as an HTML tag. (#672)
+
+- The bundled `support` agent's step limit is now 25 instead of the default 10, so a docs search plus page fetches no longer runs out before it answers. (#678)
+
+- A react run's last step now asks the model for an answer (`tool_choice: none`) instead of offering tools it could never run, so a run that reaches `recursion_limit` answers with what it found instead of stopping on pending tool calls. (#678)
+
 ## [0.16.1] — 2026-10-22
 
 ### Added
@@ -5091,3 +5137,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.15.1]: https://github.com/felix-run/felix/releases/tag/v0.15.1
 [0.16.0]: https://github.com/felix-run/felix/releases/tag/v0.16.0
 [0.16.1]: https://github.com/felix-run/felix/releases/tag/v0.16.1
+[0.17.0]: https://github.com/felix-run/felix/releases/tag/v0.17.0
