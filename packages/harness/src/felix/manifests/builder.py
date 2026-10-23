@@ -20,6 +20,7 @@ from felix.governance.judges import judge_calls_out, judge_score
 from felix.governance.permission_mode import (
     EXIT_PLAN_TOOL_NAME,
     apply_permission_mode,
+    builtin_approval_rules,
     make_exit_plan_tool,
     plan_approval_rule,
     record_waiver,
@@ -2459,27 +2460,10 @@ async def build_agent(
             # The plan is approved through the same flow as any gated call -- the row, the
             # `approval_required` frame, `GET /approvals` -- and no mode waives it.
             approval_rules.append(plan_approval_rule())
-        if m.spec.scheduling is not None and m.spec.scheduling.approval:
-            # A task's prompt runs later on the caller's authority with no one watching, so by
-            # default a person reads it first -- unless the manifest's own rule already gates it.
-            from felix.jobs.agent_tools import default_scheduling_rule
-
-            scheduling_rule = default_scheduling_rule(m.spec.scheduling, list(m.spec.approvals))
-            if scheduling_rule is not None:
-                approval_rules.append(scheduling_rule)
-        if m.spec.notify is not None and m.spec.notify.approval:
-            from felix.push.agent_tool import default_notify_rule
-
-            notify_rule = default_notify_rule(m.spec.notify, list(m.spec.approvals))
-            if notify_rule is not None:
-                approval_rules.append(notify_rule)
-        if m.spec.workflow_authoring is not None and m.spec.workflow_authoring.approval:
-            # A saved workflow runs later as whoever starts it, so a person reads it first.
-            from felix.workflows.agent_tools import default_workflow_save_rule
-
-            save_rule = default_workflow_save_rule(m.spec.workflow_authoring, list(m.spec.approvals))
-            if save_rule is not None:
-                approval_rules.append(save_rule)
+        # The approvals a spec block adds over the tool it binds -- `schedule_task`, `notify`,
+        # `save_workflow` -- unless the manifest's own rule already gates every call
+        # (`permission_mode.BUILTIN_APPROVALS`). No mode waives them.
+        approval_rules.extend(builtin_approval_rules(m.spec, list(m.spec.approvals)))
         if approval_rules:
             resolved = apply_approvals(
                 resolved, approval_rules, m.metadata.name, permissions=m.spec.permissions
