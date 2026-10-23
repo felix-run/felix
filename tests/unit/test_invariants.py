@@ -554,6 +554,7 @@ def test_every_memory_store_function_is_classified() -> None:
     # unclassified until someone says which it is.
     NOT_RETIREMENT = {
         "now_ms",
+        "normalize_topic_key",
         "memory_id",
         "_row_dict",
         "_is_active",
