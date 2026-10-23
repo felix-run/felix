@@ -380,3 +380,25 @@ async def test_a_save_records_its_creator_and_a_replace_keeps_them() -> None:
         )
         listed = (await client.get("/workflows", headers=bob)).json()["items"]
         assert [(i["created_by"], i["authored_via"]) for i in listed] == [("ada", "")]
+
+
+async def test_an_agent_authored_workflow_reads_back_as_one() -> None:
+    # Every route-made workflow has an empty `authored_via`, so only a row an agent wrote proves
+    # the routes return the stored value rather than a constant.
+    from felix.workflows.schema import WorkflowSpec
+
+    settings = make_settings()
+    await workflow_store.put_workflow(
+        settings,
+        "default",
+        "agent-made",
+        WorkflowSpec.model_validate(_definition()),
+        updated_by="ada",
+        created_by="ada",
+        authored_via="agent:quick",
+    )
+    async with app_client(settings) as client:
+        read = (await client.get("/workflows/agent-made")).json()
+        assert (read["created_by"], read["authored_via"]) == ("ada", "agent:quick")
+        listed = (await client.get("/workflows")).json()["items"]
+        assert [(i["id"], i["authored_via"]) for i in listed] == [("agent-made", "agent:quick")]

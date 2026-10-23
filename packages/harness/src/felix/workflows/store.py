@@ -169,6 +169,7 @@ def _put_in_memory(
     workflow_id: str,
     definition: dict[str, Any],
     ts: int,
+    *,
     precondition: Precondition,
     updated_by: str,
     created_by: str,
@@ -223,7 +224,14 @@ async def put_workflow(
 
     if _use_memory(settings):
         return _put_in_memory(
-            tenant_id, workflow_id, definition, ts, precondition, updated_by, created_by, authored_via
+            tenant_id,
+            workflow_id,
+            definition,
+            ts,
+            precondition=precondition,
+            updated_by=updated_by,
+            created_by=created_by,
+            authored_via=authored_via,
         )
 
     async with tenant_session(settings, tenant_id) as db:
