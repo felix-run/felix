@@ -69,7 +69,7 @@ class ModelPricing:
 
     Tiers are not marginal: crossing a threshold reprices every token of the request, so
     the matching tier's rates replace the base rates rather than applying to the excess.
-    No bundled entry sets tiers, and none should: Anthropic bills Claude 4.6 and later at one
+    Only Claude Haiku 5.5 sets them: every other Claude 4.6-and-later model is billed at one
     rate across the whole 1M window (a 900K-token request costs per token what a 9K one does),
     and the pre-4.6 entries here are sized at 200K, below any threshold that ever applied.
     """
@@ -157,7 +157,7 @@ _NATIVE_UNFORCED = {"structured_outputs": True, "forced_tool_choice": False}
 # an offer — so these say "no forcing", and "no native format", which is a 400 the other way.
 _UNVOUCHED = {"structured_outputs": False, "forced_tool_choice": False}
 
-# USD per MTok from https://platform.claude.com/docs/en/about-claude/pricing, read 2026-09-30.
+# USD per MTok from https://platform.claude.com/docs/en/about-claude/pricing, read 2026-10-23.
 # `cache_write` is the 5-minute write (1.25x input). Matching is by longest substring, so a
 # point release with different rates needs its own key: without one, `claude-opus-5-5` was
 # billed as `claude-opus-5` and `claude-fable-5-1` read its cache at `claude-fable-5`'s rate.
@@ -167,7 +167,26 @@ _OPUS_55_PRICE = ModelPricing(input=4.0, output=20.0, cache_read=0.2, cache_writ
 # Sonnet 4.x. Sonnet 5 is cheaper; its $2/$10 launch price became the standard one.
 _SONNET_PRICE = ModelPricing(input=3.0, output=15.0, cache_read=0.3, cache_write=3.75)
 _SONNET_5_PRICE = ModelPricing(input=2.0, output=10.0, cache_read=0.2, cache_write=2.5)
+# Sonnet 5's rates with Opus 5.5's 0.05x cache reads.
+_SONNET_55_PRICE = ModelPricing(input=2.0, output=10.0, cache_read=0.1, cache_write=2.5)
 _HAIKU_PRICE = ModelPricing(input=1.0, output=5.0, cache_read=0.1, cache_write=1.25)
+# Two rate cards chosen by prompt length, cache reads and writes included: a prompt over
+# 100K tokens pays 5x on every token of the request.
+_HAIKU_55_PRICE = ModelPricing(
+    input=0.1,
+    output=0.5,
+    cache_read=0.01,
+    cache_write=0.125,
+    tiers=(
+        {
+            "input_tokens_above": 100_000,
+            "input": 0.5,
+            "output": 2.5,
+            "cache_read": 0.05,
+            "cache_write": 0.625,
+        },
+    ),
+)
 _FABLE_PRICE = ModelPricing(input=10.0, output=50.0, cache_read=1.0, cache_write=12.5)
 # Fable 5.1 and Mythos 5.1: the same tier, with cache reads at 0.025x input.
 _FABLE_51_PRICE = ModelPricing(input=10.0, output=50.0, cache_read=0.25, cache_write=12.5)
@@ -214,11 +233,18 @@ _CATALOG: dict[str, ModelCatalogEntry] = {
     "claude-opus-4-8": replace(_NATIVE_FRONTIER, pricing=_OPUS_PRICE),
     "claude-opus-4-7": replace(_FRONTIER, pricing=_OPUS_PRICE),
     "claude-opus-4-6": replace(_FRONTIER, pricing=_OPUS_PRICE, quirks=_V46_QUIRKS),
-    # Its own key although priced as Sonnet 5: it rejects a forced tool choice, and under the
-    # `claude-sonnet-5` key it was sent one on every structured turn.
-    "claude-sonnet-5-5": replace(_UNFORCED_FRONTIER, pricing=_SONNET_5_PRICE),
+    # Its own key: it rejects a forced tool choice, and under the `claude-sonnet-5` key it was
+    # sent one on every structured turn — and billed its cache reads at twice their rate.
+    "claude-sonnet-5-5": replace(_UNFORCED_FRONTIER, pricing=_SONNET_55_PRICE),
     "claude-sonnet-5": replace(_NATIVE_FRONTIER, pricing=_SONNET_5_PRICE),
     "claude-sonnet-4-6": replace(_FRONTIER, quirks=_V46_QUIRKS),
+    # Thinks unless told not to, like Opus 5, and still accepts a forced tool choice (the call
+    # then skips thinking). Under the `claude-haiku` family key it was unpriced and 200K.
+    "claude-haiku-5-5": replace(
+        _FRONTIER,
+        pricing=_HAIKU_55_PRICE,
+        quirks=replace(_MODERN_QUIRKS, thinking_on_by_default=True, **_NATIVE),
+    ),
     # --- Claude, pre-4.6 (200K context, fixed thinking budgets) ---
     "claude-opus-4-5": replace(
         _PRE_46,

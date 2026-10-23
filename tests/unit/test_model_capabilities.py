@@ -137,7 +137,7 @@ def test_truncated_and_refused_runs_are_not_recorded_as_complete() -> None:
 
 
 # (input, output, cache_read, cache_write) per MTok, from the Anthropic pricing page read on
-# 2026-09-30. Every rate is asserted, not just input: cache reads are where the point
+# 2026-10-23. Every rate is asserted, not just input: cache reads are where the point
 # releases differ, and a long agentic session is mostly cache reads.
 _PUBLISHED = {
     "claude-fable-5-1": (10.0, 50.0, 0.25, 12.5),
@@ -147,10 +147,12 @@ _PUBLISHED = {
     "claude-opus-5": (5.0, 25.0, 0.5, 6.25),
     "claude-opus-4-8": (5.0, 25.0, 0.5, 6.25),
     "claude-sonnet-5": (2.0, 10.0, 0.2, 2.5),
-    "claude-sonnet-5-5": (2.0, 10.0, 0.2, 2.5),
+    "claude-sonnet-5-5": (2.0, 10.0, 0.1, 2.5),
     "claude-sonnet-4-6": (3.0, 15.0, 0.3, 3.75),
     # Haiku was priced at 0.8/4.0, under-reporting every run.
     "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
+    # The card for prompts up to 100K tokens; the one above is a tier (`test_pricing_tiers`).
+    "claude-haiku-5-5": (0.1, 0.5, 0.01, 0.125),
 }
 
 
@@ -180,7 +182,6 @@ def test_default_routes_point_at_current_models() -> None:
     from felix.config import DEFAULT_MODEL_ROUTES
 
     wire = {r["model"] for r in DEFAULT_MODEL_ROUTES.values() if r["provider"] == "anthropic"}
-    assert "claude-opus-5" in wire
-    assert "claude-sonnet-5" in wire
+    assert {"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"} <= wire
     # no date-suffixed ids
     assert not any(m.count("-") > 3 and m.split("-")[-1].isdigit() for m in wire)
