@@ -1347,14 +1347,14 @@ def redis_url_in_use(settings: Any) -> str:
 # these are just the ids Felix ships pre-mapped. Anything else is FELIX_MODEL_ROUTES.
 DEFAULT_MODEL_ROUTES: dict[str, dict[str, str]] = {
     # Current generation. Wire ids are complete as written — no date suffixes.
-    "claude-opus": {"provider": "anthropic", "model": "claude-opus-5"},
-    "claude-sonnet": {"provider": "anthropic", "model": "claude-sonnet-5"},
-    "claude-haiku": {"provider": "anthropic", "model": "claude-haiku-4-5"},
-    "claude-fable": {"provider": "anthropic", "model": "claude-fable-5"},
+    "claude-opus": {"provider": "anthropic", "model": "claude-opus-5-5"},
+    "claude-sonnet": {"provider": "anthropic", "model": "claude-sonnet-5-5"},
+    "claude-haiku": {"provider": "anthropic", "model": "claude-haiku-5-5"},
+    "claude-fable": {"provider": "anthropic", "model": "claude-fable-5-1"},
     # Legacy logical ids kept so existing manifests keep resolving, now pointing at the
     # current model in the same tier rather than a two-generation-old snapshot.
-    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-5"},
-    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-4-5"},
+    "claude-sonnet-4": {"provider": "anthropic", "model": "claude-sonnet-5-5"},
+    "claude-haiku-4": {"provider": "anthropic", "model": "claude-haiku-5-5"},
     "gpt-4.1": {"provider": "openai", "model": "gpt-4.1"},
     "gpt-4.1-mini": {"provider": "openai", "model": "gpt-4.1-mini"},
     # Open-weight models on Cloudflare Workers AI, one token and an account id under

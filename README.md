@@ -661,10 +661,11 @@ override) or by the built-in defaults:
 
 | Logical id | Provider | Wire model |
 |---|---|---|
-| `claude-opus` | anthropic | `claude-opus-5` |
-| `claude-sonnet` (default) | anthropic | `claude-sonnet-5` |
-| `claude-haiku` | anthropic | `claude-haiku-4-5` |
-| `claude-fable` | anthropic | `claude-fable-5` |
+| `claude-opus` | anthropic | `claude-opus-5-5` |
+| `claude-sonnet` (default) | anthropic | `claude-sonnet-5-5` |
+| `claude-haiku` | anthropic | `claude-haiku-5-5` |
+| `claude-fable` | anthropic | `claude-fable-5-1` |
+| `claude-sonnet-4` / `claude-haiku-4` | anthropic | legacy ids, now `claude-sonnet-5-5` / `claude-haiku-5-5` |
 | `gpt-4.1` / `gpt-4.1-mini` | openai | same |
 | `glm-5.3-cf` | workers_ai | `@cf/zai-org/glm-5.3` (1M, text only) |
 | `glm-5.3-flash-cf` | workers_ai | `@cf/zai-org/glm-5.3-flash` (1M, vision) |

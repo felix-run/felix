@@ -74,7 +74,7 @@ def test_price_lookup_reads_the_same_record() -> None:
 
 
 def test_pricing_dict_omits_tiers_when_there_are_none() -> None:
-    """No bundled entry sets tiers; the key must be absent rather than empty."""
+    """An entry without tiers omits the key rather than sending an empty list."""
     assert "tiers" not in _lookup_price("claude-sonnet-5")
 
 
@@ -167,3 +167,15 @@ def test_gpt_4_1_family_is_priced() -> None:
     assert entry_for("gpt-4.1-nano").pricing.output == 0.4
     assert entry_for("gpt-4.1-nano").pricing.cache_read == 0.025
     assert entry_for("gpt-4.1-nano").pricing.cache_write == 0.1
+
+
+def test_haiku_5_5_is_a_current_generation_entry_of_its_own() -> None:
+    """Under the `claude-haiku` family key it was sized at 200K and sent no native format."""
+    entry = entry_for("claude-haiku-5-5")
+    assert entry.context_window == 1_000_000
+    assert entry.max_output_tokens == 128_000
+    assert entry.quirks.thinking_on_by_default is True
+    assert entry.quirks.sampling is False
+    assert entry.quirks.structured_outputs is True
+    # Unlike the other 5.5 releases it still accepts a forced tool choice.
+    assert entry.quirks.forced_tool_choice is True
