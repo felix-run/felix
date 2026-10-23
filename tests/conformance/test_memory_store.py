@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from felix.memory import store as memory_store
-from felix.memory.store import ACTIVE, FORGOTTEN, SUPERSEDED
+from felix.memory.store import ACTIVE, FORGOTTEN, SUPERSEDED, MemoryFilter, MemoryPool
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=True)
@@ -43,7 +43,9 @@ def one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _put(settings: Any, content: str, **kw: Any) -> dict[str, Any]:
-    return await memory_store.put_memory(settings, TENANT, content=content, manifest_id=MANIFEST, **kw)
+    return await memory_store.put_memory(
+        settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=content, **kw
+    )
 
 
 @parametrized
@@ -51,7 +53,7 @@ async def test_same_content_collapses_to_one_row(memory_settings: Any) -> None:
     a = await _put(memory_settings, "The user prefers dark mode.")
     b = await _put(memory_settings, "the   user prefers DARK mode.")
     assert a["id"] == b["id"]
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(active) == 1
 
 
@@ -68,7 +70,7 @@ async def test_topic_key_supersedes_the_previous_value(memory_settings: Any) -> 
     assert rows[old["id"]]["superseded_seq"] == 7
     assert rows[new["id"]]["status"] == ACTIVE
 
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["Timezone is CET."]
 
 
@@ -76,10 +78,20 @@ async def test_topic_key_supersedes_the_previous_value(memory_settings: Any) -> 
 async def test_supersession_is_scoped_to_one_manifest(memory_settings: Any) -> None:
     """Two agents sharing a topic key must not overwrite each other's memory."""
     mine = await memory_store.put_memory(
-        memory_settings, TENANT, content="Mine.", manifest_id="agent-a", topic_key="k", origin_seq=1
+        memory_settings,
+        TENANT,
+        pool=MemoryPool.agent("agent-a"),
+        content="Mine.",
+        topic_key="k",
+        origin_seq=1,
     )
     await memory_store.put_memory(
-        memory_settings, TENANT, content="Theirs.", manifest_id="agent-b", topic_key="k", origin_seq=2
+        memory_settings,
+        TENANT,
+        pool=MemoryPool.agent("agent-b"),
+        content="Theirs.",
+        topic_key="k",
+        origin_seq=2,
     )
     rows = await memory_store.get_many(memory_settings, TENANT, [mine["id"]])
     assert rows[mine["id"]]["status"] == ACTIVE
@@ -92,8 +104,8 @@ async def test_as_of_reconstructs_the_earlier_belief(memory_settings: Any) -> No
         memory_settings, "Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR
     )
 
-    at5 = await memory_store.as_of(memory_settings, TENANT, 5, manifest_id=MANIFEST)
-    at9 = await memory_store.as_of(memory_settings, TENANT, 9, manifest_id=MANIFEST)
+    at5 = await memory_store.as_of(memory_settings, TENANT, 5, scope=MemoryFilter(manifest_id=MANIFEST))
+    at9 = await memory_store.as_of(memory_settings, TENANT, 9, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in at5] == ["Timezone is UTC."]
     assert [r["content"] for r in at9] == ["Timezone is CET."]
 
@@ -113,7 +125,10 @@ async def test_re_remembering_keeps_the_original_provenance(memory_settings: Any
 async def test_forget_hides_without_deleting(memory_settings: Any) -> None:
     row = await _put(memory_settings, "Regrettable fact.", origin_seq=3)
     assert await memory_store.forget(memory_settings, TENANT, row["id"]) is True
-    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+    assert (
+        await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
+        == []
+    )
 
     rows = await memory_store.get_many(memory_settings, TENANT, [row["id"]])
     assert rows[row["id"]]["status"] == FORGOTTEN
@@ -137,11 +152,15 @@ async def test_get_many_resolves_in_one_call(memory_settings: Any) -> None:
 async def test_kind_and_manifest_filters(memory_settings: Any) -> None:
     await _put(memory_settings, "a fact", kind="fact")
     await _put(memory_settings, "a procedure", kind="procedure")
-    await memory_store.put_memory(memory_settings, TENANT, content="elsewhere", manifest_id="other")
+    await memory_store.put_memory(
+        memory_settings, TENANT, pool=MemoryPool.agent("other"), content="elsewhere"
+    )
 
-    facts = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, kind="fact")
+    facts = await memory_store.list_active(
+        memory_settings, TENANT, kind="fact", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert [r["content"] for r in facts] == ["a fact"]
-    mine = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    mine = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(mine) == 2
 
 
@@ -212,7 +231,9 @@ async def test_recall_finds_by_content_not_recency(memory_settings: Any) -> None
     await _put(memory_settings, "The deployment runbook lives in the ops repository.")
     await _put(memory_settings, "Lunch was pleasant.")
 
-    hits = await recall(memory_settings, TENANT, "where is the runbook", manifest_id=MANIFEST)
+    hits = await recall(
+        memory_settings, TENANT, "where is the runbook", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert hits
     assert "runbook" in hits[0].content
 
@@ -222,7 +243,7 @@ async def test_topic_channel_finds_a_dotted_identifier(memory_settings: Any) -> 
     from felix.memory.recall import recall
 
     await _put(memory_settings, "CET.", topic_key="user.timezone")
-    hits = await recall(memory_settings, TENANT, "what timezone", manifest_id=MANIFEST)
+    hits = await recall(memory_settings, TENANT, "what timezone", scope=MemoryFilter(manifest_id=MANIFEST))
     assert hits
     assert hits[0].topic_key == "user.timezone"
     assert "topic" in hits[0].channels
@@ -238,7 +259,9 @@ async def test_vector_channel_finds_a_paraphrase(memory_settings: Any) -> None:
     await _put(memory_settings, "The automobile is red.", embedding=vectors[0])
     await _put(memory_settings, "The soup is cold.", embedding=vectors[1])
 
-    hits = await recall(memory_settings, TENANT, "my car", manifest_id=MANIFEST, embedder=emb)
+    hits = await recall(
+        memory_settings, TENANT, "my car", embedder=emb, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert hits
     assert "automobile" in hits[0].content
     assert "vector" in hits[0].channels
@@ -255,7 +278,7 @@ async def test_superseded_and_forgotten_are_not_recalled(memory_settings: Any) -
     gone = await _put(memory_settings, "Timezone trivia nobody wants.")
     await memory_store.forget(memory_settings, TENANT, gone["id"])
 
-    hits = await recall(memory_settings, TENANT, "timezone", manifest_id=MANIFEST)
+    hits = await recall(memory_settings, TENANT, "timezone", scope=MemoryFilter(manifest_id=MANIFEST))
     assert [h.content for h in hits] == ["Timezone is CET."]
 
 
@@ -266,9 +289,9 @@ async def test_recall_survives_a_query_full_of_punctuation(memory_settings: Any)
 
     await _put(memory_settings, "The runbook is in the ops repository.")
     for hostile in ("runbook & | ! ( ) :*", "'; DROP TABLE memory_vectors; --", "???"):
-        await recall(memory_settings, TENANT, hostile, manifest_id=MANIFEST)
+        await recall(memory_settings, TENANT, hostile, scope=MemoryFilter(manifest_id=MANIFEST))
 
-    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    assert await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
 
 
 @parametrized
@@ -306,7 +329,7 @@ async def test_an_automatic_writer_cannot_retire_a_curated_row(memory_settings: 
         topic_key="ops.policy",
         metadata={"source": "assistant"},
     )
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert "Never send credentials off-network." in [r["content"] for r in active]
 
 
@@ -326,7 +349,7 @@ async def test_a_curated_writer_still_supersedes_an_automatic_row(memory_setting
         topic_key="deploy.runbook",
         metadata={"source": "management_api"},
     )
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["The runbook lives in the ops repo."]
 
 
@@ -347,12 +370,12 @@ async def test_an_agent_write_on_a_topic_is_stored_alongside_not_retiring(memory
             metadata={"source": "assistant"},
         )
 
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert sorted(r["content"] for r in active) == [
         "The user's timezone is CET.",
         "The user's timezone is UTC.",
     ]
-    prelude = await active_facts_prompt(memory_settings, TENANT, manifest_id=MANIFEST)
+    prelude = await active_facts_prompt(memory_settings, TENANT, pool=MemoryPool.agent(MANIFEST))
     assert "CET" in prelude and "UTC" not in prelude, "the current value, once"
 
 
@@ -364,7 +387,7 @@ async def test_re_remembering_cannot_demote_a_curated_row(memory_settings: Any) 
     await _put(memory_settings, text, kind="instruction", metadata={"source": "management_api"})
     await _put(memory_settings, text, kind="fact", metadata={"source": "assistant"})
 
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     row = next(r for r in active if r["content"] == text)
     assert row["kind"] == "instruction", "a lower-trust write demoted the kind"
     assert (row.get("metadata") or {}).get("source") == "management_api", "provenance overwritten"
@@ -375,7 +398,7 @@ async def test_content_is_bounded_for_every_writer(memory_settings: Any) -> None
     """The management route capped content; the capture path wrote past it, and
     capture is the writer whose content is model-authored from an untrusted turn."""
     await _put(memory_settings, "x" * 10_000, metadata={"source": "assistant"})
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     row = next(r for r in active if str(r["content"]).startswith("x"))
     assert len(str(row["content"])) == memory_store.MAX_CONTENT_CHARS
 
@@ -402,7 +425,7 @@ async def test_the_agent_cannot_forget_a_curated_row(memory_settings: Any) -> No
         metadata={"source": "management_api"},
     )
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source="remember_tool") is False
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["Never send credentials off-network."]
 
 
@@ -412,10 +435,13 @@ async def test_an_operator_can_still_forget_and_undo_it(memory_settings: Any) ->
     route back, so an absolute rule would make forgetting a one-way door."""
     row = await _put(memory_settings, "Regrettable fact.", metadata={"source": "management_api"})
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source="management_api") is True
-    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+    assert (
+        await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
+        == []
+    )
 
     await _put(memory_settings, "Regrettable fact.", metadata={"source": "management_api"})
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["Regrettable fact."]
 
 
@@ -436,7 +462,7 @@ async def test_a_low_trust_write_cannot_resurrect_a_forgotten_curated_row(memory
         importance=0.99,
         metadata={"source": "assistant"},
     )
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert active == [], "a low-trust write resurrected an operator-forgotten row"
 
 
@@ -454,7 +480,7 @@ async def test_the_agent_cannot_resurrect_a_row_the_operator_forgot(memory_setti
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source="management_api") is True
 
     await _put(memory_settings, payload, metadata={"source": "assistant"})
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert active == [], "the agent resurrected a row the operator forgot"
 
 
@@ -466,7 +492,7 @@ async def test_the_agent_can_undo_its_own_forget(memory_settings: Any) -> None:
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source="remember_tool") is True
 
     await _put(memory_settings, "Agent-written note.", metadata={"source": "assistant"})
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["Agent-written note."]
 
 
@@ -489,7 +515,7 @@ async def test_a_curated_row_outside_the_window_is_still_recalled(memory_setting
         await _put(memory_settings, f"Filler fact number {i}.", metadata={"source": "assistant"})
 
     top = await memory_store.list_active(
-        memory_settings, TENANT, manifest_id=MANIFEST, limit=5, prioritized=True
+        memory_settings, TENANT, limit=5, prioritized=True, scope=MemoryFilter(manifest_id=MANIFEST)
     )
     assert "Require approval before any production write." in [r["content"] for r in top]
 
@@ -510,7 +536,9 @@ async def test_repeated_writes_cannot_erase_the_forgetter_stamp(memory_settings:
 
     for attempt in range(3):
         await _put(memory_settings, payload, metadata={"source": "assistant"})
-        active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+        active = await memory_store.list_active(
+            memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST)
+        )
         assert active == [], f"resurrected on write {attempt + 1}"
 
 
@@ -525,7 +553,7 @@ async def test_the_agent_cannot_downgrade_the_forgetter_stamp(memory_settings: A
     await memory_store.forget(memory_settings, TENANT, row["id"], source="remember_tool")
 
     await _put(memory_settings, payload, metadata={"source": "assistant"})
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert active == [], "the stamp was downgraded and the row came back"
 
 
@@ -559,7 +587,9 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     # it the tiebreak only reorders the same three facts, and the test would pin the order
     # while its docstring claims it pins which fact survives.
     written = [await _put(memory_settings, f"Fact 0-{i}.") for i in range(5)]
-    stored = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=50)
+    stored = await memory_store.list_active(
+        memory_settings, TENANT, limit=50, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert len(stored) == 5, f"{len(stored)} of 5 writes landed; the ids below will not line up"
     # Asserted on what came back from the *store*, not on what `put_memory` returned. That
     # return value is a locally built dict which is never read back, so it cannot see a
@@ -570,8 +600,12 @@ async def test_truncating_the_active_facts_drops_the_same_one_on_both_arms(
     # too. This is the right place to assert it, not a bug being fixed.
     assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
 
-    first = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
-    again = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=3)
+    first = await memory_store.list_active(
+        memory_settings, TENANT, limit=3, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
+    again = await memory_store.list_active(
+        memory_settings, TENANT, limit=3, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
 
     assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
     assert len(first) == 3
@@ -610,7 +644,9 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_mill
     # it the tiebreak only reorders the same three facts, and the test would pin the order
     # while its docstring claims it pins which fact survives.
     written = [await _put(memory_settings, f"Prioritised 0-{i}.") for i in range(5)]
-    stored = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, limit=50)
+    stored = await memory_store.list_active(
+        memory_settings, TENANT, limit=50, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert len(stored) == 5, f"{len(stored)} of 5 writes landed; the ids below will not line up"
     # Asserted on what came back from the *store*, not on what `put_memory` returned. That
     # return value is a locally built dict which is never read back, so it cannot see a
@@ -622,10 +658,10 @@ async def test_the_prioritised_order_is_total_too(memory_settings: Any, one_mill
     assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
 
     first = await memory_store.list_active(
-        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
+        memory_settings, TENANT, limit=3, prioritized=True, scope=MemoryFilter(manifest_id=MANIFEST)
     )
     again = await memory_store.list_active(
-        memory_settings, TENANT, manifest_id=MANIFEST, limit=3, prioritized=True
+        memory_settings, TENANT, limit=3, prioritized=True, scope=MemoryFilter(manifest_id=MANIFEST)
     )
 
     assert [r["id"] for r in first] == [r["id"] for r in again], "two identical reads disagreed"
@@ -650,11 +686,15 @@ async def test_as_of_truncates_by_the_same_total_order(memory_settings: Any, one
     would reasonably read the module as pinned while a revert of this one stayed green.
     """
     written = [await _put(memory_settings, f"Fact 0-{i}.", origin_seq=1) for i in range(5)]
-    stored = await memory_store.as_of(memory_settings, TENANT, turn_seq=9, manifest_id=MANIFEST, limit=50)
+    stored = await memory_store.as_of(
+        memory_settings, TENANT, turn_seq=9, limit=50, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert len(stored) == 5, f"{len(stored)} of 5 writes landed"
     assert len({r["created_at"] for r in stored}) == 1, "the clock was not frozen; this is not a tie"
 
-    page = await memory_store.as_of(memory_settings, TENANT, turn_seq=9, manifest_id=MANIFEST, limit=3)
+    page = await memory_store.as_of(
+        memory_settings, TENANT, turn_seq=9, limit=3, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
 
     expected = sorted((r["id"] for r in written), reverse=True)[:3]
     assert [r["id"] for r in page] == expected, page
@@ -704,7 +744,7 @@ async def test_consolidation_keeps_the_same_duplicate_on_both_arms(memory_settin
     await _make_duplicates(memory_settings, rows, content="the same fact", ts=1_800_000_000_000)
 
     assert await memory_store.consolidate_pools(memory_settings) == 2
-    active = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["id"] for r in active] == [min(r["id"] for r in rows)]
 
 
@@ -715,15 +755,21 @@ async def test_as_of_and_list_narrow_to_one_thread(memory_settings: Any) -> None
     await _put(memory_settings, "Ships on Mondays.", origin_seq=4, thread_id=f"{TENANT}:b")
     await _put(memory_settings, "Written outside a thread.", metadata=OPERATOR)
 
-    both = await memory_store.as_of(memory_settings, TENANT, 4, manifest_id=MANIFEST)
+    both = await memory_store.as_of(memory_settings, TENANT, 4, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(both) == 3
-    one = await memory_store.as_of(memory_settings, TENANT, 4, manifest_id=MANIFEST, thread_id=f"{TENANT}:a")
+    one = await memory_store.as_of(
+        memory_settings, TENANT, 4, thread_id=f"{TENANT}:a", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert [r["content"] for r in one] == ["Ships on Fridays."]
 
-    b = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, thread_id=f"{TENANT}:b")
+    b = await memory_store.list_active(
+        memory_settings, TENANT, thread_id=f"{TENANT}:b", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert [r["content"] for r in b] == ["Ships on Mondays."]
     # Empty is a real value: the rows no thread wrote.
-    none = await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST, thread_id="")
+    none = await memory_store.list_active(
+        memory_settings, TENANT, thread_id="", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert [r["content"] for r in none] == ["Written outside a thread."]
 
 
@@ -737,7 +783,9 @@ async def test_restore_undoes_a_forget_on_both_arms(memory_settings: Any) -> Non
     assert await memory_store.restore(memory_settings, TENANT, "nope", source="management_api") == "missing"
 
     assert await memory_store.forget(memory_settings, TENANT, row["id"], source="management_api")
-    forgotten = await memory_store.list_forgotten(memory_settings, TENANT, manifest_id=MANIFEST)
+    forgotten = await memory_store.list_forgotten(
+        memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert [r["id"] for r in forgotten] == [row["id"]]
 
     # Gated on whoever forgot it: the agent cannot undo the operator.
@@ -749,7 +797,10 @@ async def test_restore_undoes_a_forget_on_both_arms(memory_settings: Any) -> Non
     restored = (await memory_store.get_many(memory_settings, TENANT, [row["id"]]))[row["id"]]
     assert restored["status"] == ACTIVE
     assert memory_store.RETIRED_BY_KEY not in (restored.get("metadata") or {})
-    assert await memory_store.list_forgotten(memory_settings, TENANT, manifest_id=MANIFEST) == []
+    assert (
+        await memory_store.list_forgotten(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
+        == []
+    )
 
 
 @parametrized
@@ -798,7 +849,11 @@ async def test_a_stale_agent_task_is_forgotten_by_retention(
     )
     # A second tenant's: the sweep is a worker cron over every tenant, not one tenant's call.
     theirs = await memory_store.put_memory(
-        memory_settings, OTHER_TENANT, content="Rename the staging bucket.", kind="task", manifest_id=MANIFEST
+        memory_settings,
+        OTHER_TENANT,
+        pool=MemoryPool.agent(MANIFEST),
+        content="Rename the staging bucket.",
+        kind="task",
     )
     _at(monkeypatch, T0 + 31 * DAY_MS)
 
@@ -813,7 +868,10 @@ async def test_a_stale_agent_task_is_forgotten_by_retention(
     row = (await memory_store.get_many(memory_settings, TENANT, [task["id"]]))[task["id"]]
     assert row["superseded_seq"] is None, "a forget has no position in turn time"
     assert row["updated_at"] == T0 + 31 * DAY_MS
-    assert await memory_store.list_active(memory_settings, TENANT, manifest_id=MANIFEST) == []
+    assert (
+        await memory_store.list_active(memory_settings, TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
+        == []
+    )
 
 
 @parametrized

@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 import pytest
+from felix.memory.store import MemoryPool
 from felix_worker import tasks as worker_tasks
 
 # The schedule each task is registered with. Written out rather than derived, because deriving it
@@ -256,7 +257,9 @@ async def test_consolidate_memory_embeds_a_vectorless_memory(monkeypatch: pytest
     # The worker reads its settings once, at import; this is the deployment setting the embedder.
     settings = worker_tasks._settings.model_copy(update={"memory_embedder": "cron-fake"})
     monkeypatch.setattr(worker_tasks, "_settings", settings)
-    row = await memory_store.put_memory(settings, TENANT, content="Captured while the embedder was down.")
+    row = await memory_store.put_memory(
+        settings, TENANT, pool=MemoryPool.agent(""), content="Captured while the embedder was down."
+    )
     assert not memory_store._memory_rows[(TENANT, row["id"])].get("embedding"), "the premise"
 
     await worker_tasks.consolidate_memory.original_func()

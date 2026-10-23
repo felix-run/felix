@@ -9,6 +9,13 @@ Reads are gated by `memory:read`, mutations by `memory:write`; `memory:write` im
 `memory:read` through the usual rule. The tenant always comes from the authenticated
 principal, never from the request, so one tenant cannot read another's memory by
 asking nicely.
+
+Inside the tenant the operator sees every pool (`memory.store.MemoryPool`): an agent's own
+(`principal` empty) and each person's. `memory:read` and `memory:write` span every person in the
+tenant -- person isolation is the agents' filter, not this surface's. The reads take an optional
+`principal` to narrow to one pool; a write names its pool, the agent's by default. A `principal`
+is a person key (`issuer|subject`, or a bare subject under Felix's own issuer) and goes through
+`FELIX_PRINCIPAL_ALIASES` (`felix/auth/persons.py`), so it names the pool the agents use.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from felix.auth.mgmt import (
 # numbers come from the store, which applies them to every writer; this route rejects
 # rather than truncating, because a caller who sent too much should be told. Two
 # behaviours, one pair of numbers.
+from felix.auth.persons import MAX_PERSON_KEY_CHARS
 from felix.memory.store import MAX_CONTENT_CHARS, MAX_TOPIC_KEY_CHARS
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,6 +49,17 @@ class MemoryWriteRequest(BaseModel):
     manifest_id: str = ""
     topic_key: str = Field(default="", max_length=MAX_TOPIC_KEY_CHARS)
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    # The person whose pool this is written to (`_person`); empty writes the agent pool
+    # `manifest_id` names.
+    principal: str = Field(default="", max_length=MAX_PERSON_KEY_CHARS)
+
+
+# The `principal` query parameter of every read: absent is every pool, as before pools existed.
+_PRINCIPAL_FILTER = Query(
+    default=None,
+    max_length=MAX_PERSON_KEY_CHARS,
+    description="Only this person's pool; empty for agent pools. Absent: every pool.",
+)
 
 
 @router.get("")
@@ -55,6 +74,7 @@ async def list_memories(
         description="The thread suffix; empty for rows written outside any thread.",
     ),
     status: Literal["active", "forgotten"] = "active",
+    principal: str | None = _PRINCIPAL_FILTER,
 ) -> dict[str, Any]:
     """Active memories, newest first; or, with `status=forgotten`, the forgotten ones,
     most recently forgotten first.
@@ -71,7 +91,7 @@ async def list_memories(
         items = await memory_store.list_forgotten(
             request.app.state.settings,
             tenant_id,
-            manifest_id=manifest_id,
+            scope=_filter(request.app.state.settings, manifest_id, principal),
             kind=kind,
             thread_id=scoped,
             limit=limit,
@@ -80,12 +100,30 @@ async def list_memories(
         items = await memory_store.list_active(
             request.app.state.settings,
             tenant_id,
-            manifest_id=manifest_id,
+            scope=_filter(request.app.state.settings, manifest_id, principal),
             kind=kind,
             limit=limit,
             thread_id=scoped,
         )
     return {"items": items}
+
+
+def _person(settings: Any, value: str) -> str:
+    """`value` as the person key the agents read by: normalised and through the aliases. A 422
+    from fixed text for a value that names no one person -- a shared credential, a machine actor."""
+    from felix.auth.persons import normalize_person, person_of
+
+    try:
+        return person_of(settings, normalize_person(value))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="principal_not_a_person") from None
+
+
+def _filter(settings: Any, manifest_id: str, principal: str | None) -> Any:
+    from felix.memory.store import MemoryFilter
+
+    person = principal if not principal else _person(settings, principal)
+    return MemoryFilter(manifest_id=manifest_id, principal=person)
 
 
 def _scoped_thread(tenant_id: str, thread_id: str | None) -> str | None:
@@ -106,6 +144,7 @@ async def search_memories(
     manifest_id: str = "",
     kind: str | None = None,
     limit: int = Query(default=8, ge=1, le=50),
+    principal: str | None = _PRINCIPAL_FILTER,
 ) -> dict[str, Any]:
     """Hybrid recall — the same ranking the agent sees, so an operator can reproduce it."""
     from felix.memory.embedder import build_embedder
@@ -120,7 +159,7 @@ async def search_memories(
         settings,
         tenant_id,
         q,
-        manifest_id=manifest_id,
+        scope=_filter(request.app.state.settings, manifest_id, principal),
         limit=limit,
         kinds=[kind] if kind else None,
         embedder=build_embedder(settings),
@@ -144,6 +183,7 @@ def _search_item(hit: Any, row: dict[str, Any]) -> dict[str, Any]:
         # usually which channel produced it, and that is otherwise invisible.
         "channels": list(hit.channels),
         "manifest_id": row.get("manifest_id", ""),
+        "principal": row.get("principal") or "",
         "thread_id": row.get("thread_id") or "",
         "origin_seq": row.get("origin_seq"),
         "status": row.get("status") or "active",
@@ -163,6 +203,7 @@ async def memories_as_of(
         default=None,
         description="The thread suffix; empty for rows written outside any thread.",
     ),
+    principal: str | None = _PRINCIPAL_FILTER,
 ) -> dict[str, Any]:
     """What was believed at a past turn, including facts since superseded.
 
@@ -181,7 +222,7 @@ async def memories_as_of(
         request.app.state.settings,
         tenant_id,
         turn_seq,
-        manifest_id=manifest_id,
+        scope=_filter(request.app.state.settings, manifest_id, principal),
         kind=kind,
         limit=limit,
         thread_id=_scoped_thread(tenant_id, thread_id),
@@ -198,21 +239,35 @@ async def write_memory(request: Request, body: MemoryWriteRequest) -> dict[str, 
     will later read. It is gated on `memory:write` and the content is length-bounded;
     neutralisation happens on the render path, where every source of recalled text is
     treated the same.
+
+    `principal` writes that person's pool, where every agent working for them reads it; empty
+    writes the agent pool `manifest_id` names. The id follows the pool (`MemoryPool.id_for`).
     """
     from felix.memory import store as memory_store
 
     require_mgmt_scopes(request, SCOPE_MEMORY_WRITE)
-    row = await memory_store.put_memory(
-        request.app.state.settings,
-        tenant_id_from_request(request),
-        content=body.content,
-        kind=body.kind,
-        manifest_id=body.manifest_id,
-        topic_key=body.topic_key or None,
-        importance=body.importance,
-        metadata={"source": "management_api"},
+    settings = request.app.state.settings
+    pool = (
+        memory_store.MemoryPool.person(body.manifest_id, _person(settings, body.principal))
+        if body.principal.strip()
+        else memory_store.MemoryPool.agent(body.manifest_id)
     )
-    return {"id": row["id"], "status": row["status"]}
+    try:
+        row = await memory_store.put_memory(
+            settings,
+            tenant_id_from_request(request),
+            pool=pool,
+            content=body.content,
+            kind=body.kind,
+            topic_key=body.topic_key or None,
+            importance=body.importance,
+            metadata={"source": "management_api"},
+        )
+    except memory_store.MemoryNotStored:
+        # Only `other_pool` reaches here (a named pool is always writable): the id is held by a
+        # row `felix memory assign` retired into another pool.
+        raise HTTPException(status_code=409, detail="memory_held_by_another_pool") from None
+    return {"id": row["id"], "status": row["status"], "principal": row["principal"]}
 
 
 @router.delete("/{memory_id}")

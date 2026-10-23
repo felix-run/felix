@@ -309,6 +309,9 @@ async def _invoke_job_manifest(
                 # The tenant's library only: a writer's personal skills are not recorded with the
                 # job, and a job running on them would follow instructions its readers cannot see.
                 skill_owner=None,
+                # The writer's memory, though: a job runs for its writer, whose person key the
+                # recorded caller carried (`AuthContext.person`).
+                person=auth.person,
             )
             result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
         finally:

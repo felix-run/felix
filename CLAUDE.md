@@ -167,7 +167,7 @@ spends real money — it needs a model key and refuses to run without one.
 - `packages/harness` (`felix`) — all the logic: manifests, patterns, tools, session,
   governance, auth, memory, eval, durability, storage, plugins.
   <!-- toolkit:enum cli-commands -->
-- `apps/cli` (`felix`) — `migrate | eval | mint-jwt | login | chat | ingest-docs | skills | workspace | sessions | bundle-manifests | validate-manifest | doctor | version`.
+- `apps/cli` (`felix`) — `migrate | eval | mint-jwt | login | chat | ingest-docs | skills | workspace | sessions | memory | bundle-manifests | validate-manifest | doctor | version`.
 - `apps/api` (`felix-api`) — FastAPI routes, one module per surface in `routes/`, plus five
   underscore-prefixed modules that carry no route: `_skill_library_models.py` holds the
   `/skill-library` request and response models, `_skill_library_http.py` the helpers its two route

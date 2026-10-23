@@ -87,6 +87,9 @@ x-felix-env: &felix-env
   FELIX_MEMORY_EMBEDDING_DIM: ${FELIX_MEMORY_EMBEDDING_DIM:-768}
   # Agent-written task memories untouched this long are forgotten (restorable); 0 keeps them.
   FELIX_MEMORY_TASK_RETENTION_DAYS: ${FELIX_MEMORY_TASK_RETENTION_DAYS:-30}
+  # Which person a principal belongs to, for memory: JSON {"google:123":"github:70701"}. Empty
+  # maps every principal to itself. Both processes compile agents, so both need it.
+  FELIX_PRINCIPAL_ALIASES: ${FELIX_PRINCIPAL_ALIASES:-}
   # OTLP export, off by default. Reachable from the base stack on purpose: a backend is
   # something Felix *sends to*, so pointing at one — a collector, a hosted vendor, a
   # console you self-host elsewhere — must not require running that backend inside this

@@ -548,6 +548,21 @@ def test_every_memory_store_function_is_classified() -> None:
             "operator row is never kept or retired, and the stamp it leaves ranks at _rank of "
             "'consolidation' (agent), which _may_reactivate lets an agent undo"
         ),
+        # An operator's one-off move of an agent pool into a person's (`felix memory assign`).
+        "assign_to_person": (
+            "delegates to _assign_in_memory / _assign_in_postgres; operator-run under rls_bypass, "
+            "one tenant, one manifest's agent pool (principal ''), whose rows are only ever moved "
+            "into the named person's pool, never into another; the ids it computes stay content-derived"
+        ),
+        "_assign_in_memory": (
+            "guarded: retires only a moved row whose person-pool id is already taken, as superseded "
+            "by the row holding it -- never that row -- with superseded_seq its own origin_seq and "
+            "retired_by=assign, which _retirer_rank ranks as agent; ids stay content-derived"
+        ),
+        "_apply_assign": (
+            "the Postgres half of _assign_in_memory, one batch in one transaction: the same retire of "
+            "an already-taken id only, stamping retired_by=assign (_retirer_rank: agent rank)"
+        ),
         # A cron, not a writer: it forgets on age alone, so it acts at agent rank and no higher.
         "expire_tasks": (
             "guarded: active kind='task' rows only, and only where _trust(row) <= _rank('retention') "
@@ -563,6 +578,24 @@ def test_every_memory_store_function_is_classified() -> None:
         "now_ms",
         "normalize_topic_key",
         "memory_id",
+        # Pools: id derivation and the scope predicates every read and write applies.
+        "_normalized",
+        "person_memory_id",
+        "_principal",
+        "_owns",
+        "_sees",
+        "_owns_sql",
+        "_sees_sql",
+        "_scope_sql",
+        "_in_scope",
+        "_pool_guard",
+        "scope_fragment",
+        # `assign_to_person`'s read and its pure planners (`memory/assign.py`); `_apply_assign` is
+        # the write.
+        "_assign_key",
+        "_movable",
+        "_plan_assign",
+        "_assign_in_postgres",
         "_row_dict",
         "_is_active",
         "current_turn_seq",
@@ -605,9 +638,20 @@ def test_every_memory_store_function_is_classified() -> None:
         "reset_memory_for_tests",
     }
 
-    src = Path(__file__).resolve().parents[2] / "packages/harness/src/felix/memory/store.py"
-    module_src = src.read_text(encoding="utf-8")
-    tree = ast.parse(module_src)
+    # The store, and `assign.py`, which moves rows between pools and retires duplicates: a module
+    # of its own, and a retirement route all the same, so it is classified like the store's.
+    memory_dir = Path(__file__).resolve().parents[2] / "packages/harness/src/felix/memory"
+    module_src = "\n".join(
+        (memory_dir / name).read_text(encoding="utf-8") for name in ("store.py", "assign.py")
+    )
+    tree = ast.Module(
+        body=[
+            node
+            for name in ("store.py", "assign.py")
+            for node in ast.parse((memory_dir / name).read_text(encoding="utf-8")).body
+        ],
+        type_ignores=[],
+    )
 
     # This verifies that a reason cites something real. It does **not** verify that the
     # reason is accurate: `supersede`'s entry went stale inside one commit because the

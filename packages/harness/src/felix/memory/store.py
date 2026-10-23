@@ -2,10 +2,18 @@
 
 Two things make a memory row more than a log line.
 
-**Content-addressed ids.** The id is a hash of the content, scoped by manifest, so
-storing the same fact twice collapses instead of accumulating near-duplicates. The
-manifest is part of the hash on purpose: the primary key is `(tenant_id, id)`, so
-hashing content alone would collide two manifests in one tenant onto one row.
+**Content-addressed ids.** The id is a hash of the content, scoped by the row's pool, so
+storing the same fact twice collapses instead of accumulating near-duplicates. The pool is
+part of the hash on purpose: the primary key is `(tenant_id, id)`, so hashing content alone
+would collide two pools in one tenant onto one row.
+
+**Pools.** A row belongs to one pool. An *agent* pool is `(tenant, manifest_id, principal='')`:
+what one agent knows, the only kind there was before people had memory of their own, and where
+an operator's curated rows for an agent live. A *person* pool is `(tenant, principal=person)`:
+what every agent acting for that person knows about them, whichever agent wrote it --
+`manifest_id` stays on the row as provenance and is no part of the pool. Person isolation is
+this module's filter, not a database policy: RLS isolates tenants, and inside one tenant every
+read and write below names the pool it may touch (`MemoryPool`).
 
 **Supersession, along two axes that must agree.** `status` is current state and is
 the only one that can express `forgotten`, which has no position in turn time.
@@ -20,9 +28,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Literal, NamedTuple, cast
 
-from sqlalchemy import case, collate, func, null, select, update
+from sqlalchemy import and_, case, collate, false, func, null, or_, select, true, update
 from sqlalchemy import cast as sa_cast
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -55,14 +64,213 @@ def reset_memory_for_tests() -> None:
     _memory_rows.clear()
 
 
-def memory_id(manifest_id: str, content: str) -> str:
-    """A stable id for this content under this manifest.
+def _normalized(content: str) -> str:
+    """Whitespace-collapsed and lowercased, so trivially different renderings share an id."""
+    return " ".join((content or "").lower().split())
 
-    Whitespace-normalised and lowercased so trivially different renderings of the same
-    sentence land on the same row.
+
+def memory_id(manifest_id: str, content: str) -> str:
+    """A stable id for this content in this manifest's agent pool.
+
+    Unchanged since before person pools, so no existing row's id moved when they arrived.
     """
-    normalized = " ".join((content or "").lower().split())
-    return hashlib.sha256(f"{manifest_id}\x00{normalized}".encode()).hexdigest()[:32]
+    return hashlib.sha256(f"{manifest_id}\x00{_normalized(content)}".encode()).hexdigest()[:32]
+
+
+# Every person-pool id starts with this, and an agent-pool id is lowercase hex throughout, so the
+# two can never be equal whatever a manifest id or a content string holds -- a namespace inside
+# the hashed text could be forged by a manifest named after it, a prefix on the digest cannot.
+PERSON_ID_PREFIX = "p"
+
+
+def person_memory_id(principal: str, content: str) -> str:
+    """A stable id for this content in `principal`'s pool, whichever agent writes it.
+
+    The principal is length-prefixed, so no principal-and-content pair can spell another's.
+    """
+    digest = hashlib.sha256(f"{len(principal)}:{principal}\x00{_normalized(content)}".encode()).hexdigest()
+    return PERSON_ID_PREFIX + digest[:31]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryPool:
+    """Whose memory an agent's call reads and writes. Built by `felix.memory.scope.memory_pool`.
+
+    - `MemoryPool.agent(m)` -- `spec.memory.scope: agent`: the agent's own pool, read and written,
+      every row of it, as before people had memory of their own.
+    - `MemoryPool.person(m, p)` -- `scope: person` for person key `p`: writes go to `p`'s pool, and
+      reads see it plus the **operator-written** rows of `m`'s agent pool (`_TRUST_RANK` above the
+      agent's), so what an operator curated for the agent reaches every person while an agent's own
+      row there -- written before person pools, or by a person-less run -- reaches no one's prompt.
+    - `MemoryPool.personless(m)` -- `scope: person` with no person (anonymous, a shared key, a
+      machine actor for no one): the same operator rows, and **no writes** -- there is nobody to
+      remember them for, and a pool every such caller shared would mix them all.
+
+    `manifest_id` is the agent either way: the writer recorded on a new row (provenance; it is no
+    part of a person's pool) and the agent pool read beside it.
+    """
+
+    manifest_id: str
+    principal: str
+    scope: Literal["person", "agent"]
+
+    @classmethod
+    def agent(cls, manifest_id: str) -> MemoryPool:
+        return cls(manifest_id, "", "agent")
+
+    @classmethod
+    def person(cls, manifest_id: str, principal: str) -> MemoryPool:
+        if not principal:
+            raise ValueError("a person pool needs a person; use MemoryPool.personless")
+        return cls(manifest_id, principal, "person")
+
+    @classmethod
+    def personless(cls, manifest_id: str) -> MemoryPool:
+        return cls(manifest_id, "", "person")
+
+    @property
+    def personal(self) -> bool:
+        return bool(self.principal)
+
+    @property
+    def writable(self) -> bool:
+        """Whether this pool takes writes: an agent's own, or a person's -- never person-less."""
+        return self.scope == "agent" or self.personal
+
+    def id_for(self, content: str) -> str:
+        """The id `content` takes in this pool."""
+        if self.personal:
+            return person_memory_id(self.principal, content)
+        return memory_id(self.manifest_id, content)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryFilter:
+    """The operator's view of a tenant's memory: every pool, narrowed by `manifest_id` (`""` any)
+    and `principal` (`None` any, `""` the agent pools). What the `/memory` routes read by."""
+
+    manifest_id: str = ""
+    principal: str | None = None
+
+
+# What a read sees: an agent's view of its pool, or the operator's filter. Every read takes one,
+# with no default, so an agent's read that forgot to name its pool is a TypeError, not a read of
+# every person's memory.
+ReadScope = MemoryPool | MemoryFilter
+
+
+class MemoryNotStored(Exception):
+    """A write the store refused. `reason` is `read_only` (a person-less pool) or `other_pool`
+    (the content's id is held by a row of another pool -- only `felix memory assign` leaves one).
+    The message is fixed text, safe to show; it never repeats the content."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            "this memory has no one to belong to"
+            if reason == "read_only"
+            else "this memory's id is held by another pool's row"
+        )
+
+
+def _principal(row: dict[str, Any]) -> str:
+    return str(row.get("principal") or "")
+
+
+def _owns(pool: MemoryPool, row: dict[str, Any]) -> bool:
+    """Whether `row` is in `pool` itself: what a write through the pool may supersede or forget.
+
+    A person's pool is their principal; anything else is the agent's own pool.
+    """
+    if pool.personal:
+        return _principal(row) == pool.principal
+    return _principal(row) == "" and str(row.get("manifest_id") or "") == pool.manifest_id
+
+
+def _sees(pool: MemoryPool, row: dict[str, Any]) -> bool:
+    """Whether a read through `pool` returns `row` (see `MemoryPool`)."""
+    if pool.scope == "agent":
+        return _owns(pool, row)
+    if pool.personal and _owns(pool, row):
+        return True
+    return _owns(MemoryPool.agent(pool.manifest_id), row) and _trust(row) > _DEFAULT_TRUST
+
+
+def _in_scope(scope: ReadScope, row: dict[str, Any]) -> bool:
+    """The twin's form of a read's scope."""
+    if isinstance(scope, MemoryPool):
+        return _sees(scope, row)
+    return (not scope.manifest_id or row.get("manifest_id") == scope.manifest_id) and (
+        scope.principal is None or _principal(row) == scope.principal
+    )
+
+
+# --- the same predicates in SQL ---------------------------------------------------------
+#
+# Two spellings, one place: SQLAlchemy expressions for the store's own statements, and fixed
+# `text()` fragments for recall's hand-written channel statements. Every value is a bound
+# parameter; a fragment is chosen, never built from input.
+
+
+def _owns_sql(pool: MemoryPool) -> Any:
+    """`_owns` as a predicate over `memory_vectors`."""
+    if pool.personal:
+        return MemoryVector.principal == pool.principal
+    return and_(MemoryVector.principal == "", MemoryVector.manifest_id == pool.manifest_id)
+
+
+def _sees_sql(pool: MemoryPool) -> Any:
+    """`_sees` as a predicate over `memory_vectors`."""
+    if pool.scope == "agent":
+        return _owns_sql(pool)
+    curated = and_(
+        _owns_sql(MemoryPool.agent(pool.manifest_id)),
+        _trust_of_column(MemoryVector.metadata_json) > _DEFAULT_TRUST,
+    )
+    return or_(_owns_sql(pool), curated) if pool.personal else curated
+
+
+def _scope_sql(scope: ReadScope) -> Any:
+    """`_in_scope` as one predicate."""
+    if isinstance(scope, MemoryPool):
+        return _sees_sql(scope)
+    clauses = []
+    if scope.manifest_id:
+        clauses.append(MemoryVector.manifest_id == scope.manifest_id)
+    if scope.principal is not None:
+        clauses.append(MemoryVector.principal == scope.principal)
+    return and_(true(), *clauses)
+
+
+# The writer names an operator ranks above the agent: `_trust_of_column(...) > _DEFAULT_TRUST`,
+# spelled for a fragment as a bound list.
+_OPERATOR_ROW = "(metadata->>'source') = ANY(CAST(:operator_sources AS text[]))"
+_FRAGMENT_FILTER = (
+    "(:manifest = '' OR manifest_id = :manifest) AND (:any_principal OR principal = :principal)"
+)
+_FRAGMENT_AGENT = "(principal = '' AND manifest_id = :manifest)"
+_FRAGMENT_CURATED = f"(principal = '' AND manifest_id = :manifest AND {_OPERATOR_ROW})"
+_FRAGMENT_PERSON = f"(principal = :principal OR {_FRAGMENT_CURATED})"
+
+
+def scope_fragment(scope: ReadScope) -> tuple[str, dict[str, Any]]:
+    """`_scope_sql` as a fixed `text()` fragment over `memory_vectors`, and the values it binds."""
+    if isinstance(scope, MemoryFilter):
+        return _FRAGMENT_FILTER, {
+            "manifest": scope.manifest_id,
+            "principal": scope.principal or "",
+            "any_principal": scope.principal is None,
+        }
+    if scope.scope == "agent":
+        return _FRAGMENT_AGENT, {"manifest": scope.manifest_id}
+    operators = [name for name, rank in _TRUST_RANK.items() if rank > _DEFAULT_TRUST]
+    if scope.personal:
+        return _FRAGMENT_PERSON, {
+            "manifest": scope.manifest_id,
+            "principal": scope.principal,
+            "operator_sources": operators,
+        }
+    return _FRAGMENT_CURATED, {"manifest": scope.manifest_id, "operator_sources": operators}
 
 
 def _row_dict(row: MemoryVector | dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +281,7 @@ def _row_dict(row: MemoryVector | dict[str, Any]) -> dict[str, Any]:
         "id": row.id,
         "kind": row.kind,
         "manifest_id": row.manifest_id,
+        "principal": row.principal,
         "content": row.content,
         "metadata": row.metadata_json,
         "created_at": row.created_at,
@@ -119,9 +328,9 @@ async def put_memory(
     settings: Settings,
     tenant_id: str,
     *,
+    pool: MemoryPool,
     content: str,
     kind: str = "fact",
-    manifest_id: str = "",
     origin_seq: int | None = None,
     metadata: dict[str, Any] | None = None,
     supersedes_id: str | None = None,
@@ -139,9 +348,13 @@ async def put_memory(
     key, so a changed fact is a visible contradiction the operator resolves, never a silent
     deletion an injected turn could cause. See `_may_retire_by_topic`.
 
-    Idempotent by content: re-storing the same text under the same manifest reactivates
-    the existing row and keeps its original provenance, rather than adding a second
-    copy that recall would then return twice.
+    Idempotent by content: re-storing the same text in the same pool reactivates the
+    existing row and keeps its original provenance, rather than adding a second copy that
+    recall would then return twice. `pool` is required and says where the row goes
+    (`MemoryPool`): a person's pool, so two agents storing one fact about a person land on one
+    row, or the agent's own. A person-less pool takes no writes, and a row of another pool
+    already holding the id is never written through: both raise `MemoryNotStored`, before
+    anything is changed.
 
     Wide by design — a memory is a wide record, and every field past ``content`` is
     keyword-only with a default, so callers name what they mean.
@@ -166,13 +379,16 @@ async def put_memory(
     # -- a presence disagreement, the exact thing the test below pins -- and
     # strip-then-cut leaves an over-long key ending in whitespace after the cut.
     topic_key = normalize_topic_key(topic_key)
-    mem_id = memory_id(manifest_id, content)
+    if not pool.writable:
+        raise MemoryNotStored("read_only")
+    mem_id = pool.id_for(content)
     ts = now_ms()
     row: dict[str, Any] = {
         "tenant_id": tenant_id,
         "id": mem_id,
         "kind": kind,
-        "manifest_id": manifest_id,
+        "manifest_id": pool.manifest_id,
+        "principal": pool.principal,
         "content": content,
         "metadata": metadata or {},
         "created_at": ts,
@@ -191,6 +407,11 @@ async def put_memory(
     }
 
     if supersedes_id:
+        # Refused before the supersession, not after it: a write that will not land must not
+        # retire anything on its way. The write itself checks again, under a lock.
+        held = (await get_many(settings, tenant_id, [mem_id])).get(mem_id)
+        if held is not None and not _owns(pool, held):
+            raise MemoryNotStored("other_pool")
         # The ordinal a supersession closes at is this turn's, not the old row's.
         await supersede(
             settings,
@@ -202,6 +423,8 @@ async def put_memory(
             # `supersede` turned an operator write carrying `supersedes_id` into a
             # silent no-op that still reported success.
             source=str((metadata or {}).get("source") or ""),
+            # Within this pool only, like the topic sweep below.
+            pool=pool,
         )
 
     if _use_memory(settings):
@@ -209,8 +432,8 @@ async def put_memory(
         # cannot see. Either way recall must be able to reach it, or the vector
         # channel is untestable on the path CI actually runs.
         row["embedding"] = list(embedding) if embedding else None
-        return _put_in_memory(row)
-    await _put_in_postgres(settings, row, embedding=embedding)
+        return _put_in_memory(row, pool)
+    await _put_in_postgres(settings, row, pool, embedding=embedding)
     return row
 
 
@@ -375,14 +598,21 @@ def _may_displace(incoming: dict[str, Any], existing: dict[str, Any]) -> bool:
     return _trust(incoming) >= _trust(existing)
 
 
-def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
+def _put_in_memory(row: dict[str, Any], pool: MemoryPool) -> dict[str, Any]:
     tenant_id, mem_id = row["tenant_id"], row["id"]
+    existing = _memory_rows.get((tenant_id, mem_id))
+    if existing is not None and not _owns(pool, existing):
+        # Another pool's row under this id: only one `felix memory assign` leaves behind (a
+        # duplicate it retired keeps its agent-pool id). Refused before the topic sweep, so a
+        # write that does not land retires nothing; the Postgres arm checks under a row lock.
+        raise MemoryNotStored("other_pool")
     if row["topic_key"] and _may_retire_by_topic(row):
         for (other_tenant, other_id), other in _memory_rows.items():
             if (
                 other_tenant == tenant_id
                 and other_id != mem_id
-                and other.get("manifest_id") == row["manifest_id"]
+                # One pool: a person's topic never retires another person's row, nor the agent's.
+                and _owns(pool, other)
                 and other.get("topic_key") == row["topic_key"]
                 and _is_active(other)
                 and _may_displace(row, other)
@@ -393,9 +623,11 @@ def _put_in_memory(row: dict[str, Any]) -> dict[str, Any]:
                 other["superseded_seq"] = row["origin_seq"]
                 other["updated_at"] = row["updated_at"]
 
-    existing = _memory_rows.get((tenant_id, mem_id))
     if existing is not None:
-        # Reactivating keeps the first write's provenance; a later one only fills a gap.
+        # Reactivating keeps the first write's provenance; a later one only fills a gap. The
+        # writing agent too: Postgres never updates `manifest_id`, so a person's fact a second
+        # agent restates stays credited to the first.
+        row["manifest_id"] = existing.get("manifest_id", row["manifest_id"])
         row["created_at"] = existing.get("created_at", row["created_at"])
         if existing.get("origin_seq") is not None:
             row["origin_seq"] = existing["origin_seq"]
@@ -434,12 +666,26 @@ def _refused_in_sql(table: Any, row: dict[str, Any]) -> Any:
     return outranked | cannot_reactivate
 
 
-async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding: list[float] | None) -> None:
+async def _put_in_postgres(
+    settings: Settings, row: dict[str, Any], pool: MemoryPool, *, embedding: list[float] | None
+) -> None:
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     tenant_id, mem_id = row["tenant_id"], row["id"]
     factory = get_session_factory(settings=settings)
     async with factory() as db:
+        # A row of another pool under this id is refused before anything is written -- the twin's
+        # check, made under a lock on that row so it cannot change between here and the insert.
+        held = (
+            await db.execute(
+                select(MemoryVector.principal, MemoryVector.manifest_id)
+                .where(MemoryVector.tenant_id == tenant_id, MemoryVector.id == mem_id)
+                .with_for_update()
+            )
+        ).first()
+        if held is not None and not _owns(pool, {"principal": held[0], "manifest_id": held[1]}):
+            await db.rollback()
+            raise MemoryNotStored("other_pool")
         # Supersession and insert share one transaction: a crash between them would
         # otherwise leave a topic with two active rows, or none.
         if row["topic_key"] and _may_retire_by_topic(row):
@@ -447,7 +693,7 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                 update(MemoryVector)
                 .where(
                     MemoryVector.tenant_id == tenant_id,
-                    MemoryVector.manifest_id == row["manifest_id"],
+                    _owns_sql(pool),
                     MemoryVector.topic_key == row["topic_key"],
                     MemoryVector.status == ACTIVE,
                     MemoryVector.id != mem_id,
@@ -504,9 +750,12 @@ async def _put_in_postgres(settings: Settings, row: dict[str, Any], *, embedding
                 # so the first write's provenance wins and a later one only fills a gap.
                 "origin_seq": func.coalesce(table.c.origin_seq, excluded["origin_seq"]),
             },
+            # Never through to another pool's row (see the twin): `manifest_id` and
+            # `principal` are not in `set_`, and this keeps the rest out too.
+            where=table.c.principal == excluded["principal"],
         )
-        await db.execute(stmt)
-        if embedding:
+        written = await db.execute(stmt)
+        if embedding and getattr(written, "rowcount", 1):
             await _write_embedding(
                 db,
                 tenant_id,
@@ -583,6 +832,13 @@ async def _configured_dim(db: Any) -> int | None:
         return None
 
 
+def _pool_guard(pool: MemoryPool | None) -> list[Any]:
+    """The WHERE clauses confining a retirement to `pool`'s own rows; none for the operator."""
+    if pool is None:
+        return []
+    return [_owns_sql(pool)] if pool.writable else [false()]
+
+
 async def supersede(
     settings: Settings,
     tenant_id: str,
@@ -591,8 +847,12 @@ async def supersede(
     *,
     superseded_by: str | None = None,
     source: str = "",
+    pool: MemoryPool | None = None,
 ) -> None:
     """Close a memory's validity interval at ``at_seq``, on both axes.
+
+    `pool`, when named, confines it to that pool's own rows (`_owns`); `None` is the operator's
+    reach, the whole tenant.
 
     `source` is the caller's writer identity and is checked, like `forget`. This is
     the third route by which a row leaves recall and it had no predicate at all --
@@ -603,7 +863,7 @@ async def supersede(
     ts = now_ms()
     if _use_memory(settings):
         row = _memory_rows.get((tenant_id, memory_id))
-        if row is not None:
+        if row is not None and (pool is None or (pool.writable and _owns(pool, row))):
             # The higher of the two. Testing only the writer let an agent supersede a
             # row the operator had forgotten -- which does not resurrect it, but moves
             # it to a state `_may_reactivate` used to wave through, laundering the
@@ -629,6 +889,7 @@ async def supersede(
                 # Same predicates as the in-memory arm; see the docstring.
                 _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
                 _retirer_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
+                *_pool_guard(pool),
             )
             .values(
                 status=SUPERSEDED,
@@ -641,8 +902,14 @@ async def supersede(
         await db.commit()
 
 
-async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: str = "") -> bool:
+async def forget(
+    settings: Settings, tenant_id: str, memory_id: str, *, source: str = "", pool: MemoryPool | None = None
+) -> bool:
     """Hide a memory from recall without deleting it.
+
+    `pool`, when named, confines it to that pool's own rows (`_owns`): the agent's `forget` tool
+    names its pool, so a person's agent cannot reach another person's row by its id -- nor the
+    agent pool every person shares. `None` is the operator's reach, the whole tenant.
 
     `forgotten` has no turn-time endpoint on purpose: it is an out-of-band decision by
     an operator, not something a turn did, so it must not appear as a supersession in
@@ -657,7 +924,7 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
     ts = now_ms()
     if _use_memory(settings):
         row = _memory_rows.get((tenant_id, memory_id))
-        if row is None:
+        if row is None or (pool is not None and not (pool.writable and _owns(pool, row))):
             return False
         if _rank(source) < _trust(row):
             logger.warning("refusing to forget a more-trusted memory id=%s", loggable(memory_id, limit=80))
@@ -696,6 +963,7 @@ async def forget(settings: Settings, tenant_id: str, memory_id: str, *, source: 
                 # second makes a refused downgrade a no-op rather than a rewrite.
                 _trust_of_column(MemoryVector.metadata_json) <= _rank(source),
                 _retirer_rank_of_column(MemoryVector.metadata_json) <= _rank(source),
+                *_pool_guard(pool),
             )
             .values(
                 status=FORGOTTEN,
@@ -714,12 +982,12 @@ async def list_forgotten(
     settings: Settings,
     tenant_id: str,
     *,
-    manifest_id: str = "",
+    scope: ReadScope,
     kind: str | None = None,
     thread_id: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Forgotten rows, most recently forgotten first.
+    """Forgotten rows in `scope`, most recently forgotten first.
 
     A forget is soft so that it can be seen and undone; a store that only ever lists
     active rows makes it as final as a delete from the operator's side.
@@ -730,7 +998,7 @@ async def list_forgotten(
             for (t, _), r in _memory_rows.items()
             if t == tenant_id
             and str(r.get("status") or ACTIVE) == FORGOTTEN
-            and (not manifest_id or r.get("manifest_id") == manifest_id)
+            and _in_scope(scope, r)
             and (kind is None or r.get("kind") == kind)
             and (thread_id is None or (r.get("thread_id") or "") == thread_id)
         ]
@@ -742,9 +1010,8 @@ async def list_forgotten(
         stmt = select(MemoryVector).where(
             MemoryVector.tenant_id == tenant_id,
             MemoryVector.status == FORGOTTEN,
+            _scope_sql(scope),
         )
-        if manifest_id:
-            stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
         if thread_id is not None:
@@ -842,13 +1109,13 @@ async def list_active(
     settings: Settings,
     tenant_id: str,
     *,
-    manifest_id: str = "",
+    scope: ReadScope,
     kind: str | None = None,
     limit: int = 50,
     prioritized: bool = False,
     thread_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Active rows for a tenant, newest first.
+    """Active rows in `scope`, newest first: what an agent's pool sees, or the operator's filter.
 
     `thread_id` narrows to the rows one conversation wrote, in the stored
     `{tenant}:{suffix}` form; `None` means every thread. Recall never passes it.
@@ -864,7 +1131,7 @@ async def list_active(
             for (t, _), r in _memory_rows.items()
             if t == tenant_id
             and _is_active(r)
-            and (not manifest_id or r.get("manifest_id") == manifest_id)
+            and _in_scope(scope, r)
             and (kind is None or r.get("kind") == kind)
             and (thread_id is None or (r.get("thread_id") or "") == thread_id)
         ]
@@ -888,9 +1155,8 @@ async def list_active(
         stmt = select(MemoryVector).where(
             MemoryVector.tenant_id == tenant_id,
             MemoryVector.status == ACTIVE,
+            _scope_sql(scope),
         )
-        if manifest_id:
-            stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
         if thread_id is not None:
@@ -918,12 +1184,12 @@ async def as_of(
     tenant_id: str,
     turn_seq: int,
     *,
-    manifest_id: str = "",
+    scope: ReadScope,
     kind: str | None = None,
     limit: int = 200,
     thread_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """The memories that were current at turn ``turn_seq``.
+    """The memories in `scope` that were current at turn ``turn_seq``.
 
     ``turn_seq`` is an ordinal into *one* session log, so it only orders rows written by
     the same thread. Without ``thread_id`` the comparison runs across every thread's
@@ -941,7 +1207,7 @@ async def as_of(
             _row_dict(r)
             for (t, _), r in _memory_rows.items()
             if t == tenant_id
-            and (not manifest_id or r.get("manifest_id") == manifest_id)
+            and _in_scope(scope, r)
             and (kind is None or r.get("kind") == kind)
             and (thread_id is None or (r.get("thread_id") or "") == thread_id)
             and int(r.get("origin_seq") or 0) <= turn_seq
@@ -950,17 +1216,14 @@ async def as_of(
         items.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
         return items[:limit]
 
-    from sqlalchemy import or_
-
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         stmt = select(MemoryVector).where(
             MemoryVector.tenant_id == tenant_id,
             func.coalesce(MemoryVector.origin_seq, 0) <= turn_seq,
             or_(MemoryVector.superseded_seq.is_(None), MemoryVector.superseded_seq > turn_seq),
+            _scope_sql(scope),
         )
-        if manifest_id:
-            stmt = stmt.where(MemoryVector.manifest_id == manifest_id)
         if kind:
             stmt = stmt.where(MemoryVector.kind == kind)
         if thread_id is not None:
@@ -989,7 +1252,7 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
     scan_limit = max(1, min(int(max_facts), 5000))
 
     if _use_memory(settings):
-        seen: dict[tuple[str, str, str], str] = {}
+        seen: dict[tuple[str, str, str, str], str] = {}
         superseded = 0
         active = [
             ((tenant_id, mem_id), row) for (tenant_id, mem_id), row in _memory_rows.items() if _is_active(row)
@@ -998,7 +1261,8 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
         # the survivor — broken by tenant, then id, byte order, the same on both arms.
         active.sort(key=lambda item: (int(item[1].get("created_at") or 0), item[0][0], item[1]["id"]))
         for (tenant_id, mem_id), row in active[:scan_limit]:
-            key = (tenant_id, row.get("manifest_id", ""), row.get("content", ""))
+            # The pool and the writer both, so no dedupe crosses from one person to another.
+            key = (tenant_id, row.get("manifest_id", ""), _principal(row), row.get("content", ""))
             if key in seen:
                 row["status"] = SUPERSEDED
                 row["superseded_by"] = seen[key]
@@ -1031,9 +1295,9 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
                     .limit(scan_limit)
                 )
             ).all()
-            seen_pg: dict[tuple[str, str, str], str] = {}
+            seen_pg: dict[tuple[str, str, str, str], str] = {}
             for row in rows:
-                key = (row.tenant_id, row.manifest_id, row.content)
+                key = (row.tenant_id, row.manifest_id, row.principal or "", row.content)
                 if key in seen_pg:
                     row.status = SUPERSEDED
                     row.superseded_by = seen_pg[key]
@@ -1056,40 +1320,64 @@ async def consolidate_pools(settings: Settings, *, max_facts: int = 500) -> int:
 CONSOLIDATION_SOURCE = "consolidation"
 
 
-async def list_memory_pools(settings: Settings) -> list[tuple[str, str]]:
-    """Every `(tenant_id, manifest_id)` holding an active memory, in a stable order.
+class ConsolidationSlice(NamedTuple):
+    """What one consolidation pass merges within: one agent's own rows (`principal` empty), or
+    the rows one agent wrote into one person's pool.
+
+    Narrower than a person's whole pool on purpose -- merging runs under the writing manifest's
+    `consolidate` opt-in, and a person's rows from an agent that never opted in are not its to
+    merge. Capture already checks a person's whole pool before it writes.
+    """
+
+    tenant_id: str
+    manifest_id: str
+    principal: str
+
+
+async def list_memory_pools(settings: Settings) -> list[ConsolidationSlice]:
+    """Every `(tenant_id, manifest_id, principal)` holding an active memory, in a stable order.
 
     Cross-tenant: a worker caller wraps it in `rls_bypass()`, as the retention sweep does.
     """
     if _use_memory(settings):
         return sorted(
-            {(t, str(r.get("manifest_id") or "")) for (t, _), r in _memory_rows.items() if _is_active(r)}
+            {
+                ConsolidationSlice(t, str(r.get("manifest_id") or ""), _principal(r))
+                for (t, _), r in _memory_rows.items()
+                if _is_active(r)
+            }
         )
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         rows = (
             await db.execute(
-                select(MemoryVector.tenant_id, MemoryVector.manifest_id)
+                select(MemoryVector.tenant_id, MemoryVector.manifest_id, MemoryVector.principal)
                 .where(MemoryVector.status == ACTIVE)
                 .distinct()
             )
         ).all()
-    return sorted((str(t), str(m or "")) for t, m in rows)
+    return sorted(ConsolidationSlice(str(t), str(m or ""), str(p or "")) for t, m, p in rows)
 
 
-def _may_merge(row: dict[str, Any], manifest_id: str) -> bool:
+def _may_merge(row: dict[str, Any], manifest_id: str, principal: str) -> bool:
     """Whether consolidation may keep or retire `row`: active, in this pool, agent-written.
+
+    The pool is the writer and the person both (`ConsolidationSlice`), so a merge never crosses
+    from one person to another, nor between a person and the agent's own rows.
 
     `_trust(row) == _DEFAULT_TRUST` rather than `<=`: there is no rank below the agent's,
     and an operator's row is never consolidation's to touch, as keep or as duplicate.
     """
     return (
-        _is_active(row) and str(row.get("manifest_id") or "") == manifest_id and _trust(row) == _DEFAULT_TRUST
+        _is_active(row)
+        and str(row.get("manifest_id") or "") == manifest_id
+        and _principal(row) == principal
+        and _trust(row) == _DEFAULT_TRUST
     )
 
 
 async def consolidation_batch(
-    settings: Settings, tenant_id: str, *, manifest_id: str, limit: int
+    settings: Settings, tenant_id: str, *, manifest_id: str, principal: str, limit: int
 ) -> tuple[int, list[dict[str, Any]]]:
     """How many facts consolidation may consider in this pool, and the newest `limit` of them.
 
@@ -1101,7 +1389,7 @@ async def consolidation_batch(
         items = [
             _row_dict(r)
             for (t, _), r in _memory_rows.items()
-            if t == tenant_id and _may_merge(r, manifest_id)
+            if t == tenant_id and _may_merge(r, manifest_id, principal)
         ]
         items.sort(key=lambda r: (int(r["created_at"] or 0), r["id"]), reverse=True)
         return len(items), items[:limit]
@@ -1109,6 +1397,7 @@ async def consolidation_batch(
     eligible = (
         MemoryVector.tenant_id == tenant_id,
         MemoryVector.manifest_id == manifest_id,
+        MemoryVector.principal == principal,
         MemoryVector.status == ACTIVE,
         _trust_of_column(MemoryVector.metadata_json) == _DEFAULT_TRUST,
     )
@@ -1138,7 +1427,7 @@ def _survivor_key(row: dict[str, Any]) -> tuple[bool, int, int, str]:
 
 
 def plan_merges(
-    rows: dict[str, dict[str, Any]], manifest_id: str, groups: list[list[str]]
+    rows: dict[str, dict[str, Any]], manifest_id: str, groups: list[list[str]], *, principal: str
 ) -> tuple[list[tuple[str, str]], int]:
     """`(duplicate, survivor)` pairs the store may apply, and how many groups it refused.
 
@@ -1160,7 +1449,7 @@ def plan_merges(
             or len(set(ids)) != len(ids)
             or used.intersection(ids)
             or len(present) != len(members)
-            or not all(_may_merge(m, manifest_id) for m in present)
+            or not all(_may_merge(m, manifest_id, principal) for m in present)
             or len({str(m["kind"]) for m in present}) != 1
             or len({m.get("topic_key") or None for m in present}) != 1
         ):
@@ -1177,6 +1466,7 @@ async def merge_duplicates(
     tenant_id: str,
     *,
     manifest_id: str,
+    principal: str,
     groups: list[list[str]],
 ) -> tuple[int, int]:
     """Supersede every member of each group but its oldest. Returns `(superseded, groups refused)`.
@@ -1196,7 +1486,7 @@ async def merge_duplicates(
     ts = now_ms()
     if _use_memory(settings):
         live = {i: row for i in named if (row := _memory_rows.get((tenant_id, i))) is not None}
-        planned, refused = plan_merges(live, manifest_id, groups)
+        planned, refused = plan_merges(live, manifest_id, groups, principal=principal)
         for dup_id, keep_id in planned:
             row = live[dup_id]
             row["status"] = SUPERSEDED
@@ -1216,7 +1506,9 @@ async def merge_duplicates(
             )
         ).all()
         by_id = {r.id: r for r in found}
-        planned, refused = plan_merges({r.id: _row_dict(r) for r in found}, manifest_id, groups)
+        planned, refused = plan_merges(
+            {r.id: _row_dict(r) for r in found}, manifest_id, groups, principal=principal
+        )
         for dup_id, keep_id in planned:
             orm = by_id[dup_id]
             orm.status = SUPERSEDED
@@ -1465,7 +1757,13 @@ __all__ = [
     "ACTIVE",
     "CONSOLIDATION_SOURCE",
     "FORGOTTEN",
+    "PERSON_ID_PREFIX",
     "SUPERSEDED",
+    "ConsolidationSlice",
+    "MemoryFilter",
+    "MemoryNotStored",
+    "MemoryPool",
+    "ReadScope",
     "as_of",
     "configured_embedding_dim",
     "consolidate_pools",
@@ -1480,9 +1778,11 @@ __all__ = [
     "merge_duplicates",
     "missing_embeddings",
     "normalize_topic_key",
+    "person_memory_id",
     "plan_merges",
     "put_memory",
     "reset_memory_for_tests",
+    "scope_fragment",
     "supersede",
     "write_embeddings",
 ]

@@ -28,39 +28,43 @@ _TOPIC_OVERFETCH = 3
 # How many current values capture shows the extractor, so it recognises what is known.
 _KNOWN_FOR_EXTRACTION = 50
 
-# `RequestContext.extras` key: the `(manifest_id, topic_key)` pairs `remember` wrote this request.
+# `RequestContext.extras` key: the `(pool, topic_key)` pairs `remember` wrote this request.
 _REMEMBERED_EXTRA = "memory.remembered_topics"
 
 
-def note_remembered(manifest_id: str, topic_key: str | None) -> None:
+def note_remembered(pool: memory_store.MemoryPool, topic_key: str | None) -> None:
     """Record that the agent stored `topic_key` itself, so capture does not store it again.
 
     An agent with the memory tools calls `remember` mid-turn, and capture then extracts the
     same fact from the same turn seconds later in other words — a different content hash, so
     a second active row. Every topic-keyed pair in production was exactly this.
+
+    Keyed by the pool written, not the manifest: a person's `remember` in one agent stands for
+    their pool, and must not suppress capture into another person's -- nor the agent pool's.
     """
     from felix.context import try_get_context
 
     ctx = try_get_context()
     if ctx is not None and topic_key:
-        ctx.extras.setdefault(_REMEMBERED_EXTRA, set()).add((manifest_id, topic_key))
+        ctx.extras.setdefault(_REMEMBERED_EXTRA, set()).add((pool, topic_key))
 
 
-def _remembered_this_request(manifest_id: str) -> set[str]:
+def _remembered_this_request(pool: memory_store.MemoryPool) -> set[str]:
     from felix.context import try_get_context
 
     ctx = try_get_context()
     pairs = ctx.extras.get(_REMEMBERED_EXTRA, set()) if ctx is not None else set()
-    return {topic for owner, topic in pairs if owner == manifest_id}
+    return {topic for owner, topic in pairs if owner == pool}
 
 
 async def active_facts_prompt(
     settings: Settings,
     tenant_id: str,
     *,
-    manifest_id: str,
+    pool: memory_store.MemoryPool,
     limit: int = 20,
 ) -> str:
+    """The prelude: what `pool` sees (`memory_store.MemoryPool`)."""
     # Every kind, one tier. `kind="fact"` was the only filter here, so the
     # `instruction`, `event` and `task` rows extraction produces were stored,
     # superseded correctly, and never surfaced at all — an operator could enable
@@ -83,7 +87,7 @@ async def active_facts_prompt(
     rows = await memory_store.list_active(
         settings,
         tenant_id,
-        manifest_id=manifest_id,
+        scope=pool,
         kind=None,
         limit=limit * _TOPIC_OVERFETCH,
         prioritized=True,
@@ -229,8 +233,13 @@ async def _embed_facts(settings: Settings, facts: list[str]) -> tuple[list[list[
     return vectors, embedder.model
 
 
-async def _known_values(settings: Settings, tenant_id: str, *, manifest_id: str) -> list[tuple[str, str]]:
+async def _known_values(
+    settings: Settings, tenant_id: str, *, pool: memory_store.MemoryPool
+) -> list[tuple[str, str]]:
     """The pool's current `(topic_key, content)` pairs, most trusted and important first.
+
+    Everything the pool sees: for a person, what any agent of theirs stored, so a second agent
+    does not capture again what the first already holds.
 
     Never raises: extraction without them only risks a duplicate, which is what it did before.
     """
@@ -238,7 +247,7 @@ async def _known_values(settings: Settings, tenant_id: str, *, manifest_id: str)
         rows = await memory_store.list_active(
             settings,
             tenant_id,
-            manifest_id=manifest_id,
+            scope=pool,
             kind=None,
             limit=_KNOWN_FOR_EXTRACTION * _TOPIC_OVERFETCH,
             prioritized=True,
@@ -272,7 +281,7 @@ async def capture_from_turn(
     settings: Settings,
     tenant_id: str,
     *,
-    manifest_id: str,
+    pool: memory_store.MemoryPool,
     user_text: str,
     assistant_text: str,
     capture: MemoryCapture,
@@ -282,12 +291,16 @@ async def capture_from_turn(
 ) -> list[str]:
     """Extract and persist facts from a completed turn. Returns stored contents.
 
+    Into `pool` (`memory.scope.memory_pool`): a person's, or the agent's own. A person-less pool
+    takes no writes, so nothing is extracted for it -- no model call is spent on facts that
+    would belong to no one.
+
     ``origin_seq`` is the thread's turn ordinal, shared by every fact this turn
     writes so that an as-of reconstruction sees them appear together. It was never
     passed before, which left `origin_seq` null on every fact the system stored and
     made the turn-versioning columns inert.
     """
-    if not capture.enabled:
+    if not capture.enabled or not pool.writable:
         return []
     blob = f"User: {user_text}\nAssistant: {assistant_text}".strip()
     if len(blob) < capture.min_chars:
@@ -314,7 +327,7 @@ async def capture_from_turn(
     )
 
     # Only the model path proposes topic keys, so only it can use the pool's known values.
-    known = await _known_values(settings, tenant_id, manifest_id=manifest_id) if model is not None else []
+    known = await _known_values(settings, tenant_id, pool=pool) if model is not None else []
     proposed: list[ExtractedMemory] | None = None
     if model is not None:
         proposed = await extract_memories(
@@ -340,7 +353,7 @@ async def capture_from_turn(
             if not looks_like_assistant_meta(line)
         ]
 
-    chosen = _drop_known(proposed, known, remembered=_remembered_this_request(manifest_id))
+    chosen = _drop_known(proposed, known, remembered=_remembered_this_request(pool))
     chosen = chosen[: capture.max_facts]
     vectors, embedding_model = await _embed_facts(settings, [m.content for m in chosen])
 
@@ -352,7 +365,7 @@ async def capture_from_turn(
                 tenant_id,
                 content=memory.content,
                 kind=memory.kind,
-                manifest_id=manifest_id,
+                pool=pool,
                 origin_seq=origin_seq,
                 thread_id=thread_id,
                 # The point of asking for a topic key: a later value for the same key

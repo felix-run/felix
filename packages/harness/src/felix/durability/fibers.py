@@ -810,6 +810,7 @@ async def _run_fiber_step(
                             tools=provider,
                             tenant_id=tenant_id,
                             skill_owner=auth.skill_owner,
+                            person=auth.person,
                         )
                         result = await agent.invoke(
                             InvokeInput(

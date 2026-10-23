@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from felix.config import Settings
 from felix.memory import store as memory_store
-from felix.memory.store import ACTIVE, FORGOTTEN, SUPERSEDED
+from felix.memory.store import ACTIVE, FORGOTTEN, SUPERSEDED, MemoryFilter, MemoryPool
 
 from tests.support.factories import make_settings
 
@@ -32,7 +32,9 @@ def _settings() -> Settings:
 
 
 async def _put(content: str, **kw):
-    return await memory_store.put_memory(_settings(), TENANT, content=content, manifest_id=MANIFEST, **kw)
+    return await memory_store.put_memory(
+        _settings(), TENANT, pool=MemoryPool.agent(MANIFEST), content=content, **kw
+    )
 
 
 async def test_same_content_collapses_to_one_row() -> None:
@@ -40,15 +42,15 @@ async def test_same_content_collapses_to_one_row() -> None:
     a = await _put("The user prefers dark mode.")
     b = await _put("the   user prefers DARK mode.")  # same sentence, different rendering
     assert a["id"] == b["id"]
-    active = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(active) == 1
 
 
 async def test_content_hash_is_scoped_by_manifest() -> None:
     """The PK is (tenant, id), so hashing content alone would cross-wire two agents."""
     s = _settings()
-    one = await memory_store.put_memory(s, TENANT, content="same text", manifest_id="agent-a")
-    two = await memory_store.put_memory(s, TENANT, content="same text", manifest_id="agent-b")
+    one = await memory_store.put_memory(s, TENANT, pool=MemoryPool.agent("agent-a"), content="same text")
+    two = await memory_store.put_memory(s, TENANT, pool=MemoryPool.agent("agent-b"), content="same text")
     assert one["id"] != two["id"]
 
 
@@ -61,7 +63,7 @@ async def test_topic_key_supersedes_the_previous_value() -> None:
     assert rows[old["id"]]["superseded_by"] == new["id"]
     assert rows[new["id"]]["status"] == ACTIVE
 
-    active = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in active] == ["Timezone is CET."]
 
 
@@ -78,21 +80,21 @@ async def test_as_of_shows_what_was_believed_then() -> None:
     await _put("Timezone is UTC.", topic_key="user.timezone", origin_seq=4)
     await _put("Timezone is CET.", topic_key="user.timezone", origin_seq=7, metadata=OPERATOR)
 
-    at5 = await memory_store.as_of(_settings(), TENANT, 5, manifest_id=MANIFEST)
-    at9 = await memory_store.as_of(_settings(), TENANT, 9, manifest_id=MANIFEST)
+    at5 = await memory_store.as_of(_settings(), TENANT, 5, scope=MemoryFilter(manifest_id=MANIFEST))
+    at9 = await memory_store.as_of(_settings(), TENANT, 9, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in at5] == ["Timezone is UTC."]
     assert [r["content"] for r in at9] == ["Timezone is CET."]
 
 
 async def test_as_of_before_a_fact_existed_excludes_it() -> None:
     await _put("Learned at turn 6.", origin_seq=6)
-    assert await memory_store.as_of(_settings(), TENANT, 3, manifest_id=MANIFEST) == []
+    assert await memory_store.as_of(_settings(), TENANT, 3, scope=MemoryFilter(manifest_id=MANIFEST)) == []
 
 
 async def test_rows_without_provenance_read_as_genesis() -> None:
     """Rows written before provenance existed must not vanish from every as-of view."""
     await _put("Ancient fact.", origin_seq=None)
-    at0 = await memory_store.as_of(_settings(), TENANT, 0, manifest_id=MANIFEST)
+    at0 = await memory_store.as_of(_settings(), TENANT, 0, scope=MemoryFilter(manifest_id=MANIFEST))
     assert [r["content"] for r in at0] == ["Ancient fact."]
 
 
@@ -110,7 +112,7 @@ async def test_re_remembering_keeps_the_original_provenance() -> None:
 async def test_forget_hides_without_deleting() -> None:
     row = await _put("Regrettable fact.")
     assert await memory_store.forget(_settings(), TENANT, row["id"]) is True
-    assert await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST) == []
+    assert await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST)) == []
     still_there = await memory_store.get_many(_settings(), TENANT, [row["id"]])
     assert still_there[row["id"]]["status"] == FORGOTTEN
 
@@ -162,7 +164,7 @@ async def test_current_turn_seq_tracks_the_highest_ordinal() -> None:
 async def test_thread_id_is_recorded_but_does_not_scope_recall() -> None:
     """Provenance, not a filter — a fact learned in one thread is still a fact."""
     await _put("Learned in thread one.", thread_id="thread-1")
-    active = await memory_store.list_active(_settings(), TENANT, manifest_id=MANIFEST)
+    active = await memory_store.list_active(_settings(), TENANT, scope=MemoryFilter(manifest_id=MANIFEST))
     assert len(active) == 1
     assert active[0]["thread_id"] == "thread-1"
 
@@ -182,7 +184,7 @@ async def test_capture_stamps_the_turn_ordinal() -> None:
     stored = await capture_from_turn(
         settings,
         TENANT,
-        manifest_id=MANIFEST,
+        pool=MemoryPool.agent(MANIFEST),
         user_text="Remember this.",
         assistant_text="The API base URL is https://example.com/v1.",
         capture=MemoryCapture(enabled=True, max_facts=5, min_chars=10),
@@ -192,7 +194,9 @@ async def test_capture_stamps_the_turn_ordinal() -> None:
     )
     assert stored
 
-    rows = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST, kind="fact")
+    rows = await memory_store.list_active(
+        settings, TENANT, kind="fact", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert rows
     assert all(r["origin_seq"] == 12 for r in rows), "facts stored without provenance"
     assert all(r["thread_id"] == "thread-9" for r in rows)
@@ -207,7 +211,7 @@ async def test_every_fact_from_one_turn_shares_an_ordinal() -> None:
     await capture_from_turn(
         settings,
         TENANT,
-        manifest_id=MANIFEST,
+        pool=MemoryPool.agent(MANIFEST),
         user_text="Remember these.",
         assistant_text=(
             "The API base URL is https://example.com/v1.\n"
@@ -218,7 +222,9 @@ async def test_every_fact_from_one_turn_shares_an_ordinal() -> None:
         model=None,
         origin_seq=20,
     )
-    rows = await memory_store.list_active(settings, TENANT, manifest_id=MANIFEST, kind="fact")
+    rows = await memory_store.list_active(
+        settings, TENANT, kind="fact", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
     assert len(rows) > 1, "need several facts for this to mean anything"
     assert {r["origin_seq"] for r in rows} == {20}
 

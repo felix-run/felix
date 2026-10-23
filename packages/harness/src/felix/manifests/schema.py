@@ -723,6 +723,14 @@ class MemorySpec(_Strict):
     capture: MemoryCapture = Field(default_factory=MemoryCapture)
     consolidate: MemoryConsolidate = Field(default_factory=MemoryConsolidate)
     recall: MemoryRecall = Field(default_factory=MemoryRecall)
+    # Whose long-term memory this agent reads and writes. `person` (the default): the pool of the
+    # person the request acts for (`AuthContext.acting_for`, through `FELIX_PRINCIPAL_ALIASES`),
+    # shared by every agent working for them, plus this agent's own pool, which an operator
+    # curates for everyone; a request that names no person uses the agent's pool alone. `agent`:
+    # this agent's pool only, the behaviour before people had memory of their own.
+    # A closed `Literal` on purpose: it selects no implementation, it says which rows a read may
+    # see, and an unknown value must fail validation rather than fall back to some other pool.
+    scope: Literal["person", "agent"] = "person"
 
 
 class ToolResultClearing(_Strict):

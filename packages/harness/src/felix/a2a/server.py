@@ -238,6 +238,7 @@ async def handle_rpc(
                     tools=tools,
                     tenant_id=tenant_id,
                     skill_owner=call_auth.skill_owner,
+                    person=call_auth.person,
                 )
                 result = await agent.invoke(InvokeInput(messages=[incoming], thread_id=thread))
             task = {

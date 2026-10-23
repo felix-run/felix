@@ -183,6 +183,7 @@ async def _stream_completion(
                 tools=tools,
                 tenant_id=req_ctx.auth.tenant_id,
                 skill_owner=req_ctx.auth.skill_owner,
+                person=req_ctx.auth.person,
             )
             async for event in with_heartbeat(agent.stream_events(invoke_input)):
                 if event is HEARTBEAT:
@@ -449,6 +450,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
                 tools=tools,
                 tenant_id=auth.tenant_id,
                 skill_owner=auth.skill_owner,
+                person=auth.person,
             )
             result = await agent.invoke(invoke_input)
         except ModelGatewayError as exc:

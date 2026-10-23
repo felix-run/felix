@@ -557,6 +557,10 @@ class MemoryVector(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     kind: Mapped[str] = mapped_column(Text, nullable=False)
     manifest_id: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # The person whose memory this is (`memory.store.MemoryPool`), `''` for an agent's own pool.
+    # Person isolation inside a tenant is the store's filter on this column, not an RLS policy:
+    # the policy isolates tenants, as it always has (0046).
+    principal: Mapped[str] = mapped_column(Text, nullable=False, server_default="", default="")
     content: Mapped[str] = mapped_column(Text, server_default="", default="")
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, server_default=text("'{}'::jsonb"), default=dict

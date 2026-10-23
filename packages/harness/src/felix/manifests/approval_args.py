@@ -81,13 +81,14 @@ def _describe(rule: Any, unknown: list[str], reached: list[str], tools: list[Any
 def offline_tools(settings: Any) -> list[Any]:
     """Every tool whose schema is known without a network: built-ins, plugins, memory tools."""
     from felix.memory.procedural import make_remember_procedure_tool
+    from felix.memory.store import MemoryPool
     from felix.memory.tools import make_memory_tools
     from felix.tools.builtins import default_tool_provider
 
     provider = default_tool_provider()
     tools = list(provider.resolve(provider.list_names()))
     # Bound to nothing: only their schemas are read, and constructing them does no I/O.
-    tools += make_memory_tools(settings=settings, tenant_id="", manifest_id="")
+    tools += make_memory_tools(settings=settings, tenant_id="", pool=MemoryPool.agent(""))
     tools.append(make_remember_procedure_tool(settings=settings, tenant_id="", manifest_id=""))
     return tools
 

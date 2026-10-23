@@ -34,6 +34,11 @@ class AuthContext:
     # and for every machine actor but a resumed fiber, which carries its starter's: a compile
     # with None loads the tenant's library and no one's own.
     skill_owner: str | None = None
+    # The person `acting_for` is, as `issuer|subject` (`felix/auth/persons.py`), for long-term
+    # memory's person pools; "" when it names no person. Worked out by the auth middleware from the
+    # verified principal, where the issuer is still known, and carried by the recorded caller into
+    # a durable run or a job's firing, so later work keys the same person the request did.
+    person: str = ""
     # Set on a scheduled job's firing (`jobs/scheduler.py:job_auth`) and carried, through the
     # recorded caller (`auth/recorded.py`), into everything that firing starts -- a workflow run
     # and its agent steps, a durable child. `schedule_task` refuses such a caller, so scheduled

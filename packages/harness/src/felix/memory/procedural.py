@@ -1,4 +1,16 @@
-"""Procedural memory — retrieve how-to snippets and optionally record new ones."""
+"""Procedural memory — retrieve how-to snippets and optionally record new ones.
+
+Agent-scoped whatever `spec.memory.scope` says: a procedure is how an agent works, not a fact
+about the person it works for, so `remember_procedure` writes the agent's own pool and retrieval
+reads it (`memory.store.MemoryPool.agent`) -- for every caller, a person-less one included. Read
+through that pool rather than by manifest, so a `procedure` a person's agent stored in *their*
+pool through `remember` is never shown to another.
+
+That leaves one channel between people, on purpose and documented in `deploy/GOVERNANCE.md`: a
+procedure an agent learns while working for one person is retrieved for every person that agent
+works for. It is agent-written, so it never reaches a person-scope agent's *fact* reads (the
+prelude, `recall`, `list_memories`), which see only operator rows of the agent pool.
+"""
 
 from __future__ import annotations
 
@@ -81,7 +93,7 @@ async def retrieve_procedures(
         rows = await memory_store.list_active(
             settings,
             tenant_id,
-            manifest_id=manifest_id,
+            scope=memory_store.MemoryPool.agent(manifest_id),
             kind=PROCEDURE_KIND,
             limit=max(spec.top_k * 10, 20),
         )
@@ -123,9 +135,9 @@ def make_remember_procedure_tool(
         row = await memory_store.put_memory(
             settings,
             tenant_id,
+            pool=memory_store.MemoryPool.agent(manifest_id),
             content=content,
             kind=PROCEDURE_KIND,
-            manifest_id=manifest_id,
             metadata={"title": args.title, "source": "remember_procedure"},
         )
         return f"remembered_procedure:{row['id']}"

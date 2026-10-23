@@ -6,7 +6,7 @@ import pytest
 from felix.config import Settings
 from felix.manifests.schema import ArtifactsSpec, MemoryCapture
 from felix.memory.capture import _heuristic_facts, active_facts_prompt, capture_from_turn
-from felix.memory.store import list_active
+from felix.memory.store import MemoryFilter, MemoryPool, list_active
 from felix.patterns.types import ChatMessage
 from felix.storage import MemoryObjectStore
 from felix.tools.types import ToolInvocationCtx, define_tool
@@ -103,17 +103,17 @@ async def test_memory_capture_heuristic() -> None:
     facts = await capture_from_turn(
         settings,
         "default",
-        manifest_id="quick",
+        pool=MemoryPool.agent("quick"),
         user_text="Remember this.",
         assistant_text="The API base URL is https://example.com/v1.\nMaybe later.",
         capture=MemoryCapture(enabled=True, max_facts=5, min_chars=10),
         model=None,
     )
     assert any("API base URL" in f for f in facts)
-    active = await list_active(settings, "default", manifest_id="quick", kind="fact")
+    active = await list_active(settings, "default", kind="fact", scope=MemoryFilter(manifest_id="quick"))
     assert active
 
-    block = await active_facts_prompt(settings, "default", manifest_id="quick")
+    block = await active_facts_prompt(settings, "default", pool=MemoryPool.agent("quick"))
     # Fenced and labelled: recalled facts are model-extracted from earlier turns and can
     # carry text that originated in tool output, so they are reference material rather
     # than part of the system prompt.

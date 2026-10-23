@@ -1,4 +1,5 @@
-"""Felix CLI — migrate, eval, mint-jwt, login, chat, ingest-docs, skills, bundle-manifests, version."""
+"""Felix CLI — migrate, eval, mint-jwt, login, chat, ingest-docs, skills, memory, bundle-manifests,
+version."""
 
 from __future__ import annotations
 
@@ -600,6 +601,94 @@ def sessions_backfill_previews(
         rprint("no threads stored")
     if failed:
         raise typer.Exit(1)
+
+
+memory_app = typer.Typer(name="memory", help="Maintain stored long-term memory.", no_args_is_help=True)
+app.add_typer(memory_app, name="memory")
+
+
+@memory_app.command("assign")
+def memory_assign(
+    tenant: str = typer.Option(..., "--tenant", help="The tenant whose agent pool moves."),
+    manifest: str = typer.Option(..., "--manifest", help="The agent whose pool moves."),
+    to: str = typer.Option(
+        ...,
+        "--to",
+        help="The person it becomes: issuer|subject, or a bare subject under Felix's own sign-in "
+        "issuer (github:70701 is felix-self|github:70701). Resolved through FELIX_PRINCIPAL_ALIASES.",
+    ),
+    include_operator: bool = typer.Option(
+        False,
+        "--include-operator",
+        help="Move operator-written rows (POST /memory) too. By default they stay in the agent's "
+        "pool, where every person's agent already reads them; only agent-written rows move.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Count what would move; write nothing."),
+    batch_size: int = typer.Option(500, "--batch-size", min=1, help="Rows moved per transaction."),
+) -> None:
+    """Move one agent's memory pool into a person's, for memory written before people had their own.
+
+    Every row the agent wrote with no person -- active, forgotten and superseded -- joins the
+    person's pool, which every agent working for them reads (`spec.memory.scope: person`). A
+    person's agent sees only operator-written rows of an agent pool, so until this runs, what the
+    agent learnt there reaches no one. Operator-written rows stay unless --include-operator. A row
+    the person's pool already holds is merged: the existing row is kept, the moved one retired as
+    superseded by it. Running it again moves nothing. Run it with the API's own settings.
+    """
+    import asyncio
+
+    from felix.auth.context import assert_valid_tenant_id
+    from felix.auth.persons import normalize_person, person_of
+    from felix.config import get_settings
+    from felix.db.session import _use_memory
+    from felix.manifests.schema import assert_valid_manifest_name
+    from felix.memory import assign as memory_assign_module
+
+    settings = get_settings()
+    if _use_memory(settings):
+        typer.echo(
+            "FELIX_DATABASE_URL is memory:// — an in-memory store lives and dies with the process "
+            "that wrote it, so there is nothing stored to move.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        assert_valid_tenant_id(tenant)
+    except ValueError:
+        raise typer.BadParameter(
+            "a tenant id (letters, digits, '.', '_', '-')", param_hint="--tenant"
+        ) from None
+    try:
+        assert_valid_manifest_name(manifest)
+    except ValueError:
+        raise typer.BadParameter(
+            "a manifest name ([a-zA-Z0-9._-], at most 128)", param_hint="--manifest"
+        ) from None
+    try:
+        person = person_of(settings, normalize_person(to))
+    except ValueError:
+        raise typer.BadParameter(
+            "one person's principal, not a credential many callers share (api_key, a machine actor, "
+            "a trigger, a GitHub Actions workflow)",
+            param_hint="--to",
+        ) from None
+    report = asyncio.run(
+        memory_assign_module.assign_to_person(
+            settings,
+            tenant,
+            manifest_id=manifest,
+            person=person,
+            include_operator=include_operator,
+            dry_run=dry_run,
+            batch_size=batch_size,
+        )
+    )
+    verb = "would move" if dry_run else "moved"
+    # Plain: a principal is `felix-self|github:70701`, and rich would read a `[` as markup.
+    typer.echo(
+        f"{tenant}/{manifest} -> {person}: {verb} {report.moved}, merged {report.merged} "
+        f"of {report.scanned} row(s)"
+    )
 
 
 @app.command("bundle-manifests")

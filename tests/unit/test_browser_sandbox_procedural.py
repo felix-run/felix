@@ -19,7 +19,7 @@ from felix.memory.procedural import (
     rank_procedures,
     retrieve_procedures,
 )
-from felix.memory.store import put_memory
+from felix.memory.store import MemoryPool, put_memory
 from felix.patterns.types import ChatMessage
 from felix.tools.browser import tools_from_browser_refs
 from felix.tools.sandboxes import tools_from_containers, tools_from_sandboxes
@@ -340,9 +340,9 @@ async def test_react_injects_procedures() -> None:
     await put_memory(
         settings,
         "t-react",
+        pool=MemoryPool.agent("wired-tools"),
         content="To restart the worker, run felix worker restart.",
         kind="procedure",
-        manifest_id="wired-tools",
     )
     from felix.manifests.schema import ModelSpec
     from felix.patterns.react import build_react_agent

@@ -559,6 +559,13 @@ class Settings(BaseSettings):
     skill_update_webhooks: str = ""
     memory_embedding_model: str = "bge-base-en-v1.5"
     memory_recall_limit: int = 8
+    # Which person a person key belongs to, for long-term memory only (`felix/auth/persons.py`):
+    # JSON `{"google:123": "github:70701"}`, so one person signing in two ways keeps one memory.
+    # A key is `issuer|subject`; a bare subject means Felix's own sign-in issuer (`felix-self`).
+    # One hop -- a target may not itself be an alias -- neither side may be a shared credential
+    # or a machine actor, and empty maps every person to themselves. Every other subsystem
+    # (approvals, jobs, push) keeps the raw principal.
+    principal_aliases: str = ""
 
     # --- Web search ---
     # Off by default: search reaches an endpoint the operator runs or pays for, so it is
@@ -945,6 +952,16 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise RuntimeError(f"FELIX_WEBHOOK_ENDPOINTS: {exc}") from exc
 
+    def _validate_principal_aliases(self) -> None:
+        """A malformed `FELIX_PRINCIPAL_ALIASES`, or one chaining an alias to an alias, fails the boot
+        rather than splitting one person's memory across pools on the first request."""
+        from felix.auth.persons import parse_principal_aliases
+
+        try:
+            parse_principal_aliases(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_PRINCIPAL_ALIASES: {exc}") from exc
+
     def _validate_egress_credentials(self) -> None:
         """A malformed `FELIX_EGRESS_CREDENTIALS` fails the boot, not the first fetch it would sign."""
         from felix.security.egress_credentials import parse_egress_credentials
@@ -1280,6 +1297,7 @@ class Settings(BaseSettings):
         self._validate_shell_isolation()
         self._validate_workspace_gateway()
         self._validate_configured_tenant_ids()
+        self._validate_principal_aliases()
         self._validate_jwt_tenant_posture()
         from felix.auth.github import validate_login_config
         from felix.auth.google import validate_google_config

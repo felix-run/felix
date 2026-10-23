@@ -188,6 +188,7 @@ async def build_tenant_agent(
     tools: ToolProvider,
     tenant_id: str,
     skill_owner: str | None,
+    person: str,
     object_store: Any | None = None,
     workspace_root: str | None = None,
     load_agents_md: bool = False,
@@ -200,6 +201,11 @@ async def build_tenant_agent(
     default: a request path that forgot it would compile without the caller's skills and look
     like it worked, and a resumed fiber that forgot it would differ from the request that
     started it, so every call site says which it means.
+
+    `person` is the caller's `AuthContext.person` (`""` for none): whose memory pool a
+    `spec.memory.scope: person` agent uses. No default for the reason `skill_owner` has none, and
+    taken from the same `auth` the compile is for -- never from ambient context, which a caller
+    compiling for someone else need not have installed.
 
     `sub_agents` is `ResolvedManifest.sub_agents` — the children a pin check resolved for this
     request. Every caller that ran `prepare_tenant_invoke` passes it, so a pinned thread runs
@@ -219,6 +225,7 @@ async def build_tenant_agent(
         object_store=store,
         tenant_id=tenant_id,
         skill_owner=skill_owner,
+        memory_person=person,
         workspace_root=workspace_root or getattr(settings, "workspace_root", None) or None,
         load_agents_md=load_agents_md or bool(getattr(settings, "load_agents_md", False)),
         # The `allow_hosts` lists this run inherited -- a background `task` child's parents',
@@ -284,6 +291,7 @@ async def governed_tools(
         tools=tools,
         tenant_id=auth.tenant_id,
         skill_owner=auth.skill_owner,
+        person=auth.person,
     )
     return list(getattr(agent, "tools", None) or [])
 

@@ -222,7 +222,7 @@ async def _bare_agent(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "bare"}, "spec": spec}
     )
     agent = await build_tenant_agent(
-        _settings(), manifest=bare, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
+        _settings(), manifest=bare, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None, person=""
     )
     fake = _Model()
     _innermost(agent)._resolve_model = lambda _i: fake  # type: ignore[attr-defined]

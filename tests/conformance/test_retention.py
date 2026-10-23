@@ -22,6 +22,7 @@ from felix.audit import store as audit_store
 from felix.durability import fibers as fiber_store
 from felix.jobs import retention
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryPool
 from felix.plans import store as plans_store
 from felix.session import thread_state
 from felix.session.store import get_session_store
@@ -178,8 +179,14 @@ async def _seed_run(settings: Any, *, status: str) -> str:
     return str(run["id"])
 
 
-async def _seed_memory(settings: Any, *, superseded: bool) -> str:
-    row = await memory_store.put_memory(settings, TENANT, content=uuid.uuid4().hex, origin_seq=1)
+async def _seed_memory(settings: Any, *, superseded: bool, principal: str = "") -> str:
+    row = await memory_store.put_memory(
+        settings,
+        TENANT,
+        pool=MemoryPool.person("", principal) if principal else MemoryPool.agent(""),
+        content=uuid.uuid4().hex,
+        origin_seq=1,
+    )
     if superseded:
         await memory_store.supersede(settings, TENANT, row["id"], 2, source="operator")
     return str(row["id"])
@@ -194,7 +201,8 @@ async def test_sweep_removes_only_rows_older_than_each_ttl(
     clock.install(monkeypatch)
 
     # The superseded-memory grace is a week and not a setting, so those rows go in first.
-    old_superseded_memory = await _seed_memory(settings, superseded=True)
+    # In a person's pool: the sweep keys on age and supersession, never on whose memory it is.
+    old_superseded_memory = await _seed_memory(settings, superseded=True, principal="api_key|github:1")
     old_active_memory = await _seed_memory(settings, superseded=False)
     clock.ms += 7 * DAY
 
@@ -864,9 +872,13 @@ async def test_the_sweep_forgets_stale_agent_tasks_and_zero_days_keeps_them(
     settings = _retention(retention_settings).model_copy(update={"memory_task_retention_days": 30})
     clock = Clock(ms=1_800_000_000_000)
     clock.install(monkeypatch)
-    old = await memory_store.put_memory(settings, TENANT, content="Create notes.txt.", kind="task")
+    old = await memory_store.put_memory(
+        settings, TENANT, pool=MemoryPool.agent(""), content="Create notes.txt.", kind="task"
+    )
     clock.ms += 29 * DAY
-    recent = await memory_store.put_memory(settings, TENANT, content="Draft the release notes.", kind="task")
+    recent = await memory_store.put_memory(
+        settings, TENANT, pool=MemoryPool.agent(""), content="Draft the release notes.", kind="task"
+    )
     clock.ms += 2 * DAY
 
     kept = settings.model_copy(update={"memory_task_retention_days": 0})

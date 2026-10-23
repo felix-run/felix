@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from felix.config import Settings
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryPool
 from httpx import ASGITransport, AsyncClient
 
 from tests.support.factories import make_settings
@@ -120,8 +121,8 @@ async def test_as_of_is_read_only_and_shows_the_earlier_belief() -> None:
         await memory_store.put_memory(
             settings,
             "acme",
+            pool=MemoryPool.agent("m"),
             content=content,
-            manifest_id="m",
             topic_key="user.timezone",
             origin_seq=seq,
             # The operator's route: the one writer that retires by topic_key.
@@ -151,7 +152,7 @@ async def _two_threads_at_turn_four() -> None:
     settings = _settings()
     for content, thread in (("Ships on Fridays.", "acme:t-one"), ("Ships on Mondays.", "acme:t-two")):
         await memory_store.put_memory(
-            settings, "acme", content=content, manifest_id="m", origin_seq=4, thread_id=thread
+            settings, "acme", pool=MemoryPool.agent("m"), content=content, origin_seq=4, thread_id=thread
         )
 
 
@@ -234,7 +235,9 @@ async def test_forget_can_be_seen_and_undone() -> None:
 async def test_an_agent_cannot_restore_what_an_operator_forgot() -> None:
     """Restore is gated on whoever forgot the row, like a re-store is."""
     settings = _settings()
-    row = await memory_store.put_memory(settings, "acme", content="Agent-written.", manifest_id="m")
+    row = await memory_store.put_memory(
+        settings, "acme", pool=MemoryPool.agent("m"), content="Agent-written."
+    )
     assert await memory_store.forget(settings, "acme", row["id"], source="management_api")
     assert await memory_store.restore(settings, "acme", row["id"], source="") == "refused"
     assert await memory_store.restore(settings, "acme", row["id"], source="management_api") == "restored"

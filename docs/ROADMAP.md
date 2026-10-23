@@ -723,8 +723,9 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       clears, so it counts. `FELIX_JOB_RUNS_KEEP` (200) trims every job's `job_runs` to its newest N
       after each run, both arms, never a non-skipped run of the current UTC day (the cap's count).
       *Next for heartbeats:* the chat-ui toggle and a heartbeat-aware rendering of the conversation
-      (felix-web), including a muted `skipped` run. *Next:* memory scoped per user, plus
-      an agent-editable `USER.md` and `SOUL.md`.
+      (felix-web), including a muted `skipped` run. *Landed (feat/memory-person-scope):* memory
+      scoped per person — `spec.memory.scope: person` (the default), `FELIX_PRINCIPAL_ALIASES`,
+      `felix memory assign` (see Harness). *Next:* an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,
       with office-document skills; installable bundles through the skill-import gate; a stock
@@ -929,18 +930,23 @@ one member act with another's authority.
 
 ### Harness
 
-- [ ] **Memory is per agent, not per person (prod audit, 2026-10-22).** A pool is
-      `(tenant, manifest_id)`; `thread_id` is provenance only. So `assistant` and `cowork` each
-      learn `user.birthday` separately, and in a tenant with several members `user.*` means
-      whoever said it last. `memory_vectors` has no column for whose fact it is. The shape: a
-      principal column (migration, both arms, RLS unchanged) and `spec.memory.scope: principal |
-      manifest`, with `principal` sharing `user.*` facts across a person's agents. Blocked in
-      part on linking a person's GitHub and Google sign-ins, which are two principals today.
-      This is W4's "memory scoped per user". The same audit fixed the double write (`remember`
-      then capture of one fact in one turn) and the prelude spending its limit on repeats; still
-      open is whether an agent's newer value may retire an agent's older one on the same topic
+- [x] **Memory is per agent, not per person (prod audit, 2026-10-22).** *Landed
+      (feat/memory-person-scope):* `memory_vectors.principal` (migration `0046`, both arms, RLS
+      unchanged — person isolation is the store's filter); `spec.memory.scope: person | agent`,
+      `person` by default: a person (`issuer|subject`, carried through durable runs and jobs) has a
+      pool shared by every agent acting for them, read beside the operator-written rows of the
+      agent's own pool; a request naming no person writes nothing; person-pool ids hash the person
+      rather than the manifest so two agents storing one fact converge on one row. GitHub and
+      Google sign-ins link through `FELIX_PRINCIPAL_ALIASES` (one hop, memory only). Existing
+      agent-written rows reach no person until `felix memory assign` moves them. Not carried: a
+      Slack channel message names no verified person, so it writes no memory under `scope: person`.
+      Still open: whether an agent's newer value may retire an agent's older one on the same topic
       (`memory_store._may_retire_by_topic`), which the injection guard refuses today.
-      The ten duplicate rows already on prod stay until an operator forgets them.
+- [ ] **Threads belong to the tenant, not a person.** Person memory isolation stops at thread
+      access: a member who posts into another member's thread runs with their own pool, but their
+      facts land in that thread and capture learns from its history (security re-review of #677,
+      `deploy/GOVERNANCE.md` § Memory: whose memory an agent reads). Person-bound threads —
+      an owner on `thread_state`, checked on continue — would close it.
 
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
       Read, not measured — each step below carries its own before/after. In landing order:

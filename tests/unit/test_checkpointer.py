@@ -134,6 +134,7 @@ async def test_checkpointer_none_builds_a_stateless_agent() -> None:
         tools=InMemoryToolProvider(),
         tenant_id="t",
         skill_owner=None,
+        person="",
     )
     stateful = await build_tenant_agent(
         MEMORY,
@@ -141,6 +142,7 @@ async def test_checkpointer_none_builds_a_stateless_agent() -> None:
         tools=InMemoryToolProvider(),
         tenant_id="t",
         skill_owner=None,
+        person="",
     )
 
     assert stateless.session_store is None
@@ -209,7 +211,12 @@ async def test_runtime_enforces_the_cross_check() -> None:
     )
     with pytest.raises(ValueError, match="silently drops"):
         await build_tenant_agent(
-            MEMORY, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
+            MEMORY,
+            manifest=manifest,
+            tools=InMemoryToolProvider(),
+            tenant_id="t",
+            skill_owner=None,
+            person="",
         )
 
 
@@ -228,7 +235,12 @@ async def test_runtime_rejects_an_unknown_checkpointer() -> None:
     )
     with pytest.raises(ValueError, match="unknown checkpointer"):
         await build_tenant_agent(
-            MEMORY, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
+            MEMORY,
+            manifest=manifest,
+            tools=InMemoryToolProvider(),
+            tenant_id="t",
+            skill_owner=None,
+            person="",
         )
 
 
@@ -332,7 +344,12 @@ async def test_none_is_stateless_across_turns_and_postgres_is_not() -> None:
             }
         )
         agent = await build_tenant_agent(
-            settings, manifest=manifest, tools=InMemoryToolProvider(), tenant_id="t", skill_owner=None
+            settings,
+            manifest=manifest,
+            tools=InMemoryToolProvider(),
+            tenant_id="t",
+            skill_owner=None,
+            person="",
         )
         agent._resolve_model = lambda _i: _Model()  # type: ignore[attr-defined]
         for text in ("first", "second"):

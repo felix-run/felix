@@ -35,6 +35,7 @@ from typing import Any
 import pytest
 from felix.memory import recall as recall_mod
 from felix.memory import store as memory_store
+from felix.memory.store import MemoryFilter, MemoryPool
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("memory_settings", BACKENDS, indirect=True)
@@ -71,11 +72,13 @@ class _OneAxisEmbedder:
 
 
 async def _put(settings: Any, content: str, **kw: Any) -> dict[str, Any]:
-    return await memory_store.put_memory(settings, TENANT, content=content, manifest_id=MANIFEST, **kw)
+    return await memory_store.put_memory(
+        settings, TENANT, pool=MemoryPool.agent(MANIFEST), content=content, **kw
+    )
 
 
 async def _recall(settings: Any, query: str, **kw: Any) -> list[Any]:
-    return await recall_mod.recall(settings, TENANT, query, manifest_id=MANIFEST, **kw)
+    return await recall_mod.recall(settings, TENANT, query, **kw, scope=MemoryFilter(manifest_id=MANIFEST))
 
 
 # --- the answer is decided ------------------------------------------------------------------
@@ -187,12 +190,16 @@ async def test_recall_is_scoped_to_one_manifest_and_can_span_them(
     """
     mine = await _put(memory_settings, "alpha beta shared wording")
     theirs = await memory_store.put_memory(
-        memory_settings, TENANT, content="alpha beta shared wording", manifest_id="other"
+        memory_settings, TENANT, pool=MemoryPool.agent("other"), content="alpha beta shared wording"
     )
     assert mine["id"] != theirs["id"], "the manifest is supposed to be part of the id"
 
-    scoped = await recall_mod.recall(memory_settings, TENANT, "alpha beta", manifest_id=MANIFEST)
-    across = await recall_mod.recall(memory_settings, TENANT, "alpha beta", manifest_id="")
+    scoped = await recall_mod.recall(
+        memory_settings, TENANT, "alpha beta", scope=MemoryFilter(manifest_id=MANIFEST)
+    )
+    across = await recall_mod.recall(
+        memory_settings, TENANT, "alpha beta", scope=MemoryFilter(manifest_id="")
+    )
 
     assert [h.id for h in scoped] == [mine["id"]]
     assert {h.id for h in across} == {mine["id"], theirs["id"]}
@@ -202,7 +209,7 @@ async def test_recall_is_scoped_to_one_manifest_and_can_span_them(
 async def test_one_tenants_memories_are_not_recalled_for_another(memory_settings: Any) -> None:
     await _put(memory_settings, "alpha beta mine")
     await memory_store.put_memory(
-        memory_settings, "other-tenant", content="alpha beta theirs", manifest_id=MANIFEST
+        memory_settings, "other-tenant", pool=MemoryPool.agent(MANIFEST), content="alpha beta theirs"
     )
 
     hits = await _recall(memory_settings, "alpha beta")

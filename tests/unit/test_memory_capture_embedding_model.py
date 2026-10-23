@@ -14,6 +14,7 @@ from felix.manifests.schema import MemoryCapture
 from felix.memory import embedder as embedder_mod
 from felix.memory import store as memory_store
 from felix.memory.capture import capture_from_turn
+from felix.memory.store import MemoryPool
 
 from tests.support.factories import make_settings
 
@@ -41,7 +42,7 @@ async def test_a_captured_vector_records_the_backends_model() -> None:
     await capture_from_turn(
         settings,
         TENANT,
-        manifest_id="m",
+        pool=MemoryPool.agent("m"),
         user_text="Where is the runbook?",
         assistant_text="The deploy runbook lives in the ops repository under runbooks/deploy.md.",
         capture=MemoryCapture(enabled=True, max_facts=3, min_chars=5),
