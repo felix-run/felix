@@ -826,11 +826,13 @@ onto the library's import gate instead.
       and the scrubbed env, and now speaks the spec's newline-delimited JSON rather than LSP-style
       `Content-Length` frames.
 - [ ] **Follow-ups from the SDK-client reviews.**
-      - *Exceptions skip screening and masking for every untrusted tool.* `apply_content_screening`
-        and `apply_secret_masking` read a tool's output; an exception's text reaches the model
-        through `ToolRunner`'s `[error/…]` line unread. The MCP handler now returns its failures
-        as `[mcp_error]` output, which closes it there; the general fix screens and masks
-        `str(exc)` for untrusted transports.
+      - [x] *Exceptions skipped screening and masking.* `apply_secret_masking` now redacts a
+        known secret from any tool's raised text, and `apply_content_screening` screens a covered
+        tool's raise as its output, quarantining or blocking a flagged one; both re-raise with the
+        inferred error code kept (`tests/unit/test_tool_error_governance.py`).
+      - [ ] *The PII guardrail and judges do not read a raised exception.* `apply_guardrails` acts
+        on returned output only, so `duplicate key (email)=(alice@x.com)` reaches the model past
+        `guardrails: pii` with `block_on_match`. The same catch-and-re-raise shape as masking.
       - [x] *A stdio command's `PATH` was the manifest's.* An allowed name is now resolved on the
         API's own `PATH` and spawned by absolute path (`stdio_policy.resolve_stdio_command`), and
         `PATH` joined the env keys a manifest may not set, so an interpreter started through

@@ -59,6 +59,7 @@ from felix.secrets import SecretNotPermittedError
 from felix.security.host_allowlist import EgressBound, hosts_outside
 from felix.session.clearing import model_view_strategy
 from felix.skills.types import SkillCatalog
+from felix.tools.errors import ToolError, infer_error_code
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
 from felix.tools.refusal import unattended_refusal
@@ -269,26 +270,41 @@ def apply_workspace_scope(tools: list[Tool], scope: WorkspaceScopeName) -> list[
 
 
 def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str) -> list[Tool]:
-    """Innermost: redact known secrets from tool output before anything else sees them."""
+    """Innermost: redact known secrets from tool output before anything else sees them.
+
+    And from a raised exception's text, which `ToolRunner` shows the model as `[error/<code>] …`:
+    a failed request's message is where a credential most often surfaces (an echoed header, a
+    URL with its token). A raise whose text holds a secret is re-raised as a `ToolError` with the
+    same inferred code and the secret redacted, so the runner's handling -- the code, a fatal
+    tool, a timeout's retry -- is what it would have been. Any other raise passes untouched.
+    """
     if not secrets:
         return tools
+
+    def masked(content: str, tool_name: str) -> str:
+        for s in secrets:
+            if s and s in content:
+                content = content.replace(s, "[REDACTED]")
+                record_counter("felix_secret_masking", {"manifest_id": manifest_id, "tool": tool_name})
+        return content
 
     def wrap_one(tool: Tool) -> Tool:
         inner = tool.executor
 
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-            out = await inner.execute(args, ctx)
+            try:
+                out = await inner.execute(args, ctx)
+            except Exception as exc:
+                told = str(exc)
+                redacted = masked(told, tool.name)
+                if redacted == told:
+                    raise
+                # `from None`: the original, secret and all, must not ride along as the cause --
+                # a for-client run logs the exception it catches, chain included.
+                raise ToolError(infer_error_code(exc), redacted) from None
             if is_wrapper_deny(out):
                 return out
-            content = tool_output_content(out)
-            for s in secrets:
-                if s and s in content:
-                    content = content.replace(s, "[REDACTED]")
-                    record_counter(
-                        "felix_secret_masking",
-                        {"manifest_id": manifest_id, "tool": tool.name},
-                    )
-            return replace_tool_output(out, content=content)
+            return replace_tool_output(out, content=masked(tool_output_content(out), tool.name))
 
         return _clone_tool(tool, wrap_executor(inner, execute))
 
@@ -638,8 +654,31 @@ def apply_content_screening(
         # relayed-only floor: it is the free scan a manifest gets without asking.
         paid = not markers_only and (not scored_only or matches_any(scored_only, tool.name))
 
+        async def verdict(content: str) -> tuple[bool, bool]:
+            """(flagged, unavailable) for ``content``: the markers, then the paid scoring."""
+            if any(rx.search(content) for rx in _INJECTION):
+                return True, False
+            if paid and (model_id or decider is not None):
+                from felix.config import get_settings
+                from felix.governance.tool_screening import screen_tool_output
+
+                # Every window of the output, not the first: a benign prefix longer than one
+                # screener window used to carry the payload past both the model and the decider.
+                result = await screen_tool_output(get_settings(), content, model_id, decider)
+                # Unavailable is not clean: this is the path that screens MCP, A2A,
+                # browser and sandbox output, so failing open here is the whole ballgame.
+                return result.flagged, result.unavailable
+            return False, False
+
         async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-            out = await inner.execute(args, ctx)
+            try:
+                out = await inner.execute(args, ctx)
+            except Exception as exc:
+                # A relaying tool's raise too (markers only, as its output on the free floor): it
+                # handles untrusted text, and a harness bug's message can quote it.
+                if not (text_covered or tool.relays_untrusted):
+                    raise
+                return await screen_raised(exc)
             if is_wrapper_deny(out):
                 return out
             # Per call as well as per tool: a trusted tool may relay one result from an untrusted
@@ -649,19 +688,7 @@ def apply_content_screening(
             if not (text_covered or relayed):
                 return await screen_images(out) if image_tool else out
             content = tool_output_content(out)
-            flagged = any(rx.search(content) for rx in _INJECTION)
-            unavailable = False
-            if not flagged and paid and (model_id or decider is not None):
-                from felix.config import get_settings
-                from felix.governance.tool_screening import screen_tool_output
-
-                # Every window of the output, not the first: a benign prefix longer than one
-                # screener window used to carry the payload past both the model and the decider.
-                result = await screen_tool_output(get_settings(), content, model_id, decider)
-                # Unavailable is not clean: this is the path that screens MCP, A2A,
-                # browser and sandbox output, so failing open here is the whole ballgame.
-                unavailable = result.unavailable
-                flagged = result.flagged
+            flagged, unavailable = await verdict(content)
             if unavailable:
                 record_counter(
                     "felix_content_screening",
@@ -688,6 +715,39 @@ def apply_content_screening(
                 # A quarantined output shows the model nothing: its images go with its text.
                 return replace_tool_output(out, content=notice, images=[])
             return await screen_images(out)
+
+        async def screen_raised(exc: Exception) -> ToolOutput:
+            """A raise from a covered tool, screened as its output would be.
+
+            `ToolRunner` shows the model an exception's text, and an untrusted tool's exception is
+            text its server wrote -- a JSON-RPC message, a page's error body -- that no output
+            screening saw. Clean, the raise goes on untouched. Flagged or unscreenable, it is
+            blocked (`on_flag: block`) or re-raised with the text withheld, keeping its code.
+            """
+            flagged, unavailable = await verdict(str(exc))
+            if not (flagged or unavailable):
+                raise exc
+            action = "unavailable" if unavailable else on_flag
+            record_counter(
+                "felix_content_screening", {"manifest_id": manifest_id, "tool": tool.name, "action": action}
+            )
+            if on_flag == "block":
+                notice = (
+                    "[screening unavailable] tool error could not be screened"
+                    if unavailable
+                    else ("[screening blocked] untrusted content")
+                )
+                if tool.fatal:
+                    # A fatal tool's raise ends the run; a denial would not, and the payload (or a
+                    # screener outage) must not be what turns "stop" into "carry on".
+                    raise ToolError(infer_error_code(exc), notice) from None
+                return deny_output(notice, "screening")  # type: ignore[arg-type]
+            notice = (
+                "[quarantined] tool error could not be screened"
+                if unavailable
+                else ("[quarantined] tool error flagged as potentially hostile")
+            )
+            raise ToolError(infer_error_code(exc), notice) from None
 
         async def screen_images(out: ToolOutput) -> ToolOutput:
             if not tool_output_images(out):
