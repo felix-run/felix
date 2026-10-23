@@ -2270,7 +2270,7 @@ defined one (`spec.heartbeat`). The split of who decides what is the control:
 
 | Who | Decides |
 |-----|---------|
-| The operator (`manifests:write`) | Everything a firing does: the `checklist` the agent works through, the `schedule` (recurring only, never faster than `min_interval_minutes`, itself at least 15), the `model` route firings use, `max_turns`, and `keep_threads`. A manifest with a heartbeat must also bind `notify` (refused at write otherwise). |
+| The operator (`manifests:write`) | Everything a firing does: the `checklist` the agent works through, the `schedule` (recurring only, never faster than `min_interval_minutes`, itself at least 15), the `model` route firings use, `max_turns`, `keep_threads`, and `max_firings_per_day`. A manifest with a heartbeat must also bind `notify` (refused at write otherwise). |
 | The person (`heartbeats:write`) | Only on or off, for themselves: `PUT /heartbeats/{manifest}` with `{enabled}`, `DELETE`, and `POST .../run` to fire it now (`409 heartbeat_running` while a firing is in flight). `GET /heartbeats` (`heartbeats:read`) lists their own and no one else's. |
 
 **It runs as the person.** Enrolling writes an ordinary job (`hb-<manifest>-<sha256(person)[:12]>`,
@@ -2312,6 +2312,20 @@ titled "Heartbeat: <manifest>") as an entry for the person that no model prompt 
 record says whether the firing was `quiet` (sent no notice) and keeps the first 500 characters of
 its answer.
 
+**An operator can cap its firings per UTC day** with `max_firings_per_day` (1 to 1440; unset, the
+default, caps nothing beyond what the schedule fires), counting every firing that ran -- scheduled or asked for with `POST /heartbeats/{manifest}/run`, so a person cannot
+fire past it by hand. A firing due past the cap runs nothing: no model call, no tool, no notice. It
+is recorded as a run with status `skipped` (result `{"reason": "daily_cap", "max_firings_per_day":
+N}`), the job's `last_status` reads `skipped`, and the heartbeat stays on and fires again after UTC
+midnight -- whatever `FELIX_TIMEZONE` says, so the day is the same on every install. Skipped runs do
+not count toward the cap, so an operator raising it mid-day gives today the difference. A schedule
+that fires more often than the cap is allowed -- the cap binds, and the rest of the day's slots are
+recorded `skipped` -- and `PUT /manifests` and `felix validate-manifest` say so as a warning. A
+firing that ends some other way -- cancelled by a worker shutting down or a caller disconnecting
+from a manual run, or failed in the scheduler -- is still recorded (an error, `cancelled` or
+`execution failed`) before its `running` mark clears, so it counts: it may already have called the
+model.
+
 **Firing transcripts are the tenant's to read**, like an agent task's and any job's: each firing's
 thread (`{tenant}:job:hb-…:<hex>`) is an ordinary thread of the tenant, so whoever may read the
 tenant's sessions reads what a heartbeat checked on the person's behalf. Write a checklist with
@@ -2321,7 +2335,10 @@ that in mind; the notice itself goes to the person alone.
 firing threads of that heartbeat are deleted whole (events and metadata), on every store. The
 person's conversation is never among them. `DELETE /heartbeats/{manifest}` removes the job, its run
 history and its firing threads, and keeps the conversation, which holds the notices the person was
-sent and is theirs to delete. Job run records are not yet trimmed.
+sent and is theirs to delete. Its run records are trimmed like every job's: after each run, all but
+the newest `FELIX_JOB_RUNS_KEEP` (200) are deleted -- except runs of the current UTC day that ran,
+which are what the daily cap counts and stay until the day ends, so a small `FELIX_JOB_RUNS_KEEP`
+never hands a heartbeat its firings back. Skipped runs are trimmed like any other.
 
 ## Permission modes
 

@@ -33,13 +33,54 @@ def _refusal(heartbeat: dict[str, Any], **kwargs: Any) -> str:
 
 def test_the_defaults_are_hourly_on_the_manifest_s_model() -> None:
     spec = _manifest({"checklist": "Check the build."}).spec.heartbeat
-    assert (spec.schedule, spec.min_interval_minutes, spec.model, spec.max_turns, spec.keep_threads) == (
-        "every:60m",
-        30,
-        None,
-        6,
-        20,
-    )
+    assert (
+        spec.schedule,
+        spec.min_interval_minutes,
+        spec.model,
+        spec.max_turns,
+        spec.keep_threads,
+        spec.max_firings_per_day,
+    ) == ("every:60m", 30, None, 6, 20, None), "no cap unless the operator sets one"
+
+
+def test_a_cap_below_what_the_schedule_could_fire_is_allowed() -> None:
+    # Every 15 minutes is 96 a day; a cap of 4 is a configuration, not an error.
+    heartbeat = {
+        "checklist": "x",
+        "schedule": "every:15m",
+        "min_interval_minutes": 15,
+        "max_firings_per_day": 4,
+    }
+    assert _manifest(heartbeat).spec.heartbeat.max_firings_per_day == 4
+
+
+@pytest.mark.parametrize(
+    ("schedule", "cap", "warned"),
+    [
+        ("every:15m", 4, "fires up to 96 times"),
+        ("every:60m", 23, "fires up to 24 times"),
+        ("every:60m", 24, ""),  # exactly what it fires: the cap never binds
+        ("every:60m", None, ""),  # no cap
+        ("every:7h", 3, "fires up to 4 times"),  # 24/7 rounds up: some UTC days hold four
+        ("0 9,10 * * 1-5", 1, "fires up to 2 times"),  # the busiest day, not a weekend
+        ("0 9,10 * * 1-5", 2, ""),
+    ],
+)
+def test_a_cap_below_the_schedule_s_firings_is_a_write_warning(
+    schedule: str, cap: int | None, warned: str
+) -> None:
+    """`manifest_warnings` -- what `PUT /manifests` returns and `felix validate-manifest` prints."""
+    from felix.manifests.governance import manifest_warnings
+
+    heartbeat: dict[str, Any] = {"checklist": "x", "schedule": schedule, "min_interval_minutes": 15}
+    if cap is not None:
+        heartbeat["max_firings_per_day"] = cap
+    warnings = [w for w in manifest_warnings(_manifest(heartbeat)) if "max_firings_per_day" in w]
+    if not warned:
+        assert warnings == []
+        return
+    (warning,) = warnings
+    assert warned in warning and f"max_firings_per_day is {cap}" in warning, warning
 
 
 def test_a_heartbeat_needs_notify() -> None:
@@ -81,6 +122,8 @@ def test_the_floor_is_the_operator_s_but_never_under_fifteen_minutes() -> None:
         ("max_turns", 21),
         ("keep_threads", 0),
         ("keep_threads", 201),
+        ("max_firings_per_day", 0),
+        ("max_firings_per_day", 1441),
     ],
 )
 def test_out_of_range_fields_are_refused(field: str, value: Any) -> None:

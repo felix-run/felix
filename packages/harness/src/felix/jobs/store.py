@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from copy import deepcopy
@@ -12,6 +13,8 @@ from sqlalchemy import collate, delete, select
 from felix.config import Settings
 from felix.db.models import Job, JobRun
 from felix.db.session import _use_memory, get_session_factory
+
+logger = logging.getLogger("felix.jobs.store")
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -595,6 +598,103 @@ async def list_runs(
         return [_run_dict(r) for r in rows]
 
 
+# A run's `status`: `ok`, `error`, or `skipped` -- a firing that ran nothing because a limit held it
+# (a heartbeat over `max_firings_per_day`). A skipped run is a record that a firing was due, not a
+# run: it never counts toward that limit (`count_runs_since`), and trimming keeps none of it back.
+SKIPPED = "skipped"
+DAY_MS = 86_400_000
+# Rows one trim deletes at most: a history from before trimming existed is cut down over a few
+# runs, never in one statement holding the job's rows.
+TRIM_BATCH = 1000
+
+
+def utc_day_start(at_ms: int) -> int:
+    """The start of the UTC day holding `at_ms`. Unix time has no leap seconds, so a day is exact."""
+    return at_ms - at_ms % DAY_MS
+
+
+async def count_runs_since(settings: Settings, tenant_id: str, name: str, since_ms: int) -> int:
+    """How many runs of the job started at or after `since_ms` and ran -- every status but
+    `SKIPPED`. One indexed count: `idx_job_runs_history` is `(tenant_id, job_name, started_at DESC,
+    run_id DESC)`, so the range on `started_at` is read from the index; `status` is checked per row."""
+    if _use_memory(settings):
+        return sum(
+            1
+            for (t, j, _), row in _memory_runs.items()
+            if t == tenant_id and j == name and row["started_at"] >= since_ms and row.get("status") != SKIPPED
+        )
+
+    from sqlalchemy import func
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        counted = await db.scalar(
+            select(func.count())
+            .select_from(JobRun)
+            .where(
+                JobRun.tenant_id == tenant_id,
+                JobRun.job_name == name,
+                JobRun.started_at >= since_ms,
+                JobRun.status != SKIPPED,
+            )
+        )
+        return int(counted or 0)
+
+
+async def trim_runs(settings: Settings, tenant_id: str, name: str, *, keep: int, protect_since: int) -> int:
+    """Delete the job's runs past its newest `keep` -- newest by `(started_at, run_id)`, the order
+    `list_runs` reads -- except any that ran at or after `protect_since` (a run that is not
+    `SKIPPED`): those are what a heartbeat's daily cap counts, so trimming them would let it fire
+    again. At most `TRIM_BATCH`, oldest first. `keep` 0 or less trims nothing. How many went."""
+    if keep <= 0:
+        return 0
+
+    def _doomed(row: dict[str, Any]) -> bool:
+        return row["started_at"] < protect_since or row.get("status") == SKIPPED
+
+    if _use_memory(settings):
+        rows = [row for (t, j, _), row in _memory_runs.items() if t == tenant_id and j == name]
+        rows.sort(key=lambda r: (r["started_at"], r["run_id"]), reverse=True)
+        # Past the newest `keep`, oldest first, as the Postgres arm takes its batch.
+        doomed = [row for row in rows[keep:] if _doomed(row)]
+        doomed.sort(key=lambda r: (r["started_at"], r["run_id"]))
+        gone = doomed[:TRIM_BATCH]
+        for row in gone:
+            _memory_runs.pop((row["tenant_id"], row["job_name"], row["run_id"]), None)
+        return len(gone)
+
+    from sqlalchemy import or_, tuple_
+
+    mine = (JobRun.tenant_id == tenant_id, JobRun.job_name == name)
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        # The oldest run still kept; everything strictly older than it is past the newest `keep`.
+        last_kept = (
+            await db.execute(
+                select(JobRun.started_at, JobRun.run_id)
+                .where(*mine)
+                .order_by(JobRun.started_at.desc(), JobRun.run_id.desc())
+                .offset(keep - 1)
+                .limit(1)
+            )
+        ).first()
+        if last_kept is None:
+            return 0
+        doomed = (
+            select(JobRun.run_id)
+            .where(
+                *mine,
+                tuple_(JobRun.started_at, JobRun.run_id) < tuple_(last_kept[0], last_kept[1]),
+                or_(JobRun.started_at < protect_since, JobRun.status == SKIPPED),
+            )
+            .order_by(JobRun.started_at, JobRun.run_id)
+            .limit(TRIM_BATCH)
+        )
+        result = await db.execute(delete(JobRun).where(*mine, JobRun.run_id.in_(doomed)))
+        await db.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+
+
 async def record_run(
     settings: Settings,
     tenant_id: str,
@@ -606,7 +706,40 @@ async def record_run(
     started_at: int | None = None,
     finished_at: int | None = None,
 ) -> dict[str, Any]:
-    """Persist a job run row (helper for scheduler)."""
+    """Persist a job run row (helper for scheduler), then trim the job's history to
+    `FELIX_JOB_RUNS_KEEP` (`trim_runs`) -- every job's, not only a heartbeat's."""
+    run = await _insert_run(
+        settings,
+        tenant_id,
+        name,
+        status=status,
+        error=error,
+        result=result,
+        started_at=started_at,
+        finished_at=finished_at,
+    )
+    try:
+        await trim_runs(
+            settings, tenant_id, name, keep=settings.job_runs_keep, protect_since=utc_day_start(now_ms())
+        )
+    except Exception:
+        # The run is recorded; a history left one row long until the next run trims it is not a
+        # reason to lose that.
+        logger.warning("job_runs_trim_failed", exc_info=True)
+    return run
+
+
+async def _insert_run(
+    settings: Settings,
+    tenant_id: str,
+    name: str,
+    *,
+    status: str,
+    error: str,
+    result: dict[str, Any] | None,
+    started_at: int | None,
+    finished_at: int | None,
+) -> dict[str, Any]:
     run_id = uuid.uuid4().hex
     started = started_at or now_ms()
     finished = finished_at or now_ms()
@@ -646,9 +779,11 @@ __all__ = [
     "RUNNING",
     "RUNNING_STALE_MS",
     "SCHEDULED_BY",
+    "SKIPPED",
     "BothTargets",
     "claim_manual_run",
     "claim_run",
+    "count_runs_since",
     "delete_job",
     "disable_job",
     "finish_run",
@@ -661,4 +796,6 @@ __all__ = [
     "scheduled_by",
     "set_schedule",
     "touch_run",
+    "trim_runs",
+    "utc_day_start",
 ]

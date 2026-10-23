@@ -290,7 +290,7 @@ zero cloud SDKs.
 - Production JWT and api_key deploys need `FELIX_CONSUMER_SHARED_SECRET` for `POST /internal/*`
 - Retention: the worker's nightly sweep prunes `audit_events`, `usage_events`, finished `fibers`
   and `a2a_tasks`, and (off by default) idle session threads — `FELIX_AUDIT_RETENTION_DAYS` (30),
-  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30; finished workflow runs), `FELIX_SCHEDULED_TASK_RETENTION_DAYS` (30; one-shot agent-scheduled tasks that have fired, never an operator's job), `FELIX_SESSION_RETENTION_DAYS`
+  `FELIX_USAGE_RETENTION_DAYS` (365), `FELIX_FIBER_RETENTION_DAYS` (7), `FELIX_WORKFLOW_RUN_RETENTION_DAYS` (30; finished workflow runs), `FELIX_SCHEDULED_TASK_RETENTION_DAYS` (30; one-shot agent-scheduled tasks that have fired, never an operator's job), `FELIX_JOB_RUNS_KEEP` (200; run records kept per job, newest first, trimmed after each run rather than nightly — 0 keeps all; the current UTC day's runs stay until it ends, since a heartbeat's daily cap counts them), `FELIX_SESSION_RETENTION_DAYS`
   (0 = keep), `FELIX_APPROVAL_RETENTION_DAYS` (0 = keep, and only *settled* approvals — a grant
   that can still authorize is never swept), `FELIX_ATTACHMENT_RETENTION_DAYS` (0 = keep; the one
   sweep that deletes *bytes* as well as rows, since `attachments/` is an object-store prefix
@@ -910,7 +910,8 @@ Storage and execution:
   `FELIX_PUSH_ALLOWED_HOSTS`, and a push carries the kind of wait and the thread, never the call
 - A heartbeat is a periodic check-in a person turns on for themselves: the operator writes
   `spec.heartbeat` (what to check, a recurring `schedule`, a `model` route and `max_turns` for
-  firings, `keep_threads`; it needs `spec.notify`), and a person holding `heartbeats:write` turns
+  firings, `keep_threads`, an optional `max_firings_per_day` — past it a UTC day's firings, manual ones
+  included, are recorded `skipped` with no model call; it needs `spec.notify`), and a person holding `heartbeats:write` turns
   theirs on or off with `PUT /heartbeats/{manifest}` (`{enabled}` and nothing else), removes it with
   `DELETE`, or fires it now with `POST /heartbeats/{manifest}/run`; `GET /heartbeats`
   (`heartbeats:read`) lists their own, with `expires_at` when the credential that enrolled it is one

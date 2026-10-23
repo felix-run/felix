@@ -155,6 +155,63 @@ async def test_a_cancelled_run_clears_its_mark(settings: Settings, monkeypatch: 
         await task
     row = await _row(settings)
     assert (row["last_status"], row["last_error"]) == ("error", "cancelled")
+    # And it leaves a run record: the model may already have been called, and a heartbeat's daily
+    # cap counts records -- a cancelled firing that left none was spend nothing counted.
+    (run,) = await jobs_store.list_runs(settings, TENANT, "a")
+    assert (run["status"], run["error"], run["started_at"]) == ("error", "cancelled", T0)
+    assert await jobs_store.count_runs_since(settings, TENANT, "a", T0) == 1
+
+
+async def test_a_run_cancelled_after_its_record_is_not_recorded_twice(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelled between the run record and the end of its claim: one record, not two."""
+    await _job(settings)
+    seen = (await _row(settings))["next_run_at"]
+    assert await jobs_store.claim_run(
+        settings, TENANT, "a", seen_next_run_at=seen, last_run_at=T0, next_run_at=None
+    )
+    monkeypatch.setattr(scheduler, "_invoke_job_manifest", _ok)
+    real_finish = jobs_store.finish_run
+    calls = iter([True])
+
+    async def _cancel_once(*a: Any, **kw: Any) -> bool:
+        if next(calls, False):
+            raise asyncio.CancelledError
+        return await real_finish(*a, **kw)
+
+    monkeypatch.setattr(jobs_store, "finish_run", _cancel_once)
+    with pytest.raises(asyncio.CancelledError):
+        await scheduler.fire_job(settings, TENANT, await _row(settings), started_at=T0)
+    runs = await jobs_store.list_runs(settings, TENANT, "a")
+    assert [r["status"] for r in runs] == ["ok"]
+    assert (await _row(settings))["last_status"] == "error", "its mark still cleared"
+
+
+async def test_a_failed_run_is_recorded_before_its_mark_clears(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Freed first, a manual run could claim the job in the gap and count one run fewer than ran."""
+    await _job(settings)
+    seen = (await _row(settings))["next_run_at"]
+    assert await jobs_store.claim_run(
+        settings, TENANT, "a", seen_next_run_at=seen, last_run_at=T0, next_run_at=None
+    )
+    monkeypatch.setattr(scheduler, "_invoke_job_manifest", _ok)
+    real = jobs_store.record_run
+    attempts: list[str] = []
+
+    async def _record(*a: Any, **kw: Any) -> dict[str, Any]:
+        attempts.append((await _row(settings))["last_status"])
+        if len(attempts) == 1:
+            raise RuntimeError("store down")
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(jobs_store, "record_run", _record)
+    run = await scheduler.fire_job(settings, TENANT, await _row(settings), started_at=T0)
+    assert run["error"] == "execution failed"
+    assert attempts == ["running", "running"], "the failure was recorded after the mark was cleared"
+    assert (await _row(settings))["last_status"] == "error"
 
 
 async def test_a_manual_claim_refuses_a_running_job_and_holds_off_the_sweep(settings: Settings) -> None:

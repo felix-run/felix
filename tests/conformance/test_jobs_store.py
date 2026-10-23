@@ -361,6 +361,131 @@ async def test_one_jobs_runs_are_not_anothers(store_settings: Any) -> None:
     assert [r["error"] for r in await jobs.list_runs(store_settings, OTHER, "a")] == ["from-other-tenant"]
 
 
+# --- trimming the run history (`FELIX_JOB_RUNS_KEEP`) and the daily count -----------------------
+
+
+def _keeping(settings: Any, keep: int) -> Any:
+    return settings.model_copy(update={"job_runs_keep": keep})
+
+
+async def _started(settings: Any, name: str = JOB, tenant: str = TENANT) -> list[int]:
+    return [r["started_at"] for r in await jobs.list_runs(settings, tenant, name, limit=1000)]
+
+
+@parametrized
+async def test_recording_a_run_keeps_only_the_newest_n_of_that_job(store_settings: Any) -> None:
+    """One row per firing, forever, until this: each `record_run` trims its own job to the newest
+    `job_runs_keep`. Another job's history -- the same tenant's, or another tenant's job of the same
+    name -- is written first with trimming off and must come through every trim below untouched."""
+    unbounded = _keeping(store_settings, 0)
+    for started in range(1, 5):
+        await jobs.record_run(unbounded, TENANT, "other-job", started_at=started)
+        await jobs.record_run(unbounded, OTHER, JOB, started_at=started)
+
+    keep3 = _keeping(store_settings, 3)
+    for started in (10, 50, 30, 20, 40):
+        await jobs.record_run(keep3, TENANT, JOB, started_at=started)
+
+    assert await _started(store_settings) == [50, 40, 30], "the newest three, by started_at"
+    assert await _started(store_settings, "other-job") == [4, 3, 2, 1], (
+        "another job's runs are not this one's"
+    )
+    assert await _started(store_settings, JOB, OTHER) == [4, 3, 2, 1], "nor another tenant's"
+
+
+@parametrized
+async def test_keep_zero_keeps_every_run(store_settings: Any) -> None:
+    unbounded = _keeping(store_settings, 0)
+    for started in range(1, 8):
+        await jobs.record_run(unbounded, TENANT, JOB, started_at=started)
+    assert await _started(store_settings) == [7, 6, 5, 4, 3, 2, 1]
+    assert await jobs.trim_runs(store_settings, TENANT, JOB, keep=0, protect_since=10**15) == 0
+
+
+@parametrized
+async def test_runs_sharing_a_timestamp_are_trimmed_the_way_they_are_listed(store_settings: Any) -> None:
+    """Which tied run survives is the `run_id` tiebreak `list_runs` pages by, on both arms -- not
+    insertion order on one and the plan's order on the other."""
+    unbounded = _keeping(store_settings, 0)
+    recorded = [await jobs.record_run(unbounded, TENANT, JOB, started_at=100) for _ in range(5)]
+
+    assert await jobs.trim_runs(store_settings, TENANT, JOB, keep=2, protect_since=10**15) == 3
+
+    kept = [r["run_id"] for r in await jobs.list_runs(store_settings, TENANT, JOB)]
+    assert kept == sorted((r["run_id"] for r in recorded), reverse=True)[:2]
+
+
+@parametrized
+async def test_todays_runs_that_ran_outlive_the_trim_and_skipped_ones_do_not(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heartbeat's daily cap counts today's runs (`count_runs_since`), so a trim that took them
+    would hand it firings back; a person asking for skipped runs could push them out. A skipped run
+    counts for nothing and is trimmed like any old one."""
+    # Pinned mid-day, so the runs below cannot straddle a real UTC midnight.
+    now = 1_800_000_000_000 - 1_800_000_000_000 % jobs.DAY_MS + 12 * 3_600_000
+    monkeypatch.setattr(jobs, "now_ms", lambda: now)
+    today = jobs.utc_day_start(now)
+    keep2 = _keeping(store_settings, 2)
+    await jobs.record_run(keep2, TENANT, JOB, started_at=today - 1)
+    for offset in (3, 2, 1):
+        await jobs.record_run(keep2, TENANT, JOB, started_at=now - offset)
+    for _ in range(3):
+        await jobs.record_run(keep2, TENANT, JOB, started_at=now, status=jobs.SKIPPED)
+
+    runs = await jobs.list_runs(store_settings, TENANT, JOB, limit=100)
+    assert [(r["started_at"] - now, r["status"]) for r in runs] == [
+        (0, "skipped"),
+        (0, "skipped"),
+        (-1, "ok"),
+        (-2, "ok"),
+        (-3, "ok"),
+    ], "yesterday's run and the oldest skipped one went; today's three that ran stayed"
+    assert await jobs.count_runs_since(store_settings, TENANT, JOB, today) == 3
+
+
+@parametrized
+async def test_a_trim_takes_at_most_a_batch_and_the_oldest_first(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A history from before trimming existed shrinks over several runs, never in one statement --
+    and each batch is the *oldest* rows past the keep, so the newest are never what a batch takes."""
+    for started in range(1, 7):
+        await jobs.record_run(_keeping(store_settings, 0), TENANT, JOB, started_at=started)
+    monkeypatch.setattr(jobs, "TRIM_BATCH", 2)
+
+    assert await jobs.trim_runs(store_settings, TENANT, JOB, keep=1, protect_since=10**15) == 2
+    assert await _started(store_settings) == [6, 5, 4, 3]
+    assert await jobs.trim_runs(store_settings, TENANT, JOB, keep=1, protect_since=10**15) == 2
+    assert await jobs.trim_runs(store_settings, TENANT, JOB, keep=1, protect_since=10**15) == 1
+    assert await _started(store_settings) == [6]
+
+
+@parametrized
+async def test_a_trim_that_fails_keeps_the_run_it_followed(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _down(*_a: Any, **_kw: Any) -> int:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(jobs, "trim_runs", _down)
+    recorded = await jobs.record_run(_keeping(store_settings, 1), TENANT, JOB, started_at=10)
+    assert [r["run_id"] for r in await jobs.list_runs(store_settings, TENANT, JOB)] == [recorded["run_id"]]
+
+
+@parametrized
+async def test_count_runs_since_counts_one_jobs_runs_that_ran(store_settings: Any) -> None:
+    unbounded = _keeping(store_settings, 0)
+    for started, status in ((99, "ok"), (100, "ok"), (150, "error"), (200, jobs.SKIPPED)):
+        await jobs.record_run(unbounded, TENANT, JOB, started_at=started, status=status)
+    await jobs.record_run(unbounded, TENANT, "other-job", started_at=120)
+    await jobs.record_run(unbounded, OTHER, JOB, started_at=120)
+
+    assert await jobs.count_runs_since(store_settings, TENANT, JOB, 100) == 2, "from 100, never skipped"
+    assert await jobs.count_runs_since(store_settings, TENANT, JOB, 201) == 0
+    assert await jobs.count_runs_since(store_settings, TENANT, "nobody", 0) == 0
+
+
 @parametrized
 async def test_jobs_are_listed_in_a_stable_order(store_settings: Any) -> None:
     """`GET /jobs` is an operator's inventory, and neither arm ordered it at all.

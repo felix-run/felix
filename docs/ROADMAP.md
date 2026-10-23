@@ -702,7 +702,7 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       *Follow-ups:* the sweep still awaits each firing in turn, so one long run delays the jobs
       after it (fan out per job, bounded); `accept_edits` on a job's thread still waives its edit-tool
       approvals unattended (only `bypass` is re-checked); a job run record does not list the calls it refused
-      (they are `policy_deny` audit rows). *Landed (this PR):* heartbeat core. The operator
+      (they are `policy_deny` audit rows). *Landed:* heartbeat core (#661). The operator
       defines `spec.heartbeat` (checklist, recurring schedule held to `min_interval_minutes` >= 15,
       a firing `model` route, `max_turns`, `keep_threads`; needs `spec.notify`), and a person turns
       their own on or off over `/heartbeats` (`heartbeats:read` / `heartbeats:write`, a named
@@ -714,9 +714,15 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       manifest's current checklist, never the job payload, runs on the heartbeat's model and step
       bound, records `quiet` (no notice sent) and the answer cut to 500, and prunes its firing
       threads to `keep_threads` (`session/prune.py`, both store arms); a manifest that drops its
-      heartbeat turns it off. *Next for heartbeats:* a per-person firings/day cap; trimming
-      `job_runs` (a heartbeat adds one per firing, forever); the chat-ui toggle and a
-      heartbeat-aware rendering of the conversation (felix-web). *Next:* memory scoped per user, plus
+      heartbeat turns it off. *Landed (this PR):* heartbeat limits. `spec.heartbeat.max_firings_per_day`
+      (optional; unset caps nothing) holds a person's firings per UTC day, scheduled and manual
+      alike; past it a firing calls no model and is recorded `skipped` (a new run status, not
+      counted toward the cap), and the heartbeat stays on; a cap below the schedule's daily firings
+      is a write warning. A cancelled or scheduler-failed firing is now recorded before its mark
+      clears, so it counts. `FELIX_JOB_RUNS_KEEP` (200) trims every job's `job_runs` to its newest N
+      after each run, both arms, never a non-skipped run of the current UTC day (the cap's count).
+      *Next for heartbeats:* the chat-ui toggle and a heartbeat-aware rendering of the conversation
+      (felix-web), including a muted `skipped` run. *Next:* memory scoped per user, plus
       an agent-editable `USER.md` and `SOUL.md`.
 - [ ] **W5 — Cowork layer.** A per-user OAuth vault generalised from GitHub connections, with MCP
       OAuth on top of it; a stateful browser tool; PDF attachments and first-class output artifacts,

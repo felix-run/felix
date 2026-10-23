@@ -944,6 +944,20 @@
           "minimum": 1,
           "title": "Keep Threads",
           "type": "integer"
+        },
+        "max_firings_per_day": {
+          "anyOf": [
+            {
+              "maximum": 1440,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Firings Per Day"
         }
       },
       "required": [
