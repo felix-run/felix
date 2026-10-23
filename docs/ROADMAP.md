@@ -829,7 +829,19 @@ onto the library's import gate instead.
         API's own `PATH` and spawned by absolute path (`stdio_policy.resolve_stdio_command`), and
         `PATH` joined the env keys a manifest may not set, so an interpreter started through
         `/usr/bin/env` comes from the operator's directories too.
-      - [ ] *The stdio env denylist misses variables that run code with no file on the host.*
+      - [x] *The stdio env denylist missed variables that run code with no file on the host.*
+        Named keys and four prefixes (`LD_`, `DYLD_`, `BASH_FUNC_`, `GIT_CONFIG_`), compared
+        case-insensitively, refused at spawn and on write but not at compile; the child's git
+        disarmed as the shell tool's (`stdio_policy.GIT_DISARMED`, now with `protocol.ext.allow`,
+        `core.askPass` and `GIT_TERMINAL_PROMPT=0`). Left open, in `deploy/GOVERNANCE.md`: keys
+        that point at a file, repository-named git drivers, TLS and proxy keys.
+      - [ ] *Decide: an env-key allowlist per stdio command.* A denylist is the known keys, not all
+        of them, and a server's own settings (`*_API_URL` pointed at an attacker collects the
+        `secret:` value sent with it) are beyond any denylist. An operator-defined set of keys a
+        manifest may set per allowlisted command closes the class; it needs a settings shape and
+        a story for stored manifests. Also open: whether a manifest may override `HOME`, and a
+        `felix doctor` check that git is 2.31 or later.
+        Was:
         `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n=core.fsmonitor`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`,
         `BASH_FUNC_<name>%%`, `SHELLOPTS`+`PS4`, `JAVA_TOOL_OPTIONS`/`JDK_JAVA_OPTIONS` reach a
         fixed allowlisted binary (an `mcp-server-git`) through `mcp_servers[].env`. A prefix ban

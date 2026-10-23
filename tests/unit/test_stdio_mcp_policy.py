@@ -305,3 +305,113 @@ def test_a_link_that_matched_through_its_target_spawns_the_target(tmp_path: Path
     link.symlink_to(target)
     listed = os.path.realpath(target)
     assert resolve_stdio_command(str(link), _settings(mcp_stdio_allowed_commands=listed)) == listed
+
+
+# --- variables that run code with no file on the host ------------------------------
+
+
+REFUSED = [
+    # git runs a program from these on a fixed git server's first `git status`.
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_SSH_COMMAND",
+    "GIT_ASKPASS",
+    "GIT_EXTERNAL_DIFF",
+    "SSH_ASKPASS",
+    "GIT_ALLOW_PROTOCOL",
+    "GIT_TRACE",
+    "GIT_TRACE_CURL",
+    "GIT_TRACE2_EVENT",
+    # Python: a warnings filter imports a module, and `antigravity` opens `BROWSER`.
+    "PYTHONWARNINGS",
+    "BROWSER",
+    "HGRCPATH",
+    # bash: an exported function, xtrace's prompt, a startup file.
+    "BASH_FUNC_dirname%%",
+    "SHELLOPTS",
+    "PS4",
+    "ENV",
+    # JVM and other interpreters: an option string is code.
+    "JAVA_TOOL_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "_JAVA_OPTIONS",
+    "PYTHONBREAKPOINT",
+    "RUBYOPT",
+    # the loader families, by prefix.
+    "LD_AUDIT",
+    "DYLD_FRAMEWORK_PATH",
+    # case is no way round it.
+    "Path",
+    "ld_preload",
+]
+
+# A server's own settings, and the git and interpreter variables that steer nothing into running.
+ALLOWED = [
+    "GITHUB_TOKEN",
+    "GIT_AUTHOR_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "NODE_ENV",
+    "PYTHONUNBUFFERED",
+    "LANGUAGE",
+]
+
+
+@pytest.mark.parametrize("key", REFUSED)
+def test_a_variable_that_runs_code_is_refused_at_spawn(key: str) -> None:
+    with pytest.raises(StdioNotAllowedError, match="may not set"):
+        stdio_child_env({key: "x"})
+
+
+def test_a_servers_own_settings_still_reach_it() -> None:
+    env = stdio_child_env(dict.fromkeys(ALLOWED, "v"))
+    assert all(env[k] == "v" for k in ALLOWED)
+
+
+def _stdio_manifest(env: dict[str, str]) -> object:
+    return parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "git-agent"},
+            "spec": {
+                "mcp_servers": [{"name": "git", "transport": "stdio", "command": "/usr/bin/true", "env": env}]
+            },
+        }
+    )
+
+
+def test_such_a_variable_is_refused_on_write_and_not_at_compile() -> None:
+    """New manifests get a 400 naming the key. A stored one is not failed at compile -- that would
+    take down its whole agent; its stdio server binds nothing at spawn instead."""
+    from felix.manifests.governance import validate_for_write, validate_governance
+
+    settings = _settings(mcp_stdio_allowed_commands="/usr/bin/true")
+    manifest = _stdio_manifest({"GIT_SSH_COMMAND": "sh -c id", "GIT_AUTHOR_NAME": "bot"})
+    with pytest.raises(GovernanceError, match=r"mcp_servers\[git\]: env may not set GIT_SSH_COMMAND"):
+        validate_for_write(manifest, settings)
+    validate_governance(manifest, settings)
+    validate_for_write(_stdio_manifest({"GIT_AUTHOR_NAME": "bot"}), settings)
+
+
+def test_a_stdio_servers_git_is_disarmed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server pointed at a repository runs what that repository's `.git/config` names on its first
+    `git status`; the child's environment overrides those keys, as the shell tool's does."""
+    from felix.manifests.schema import McpServerRef
+    from felix.mcp.stdio import stdio_parameters
+    from felix.security.stdio_policy import GIT_DISARMED
+
+    _executable(tmp_path, "git-mcp")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    params = stdio_parameters(
+        McpServerRef(name="g", transport="stdio", command="git-mcp", env={"GIT_AUTHOR_NAME": "bot"}),
+        settings=_settings(mcp_stdio_allowed_commands="git-mcp"),
+    )
+    env = params.env or {}
+    pinned = {
+        env[f"GIT_CONFIG_KEY_{n}"]: env[f"GIT_CONFIG_VALUE_{n}"] for n in range(int(env["GIT_CONFIG_COUNT"]))
+    }
+    assert pinned == dict(GIT_DISARMED)
+    assert pinned["core.fsmonitor"] == "false" and pinned["core.hooksPath"] == "/dev/null"
+    assert pinned["protocol.ext.allow"] == "never" and env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GIT_AUTHOR_NAME"] == "bot"

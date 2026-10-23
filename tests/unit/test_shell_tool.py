@@ -201,9 +201,9 @@ async def test_the_child_does_not_see_the_api_environment(
     # passed on macOS and on CI and failed inside the image.
     injected = {"__CF_USER_TEXT_ENCODING", "LC_CTYPE"}
     # And what the tool adds itself: git's overrides of the repository's config, values it wrote.
-    from felix.tools.shell import _git_disarmed
+    from felix.security.stdio_policy import git_disarmed
 
-    ours = set(_git_disarmed({}))
+    ours = set(git_disarmed({}))
     assert set(env) - injected - ours <= {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}, sorted(env)
 
 

@@ -61,6 +61,8 @@ CASES = {
         _plant_config("gpg.program", "{program}"),
         [*IDENTITY, "commit", "-S", "--allow-empty", "-m", "x"],
     ),
+    # A URL whose transport is a command line: allowed by the repository, run by any fetch of it.
+    "protocol.ext.allow": (_plant_config("protocol.ext.allow", "always"), ["ls-remote"]),
 }
 
 
@@ -71,6 +73,8 @@ def _plant(case: str, repo: Path, marker: Path) -> list[str]:
         hooks = Path(f"{repo.parent / 'program.sh'}.d")
         hooks.mkdir()
         _script(hooks / "pre-commit", marker)
+    if case == "protocol.ext.allow":
+        return ["git", *args, f"ext::sh -c touch% {marker}"]
     return ["git", *args]
 
 

@@ -154,16 +154,47 @@ is decided by the operator's environment, never the manifest's:
 
 The child process does **not** inherit the API environment; it receives
 `PATH`/`HOME`/`LANG`/`LC_ALL`/`TZ` (plus the SDK's `LOGNAME`/`SHELL`/`TERM`/`USER`) and the keys
-declared in `mcp_servers[].env` (with `secret:NAME` refs resolved). Loader variables such as
-`LD_PRELOAD`, `PYTHONPATH` and `PATH` are rejected.
+declared in `mcp_servers[].env` (with `secret:NAME` refs resolved). A key that makes the server
+run or load code the manifest chose is refused (`stdio_policy.env_key_refused`, case-insensitive):
+
+| Family | Refused |
+|---|---|
+| Loaders | `LD_*`, `DYLD_*`, `GCONV_PATH` |
+| Shells | `BASH_FUNC_*`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `PROMPT_COMMAND`, `IFS` |
+| Interpreters | `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONBREAKPOINT`, `PYTHONWARNINGS`, `PYTHONINSPECT`, `PYTHONUSERBASE`, `BROWSER`, `PERL5OPT`, `PERL5LIB`, `PERLLIB`, `PERL5DB`, `RUBYOPT`, `RUBYLIB`, `HGRCPATH` |
+| git | `GIT_CONFIG_*`, `GIT_TRACE*`, `GIT_CONFIG`, `GIT_ALLOW_PROTOCOL`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_EXTERNAL_DIFF`, `GIT_EXEC_PATH`, `GIT_PROXY_COMMAND`, `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, `GIT_TEMPLATE_DIR` |
+| Lookup | `PATH` |
+
+A manifest saved with one gets a `400` naming it. One already stored is not failed at compile,
+which would take its whole agent down; that stdio server binds no tools at spawn instead. Every
+other key (`GIT_AUTHOR_NAME`, a server's own token) passes. The child's git is also disarmed
+exactly as the shell tool's is (`stdio_policy.GIT_DISARMED`: hooks, `core.fsmonitor`, pager,
+editor, `core.sshCommand`, `core.askPass`, credential helper, signing programs and
+`protocol.ext.allow=never` pinned through `GIT_CONFIG_*`, with `GIT_TERMINAL_PROMPT=0`). Those
+pins need git 2.31 or later; an older git ignores `GIT_CONFIG_COUNT` without error. A git server
+that relied on a credential helper must be given its token another way: through a `secret:` env
+key the server reads, never in a URL, which lands in `.git/config`, `ps` and git's error text.
+
+The list is the known keys that need no file of the attacker's on the host, not a proof that no
+other exists. Not covered:
+
+- **A repository's own config, for programs git names by driver or remote:**
+  `diff.<driver>.textconv`, `merge.<driver>.driver`, `filter.<driver>.clean`/`smudge` (named
+  in `.gitattributes`), `remote.<name>.uploadpack`, `submodule.<name>.update=!cmd`,
+  `core.gitProxy`. These need a repository the attacker can write.
+- **Keys that point at a file:** `HOME`, `XDG_*`, `GIT_DIR`, `OPENSSL_CONF`, CA bundles. On Linux
+  a value may contain newlines, so `/proc/self/environ` can serve as that file for a pointer to a
+  command-running format; the ones known to matter (`BASH_ENV`, `ENV`, `GIT_CONFIG_*`, `HGRCPATH`)
+  are refused.
+- **Trust and egress, not code:** `NODE_TLS_REJECT_UNAUTHORIZED`, `GIT_SSL_NO_VERIFY`,
+  `PYTHONHTTPSVERIFY`, `HTTP(S)_PROXY`/`ALL_PROXY`. The SSRF guard does not cover a stdio child's
+  own connections.
 
 **Allowlisting an interpreter or a package runner is code execution for `manifests:write`.**
 `uvx --from git+…`, `npx -y <package>`, `node -e`, `python -c` and an index URL in the arguments
 all run whatever the manifest names; the allowlist decides *which binary* runs, not what it runs.
-Allowlist fixed server binaries where you can. The environment denylist does not cover every
-variable that steers a program (`GIT_CONFIG_*`, `BASH_FUNC_*`, `JAVA_TOOL_OPTIONS` among them —
-tracked in `docs/ROADMAP.md`), so even a fixed binary is only as safe as the manifests allowed to
-configure it. Prefer `transport: http`/`sse` where you can.
+Allowlist fixed server binaries where you can: the environment rules above only mean something
+for those. Prefer `transport: http`/`sse` where you can.
 
 `FELIX_AUTH_MODE=none` is refused on any non-loopback bind, in every environment. Where it is
 accepted, every boot logs a warning that the API is unauthenticated. The loopback check reads
