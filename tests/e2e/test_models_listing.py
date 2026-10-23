@@ -36,6 +36,7 @@ async def test_a_manifest_on_the_default_route_is_described_by_that_routes_model
     quick = (await _listed(boot))["quick"]["felix"]
 
     assert quick["providerModel"] == DEFAULT_ROUTE
+    assert quick["wireModel"] == WIRE_MODEL
     assert quick["contextWindow"] == served.context_window
     assert quick["modalities"] == list(served.input_modalities)
     assert quick["supportedThinkingLevels"] == supported_thinking_levels(WIRE_MODEL)
@@ -51,6 +52,8 @@ async def test_a_manifest_naming_a_route_reports_that_route(boot: Any) -> None:
 
     assert hybrid["id"] == "hybrid-router", "the id stays the manifest's name"
     assert hybrid["felix"]["providerModel"] == "claude-haiku"
+    # The route's name says Haiku; what it serves here is the scripted WIRE_MODEL.
+    assert hybrid["felix"]["wireModel"] == WIRE_MODEL
     # Every e2e route is the scripted one on WIRE_MODEL: read by route name, `claude-haiku`
     # would be priced and sized as the real Haiku.
     assert hybrid["felix"]["contextWindow"] == served.context_window
