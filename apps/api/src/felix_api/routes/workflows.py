@@ -35,13 +35,11 @@ from felix.auth.mgmt import (
 )
 from felix.context import AuthContext, RequestContext, async_run_with_context, try_get_context
 from felix.logging_setup import loggable
-from felix.tools.types import tool_input_schema
 from felix.workflows import store as workflow_store
-from felix.workflows.check import Problem, ProblemCode, check
-from felix.workflows.kinds import get_step_kind, list_step_kinds
-from felix.workflows.ports import Port, StepPorts, describe
+from felix.workflows.check import ProblemCode, check
+from felix.workflows.present import ports_view, problem_view, step_kind_views, step_tool_view
 from felix.workflows.schema import WORKFLOW_ID_PATTERN, WorkflowSpec
-from felix.workflows.tool_step import step_ports, step_tools
+from felix.workflows.tool_step import step_tools
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 logger = logging.getLogger("felix_api.routes.workflows")
@@ -181,29 +179,12 @@ _CHANGED = {"model": WorkflowChangedResponse, "description": "The precondition n
 _NOT_FOUND = {"model": NotFoundResponse, "description": "No such workflow"}
 
 
-def _port(port: Port) -> dict[str, Any]:
-    return {
-        "name": port.name,
-        "type": "control" if port.control else describe(port.schema),
-        "schema": port.schema,
-        "control": port.control,
-        "required": port.required,
-    }
-
-
-def _ports(resolved: StepPorts | None) -> dict[str, Any] | None:
-    if resolved is None:
-        return None
-    return {"inputs": [_port(p) for p in resolved.inputs], "outputs": [_port(p) for p in resolved.outputs]}
-
-
-def _problem(problem: Problem) -> dict[str, Any]:
-    return {"code": problem.code, "message": problem.message, "step": problem.step, "port": problem.port}
-
-
 def _checked(spec: WorkflowSpec) -> dict[str, Any]:
     ports, found = check(spec)
-    return {"ports": {node: _ports(p) for node, p in ports.items()}, "problems": [_problem(p) for p in found]}
+    return {
+        "ports": {node: ports_view(p) for node, p in ports.items()},
+        "problems": [problem_view(p) for p in found],
+    }
 
 
 def _present(row: dict[str, Any]) -> dict[str, Any]:
@@ -303,33 +284,7 @@ def _changed(conflict: workflow_store.WorkflowConflict, *, conditional: bool = T
 async def list_kinds(request: Request) -> dict[str, Any]:
     """The step kinds a workflow can use: built in, and any a plugin registered."""
     require_mgmt_scopes(request, SCOPE_WORKFLOWS_READ)
-    items = []
-    for name in list_step_kinds():
-        kind = get_step_kind(name)
-        if kind is None:
-            continue
-        try:
-            config_schema = kind.config.model_json_schema()
-        except Exception:
-            # A plugin's config model pydantic cannot describe is that kind's problem: listed with
-            # no form, never a 500 that empties the editor's palette.
-            logger.warning("step kind %s has no JSON Schema for its config", name, exc_info=True)
-            config_schema = {}
-        items.append({"name": name, "label": kind.label, "config_schema": config_schema})
-    return {"items": items}
-
-
-def _step_tool(manifest: str, tool: Any) -> dict[str, Any]:
-    inputs, problem = step_ports(manifest, tool)
-    return {
-        "name": tool.name,
-        "description": str(tool.description or ""),
-        "input_schema": tool_input_schema(tool),
-        "inputs": None if inputs is None else [_port(p) for p in inputs],
-        "problem": problem,
-        "read_only": bool(getattr(tool, "read_only", False)),
-        "replay_safe": bool(getattr(tool, "replay_safe", False)),
-    }
+    return {"items": step_kind_views()}
 
 
 @router.get(
@@ -377,7 +332,7 @@ async def list_step_tools(
         raise HTTPException(
             status_code=503, detail={"error": "manifest_unavailable", "manifest": manifest}
         ) from None
-    return {"manifest": manifest, "items": [_step_tool(manifest, t) for t in tools]}
+    return {"manifest": manifest, "items": [step_tool_view(manifest, t) for t in tools]}
 
 
 @router.post("/-/check", response_model=CheckOut)

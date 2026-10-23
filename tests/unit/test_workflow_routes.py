@@ -338,7 +338,7 @@ async def test_a_kind_with_no_json_schema_is_listed_without_a_form(monkeypatch: 
 def test_a_listed_tool_whose_schema_cannot_become_ports_says_so() -> None:
     from felix.tools.executor import local_executor
     from felix.tools.types import Tool
-    from felix_api.routes.workflows import _step_tool
+    from felix.workflows.present import step_tool_view as _step_tool
 
     async def run(_args: Any, _ctx: Any = None) -> str:
         return ""

@@ -116,7 +116,7 @@ async def test_an_approved_workflow_is_the_persons_runs_as_them_and_a_console_sa
                 ScriptedTurn(content="started"),
             ]
         )
-        assert (await _chat(app, "Run it on a bug.")).status_code == 200
+        assert (await asyncio.wait_for(_chat(app, "Run it on a bug."), timeout=20)).status_code == 200
         started = _tool_results(app)[-1]
         assert "run_id" in started, started
         runs = (await app.client.get(f"/workflows/{saved['workflow_id']}/runs", headers=ALICE)).json()[
@@ -137,7 +137,7 @@ async def test_an_approved_workflow_is_the_persons_runs_as_them_and_a_console_sa
                 ScriptedTurn(content="refused"),
             ]
         )
-        assert (await _chat(app, "Change it back.")).status_code == 200
+        assert (await asyncio.wait_for(_chat(app, "Change it back."), timeout=20)).status_code == 200
         # Refused by the tool's own checks, which the approval gate runs first: no one is asked.
         last = next(str(m.content) for m in reversed(app.spy.prompts[-1]) if getattr(m, "role", "") == "tool")
         assert last.startswith("[approval preview failed]") and "no_such_workflow" in last, last

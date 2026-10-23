@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from felix.context import AuthContext
     from felix.manifests.schema import ApprovalRule, WorkflowAuthoringSpec
     from felix.workflows.check import Problem
-    from felix.workflows.ports import Port, StepPorts
     from felix.workflows.schema import WorkflowSpec
 
 logger = logging.getLogger("felix.workflows.agent_tools")
@@ -50,8 +49,9 @@ SAVE_WORKFLOW = SAVE_WORKFLOW_TOOL_NAME
 WORKFLOW_AUTHORING_TOOL_NAMES = frozenset(
     {"workflow_catalog", "check_workflow", SAVE_WORKFLOW, "list_my_workflows", "run_workflow"}
 )
-# What an approver sees of each agent step's prompt; the rest is counted, not shown.
-PREVIEW_PROMPT_CHARS = 4000
+# The longest prompt an agent step saved here may have. The approver is shown every character of
+# every step, so this is what keeps a preview readable -- not a cut that would hide the rest.
+MAX_AGENT_PROMPT_CHARS = 4000
 # A run's inputs, serialized. A run's whole record is capped far above this (`runs.py`); a model
 # passing more than this is passing a document, which belongs in a step's reach, not an input.
 MAX_RUN_INPUT_BYTES = 64 * 1024
@@ -148,25 +148,6 @@ def default_workflow_save_rule(
     return workflow_save_approval_rule()
 
 
-def _problem(problem: Problem) -> dict[str, Any]:
-    return {"code": problem.code, "message": problem.message, "step": problem.step, "port": problem.port}
-
-
-def _port(port: Port) -> dict[str, Any]:
-    from felix.workflows.ports import describe
-
-    out: dict[str, Any] = {"name": port.name, "type": "control" if port.control else describe(port.schema)}
-    if port.required:
-        out["required"] = True
-    return out
-
-
-def _ports(resolved: StepPorts | None) -> dict[str, Any] | None:
-    if resolved is None:
-        return None
-    return {"inputs": [_port(p) for p in resolved.inputs], "outputs": [_port(p) for p in resolved.outputs]}
-
-
 def _parse(definition: dict[str, Any]) -> WorkflowSpec:
     """`definition` as a `WorkflowSpec`, or `invalid_definition` naming where and which rule --
     pydantic's own messages, which name the location and the rule and never the input."""
@@ -260,9 +241,11 @@ class _AgentWorkflows:
         return [r for r in rows if self.is_mine(r, owner)]
 
     def check_reach(self, spec: WorkflowSpec) -> list[Problem]:
-        """What this agent may not save, beside what any workflow may not: too many steps, or a
-        step naming a manifest outside `spec.workflow_authoring.manifests`."""
+        """What this agent may not save, beside what any workflow may not: more than `max_steps`, a
+        kind outside `kinds`, an agent prompt longer than an approver is shown, or a step naming a
+        manifest outside `manifests` (which steps name one is the engine's rule, `named_manifests`)."""
         from felix.workflows.check import Problem
+        from felix.workflows.engine import named_manifests
 
         found: list[Problem] = []
         if len(spec.steps) > self.spec.max_steps:
@@ -271,37 +254,41 @@ class _AgentWorkflows:
                     "too_many_steps", f"a workflow saved here may have at most {self.spec.max_steps} steps"
                 )
             )
+        kinds = frozenset(self.spec.kinds)
         for step in spec.steps:
-            named = step.config.get("manifest") if isinstance(step.config, dict) else None
-            if isinstance(named, str) and named not in self.allowed:
+            if step.kind not in kinds:
+                found.append(
+                    Problem(
+                        "kind_not_allowed", f"steps here may be only {', '.join(sorted(kinds))}", step=step.id
+                    )
+                )
+            prompt = step.config.get("prompt") if step.kind == "agent_turn" else None
+            if isinstance(prompt, str) and len(prompt) > MAX_AGENT_PROMPT_CHARS:
+                found.append(
+                    Problem(
+                        "prompt_too_long",
+                        f"an agent step's prompt may be at most {MAX_AGENT_PROMPT_CHARS} characters here",
+                        step=step.id,
+                    )
+                )
+        for step_id, name in named_manifests(spec).items():
+            if name not in self.allowed:
                 found.append(
                     Problem(
                         "manifest_not_allowed",
                         f"steps here may name only {', '.join(sorted(self.allowed))}",
-                        step=step.id,
+                        step=step_id,
                     )
                 )
         return found
 
     async def catalog(self, args: _CatalogArgs, _ctx: ToolInvocationCtx | None) -> str:
-        from felix.workflows.kinds import get_step_kind, list_step_kinds
+        from felix.workflows.present import step_kind_views
         from felix.workflows.schema import WorkflowSpec
 
         auth, _owner = self.caller(SCOPE_WORKFLOWS_READ, acting=False)
-        kinds = []
-        for name in list_step_kinds():
-            kind = get_step_kind(name)
-            if kind is None:
-                continue
-            try:
-                config_schema = kind.config.model_json_schema()
-            except Exception:
-                # As the route does: a plugin's config pydantic cannot describe is listed formless.
-                logger.warning("step kind %s has no JSON Schema for its config", name, exc_info=True)
-                config_schema = {}
-            kinds.append({"kind": name, "label": kind.label, "config_schema": config_schema})
         out: dict[str, Any] = {
-            "kinds": kinds,
+            "kinds": [k for k in step_kind_views() if k["name"] in self.spec.kinds],
             "manifests": sorted(self.allowed),
             "definition_schema": WorkflowSpec.model_json_schema(),
         }
@@ -313,8 +300,8 @@ class _AgentWorkflows:
         """The tools a `tool_call` step naming ``manifest`` can call, as the caller would get them."""
         from felix.manifests.inbound_auth import InboundAuthError
         from felix.runtime import UnknownManifest
-        from felix.tools.types import tool_input_schema
-        from felix.workflows.tool_step import step_ports, step_tools
+        from felix.workflows.present import step_tool_view
+        from felix.workflows.tool_step import step_tools
 
         if manifest not in self.allowed:
             raise ToolRefused(
@@ -331,36 +318,22 @@ class _AgentWorkflows:
             raise ToolRefused(
                 "manifest_unavailable", "that manifest could not be compiled just now"
             ) from None
-        listed = []
-        for tool in tools:
-            if tool.name in WORKFLOW_AUTHORING_TOOL_NAMES:
-                continue  # refused inside a workflow run (`caller`), so never offered to a step
-            inputs, problem = step_ports(manifest, tool)
-            listed.append(
-                {
-                    "name": tool.name,
-                    "description": str(tool.description or "")[:500],
-                    "input_schema": tool_input_schema(tool),
-                    "inputs": None if inputs is None else [_port(p) for p in inputs],
-                    "problem": problem,
-                }
-            )
-        return listed
+        # Not the authoring tools: refused inside a workflow run (`caller`), so never offered to a step.
+        return [step_tool_view(manifest, t) for t in tools if t.name not in WORKFLOW_AUTHORING_TOOL_NAMES]
 
     async def check(self, args: _CheckArgs, _ctx: ToolInvocationCtx | None) -> str:
-        from felix.workflows.engine import run_problems
+        from felix.workflows.engine import check_runnable
+        from felix.workflows.present import ports_view, problem_view
 
         self.caller(SCOPE_WORKFLOWS_READ, acting=False)
         spec = _parse(args.definition)
-        from felix.workflows.check import check as check_graph
-
-        ports, _ = check_graph(spec)
-        found = run_problems(spec) + self.check_reach(spec)
+        ports, found = check_runnable(spec)
+        found += self.check_reach(spec)
         return json.dumps(
             {
                 "ok": not found,
-                "problems": [_problem(p) for p in found],
-                "ports": {node: _ports(p) for node, p in ports.items()},
+                "problems": [problem_view(p) for p in found],
+                "ports": {node: ports_view(p) for node, p in ports.items()},
             }
         )
 
@@ -402,31 +375,22 @@ class _AgentWorkflows:
         return auth, owner, spec, current
 
     async def check_admitted(self, spec: WorkflowSpec, auth: AuthContext) -> None:
-        """Each manifest a step names must admit this person, or the workflow is one they could
-        not run: saving it would hand whoever starts it later steps its author could not reach."""
-        from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
-        from felix.runtime import resolve_tenant_manifest
+        """Each manifest a step names must admit this person -- the check a run's start makes
+        (`engine.admitted_manifests`) -- or the workflow is one they could not run, and saving it
+        would hand whoever starts it later steps its author could not reach."""
+        from felix.workflows import engine
 
-        named = sorted(
-            {
-                str(step.config["manifest"])
-                for step in spec.steps
-                if isinstance(step.config, dict) and isinstance(step.config.get("manifest"), str)
-            }
-        )
-        for name in named:
-            try:
-                resolved = await resolve_tenant_manifest(self.settings, self.tenant_id, name)
-            except Exception:
-                raise ToolRefused(
-                    "unknown_manifest", "a step names a manifest that does not resolve"
-                ) from None
-            try:
-                enforce_inbound_auth(resolved.manifest, auth)
-            except InboundAuthError:
-                raise ToolRefused(
-                    "not_permitted", "a step names a manifest this person may not use; nothing was saved"
-                ) from None
+        try:
+            await engine.admitted_manifests(self.settings, self.tenant_id, spec, auth)
+        except engine.NotRunnable:
+            # Logged by the engine with the reason; a store outage lands here too.
+            raise ToolRefused(
+                "unknown_manifest", "a step names a manifest that could not be found; nothing was saved"
+            ) from None
+        except engine.NotPermitted:
+            raise ToolRefused(
+                "not_permitted", "a step names a manifest this person may not use; nothing was saved"
+            ) from None
 
     async def save(self, args: _SaveArgs, tool_ctx: ToolInvocationCtx | None) -> str:
         from felix.audit import store as audit_store
@@ -472,6 +436,8 @@ class _AgentWorkflows:
                 "revision": row["revision"],
                 "created": created,
                 "via": self.via,
+                # Issuer-qualified, as ownership is: `principal_subj` alone is ambiguous across issuers.
+                "owner": owner,
             },
         )
         return json.dumps(
@@ -505,6 +471,19 @@ class _AgentWorkflows:
             )
         return json.dumps({"workflows": items})
 
+    async def active_runs(self, owner: str) -> int:
+        """Runs still going from the workflows this agent holds for ``owner``, whoever started them:
+        a run needs no approval, so this bounds what one person's agent can hold of the tenant's."""
+        from felix.workflows import runs as run_store
+
+        going = 0
+        for row in await self.mine(owner):
+            runs = await run_store.list_runs(
+                self.settings, self.tenant_id, row["id"], limit=run_store.MAX_RUN_LIST
+            )
+            going += sum(1 for r in runs if r["status"] not in run_store.RUN_TERMINAL)
+        return going
+
     async def run(self, args: _RunArgs, tool_ctx: ToolInvocationCtx | None) -> str:
         from felix.workflows import engine
         from felix.workflows import store as workflow_store
@@ -523,6 +502,12 @@ class _AgentWorkflows:
                 "nothing was run",
             )
         assert workflow is not None  # `is_mine` is False for None
+        if await self.active_runs(owner) >= self.spec.max_active_runs:
+            raise ToolRefused(
+                "too_many_runs",
+                f"this person already has {self.spec.max_active_runs} runs going from this agent's "
+                "workflows, the most allowed; wait for one to finish. Nothing was run",
+            )
         try:
             run = await engine.start_run(
                 self.settings,
@@ -549,41 +534,46 @@ class _AgentWorkflows:
         )
 
     async def preview(self, args: ToolInput) -> str:
-        """What an approver reads: the workflow as it would be saved, every step and edge.
+        """What an approver reads: every field of the workflow as it would be saved.
 
         Runs `admit` first and raises its `ToolRefused`, so the approvals wrapper denies a call the
-        tool would refuse with no row and no wait (`builder._approval_preview`)."""
+        tool would refuse with no row and no wait (`builder._approval_preview`). The definition is
+        shown whole, as escaped JSON: a prompt or a description the model wrote sits inside a quoted
+        string, so it cannot draw a line of this layout, and `check_reach` keeps every prompt short
+        enough that nothing is left out.
+        """
         try:
             parsed = _SaveArgs.model_validate(args)
         except ValidationError:
             raise ToolRefused(
                 "invalid_arguments", "the arguments do not match save_workflow's schema"
             ) from None
-        _auth, _owner, spec, current = await self.admit(parsed, None)
+        try:
+            _auth, _owner, spec, current = await self.admit(parsed, None)
+        except ToolRefused:
+            raise
+        except Exception:
+            # The wrapper would put the exception's text in the model's denial.
+            logger.warning("save_workflow preview failed manifest=%s", self.manifest_id, exc_info=True)
+            raise ToolRefused(
+                "unavailable", "the workflow could not be checked just now; nothing was saved"
+            ) from None
         action = f"replace {current['id']}" if current is not None else "create a new workflow"
-        lines = [f"save_workflow on {self.manifest_id}: {action}", f"Name: {spec.name}"]
-        if spec.description:
-            lines.append(f"Description: {spec.description}")
-        if spec.inputs:
-            lines.append("Inputs: " + ", ".join(sorted(spec.inputs)))
-        lines.append("Runs later as whoever starts it: you from this agent, a job or a trigger.")
-        for step in spec.steps:
-            lines.append("")
-            lines.append(f"--- step {step.id} ({step.kind}){f': {step.name}' if step.name else ''} ---")
-            config = dict(step.config)
-            prompt = config.pop("prompt", None)
-            if config:
-                lines.append(json.dumps(config, indent=2, sort_keys=True, default=str))
-            if isinstance(prompt, str):
-                shown = prompt[:PREVIEW_PROMPT_CHARS]
-                more = len(prompt) - len(shown)
-                lines.append("prompt:\n" + shown + (f"\n(… {more} more characters)" if more else ""))
-        if spec.edges:
-            lines.append("")
-            lines.append("--- edges ---")
-            for edge in spec.edges:
-                lines.append(f"{edge.source.step}.{edge.source.port} → {edge.target.step}.{edge.target.port}")
-        return "\n".join(lines)
+        shown = spec.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude={"trigger_position": True, "steps": {"__all__": {"position"}}},
+        )
+        return "\n".join(
+            [
+                f"save_workflow on {self.manifest_id}: {action}",
+                f"{len(spec.steps)} step(s), {len(spec.edges)} edge(s), inputs: {len(spec.inputs)}",
+                "Runs later as whoever starts it: the person from this agent, a job or a trigger.",
+                "",
+                "--- definition (every field, as saved) ---",
+                json.dumps(shown, indent=2, sort_keys=True, ensure_ascii=True),
+            ]
+        )
 
 
 def _answered(call: Any) -> Any:
@@ -615,6 +605,9 @@ def make_workflow_authoring_tools(
         args=_CatalogArgs,
         handler=_answered(flows.catalog),
         read_only=True,
+        # It relays other tools' descriptions and schemas, an MCP server's included: third-party
+        # text, so content screening reads it as it reads that server's own results.
+        relays_untrusted=True,
     )
     check = define_tool(
         name="check_workflow",

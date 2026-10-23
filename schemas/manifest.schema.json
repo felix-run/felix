@@ -3033,6 +3033,22 @@
           "title": "Manifests",
           "type": "array"
         },
+        "kinds": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "title": "Kinds",
+          "type": "array"
+        },
+        "max_active_runs": {
+          "default": 3,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Active Runs",
+          "type": "integer"
+        },
         "approval": {
           "default": true,
           "title": "Approval",

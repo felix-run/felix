@@ -193,12 +193,13 @@ def _put_in_memory(
     created_by: str,
     authored_via: str,
 ) -> dict[str, Any]:
-    # No await between the checks and the store, so this is atomic on the loop.
+    # No await between the checks and the store, so this is atomic on the loop. Owner first, as
+    # on Postgres: a row adopted since it was read is not the writer's, whatever its revision.
     existing = _memory_workflows.get((tenant_id, workflow_id))
-    if _precondition_fails(precondition, existing["revision"] if existing else None):
-        raise WorkflowConflict(workflow_id, _workflow_dict(existing) if existing else None)
     if existing is not None and not _owned_by(owner, existing["created_by"], existing["authored_via"]):
         raise WorkflowNotOwned(workflow_id)
+    if _precondition_fails(precondition, existing["revision"] if existing else None):
+        raise WorkflowConflict(workflow_id, _workflow_dict(existing) if existing else None)
     if existing is None and sum(1 for t, _ in _memory_workflows if t == tenant_id) >= MAX_PER_TENANT:
         raise WorkflowLimitReached(MAX_PER_TENANT)
     # The twin keeps the revision rather than a separate generation, so its rows have exactly the
@@ -263,14 +264,16 @@ async def put_workflow(
     async with tenant_session(settings, tenant_id) as db:
         # Locked so the precondition and the write see the same row.
         current = await db.get(Workflow, (tenant_id, workflow_id), with_for_update=True)
+        # Owner first: a row a person adopted since the writer read it is not theirs, and saying
+        # so beats "changed", which invites a retry that can only fail the same way.
+        if current is not None and not _owned_by(owner, current.created_by, current.authored_via):
+            await db.rollback()
+            raise WorkflowNotOwned(workflow_id)
         stored = _revision(current.generation, current.version) if current else None
         if _precondition_fails(precondition, stored):
             snapshot = _workflow_dict(current) if current is not None else None
             await db.rollback()
             raise WorkflowConflict(workflow_id, snapshot)
-        if current is not None and not _owned_by(owner, current.created_by, current.authored_via):
-            await db.rollback()
-            raise WorkflowNotOwned(workflow_id)
         if current is None:
             # Counted inside the transaction but not locked against another create: two at the
             # cap at once can both land. The cap bounds a tenant's footprint, not an exact count.

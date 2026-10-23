@@ -2285,7 +2285,9 @@
               "not_runnable",
               "too_many_problems",
               "too_many_steps",
-              "manifest_not_allowed"
+              "manifest_not_allowed",
+              "kind_not_allowed",
+              "prompt_too_long"
             ],
             "title": "Code",
             "type": "string"
@@ -2851,7 +2853,9 @@
               "not_runnable",
               "too_many_problems",
               "too_many_steps",
-              "manifest_not_allowed"
+              "manifest_not_allowed",
+              "kind_not_allowed",
+              "prompt_too_long"
             ],
             "title": "Code",
             "type": "string"

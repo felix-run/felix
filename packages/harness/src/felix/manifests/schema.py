@@ -956,6 +956,14 @@ class WorkflowAuthoringSpec(_Strict):
     max_steps: int = Field(default=30, ge=1, le=200)
     #: The manifests its agent and tool steps may name. Empty: this manifest only.
     manifests: list[str] = Field(default_factory=list, max_length=50)
+    #: The step kinds a workflow saved here may use: an allowlist, so a kind a plugin registers later
+    #: is not open to the agent until named here.
+    kinds: list[str] = Field(
+        default_factory=lambda: ["agent_turn", "tool_call", "approval", "branch"], min_length=1, max_length=50
+    )
+    #: Runs one person may have going at once from the workflows this agent holds for them. Runs
+    #: need no approval, so this is what stops a looping agent filling the tenant's run quota.
+    max_active_runs: int = Field(default=3, ge=1, le=20)
     #: Hold every `save_workflow` call for a person's approval -- one-shot, bound to the caller --
     #: unless `spec.approvals` has a rule naming `save_workflow` literally that gates every call. No
     #: permission mode waives it: a saved workflow runs later as whoever starts it, a job or a

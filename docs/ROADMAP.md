@@ -804,6 +804,13 @@ an open registry, not a fixed vocabulary, so this stays inside the extensibility
       the workflow. The tools refuse unattended runs and workflow threads, and mint `wf-<hex>` ids.
       *Open:* the console marking agent-written workflows (felix-web); a Slack or other channel
       caller with no `skill_owner` cannot author.
+      *Decisions for the maintainer:* whether `run_workflow` should take an optional per-run
+      approval (inputs reach `tool_call` steps as raw arguments); whether to refuse replacing a
+      workflow an unpinned trigger targets, or list attached triggers and jobs in the preview.
+      *Deferred:* the unwaivable built-in approval (`schedule_task`, `notify`, `save_workflow`) is
+      written three times: rule and tool constants, two frozensets, a rule factory, a
+      `default_*_rule` and a builder block each. One declarative `BuiltinApproval` in
+      `permission_mode.py` should derive them all.
 - [ ] Open: whether a workflow can call another; per-step retry and timeout. (A tool schema that
       drifted since a `tool_call` step was wired fails the step at run, #640.)
 

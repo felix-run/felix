@@ -2431,7 +2431,7 @@ one, owned by the person the conversation acts for. The owner is their issuer-qu
 (`issuer|subject`, `AuthContext.skill_owner`), so the same subject at another issuer is someone
 else. `authored_via` records `agent:<manifest>`. The agent sees, changes and runs only workflows
 holding both, never an operator's or another person's. The store checks the pair under the same row
-lock as the revision, so a save cannot land on a workflow taken over in between. A person's own save
+lock as the revision (and before it), so a save cannot land on a workflow taken over in between. A person's own save
 through `PUT /workflows/{id}` clears `authored_via`, which takes the workflow over: the agent can no
 longer change or run it. New workflows get an id minted by the tool (`wf-<hex>`), so an agent cannot
 re-create a deleted id that a job or trigger still names.
@@ -2439,14 +2439,18 @@ re-create a deleted id that a job or trigger still names.
 `save_workflow` is gated by the built-in `workflow_authoring.save_workflow` rule (`one_shot`,
 `bind_principal`). It is displaced only by a manifest rule that names `save_workflow` literally and
 gates every call, and no permission mode waives it: a saved workflow runs later as whoever starts
-it, a job or a trigger included. The approver reads every step, config and edge; each agent prompt
-is shown up to 4,000 characters. The tool's own checks run first, so a call it would refuse never
-asks anyone. Those checks cover:
+it, a job or a trigger included. The approver reads the whole definition, every field, as escaped
+JSON. Text the model wrote sits inside quoted strings, so it cannot draw a line of the preview's
+layout, and an agent step's prompt is capped at 4,000 characters so nothing is cut off. The tool's
+own checks run first, so a call it would refuse never asks anyone. Those checks cover:
 - the definition's problems;
 - more than `max_steps` steps;
+- a step kind outside `kinds` (an allowlist: `agent_turn`, `tool_call`, `approval`, `branch`);
 - a step naming a manifest outside `manifests` (default: this one);
-- a step naming a manifest whose inbound rules refuse the person;
-- the `max_workflows` cap.
+- a step naming a manifest whose inbound rules refuse the person (the same check a run's start makes,
+  `engine.admitted_manifests`);
+- the `max_workflows` cap. It is counted outside the store's lock, so separately approved saves racing
+  at the cap can pass it; the tenant's 500 is the hard bound.
 
 Saving and running refuse:
 - a caller who is anonymous, uses a shared subject, or has no owner key;
@@ -2456,6 +2460,20 @@ Saving and running refuse:
 A run starts as the person through `engine.start_run`, which checks each step's manifest against
 them. The run's trigger is `agent:<manifest>`, and every input is treated as untrusted, so each
 agent step reads the inputs fenced as data.
+
+`run_workflow` asks no one: once a workflow's shape is approved, the agent may start it with any
+inputs. A `tool_call` step receives its inputs as tool arguments, which only that manifest's own
+policies, screening and approvals govern; fencing applies to agent steps alone. `max_active_runs`
+(default 3) bounds the runs one person's agent can hold going, so a looping agent cannot fill the
+tenant's run quota.
+
+A saved workflow also runs as whoever else starts it: anyone holding `workflows:write`, from the
+console, with their own authority. A job is pinned to the revision its writer saw. A trigger is
+pinned only if its config names a revision, so an unpinned trigger aimed at an agent's workflow
+runs whatever the agent saves next, under the trigger's scopes. Pin such triggers.
+
+`workflow_catalog` relays other manifests' tool descriptions and schemas, which is third-party text,
+and is marked `relays_untrusted` so content screening reads it.
 
 **Notices.** `spec.notify` binds `notify`, which sends a title (80 characters) and a message (500) as
 a Web Push to the person the run acts for (`acting_for`) — only to browsers that person subscribed
