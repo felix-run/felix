@@ -197,11 +197,11 @@ def test_approval_rules_cannot_be_silently_disarmed(manifest: Manifest) -> None:
 
 
 def test_unattended_approval_is_actually_enforced(manifest: Manifest) -> None:
-    """`allow_unattended` is inert unless eu_ai_act is on at risk_tier high.
+    """Every rule refuses an unattended run, and eu_ai_act at risk_tier high keeps it so.
 
-    It is read in exactly one place — the governance validator — and never by
-    `apply_approvals`. Without the governance block below it is decoration, and a field that
-    looks like an access control and is not one is worse than a missing feature.
+    `apply_approvals` refuses a gated call in an unattended run (a scheduled job and what it
+    starts) unless the rule sets `allow_unattended`; the governance validator is what stops a
+    later edit setting it on this manifest.
     """
     gov = manifest.spec.governance
     assert "eu_ai_act" in gov.frameworks

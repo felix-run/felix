@@ -82,8 +82,13 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
 - `GET /audit` shows the emitted governance events for the run.
 - Untrusted-source screening only applies to tools `_is_untrusted_tool()` marks (MCP, peers,
   browser, queues, sandboxes) — a built-in tool is not screened, by design.
-- Approvals surface as an interrupt (`approvals/interrupt.py`); an unattended durable run with
-  `allow_unattended: false` will wait for the TTL and then fail — that is expected.
+- Approvals surface as an interrupt (`approvals/interrupt.py`). An unattended run
+  (`RequestContext.unattended`, a read-only property over `AuthContext.scheduled` (a job's
+  firing) and `AuthContext.trigger_run` (an inbound trigger's run), each carried by the recorded caller
+  into everything the run starts) never waits: a rule without `allow_unattended` refuses with
+  `[approval unavailable]` before the preview, row, push or frame, and so do a command-screening
+  approval (`_await_approval`) and a client tool (`tools/client_bridge.py`). `allow_unattended: true`
+  keeps the wait. Details: `deploy/GOVERNANCE.md`, "Unattended runs".
 
 ## Related
 

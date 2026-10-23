@@ -30,6 +30,25 @@ class ToolRefused(Exception):
         return json.dumps({"error": self.code, "detail": self.detail})
 
 
+# What each kind of gate could not get in an unattended run (`RequestContext.unattended`).
+_UNATTENDED_WANTED = {
+    "approval": "no one can approve it",
+    "command approval": "no one can approve it",
+    "client tool": "no client is attached to run it",
+}
+
+
+def unattended_refusal(gate: str, tool_name: str, rule_id: str | None = None) -> str:
+    """The tool result of a call an unattended run could not have made: `gate` is the kind of wait
+    it would have needed (`approval`, `command approval`, `client tool`). Written for the model --
+    why, and that nothing happened -- so the run can carry on and report it. The one wording."""
+    rule = f" rule={rule_id}" if rule_id else ""
+    return (
+        f"[{gate} unavailable] tool={tool_name}{rule}: this run is unattended (no person started it), "
+        f"so {_UNATTENDED_WANTED[gate]}; the call was not made."
+    )
+
+
 def require_person(*, no_caller: str, shared_subject: str) -> tuple[RequestContext, AuthContext]:
     """The request context and caller of a call made for a named person, or a refusal.
 

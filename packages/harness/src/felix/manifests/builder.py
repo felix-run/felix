@@ -61,6 +61,7 @@ from felix.session.clearing import model_view_strategy
 from felix.skills.types import SkillCatalog
 from felix.tools.executor import wrap_executor
 from felix.tools.provider import ToolProvider
+from felix.tools.refusal import unattended_refusal
 from felix.tools.types import (
     Tool,
     ToolInput,
@@ -460,6 +461,13 @@ def apply_command_screening(
                                 "command",  # type: ignore[arg-type]
                             )
                         if decision == "require_approval":
+                            req = try_get_context()
+                            if req is not None and req.unattended:
+                                # No command rule carries `allow_unattended`: never a wait here.
+                                return deny_output(
+                                    unattended_refusal("command approval", tool.name, f"command:{reason}"),
+                                    "approvals",
+                                )
                             record_counter(
                                 "felix_approval_required",
                                 {"manifest_id": manifest_id, "tool": tool.name, "rule": "command"},
@@ -1173,6 +1181,7 @@ def apply_approvals(
             granted = waived_by is not None
             pending_row: dict[str, object] | None = None
             preview_failure: str | None = None
+            unattended = False
             # What the row and the frame show. Equal to `args` unless the tool computes a
             # preview, which is added here and nowhere else: the signature below is hashed from
             # `args`, so a preview can neither widen nor narrow what an approval authorizes.
@@ -1213,6 +1222,11 @@ def apply_approvals(
                         granted = True
                         if approved.get("edited_args"):
                             args = _without_preview(tool, approved["edited_args"])
+                    elif req.unattended and not rule.allow_unattended:
+                        # No one is there to decide (`RequestContext.unattended`): refused below,
+                        # before a preview, a row, a push or a wait -- a scheduled sweep used to
+                        # stall behind the rule's whole ttl, and every job after it with it.
+                        unattended = True
                     else:
                         preview = await _approval_preview(tool, args)
                         if preview is not None:
@@ -1241,6 +1255,13 @@ def apply_approvals(
                     preview_failure = str(exc)
                 except Exception:
                     logger.debug("approvals store lookup failed", exc_info=True)
+
+            if unattended:
+                record_counter(
+                    "felix_approval_unattended_refused",
+                    {"manifest_id": manifest_id, "tool": tool.name, "rule": rule.id},
+                )
+                return deny_output(unattended_refusal("approval", tool.name, rule.id), "approvals")
 
             if preview_failure is not None:
                 record_counter(

@@ -71,7 +71,9 @@ happens per turn inside the ReAct loop.
   nothing reads it — it is in `KNOWN_INERT_FIELDS` (`tests/unit/test_inert_manifest_fields.py`),
   a set that may only shrink. Do not rely on it.
 - `approvals[]` — pause the run until a decision arrives (`/approvals`); `allow_unattended: false`
-  means a durable/unattended run cannot self-approve. `ttl_seconds` bounds the wait. `one_shot`
+  (the default) refuses the call at once in an unattended run -- a scheduled job's firing and
+  anything it starts -- with no row and no wait; `true` asks and waits as for a person.
+  `ttl_seconds` bounds the wait. `one_shot`
   spends a grant on first use so a replay cannot ride it; `bind_principal` ties the grant to the
   caller who asked. `when_args` gates only calls that supply all the named arguments (checked
   against the tool schema by `manifests/approval_args.py`). Approvals is the one control that

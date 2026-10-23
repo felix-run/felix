@@ -131,6 +131,14 @@ class _ClientToolExecutor:
             # Deny now rather than wait the full timeout: the route that would answer this
             # refuses the same id, so the wait could only ever end in `[error/timeout]`.
             return "[error/invalid_arguments] tool_call_id is too long"
+        if _unattended():
+            # No client is attached to a run nobody started by hand (`RequestContext.unattended`):
+            # the request would sit unanswered for the whole timeout, holding a scheduled sweep.
+            from felix.tools.refusal import unattended_refusal
+
+            return tool_error_output(
+                ToolErrorCode.TRANSPORT_UNAVAILABLE, unattended_refusal("client tool", self._name)
+            )
 
         request = {
             "id": tool_call_id,
@@ -162,6 +170,13 @@ def _tenant() -> str:
 
     ctx = try_get_context()
     return ctx.auth.tenant_id if ctx is not None else ""
+
+
+def _unattended() -> bool:
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    return ctx is not None and ctx.unattended
 
 
 def tools_from_client_refs(refs: list[ClientToolRef]) -> list[Tool]:

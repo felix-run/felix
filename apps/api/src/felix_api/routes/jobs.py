@@ -218,7 +218,16 @@ async def run_job_now(name: str, request: Request) -> Any:
         raise HTTPException(status_code=403, detail="not_job_writer")
     auth = getattr(request.state, "auth", None)
     who = str(getattr(getattr(auth, "principal", None), "subject", "") or "")
-    return await fire_job(settings, tenant, job, started_at=now_ms(), trigger="manual", requested_by=who)
+    started_at = now_ms()
+    # Not beside a run already in flight, scheduled or asked for: both would share the job's
+    # thread. Refused rather than queued -- the caller is waiting on this response, and the run in
+    # flight may take as long as its manifest allows. A mark left by a crashed worker stops
+    # refusing after `RUNNING_STALE_MS`.
+    if not await jobs_store.claim_manual_run(settings, tenant, name, last_run_at=started_at):
+        if await jobs_store.get_job(settings, tenant, name) is None:
+            raise HTTPException(status_code=404, detail="not_found")
+        raise HTTPException(status_code=409, detail={"error": "job_running"})
+    return await fire_job(settings, tenant, job, started_at=started_at, trigger="manual", requested_by=who)
 
 
 @router.get("/{name}/runs")

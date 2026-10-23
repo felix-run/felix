@@ -49,6 +49,9 @@ def record_caller(auth: AuthContext, *, skill_owner: bool = False) -> dict[str, 
     if auth.scheduled:
         # Work a scheduled firing starts stays scheduled work (`AuthContext.scheduled`).
         recorded["scheduled"] = True
+    if auth.trigger_run:
+        # And so does work a trigger's run starts (`AuthContext.trigger_run`): its durable run.
+        recorded["trigger_run"] = True
     if auth.scheme == "self" and auth.raw_claims.get("iss") == SELF_ISSUER:
         # Which sign-in minted the token, and for a Google one the address its account entry is
         # keyed by: what a job's firing re-checks against today's configuration
@@ -104,6 +107,8 @@ def replay_caller(
         skill_owner=skill_owner,
         # Never cleared by a replay: `scheduled` here only adds it, for a job's own firing.
         scheduled=scheduled or record.get("scheduled") is True,
+        # Likewise only ever added by a replay.
+        trigger_run=record.get("trigger_run") is True,
         raw_claims={MANIFESTS_CLAIM: record[MANIFESTS_CLAIM]} if MANIFESTS_CLAIM in record else {},
     )
 
