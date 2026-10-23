@@ -18,6 +18,7 @@ is believed.
 | [`compile-pipeline`](diagrams/compile-pipeline.mmd) | How does a `felix/v1` manifest become a runnable, governed agent? |
 | [`governance-stack`](diagrams/governance-stack.mmd) | What does a tool call pass through, in what order, and where can it be denied? |
 | [`request-path`](diagrams/request-path.mmd) | How does `POST /chat` reach the model and the session log? |
+| [`stream-path`](diagrams/stream-path.mmd) | How does `POST /chat/stream` become server-sent events, durable or not? |
 | [`react-turn`](diagrams/react-turn.mmd) | What happens inside one streaming turn, step by step? |
 
 ### Structure

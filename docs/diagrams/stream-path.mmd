@@ -1,0 +1,34 @@
+---
+title: POST /chat/stream request path
+---
+%% Source of truth: apps/api/src/felix_api/routes/chat.py:chat_stream and
+%% routes/_streaming.py:durable_run_gen, routes/_sse.py (with_heartbeat, is_resume_point).
+flowchart TB
+    accTitle: How a streaming chat request becomes server-sent events
+    accDescr: After the same middleware as POST /chat, the stream route refuses with 409 a caller that does not hold the thread's lease and, without an Idempotency-Key, a thread that already has a durable run in flight. It resolves and pins the manifest and screens the user's messages. Under an Idempotency-Key the first request claims the key and a repeat replays what the first one streamed instead of running again. It then branches on spec.execution.mode. A durable manifest starts a fiber and streams the run's progress, run_accepted then run_status on each change then final, with the session events the worker appends tailed in between. A transient one compiles the agent and streams its events with a keep-alive comment after fifteen quiet seconds. Structural frames carry an id, the thread's next session sequence, which a client hands back as Last-Event-ID to GET /chat/stream/{thread_id} after a dropped connection.
+
+    mw[["ASGI middleware<br/>see request-path"]] --> gate{"lease held, and no<br/>durable run in flight?"}
+    gate -->|"409 lease_held or run_in_progress"| refuse([Refused])
+    gate -->|"yes"| resolve["resolve, pin,<br/>inbound screening"]
+    resolve --> key{"Idempotency-Key<br/>already claimed?"}
+    key -->|"yes"| replay(["replay the first stream"])
+    key -->|"no, claim it"| mode{"spec.execution.mode"}
+
+    mode -->|"durable"| fiber["start_durable_chat<br/>durable_run_gen"]
+    mode -->|"transient"| build[["build_tenant_agent<br/>stream_events"]]
+
+    fiber -->|"run_accepted, run_status,<br/>session_event, final"| sse["SSE frames<br/>id: on structural frames"]
+    build -->|"text_delta, tool_start, tool_end,<br/>approval_required, done"| sse
+    sse -->|"Last-Event-ID"| reattach([GET /chat/stream/thread_id])
+    build -->|"appends events"| pg[("Postgres<br/>session_events")]
+
+    class mode focal
+    class sse focal
+    class refuse,replay,reattach external
+    class pg store
+    class gate,resolve,key,fiber primary
+
+    classDef focal    fill:none,stroke:#2F81F7,stroke-width:3px
+    classDef primary  fill:none,stroke:#6e7781,stroke-width:1px
+    classDef external fill:none,stroke:#7d8590,stroke-width:1px,stroke-dasharray:4 3
+    classDef store    fill:none,stroke:#2EA043,stroke-width:1.5px
