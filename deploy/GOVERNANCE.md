@@ -913,8 +913,8 @@ Outbound MCP (`spec.mcp_servers`) is the official SDK's client, whose HTTP stack
 than httpx. It is handed `safe_httpx2_client` (`security/egress_httpx2.py`): the same pin
 (`connect_pinned`) and the same per-hop checks (`guard_request`) installed on httpx2's own pool, so an
 MCP server URL is resolved once, validated, and dialled at the address that was checked. A failed
-MCP call comes back as `[mcp_error] …` tool output rather than an exception, because its text is
-usually the server's: content screening and secret masking read output, not exceptions.
+MCP call comes back as `[mcp_error] …` tool output rather than an exception, which audit and eval
+count as a failed call; its text is screened and masked like any output.
 
 `spec.http_tools` goes through `safe_async_client` like every other outbound call, so it
 inherits the pin for free, on the first request and on each redirect hop: the fetch tool
@@ -1994,6 +1994,20 @@ and, in addition, whatever `tools` names. `memory` covers `recall` and `list_mem
 runs over turns that carried untrusted tool output, so a payload quarantined on its way in could
 otherwise come back as a remembered "fact". Naming a trusted local tool extends screening to it;
 it does not narrow screening away from anything.
+
+**A raised exception is covered too.** `ToolRunner` shows the model a raise as
+`[error/<code>] <exception text>`, and for an untrusted tool that text is the remote author's: a
+server's error body, a JSON-RPC message. A covered tool's raise is screened as its output is
+(markers, then the model or decider), and so is the raise of a tool that relays untrusted text.
+Clean, it goes through unchanged. Flagged or unscreenable, it is denied under `on_flag: block`, or
+re-raised as `[quarantined] tool error …` with its error code kept, so a timeout is still a timeout
+to the runner. A `fatal` tool's blocked raise is re-raised rather than denied, so it still ends the
+run. Secret masking likewise redacts a known secret from any tool's exception text (a failed request
+often echoes its credential), re-raising with the same code.
+
+The PII guardrail and judges do **not** read a raise: a tool's exception that quotes a row (a
+duplicate-key message naming an email) reaches the model past `guardrails: pii`. Tracked in
+`docs/ROADMAP.md`.
 
 `create_skill` and `update_skill` are trusted local tools and are not screened by default; their
 output is the library's own JSON. What they *save* is checked by the skill security scan on save

@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.config import Settings
 from felix.memory import store as memory_store
+from felix.memory.capture import note_remembered
 from felix.tools.types import Tool, ToolInvocationCtx, define_tool
 
 logger = logging.getLogger("felix.memory.tools")
@@ -147,6 +148,7 @@ def _remember_tool(b: _Binding) -> Tool:
             origin_seq=origin_seq,
             metadata={"source": "remember_tool"},
         )
+        note_remembered(b.manifest_id, row.get("topic_key"))
         return f"remembered:{row['id']}"
 
     return define_tool(

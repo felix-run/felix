@@ -833,11 +833,13 @@ onto the library's import gate instead.
       and the scrubbed env, and now speaks the spec's newline-delimited JSON rather than LSP-style
       `Content-Length` frames.
 - [ ] **Follow-ups from the SDK-client reviews.**
-      - *Exceptions skip screening and masking for every untrusted tool.* `apply_content_screening`
-        and `apply_secret_masking` read a tool's output; an exception's text reaches the model
-        through `ToolRunner`'s `[error/…]` line unread. The MCP handler now returns its failures
-        as `[mcp_error]` output, which closes it there; the general fix screens and masks
-        `str(exc)` for untrusted transports.
+      - [x] *Exceptions skipped screening and masking.* `apply_secret_masking` now redacts a
+        known secret from any tool's raised text, and `apply_content_screening` screens a covered
+        tool's raise as its output, quarantining or blocking a flagged one; both re-raise with the
+        inferred error code kept (`tests/unit/test_tool_error_governance.py`).
+      - [ ] *The PII guardrail and judges do not read a raised exception.* `apply_guardrails` acts
+        on returned output only, so `duplicate key (email)=(alice@x.com)` reaches the model past
+        `guardrails: pii` with `block_on_match`. The same catch-and-re-raise shape as masking.
       - [x] *A stdio command's `PATH` was the manifest's.* An allowed name is now resolved on the
         API's own `PATH` and spawned by absolute path (`stdio_policy.resolve_stdio_command`), and
         `PATH` joined the env keys a manifest may not set, so an interpreter started through
@@ -914,6 +916,19 @@ one member act with another's authority.
       `side_question.UnknownManifestError`, MCP's `_UnknownManifest`; define it in `manifests/resolver.py`.
 
 ### Harness
+
+- [ ] **Memory is per agent, not per person (prod audit, 2026-10-22).** A pool is
+      `(tenant, manifest_id)`; `thread_id` is provenance only. So `assistant` and `cowork` each
+      learn `user.birthday` separately, and in a tenant with several members `user.*` means
+      whoever said it last. `memory_vectors` has no column for whose fact it is. The shape: a
+      principal column (migration, both arms, RLS unchanged) and `spec.memory.scope: principal |
+      manifest`, with `principal` sharing `user.*` facts across a person's agents. Blocked in
+      part on linking a person's GitHub and Google sign-ins, which are two principals today.
+      This is W4's "memory scoped per user". The same audit fixed the double write (`remember`
+      then capture of one fact in one turn) and the prelude spending its limit on repeats; still
+      open is whether an agent's newer value may retire an agent's older one on the same topic
+      (`memory_store._may_retire_by_topic`), which the injection guard refuses today.
+      The ten duplicate rows already on prod stay until an operator forgets them.
 
 - [ ] **Performance audit (2026-10-08): the harness rebuilds per request what the last one had.**
       Read, not measured — each step below carries its own before/after. In landing order:
