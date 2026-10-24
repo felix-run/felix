@@ -1,6 +1,6 @@
 ---
 name: felix-postgres
-description: Postgres and data-layer specialist for Felix — Alembic migrations, SQLAlchemy models, tenant RLS, pgvector, the session event log, warehouse spill, and query shape. Delegate for schema changes, migration authoring/review, or any "why is this query/store behaving like this" question.
+description: Postgres and data-layer specialist: Alembic, SQLAlchemy models, tenant RLS, pgvector, the session event log, warehouse spill. Delegate when a change touches db/models.py, migrations/versions/ or a store and its memory:// twin, or to find out why a query or store misbehaves. The migration, twin and conformance loop is long, so it runs better in its own context.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: cyan

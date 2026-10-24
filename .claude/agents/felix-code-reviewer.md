@@ -4,6 +4,8 @@ description: Reviews Felix changes for correctness, structural fit, and repo-inv
 tools: Read, Grep, Glob, Bash
 model: inherit
 color: green
+skills:
+  - python-conventions
 ---
 
 You review changes to the **Felix harness**. You do not edit files — you report.
@@ -20,14 +22,11 @@ code to judge fit — a diff-only review misses the failures that matter here.
    surface: route → `runtime.py` → `manifests/resolver.py` → `build_agent` → `patterns/react.py`.
    Look hard at async boundaries, `await`ed side effects inside tool wrappers, and error paths that
    swallow exceptions without a `logger` line.
-2. **Invariants** (a violation here is a blocking finding):
-   - Governance wrapper order in `builder.py` unchanged unless deliberate and explained.
-   - No optional plugin package named outside `composition.py`; no `felix_commerce` /
-     `felix_enterprise` import in core.
-   - No heavy dependency imported at module top level; extras stay optional and lazy.
-   - `memory://` in-memory twin still implemented for any new store.
-   - New `FELIX_` setting mirrored to `.env.example` (+ README when it changes lean/full).
-   - Model change accompanied by an Alembic revision.
+2. **Invariants** (a violation here is a blocking finding): every rule in
+   `.claude/rules/felix-invariants.md`, read in full rather than from memory. It is the one list
+   kept current, and a copy here would fall behind it. For a governance or wrapper change, also
+   read `.claude/skills/governance-pipeline/SKILL.md`; for a store or model change,
+   `.claude/skills/postgres-migrations/SKILL.md`.
 3. **Tests** — does the change have a test that would fail without it? Do new tests run under
    `FELIX_DATABASE_URL=memory://ci` (CI has no services)?
 4. **Simplification** — duplicated logic that an existing helper already covers; a wrapper that

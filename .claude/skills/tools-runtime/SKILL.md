@@ -1,6 +1,6 @@
 ---
 name: tools-runtime
-description: How a Felix tool runs once it is bound — the Tool dataclass and executors, the transport label and the trust allowlist that decides content screening, the ToolProvider and builtins, and each tool family's runtime rules (shell and the shell runner, workspace scopes and the local/hosted backends, http_fetch and web_search egress, browser, sandboxes and containers, queues, client tools, outbound MCP, document search, GitHub publish and per-thread repo checkouts, image tools, artifact spill, attachments, workspace notes). Use when adding or changing a tool or a tool family, touching felix/tools/, felix/mcp/, felix/repos/, felix/documents/, artifacts.py, attachments.py, shell_runner.py or workspace_notes.py, or tracing why a tool refused, timed out, or was or was not screened.
+description: How a bound Felix tool runs: executors, transports and the trust allowlist that decides screening, the ToolProvider, and each family's rules (shell, workspaces, fetch/search egress, browser, sandboxes, containers, queues, MCP client, client tools, document search, GitHub publish, artifact spill, attachments). Use when editing felix/tools/, mcp/, repos/, documents/, artifacts.py, attachments.py, shell_runner.py or workspace_notes.py, or tracing why a tool refused, timed out, or was or was not screened.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*)
 metadata:
   covers: felix/tools/, felix/mcp/, felix/repos/, felix/documents/, felix/artifacts.py, felix/attachments.py, felix/shell_runner.py, felix/workspace_notes.py, felix/ui/

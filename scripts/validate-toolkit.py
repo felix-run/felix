@@ -8,10 +8,12 @@ runs this; it needs no dependencies beyond the standard library.
 Checks:
   * every hook script parses under `bash -n` and is executable
   * settings.json is valid JSON and every command it references exists
-  * subagent frontmatter has a name matching its filename, plus a description
+  * subagent frontmatter has a name matching its filename, plus a description of at most
+    LISTED_DESCRIPTION_MAX characters
   * skill frontmatter follows the Agent Skills spec (agentskills.io):
     name (<=64 chars, lowercase/digits/hyphens, matching its directory),
-    description (<=1024 chars), and no keys outside the six spec fields
+    description (<=1024 chars by the spec, LISTED_DESCRIPTION_MAX here), and no keys outside
+    the six spec fields
   * every skill an agent preloads (`skills:`) exists, and every `references/*.md` a
     skill links to exists
   * every repo path and `make` target the toolkit's Markdown cites still exists -- the
@@ -65,6 +67,12 @@ AGENT_FIELDS = {
     "initialPrompt",
 }
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# Tighter than the spec's 1024. A session lists every skill and agent with its description,
+# and a long one can be listed with no description at all -- `tools-runtime` was, at about 780
+# characters, and a skill with no visible description is never matched to a task. This caps
+# each description; it is a proxy and does not bound the listing's total. Agents get the same
+# cap because their descriptions are listed the same way, to the agent deciding whom to delegate.
+LISTED_DESCRIPTION_MAX = 512
 
 errors: list[str] = []
 
@@ -151,6 +159,14 @@ def check_settings() -> None:
             fail(f".claude/settings.json references a non-executable script: {target.relative_to(ROOT)}")
 
 
+def check_listed_description(rel: Path, description: str) -> None:
+    if len(description) > LISTED_DESCRIPTION_MAX:
+        fail(
+            f"{rel}: description is {len(description)} characters (max {LISTED_DESCRIPTION_MAX}, "
+            "so the session listing keeps it; leave the inventory to the body)"
+        )
+
+
 def check_agents() -> None:
     for agent in sorted((CLAUDE / "agents").glob("*.md")):
         rel = agent.relative_to(ROOT)
@@ -161,6 +177,8 @@ def check_agents() -> None:
             fail(f"{rel}: frontmatter name {fields.get('name')!r} != filename {agent.stem!r}")
         if not fields.get("description"):
             fail(f"{rel}: missing description (it is how Claude decides to delegate)")
+        else:
+            check_listed_description(rel, fields["description"])
         unknown = {field.split(".")[0] for field in fields} - AGENT_FIELDS
         if unknown:
             fail(f"{rel}: unknown frontmatter field(s): {', '.join(sorted(unknown))}")
@@ -194,6 +212,8 @@ def check_skills() -> None:
         description = fields.get("description", "")
         if not 1 <= len(description) <= 1024:
             fail(f"{rel}: description is {len(description)} characters (spec allows 1–1024)")
+        else:
+            check_listed_description(rel, description)
         if len(fields.get("compatibility", "")) > 500:
             fail(f"{rel}: compatibility exceeds the 500-character maximum")
 
