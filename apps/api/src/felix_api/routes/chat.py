@@ -804,12 +804,16 @@ def _refuse_unseeable_images(
         raise HTTPException(status_code=422, detail=problem)
 
 
-def _allowlisted_model(manifest: Any, model_id: str | None, settings: Any = None) -> str | None:
+async def _allowlisted_model(
+    resolved: Any, model_id: str | None, settings: Any, *, tenant_id: str
+) -> str | None:
     if not model_id:
         return None
     from felix.config import DEFAULT_MODEL_ROUTES, get_settings
+    from felix.manifests.governance import request_model_tree_refusal
+    from felix.patterns.model import parse_model_routes
 
-    spec = getattr(getattr(manifest, "spec", None), "model", None)
+    spec = getattr(getattr(resolved.manifest, "spec", None), "model", None)
     primary = getattr(spec, "id", None)
     fallbacks = list(getattr(spec, "fallbacks", None) or [])
     allowed: set[str] = set(fallbacks)
@@ -818,18 +822,19 @@ def _allowlisted_model(manifest: Any, model_id: str | None, settings: Any = None
     cfg = settings or get_settings()
     allowed.add(cfg.default_model_id)
     allowed.update(DEFAULT_MODEL_ROUTES.keys())
-    # Also accept provider/model keys present in FELIX_MODEL_ROUTES overrides via parse.
-    try:
-        from felix.patterns.model import parse_model_routes
-
-        allowed.update(parse_model_routes(cfg).keys())
-    except Exception:
-        pass
+    allowed.update(parse_model_routes(cfg).keys())
     if model_id not in allowed:
         raise HTTPException(
             status_code=400,
             detail=f"model_not_allowlisted:{model_id}",
         )
+    # Being a configured route is not enough: the provider pin and cost cap of the manifest, and
+    # of every sub-agent the override is handed to, hold for the turn's model whoever chose it.
+    refusal = await request_model_tree_refusal(
+        resolved.manifest, model_id, cfg, tenant_id=tenant_id, children=resolved.sub_agents
+    )
+    if refusal is not None:
+        raise HTTPException(status_code=400, detail=f"{refusal}:{model_id}")
     return model_id
 
 
@@ -941,7 +946,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         if isinstance(exc, (LookupError, ValueError)):
             raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
-    model_id = _allowlisted_model(resolved.manifest, body.model, settings)
+    model_id = await _allowlisted_model(resolved, body.model, settings, tenant_id=auth.tenant_id)
     messages = _caller_messages(body.messages)
     # Before screening: a command's expansion is the user's turn and is screened as one.
     messages = await _expand_prompts(
@@ -1375,7 +1380,7 @@ async def chat_stream(
         if isinstance(exc, (LookupError, ValueError)):
             raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
-    model_id = _allowlisted_model(resolved.manifest, body.model, settings)
+    model_id = await _allowlisted_model(resolved, body.model, settings, tenant_id=auth.tenant_id)
     messages = _caller_messages(body.messages)
     # Before screening: a command's expansion is the user's turn and is screened as one.
     messages = await _expand_prompts(
@@ -2916,7 +2921,7 @@ async def chat_continue(body: ContinueRequest, request: Request, lease_token: Le
         if isinstance(exc, (LookupError, ValueError)):
             raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
         raise
-    model_id = _allowlisted_model(resolved.manifest, body.model, settings)
+    model_id = await _allowlisted_model(resolved, body.model, settings, tenant_id=auth.tenant_id)
     # Empty incoming — session strategy rebuilds context from leaf.
     messages = [ChatMessage(role="user", content="Continue.")]
     if wake.pending_tool_calls:
