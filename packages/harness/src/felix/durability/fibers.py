@@ -812,6 +812,20 @@ async def _run_fiber_step(
                             skill_owner=auth.skill_owner,
                             person=auth.person,
                         )
+                        if model_id:
+                            # Checked when the run was enqueued; again here, since a run can
+                            # outlive the route table or the rules it was checked against.
+                            from felix.manifests.governance import GovernanceError, request_model_tree_refusal
+
+                            refusal = await request_model_tree_refusal(
+                                resolved.manifest,
+                                str(model_id),
+                                settings,
+                                tenant_id=tenant_id,
+                                children=resolved.sub_agents,
+                            )
+                            if refusal is not None:
+                                raise GovernanceError(f"{refusal}:{model_id}")
                         result = await agent.invoke(
                             InvokeInput(
                                 messages=[] if point == "resume" else messages,

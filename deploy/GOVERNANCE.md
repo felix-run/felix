@@ -412,10 +412,17 @@ the routes built from `spec.model`: the model, fallbacks, vision, escalation, pl
 heartbeat and capture. The verifier, judges, screening, consolidation and extraction build their own
 client and are billed at catalog rates, so they must route to a priced model.
 
+A request's `model` override (`POST /chat`, `/chat/stream`, `/chat/continue`) is held to the same
+rules for the one turn it replaces `spec.model.id`, and so are the rules of every sub-agent it
+is handed to, since each child turn runs on it under the child's own manifest. Its provider must be
+in `providers`. Under a declared `max_cost_usd` it must be priced, and with `spec.model.price` set it
+must be one of the routes built from `spec.model` that the manifest names, since the override is
+metered at those rates. A refusal is `400 model_provider_not_allowed:<id>`, `model_unpriced:<id>`
+or `model_not_priced_by_manifest:<id>`. A durable run checks again when it resumes, so a run that
+outlives a route-table or manifest change fails rather than running on a route now refused.
+
 Not yet covered, so nobody assumes more:
 
-- A request's `model` override can name any configured route, and it is not checked against the
-  pin or the cap.
 - `spec.decider` resolves through `FELIX_DECISION_ROUTES`, a separate table, and is not pinned.
 - The rewind summary and `/chat/compact` build `spec.model` without the compile check. That only
   matters once a manifest already violates its pin, because its turns are refused by then.
