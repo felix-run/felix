@@ -300,6 +300,7 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
     """
     from felix.context import AuthContext, RequestContext, async_run_with_context
     from felix.db.session import rls_bypass
+    from felix.manifests.governance import GovernanceError, assert_outbound_providers_allowed
     from felix.manifests.schema import ModelSpec
     from felix.patterns.model import build_model
     from felix.runtime import resolve_tenant_manifest
@@ -323,6 +324,7 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
         "rejected": 0,
         "failed": 0,
         "unresolved": 0,
+        "refused": 0,
     }
     for pool in pools:
         tenant_id, manifest_id = pool.tenant_id, pool.manifest_id
@@ -341,6 +343,19 @@ async def consolidate_all_pools(settings: Settings) -> dict[str, int]:
                     continue
                 spec = resolved.manifest.spec.memory.consolidate
                 if not spec.enabled:
+                    continue
+                try:
+                    assert_outbound_providers_allowed(resolved.manifest, settings)
+                except GovernanceError:
+                    # The manifest's own turns are refused at compile for this, and the sweep
+                    # does not compile it: without the check, the pool's memories still went to
+                    # the provider the pin forbids, every tick.
+                    totals["refused"] += 1
+                    logger.warning(
+                        "memory consolidation refused by auth.outbound.providers tenant=%s manifest=%s",
+                        loggable(tenant_id, limit=64),
+                        loggable(manifest_id, limit=64),
+                    )
                     continue
                 totals["pools"] += 1
                 model = build_model(settings, ModelSpec(id=spec.model))

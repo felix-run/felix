@@ -92,13 +92,69 @@ def assert_stdio_env_allowed(manifest: Manifest) -> None:
         raise GovernanceError("; ".join(errors))
 
 
-def _extract_models(manifest: Manifest) -> list[str]:
-    """`http_tools[].extract_model` routes: a page and a model-written prompt go to each one."""
-    return [ref.extract_model for ref in manifest.spec.http_tools if ref.extract_model]
+Route = tuple[str, str]  # (the field that names it, the route id)
+
+
+def _named(pairs: list[tuple[str, str | None]]) -> list[Route]:
+    return [(field, rid.strip()) for field, rid in pairs if rid and rid.strip()]
+
+
+def _routes_priced_by_spec_model(manifest: Manifest, settings: Any) -> list[Route]:
+    """Routes built from `spec.model` with only the id swapped, so `spec.model.price` rates them.
+
+    Built by `build_model`/`build_one_model(settings, spec, id)` (fallbacks, vision, escalation,
+    capture), `_spec_with_model` (planner, executor) and `model_copy` (`jobs/heartbeat.py`).
+    """
+    from felix.patterns.model_vision import vision_plan
+
+    spec = manifest.spec.model
+    pairs: list[tuple[str, str | None]] = [("spec.model.id", spec.id or settings.default_model_id)]
+    pairs += [(f"spec.model.fallbacks[{n}]", f) for n, f in enumerate(spec.fallbacks)]
+    if spec.vision_model:
+        pairs.append(("spec.model.vision_model", spec.vision_model))
+    else:
+        # A text-only primary hands images to the deployment's default vision route, which the
+        # author never named but the run still sends its conversation to.
+        pairs.append(("FELIX_DEFAULT_VISION_MODEL_ID", vision_plan(settings, spec).vision_id))
+    escalation = spec.confidence_escalation
+    if escalation.enabled:
+        pairs.append(("spec.model.confidence_escalation.escalate_to", escalation.escalate_to))
+    plan = manifest.spec.plan_execute
+    pairs += [("spec.plan_execute.planner_model", plan.planner_model)]
+    pairs += [("spec.plan_execute.executor_model", plan.executor_model)]
+    if manifest.spec.heartbeat is not None:
+        pairs.append(("spec.heartbeat.model", manifest.spec.heartbeat.model))
+    capture = manifest.spec.memory.capture
+    if capture.enabled:
+        pairs.append(("spec.memory.capture.model", capture.model))
+    return _named(pairs)
+
+
+def _routes_at_catalog_rates(manifest: Manifest) -> list[Route]:
+    """Routes built from a bare `ModelSpec(id=...)`: billed at catalog rates whatever
+    `spec.model.price` says, and each one is sent content from the run.
+
+    With `_routes_priced_by_spec_model`, the one inventory both checks below read, so a new
+    model field is added once; `tests/unit/test_inert_manifest_fields.py` fails a schema field
+    that names a route and is in neither. Before it existed a manifest pinned to one provider
+    could send tool output to another through a judge or the screening model.
+    """
+    spec = manifest.spec
+    pairs: list[tuple[str, str | None]] = [
+        (f"spec.http_tools[{ref.name}].extract_model", ref.extract_model) for ref in spec.http_tools
+    ]
+    pairs.append(("spec.reflect.verifier_model", spec.reflect.verifier_model))
+    pairs += [(f"spec.guardrails.judges[{rule.name}].model", rule.model) for rule in spec.guardrails.judges]
+    if spec.content_screening.enabled:
+        pairs.append(("spec.content_screening.model", spec.content_screening.model))
+        pairs.append(("spec.content_screening.image_model", spec.content_screening.image_model))
+    if spec.memory.consolidate.enabled:
+        pairs.append(("spec.memory.consolidate.model", spec.memory.consolidate.model))
+    return _named(pairs)
 
 
 def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None = None) -> None:
-    """Enforce ``spec.auth.outbound.providers``.
+    """Enforce ``spec.auth.outbound.providers`` on every model route the manifest names.
 
     The field was declared and never read, so a manifest naming ``[anthropic]`` could
     still route to OpenAI or Workers AI. Checked at compile so a violation fails the
@@ -115,19 +171,16 @@ def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None =
 
     settings = settings or get_settings()
     routes = parse_model_routes(settings)
-    spec = manifest.spec.model
-    wanted = [getattr(spec, "id", None) or settings.default_model_id]
-    wanted += list(getattr(spec, "fallbacks", None) or [])
-    wanted += _extract_models(manifest)
+    wanted = _routes_priced_by_spec_model(manifest, settings) + _routes_at_catalog_rates(manifest)
 
     errors: list[str] = []
-    for logical_id in wanted:
-        route = routes.get(str(logical_id))
+    for field, logical_id in wanted:
+        route = routes.get(logical_id)
         if route is None:
             continue  # unknown ids are reported by the model layer, not here
         if route.provider.lower() not in allowed:
             errors.append(
-                f"model {logical_id!r} routes to provider {route.provider!r}, "
+                f"{field} {logical_id!r} routes to provider {route.provider!r}, "
                 f"not in auth.outbound.providers ({', '.join(sorted(allowed))})"
             )
     if errors:
@@ -148,19 +201,17 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
     on an unpriced model for a ceiling the author never asked for. Declaring one is a
     statement that spend matters here, and that is the statement Felix must not fake.
 
-    The escape hatch is `spec.model.price`, which is the documented way to supply rates
-    per deployment.
+    The escape hatch is `spec.model.price`, for the routes built from `spec.model`. Every
+    other route is billed at catalog rates, so it must route to a priced model.
     """
     limits = getattr(manifest.spec, "limits", None)
     declared = getattr(limits, "max_cost_usd", None) if limits is not None else None
     if declared is None:
         return
-    spec = manifest.spec.model
-    # `spec.model.price` rates the agent's own model and its fallbacks. It never reaches a fetch
-    # tool's `extract_model`, which is billed at catalog rates, so those are checked regardless.
-    extract = _extract_models(manifest)
-    if getattr(spec, "price", None) and not extract:
-        return  # rates supplied by the manifest itself
+    priced_by_manifest = bool(manifest.spec.model.price)
+    catalog = _routes_at_catalog_rates(manifest)
+    if priced_by_manifest and not catalog:
+        return  # spec.model.price covers every route left
 
     from felix.config import get_settings
     from felix.model_catalog import is_priced
@@ -168,24 +219,22 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
 
     settings = settings or get_settings()
     routes = parse_model_routes(settings)
-    wanted: list[str] = []
-    if not getattr(spec, "price", None):
-        wanted.append(getattr(spec, "id", None) or settings.default_model_id)
-        wanted += list(getattr(spec, "fallbacks", None) or [])
-    wanted += extract
+    wanted = catalog if priced_by_manifest else _routes_priced_by_spec_model(manifest, settings) + catalog
 
     unpriced: list[str] = []
-    for logical_id in wanted:
-        route = routes.get(str(logical_id))
+    for field, logical_id in wanted:
+        route = routes.get(logical_id)
         if route is None:
             continue  # unknown ids are reported by the model layer, not here
         if not is_priced(route.model):
-            unpriced.append(f"{logical_id} -> {route.model}")
+            at_catalog = " (billed at catalog rates)" if (field, logical_id) in catalog else ""
+            unpriced.append(f"{field} {logical_id} -> {route.model}{at_catalog}")
     if unpriced:
         raise GovernanceError(
             f"limits.max_cost_usd is declared but Felix has no rates for {', '.join(unpriced)}, "
-            "so the cap could not be enforced. Supply rates with spec.model.price, or drop "
-            "the limit."
+            "so the cap could not be enforced. Supply rates with spec.model.price, which covers "
+            "spec.model and the routes built from it; route anything billed at catalog rates to a "
+            "priced model; or drop the limit."
         )
 
 
