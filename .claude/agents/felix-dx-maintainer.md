@@ -1,6 +1,6 @@
 ---
 name: felix-dx-maintainer
-description: Maintains the developer experience of the Felix repo — Makefile targets, the felix CLI, pre-commit, the .claude toolkit (agents, skills, hooks, settings), and onboarding friction. Delegate to add a workflow command, fix a confusing failure mode, or extend this toolkit.
+description: Developer-experience maintainer. Delegate to add a workflow command, or when a change touches the Makefile, pre-commit, the felix CLI's ergonomics or .claude/ (agents, skills, hooks, settings), when a hook misfires or scripts/validate-toolkit.py fails, when a command's failure message misled you, or for onboarding friction.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: pink

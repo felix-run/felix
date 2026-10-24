@@ -1,6 +1,6 @@
 ---
 name: felix-test-engineer
-description: Writes and repairs Felix tests — unit, e2e, conformance, integration, eval fixtures — and diagnoses failures under the memory:// in-memory path. Delegate to add coverage for a change, fix a failing suite, or extend the CI-safe test surface.
+description: Test specialist. Delegate to add coverage for a finished change, repair a failing suite, or diagnose a failure under the memory:// path (unit, e2e, conformance, integration, eval fixtures). It proves each new test fails without the change by mutation, a loop worth its own context.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: yellow

@@ -1,6 +1,6 @@
 ---
 name: felix-devops
-description: Deployment and infrastructure specialist for Felix — Docker/Compose overlays, the lean image and extras, Helm chart, AWS/GCP deploy notes, GitHub Actions CI, and small-VM memory budgets. Delegate for packaging, deploy, CI, or "will this run on a 2 GiB VM" questions.
+description: Deploy and CI specialist: Docker and the lean image, extras, Compose, Helm, AWS/GCP, GitHub Actions. Delegate when a change touches deploy/, the Dockerfile, .github/workflows/ or the Makefile targets that drive them, for packaging, when CI fails for a reason outside the code, or for "will this fit a 2 GiB VM". CI logs and image builds are noisy; read them in an isolated context.
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: inherit
 color: orange
