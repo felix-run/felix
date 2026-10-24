@@ -156,7 +156,10 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
     if declared is None:
         return
     spec = manifest.spec.model
-    if getattr(spec, "price", None):
+    # `spec.model.price` rates the agent's own model and its fallbacks. It never reaches a fetch
+    # tool's `extract_model`, which is billed at catalog rates, so those are checked regardless.
+    extract = _extract_models(manifest)
+    if getattr(spec, "price", None) and not extract:
         return  # rates supplied by the manifest itself
 
     from felix.config import get_settings
@@ -165,9 +168,11 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
 
     settings = settings or get_settings()
     routes = parse_model_routes(settings)
-    wanted = [getattr(spec, "id", None) or settings.default_model_id]
-    wanted += list(getattr(spec, "fallbacks", None) or [])
-    wanted += _extract_models(manifest)
+    wanted: list[str] = []
+    if not getattr(spec, "price", None):
+        wanted.append(getattr(spec, "id", None) or settings.default_model_id)
+        wanted += list(getattr(spec, "fallbacks", None) or [])
+    wanted += extract
 
     unpriced: list[str] = []
     for logical_id in wanted:

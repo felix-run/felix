@@ -214,6 +214,32 @@ def test_an_unpriceable_fallback_is_refused_too() -> None:
         assert_cost_limit_is_measurable(manifest, settings)
 
 
+def test_an_unpriceable_extract_model_is_refused_even_with_a_price_override() -> None:
+    """`spec.model.price` rates the agent's own model; a fetch tool's extractor is billed at
+    catalog rates. The check returned on `price` first, so this cap compiled and every
+    extraction was counted at $0."""
+    from felix.manifests.schema import HttpFetchToolRef
+
+    settings = _settings(
+        model_routes=(
+            '{"known":{"provider":"anthropic","model":"claude-sonnet-5"},'
+            '"mystery":{"provider":"openai","model":"mystery-model"}}'
+        )
+    )
+    manifest = _manifest("known", limits={"max_cost_usd": 5.0}, price={"input": 1.0, "output": 2.0})
+    manifest.spec.http_tools = [
+        HttpFetchToolRef(name="web_fetch", allow_any_host=True, extract_model="mystery")
+    ]
+    with pytest.raises(GovernanceError, match="mystery"):
+        assert_cost_limit_is_measurable(manifest, settings)
+    # The override still covers the agent's own model: a priced extractor passes.
+    manifest.spec.http_tools = [
+        HttpFetchToolRef(name="web_fetch", allow_any_host=True, extract_model="known")
+    ]
+    manifest.spec.model.id = "mystery"
+    assert_cost_limit_is_measurable(manifest, settings)
+
+
 def test_a_route_absent_from_the_table_is_left_to_the_model_layer() -> None:
     """`build_one_model` reports an unknown logical id with the registered providers named;
     repeating that here would be a second, worse copy of the same message."""
