@@ -400,17 +400,18 @@ class _HttpFetchExecutor:
         fetched = await self._fetch(url)
         if isinstance(fetched, str):
             return fetched
-        if self._extractor is None or (fetched.text or "").strip() in ("", NO_READABLE_TEXT):
+        page = fetched.text
+        if self._extractor is None or not page or page.strip() in ("", NO_READABLE_TEXT):
             # Without an extractor the page is the answer; without text there is nothing to
             # spend a model call on.
-            return fetched.render(fetched.text)
-        if self._prescreen and await _carries_injection_marker(fetched.text):
+            return fetched.render(page)
+        if self._prescreen and await _carries_injection_marker(page):
             # Screening sees the extractor's answer, and a marker a paraphrase drops would pass
             # it. So the page is checked as served, and a hit spends no model call.
             return fetched.render(_MARKED)
         try:
             answer = await self._extractor.answer(
-                prompt, fetched.text, manifest_id=ctx.manifest_id if ctx is not None else None
+                prompt, page, manifest_id=ctx.manifest_id if ctx is not None else None
             )
         except Exception as exc:
             # Never the page instead: the author opted in so the agent's model would not read it.
