@@ -460,6 +460,22 @@ async def test_a_disabled_manifest_never_reaches_the_model(routed: Any) -> None:
     assert built == [] and totals["pools"] == 0
 
 
+async def test_a_pin_the_consolidation_route_breaks_keeps_the_memories_home(routed: Any) -> None:
+    """The sweep never compiles the manifest, so the compile-time pin did not reach it: a
+    manifest whose turns were refused still sent its pool's facts to the forbidden route."""
+    from felix.manifests import store as manifest_store
+
+    s, built, _ = routed
+    pinned = _manifest(enabled=True)
+    pinned.spec.auth.outbound.providers = ["anthropic"]  # `consolidator` routes to `scripted`
+    await manifest_store.put_version(s, TENANT, MANIFEST, pinned)
+    await _filler(s, n=30)
+
+    totals = await consolidation.consolidate_all_pools(s)
+
+    assert built == [] and totals["refused"] == 1 and totals["pools"] == 0, totals
+
+
 async def test_a_failing_pool_does_not_stop_the_next(routed: Any) -> None:
     from felix.manifests import store as manifest_store
 

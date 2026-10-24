@@ -397,6 +397,29 @@ spec:
 scheme (`access`, `cognito`, `self`); `jwt` is an umbrella for all three. An empty list
 allows any scheme. Anonymous access is governed by `allow_anonymous`, not by this list.
 
+`providers` covers every model route the manifest names, not just `spec.model.id` and its
+fallbacks. That includes `vision_model` (or, when the primary is text-only and none is named,
+`FELIX_DEFAULT_VISION_MODEL_ID`), `confidence_escalation.escalate_to` when enabled,
+`plan_execute.planner_model`/`executor_model`, `heartbeat.model`, `reflect.verifier_model`, each
+`guardrails.judges[].model`, and `http_tools[].extract_model`. When their feature is enabled, it also
+covers `content_screening.model`/`image_model` and `memory.capture`/`consolidate.model`. Each of
+these is sent content from the run, so one left out would be a way around the pin. The memory
+consolidation sweep never compiles the manifest, so it checks the pin itself and skips a pool the
+pin refuses.
+
+The same list feeds the `limits.max_cost_usd` pricing check. There, `spec.model.price` covers only
+the routes built from `spec.model`: the model, fallbacks, vision, escalation, plan/execute,
+heartbeat and capture. The verifier, judges, screening, consolidation and extraction build their own
+client and are billed at catalog rates, so they must route to a priced model.
+
+Not yet covered, so nobody assumes more:
+
+- A request's `model` override can name any configured route, and it is not checked against the
+  pin or the cap.
+- `spec.decider` resolves through `FELIX_DECISION_ROUTES`, a separate table, and is not pinned.
+- The rewind summary and `/chat/compact` build `spec.model` without the compile check. That only
+  matters once a manifest already violates its pin, because its turns are refused by then.
+
 **Sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on the manifest
 a request names — the router — and not again on each sub-agent it compiles. A child's own
 `allow_anonymous`, `schemes` and `required_scopes` therefore apply when the child is called by
@@ -449,9 +472,8 @@ which refuses it. One limit, stated so nobody assumes more: a thread pinned befo
 covered adopts its children as they are on its next turn, so an edit made before that upgrade is
 accepted.
 
-`providers` is checked at **compile**, against the resolved route for the primary model
-and every entry in `model.fallbacks`, so a violation fails the build rather than
-surfacing at the first model call.
+`providers` is checked at **compile**, against the resolved route of every model field listed
+above, so a violation fails the build rather than surfacing at the first model call.
 
 ### What a caller can put in the system tier: nothing
 

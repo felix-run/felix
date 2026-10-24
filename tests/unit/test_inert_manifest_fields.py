@@ -18,6 +18,8 @@ from felix.manifests.governance import GovernanceError, assert_outbound_provider
 from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
 from felix.manifests.loader import parse_manifest
 
+from tests.support.model_routes import EXEMPT, ROUTE_FIELDS, route_naming_fields, with_fragment
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -118,6 +120,68 @@ def test_fetch_extraction_models_are_checked_too() -> None:
     )
     with pytest.raises(GovernanceError, match=re.escape("gpt-4.1")):
         assert_outbound_providers_allowed(m, _settings())
+
+
+@pytest.mark.parametrize("field", sorted(ROUTE_FIELDS))
+def test_every_routed_model_field_is_held_to_the_provider_pin(field: str) -> None:
+    """A field missing from the pin is a way around it: a manifest locked to Anthropic could
+    reach OpenAI through a judge or an escalation route."""
+    _, fragment = ROUTE_FIELDS[field]
+    base = {"auth": {"outbound": {"providers": ["anthropic"]}}, "model": {"id": "claude-sonnet-4"}}
+    with pytest.raises(GovernanceError, match=re.escape("gpt-4.1")):
+        assert_outbound_providers_allowed(_manifest(with_fragment(base, fragment("gpt-4.1"))), _settings())
+
+
+def test_every_schema_field_naming_a_route_is_classified() -> None:
+    """The inventory both checks read is hand-written; this keeps it whole. A new field whose
+    name says model goes into `tests/support/model_routes.py` (and the governance lists), or into
+    its EXEMPT with the reason. `confidence_escalation.escalate_to` was missed exactly this way."""
+    found = route_naming_fields()
+    assert found == set(ROUTE_FIELDS) | set(EXEMPT), (
+        f"unclassified: {sorted(found - set(ROUTE_FIELDS) - set(EXEMPT))}; "
+        f"stale: {sorted((set(ROUTE_FIELDS) | set(EXEMPT)) - found)}"
+    )
+
+
+def test_the_deployment_default_vision_route_is_held_to_the_pin_when_it_would_run() -> None:
+    """A text-only primary hands images to `FELIX_DEFAULT_VISION_MODEL_ID`. The author never
+    named it, and the run still sends its conversation there."""
+    import json
+
+    routes = {
+        "texty": {"provider": "anthropic", "model": "claude-sonnet-4", "modalities": ["text"]},
+        "seer": {"provider": "openai", "model": "gpt-4.1"},
+    }
+    spec = {"auth": {"outbound": {"providers": ["anthropic"]}}, "model": {"id": "texty"}}
+    settings = _settings(model_routes=json.dumps(routes), default_vision_model_id="seer")
+    with pytest.raises(GovernanceError, match="FELIX_DEFAULT_VISION_MODEL_ID 'seer'"):
+        assert_outbound_providers_allowed(_manifest(spec), settings)
+    # A primary that sees images never calls it.
+    routes["texty"]["modalities"] = ["text", "image"]
+    settings = _settings(model_routes=json.dumps(routes), default_vision_model_id="seer")
+    assert_outbound_providers_allowed(_manifest(spec), settings)
+
+
+@pytest.mark.parametrize(
+    "off",
+    [
+        {"memory": {"capture": {"enabled": False, "model": "gpt-4.1"}}},
+        {"memory": {"consolidate": {"enabled": False, "model": "gpt-4.1"}}},
+        {"content_screening": {"enabled": False, "model": "gpt-4.1"}},
+        {
+            "model": {
+                "id": "claude-sonnet-4",
+                "confidence_escalation": {"enabled": False, "escalate_to": "gpt-4.1"},
+            }
+        },
+    ],
+    ids=["capture", "consolidate", "screening", "escalation"],
+)
+def test_a_disabled_feature_does_not_trip_the_pin(off: dict) -> None:
+    """`memory.capture.model` defaults to `claude-haiku`; checking it while capture is off would
+    refuse every manifest pinned away from Anthropic over a model it never calls."""
+    spec = {"auth": {"outbound": {"providers": ["anthropic"]}}, "model": {"id": "claude-sonnet-4"}, **off}
+    assert_outbound_providers_allowed(_manifest(spec), _settings())
 
 
 def test_empty_providers_allows_anything() -> None:

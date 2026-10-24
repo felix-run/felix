@@ -22,6 +22,8 @@ from felix.usage.pricing import estimate_cost
 from felix_ai.catalog import all_entries, entry_for, is_priced
 from felix_ai.types import ChatMessage, ModelChatResult, ModelRoute, TokenUsage
 
+from tests.support.model_routes import ROUTE_FIELDS, with_fragment
+
 
 def _settings(**kw: Any) -> Settings:
     return Settings(database_url="memory://metering", object_store="memory", **kw)
@@ -238,6 +240,43 @@ def test_an_unpriceable_extract_model_is_refused_even_with_a_price_override() ->
     ]
     manifest.spec.model.id = "mystery"
     assert_cost_limit_is_measurable(manifest, settings)
+
+
+_ROUTES = (
+    '{"known":{"provider":"anthropic","model":"claude-sonnet-5"},'
+    '"mystery":{"provider":"openai","model":"mystery-model"}}'
+)
+_PRICE = {"input": 1.0, "output": 2.0}
+_SPEC_MODEL = sorted(f for f, (kind, _) in ROUTE_FIELDS.items() if kind == "spec_model")
+_CATALOG = sorted(f for f, (kind, _) in ROUTE_FIELDS.items() if kind == "catalog")
+
+
+def _capped(fragment: dict[str, Any], *, price: dict[str, float] | None):
+    model: dict[str, Any] = {"id": "known", **({"price": price} if price else {})}
+    spec = with_fragment({"model": model, "limits": {"max_cost_usd": 5.0}}, fragment)
+    return parse_manifest(
+        {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": "c"}, "spec": spec}
+    )
+
+
+@pytest.mark.parametrize("field", _CATALOG)
+def test_a_route_billed_at_catalog_rates_is_checked_even_under_a_price_override(field: str) -> None:
+    _, fragment = ROUTE_FIELDS[field]
+    with pytest.raises(GovernanceError, match=r"mystery.*billed at catalog rates"):
+        assert_cost_limit_is_measurable(
+            _capped(fragment("mystery"), price=_PRICE), _settings(model_routes=_ROUTES)
+        )
+
+
+@pytest.mark.parametrize("field", _SPEC_MODEL)
+def test_a_route_built_from_spec_model_is_checked_and_priced_by_the_override(field: str) -> None:
+    _, fragment = ROUTE_FIELDS[field]
+    settings = _settings(model_routes=_ROUTES)
+    with pytest.raises(GovernanceError, match="mystery"):
+        assert_cost_limit_is_measurable(_capped(fragment("mystery"), price=None), settings)
+    # With a priced catalog route beside it, so the check runs past its early return.
+    judged = with_fragment(fragment("mystery"), ROUTE_FIELDS["guardrails.judges.model"][1]("known"))
+    assert_cost_limit_is_measurable(_capped(judged, price=_PRICE), settings)
 
 
 def test_a_route_absent_from_the_table_is_left_to_the_model_layer() -> None:
