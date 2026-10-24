@@ -1,6 +1,6 @@
 ---
 name: skill-library
-description: How Felix loads, stores, imports, screens, publishes and improves Agent Skills — the catalog loader and its precedence rule, the tenant and personal skill libraries, GitHub import into drafts (allowlist, first-seen cooldown, upstream checks), the publish gate and policy, agent authoring, promotion and adopt, and the feedback/evaluation/improvement loop run by the worker. Covers felix/skills/, the `felix skills` CLI and the /skills and /skill-library routes. Use when editing anything under packages/harness/src/felix/skills/, a skill-library route, `spec.skills` / `skill_authoring` / `personal_skills` / `skill_suggestion`, or when a skill does not appear in a catalog, a publish or import is refused, or an imported skill's text is quarantined.
+description: How Felix loads, imports, screens and publishes Agent Skills: catalog precedence, tenant and personal libraries, GitHub import into drafts (allowlist, first-seen cooldown), the publish gate, promotion and adopt, and the worker's improvement loop. Use when editing felix/skills/, the `felix skills` CLI, a /skills or /skill-library route, or spec.skills / skill_authoring / personal_skills / skill_suggestion, or when a skill is missing from a catalog, refused, or an imported skill's text is quarantined.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*) Bash(uv run felix:*)
 metadata:
   covers: felix/skills/, felix_cli/skills.py
