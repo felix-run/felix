@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from felix.governance.permission_mode import NOTIFY_TOOL_NAME
+from felix.jobs import origin_thread
 from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
@@ -88,17 +89,12 @@ NOTICE_TTL_SECONDS = 12 * 60 * 60
 LINK_REMOVED = "[link removed]"
 # The `metadata.type` of the entry a notice leaves in the conversation it links to.
 NOTICE_ENTRY_TYPE = "notice"
-# What became of the notice in the conversation it links to: the result's `thread`.
-THREAD_APPENDED = "appended"
-THREAD_RUN_LIVE = "run_live"
-THREAD_MISSING = "missing"
-THREAD_FAILED = "failed"
-# The run's own thread, or a link that is not a chat thread: nothing to add it to.
-THREAD_NOT_ELIGIBLE = "not_eligible"
+# What became of the notice in the conversation it links to (the result's `thread`), when it was
+# not added there.
 _THREAD_NOTES = {
-    THREAD_RUN_LIVE: "a run is going on in the conversation it links to, so it was not added there",
-    THREAD_MISSING: "the conversation it links to does not exist, so it was not added there",
-    THREAD_FAILED: "it could not be added to the conversation it links to",
+    origin_thread.RUN_LIVE: "a run is going on in the conversation it links to, so it was not added there",
+    origin_thread.MISSING: "the conversation it links to does not exist, so it was not added there",
+    origin_thread.FAILED: "it could not be added to the conversation it links to",
 }
 
 # One limiter per process: an in-process one is the counter, so a fresh one per call counts nothing.
@@ -200,24 +196,6 @@ def reset_notify_for_tests() -> None:
     """Forget the per-person hourly counts."""
     global _limiter
     _limiter = None
-
-
-# No `:` -- a chat client cannot make a thread with one (`thread_ids.effective_thread_id`), while
-# every thread the harness mints for itself has one (`job:`, `channel:`, `a2a:`, `workflow:`,
-# `fiber:`) -- so a recorded origin naming a harness thread is neither linked nor written to.
-_THREAD_SUFFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]*")
-
-
-def _openable_thread(tenant_id: str, thread_id: object) -> bool:
-    """Whether a recorded thread id is a chat thread this tenant's person could open: the tenant's
-    own (`thread_ids.thread_belongs_to_tenant`), with a suffix of plain id characters -- no path,
-    scheme or `..` for a client to follow, and no `:`, which only the harness's own threads have."""
-    from felix.thread_ids import thread_belongs_to_tenant
-
-    if not isinstance(thread_id, str) or not thread_belongs_to_tenant(tenant_id, thread_id):
-        return False
-    suffix = thread_id[len(tenant_id) + 1 :]
-    return _THREAD_SUFFIX.fullmatch(suffix) is not None and ".." not in suffix
 
 
 class _Notices:
@@ -331,56 +309,15 @@ class _Notices:
         was scheduled from, a heartbeat's own conversation -- and that is the one. Only
         `schedule_task` and a heartbeat's enrolment (`jobs/heartbeat.py:enrol`) write that record
         (`PUT /jobs` strips a caller's), it is used only for a job this person wrote, and only a
-        chat thread id of this tenant's (`_openable_thread`). Otherwise the run's own."""
-        from felix.jobs.scheduler import SCHEDULED_FROM_EXTRA
-
-        origin = ctx.extras.get(SCHEDULED_FROM_EXTRA)
-        if isinstance(origin, dict) and origin.get("created_by") == auth.acting_for:
-            thread = origin.get("thread_id")
-            if _openable_thread(self.tenant_id, thread):
-                return str(thread)
-        return self.own_thread(ctx, call)
+        chat thread id of this tenant's (`origin_thread.origin_of`). Otherwise the run's own."""
+        return origin_thread.origin_of(ctx, self.tenant_id, auth.acting_for) or self.own_thread(ctx, call)
 
     async def append(self, thread_id: str, title: str, body: str) -> str:
-        """Add the notice to `thread_id` (`notice_entry`); what became of it, a `THREAD_*` value.
-
-        Never into a thread that does not exist (a notice creates no conversation), and never
-        while a run is going on in it: a turn's events are a sequence -- its user turn and its
-        reply, a tool call and its result -- and an entry landing between them would split it.
-        Checked inside the thread's `leaf_lock` and appended in the same hold, through
-        `annotate_and_append(sync=True)`, so the notice is parented on the leaf the store holds --
-        not on one this replica last saw -- and becomes it: on the active branch, where the
-        thread's next turn continues from it.
-
-        An exclusive lease is not a run. A client holds one for as long as it has the thread open,
-        idle or not, and that is the person this is for, watching the thread's stream."""
-        from felix.session.store import get_session_store
-        from felix.session.thread_state import thread_exists
-        from felix.session.tree import annotate_and_append, leaf_lock
-
-        session = get_session_store(self.settings, tenant_id=self.tenant_id).open(thread_id)
-        try:
-            if not await thread_exists(session, settings=self.settings, tenant_id=self.tenant_id):
-                return THREAD_MISSING
-            async with leaf_lock(session):
-                if await self._run_live(thread_id):
-                    return THREAD_RUN_LIVE
-                await annotate_and_append(session, [notice_entry(title, body)], sync=True, lock_held=True)
-        except Exception:
-            logger.warning("notify thread append failed manifest=%s", self.manifest_id, exc_info=True)
-            return THREAD_FAILED
-        return THREAD_APPENDED
-
-    async def _run_live(self, thread_id: str) -> bool:
-        """Whether a run is going on in `thread_id`: a turn that marked itself
-        (`workspace_notes.run_active`, here or, through Redis, on any replica), or a durable run
-        not yet finished, which may sit between steps with no turn marked."""
-        from felix.durability.runs import active_durable_run
-        from felix.workspace_notes import run_active
-
-        if await run_active(self.tenant_id, thread_id):
-            return True
-        return await active_durable_run(self.settings, self.tenant_id, thread_id) is not None
+        """Add the notice to `thread_id` (`notice_entry`); what became of it, an `origin_thread` value.
+        Only into a conversation that exists and has no run going on (`origin_thread.append_when_idle`)."""
+        return await origin_thread.append_when_idle(
+            self.settings, self.tenant_id, thread_id, [notice_entry(title, body)]
+        )
 
     async def send(self, args: _NotifyArgs, call: ToolInvocationCtx | None) -> str:
         from felix.audit.emit import emit_agent_audit
@@ -408,7 +345,7 @@ class _Notices:
         # The thread first, so the conversation the push links to already holds the notice when
         # the person taps it. Not the run's own thread: a live conversation already shows the call
         # and the model's answer, and its turn owns the leaf.
-        thread = THREAD_NOT_ELIGIBLE
+        thread = origin_thread.NOT_ELIGIBLE
         if thread_id and thread_id != self.own_thread(ctx, call):
             thread = await self.append(thread_id, title, body)
         delivered, push_note = await self.push(
@@ -484,7 +421,7 @@ def notice_entry(title: str, body: str) -> AppendableEvent:
 def _outcome(delivered: int, push_note: str | None, thread: str) -> dict[str, Any]:
     """The result the model reads: how many browsers took it, the channels that delivered it, what
     became of it in the conversation it links to, and a note saying why anything did not."""
-    appended = thread == THREAD_APPENDED
+    appended = thread == origin_thread.APPENDED
     channels = [*(["push"] if delivered else []), *(["thread"] if appended else [])]
     notes = [n for n in (push_note, _THREAD_NOTES.get(thread)) if n]
     if appended and push_note:
@@ -532,11 +469,6 @@ __all__ = [
     "LINK_REMOVED",
     "NOTICE_ENTRY_TYPE",
     "NOTIFY",
-    "THREAD_APPENDED",
-    "THREAD_FAILED",
-    "THREAD_MISSING",
-    "THREAD_NOT_ELIGIBLE",
-    "THREAD_RUN_LIVE",
     "hourly_key",
     "make_notify_tool",
     "notice_entry",

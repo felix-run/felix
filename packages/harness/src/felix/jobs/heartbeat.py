@@ -42,7 +42,8 @@ logger = logging.getLogger("felix.jobs.heartbeat")
 HEARTBEAT = "heartbeat"
 JOB_PREFIX = "hb-"
 # The person's heartbeat conversation is `{tenant}:hb-<16 hex>`: a chat thread id (no `:` in the
-# suffix), so a chat client can open it and `notify` will write into it (`_openable_thread`).
+# suffix), so a chat client can open it and `notify` will write into it
+# (`jobs/origin_thread.py:openable_thread`).
 CONVERSATION_PREFIX = "hb-"
 HEARTBEAT_OK = "HEARTBEAT_OK"
 MAX_ANSWER_CHARS = 500

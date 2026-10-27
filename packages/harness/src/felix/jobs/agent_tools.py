@@ -32,9 +32,11 @@ from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
 if TYPE_CHECKING:
-    from felix.context import AuthContext
+    from felix.config import Settings
+    from felix.context import AuthContext, RequestContext
     from felix.jobs.schedule import Schedule
-    from felix.manifests.schema import SchedulingSpec
+    from felix.manifests.schema import Manifest, SchedulingSpec
+    from felix.session.types import AppendableEvent
 
 logger = logging.getLogger("felix.jobs.agent_tools")
 
@@ -420,9 +422,82 @@ def make_scheduling_tools(
     return [schedule, listing, cancel]
 
 
+# --- reporting back ---------------------------------------------------------------------------
+# The `metadata.type` of the entry a task's answer leaves in the conversation it was scheduled from.
+TASK_REPORT_ENTRY_TYPE = "task_report"
+# The most of an answer that entry carries; the job's run history keeps it whole.
+MAX_REPORT_CHARS = 16_000
+# A report's outcome, beside the `origin_thread` ones, when the marker scan flagged the answer.
+REPORT_SCREENED = "screened"
+
+
+def task_report_entry(job: dict[str, Any], answer: str) -> AppendableEvent:
+    """The entry a task's answer leaves in the conversation it was scheduled from.
+
+    `custom` with `in_context` set and the `assistant` role: the agent's own answer, which the next
+    turn there reads, so the person can ask about what the task found. Never `user` -- the text is
+    a model's answer, possibly over what a tool fetched, and must not read as the person's words."""
+    from felix.session.types import AppendableEvent
+
+    payload = job.get("payload") or {}
+    # `schedule_task` bounds a title; a writer re-saving the job over `PUT /jobs` can store any value.
+    given = payload.get("title")
+    title = given[:MAX_TITLE_CHARS] if isinstance(given, str) and given.strip() else str(job["name"])
+    text = answer
+    if len(text) > MAX_REPORT_CHARS:
+        text = f"{text[:MAX_REPORT_CHARS]}\n\n[cut short; the whole answer is in the task's run history]"
+    return AppendableEvent(
+        kind="custom",
+        role="assistant",
+        content=f"[Scheduled task: {title}]\n\n{text}",
+        metadata={"type": TASK_REPORT_ENTRY_TYPE, "task": job["name"], "title": title, "in_context": True},
+    )
+
+
+async def report_back(
+    settings: Settings,
+    tenant_id: str,
+    job: dict[str, Any],
+    manifest: Manifest,
+    ctx: RequestContext,
+    answer: str,
+) -> str | None:
+    """Add a task's answer to the conversation it was scheduled from; what became of it, an
+    `origin_thread` value, or None when there is nothing to report: a firing that is not this
+    manifest's task, a manifest with `spec.scheduling.report_back` off, or an empty answer.
+
+    The conversation is the one `origin_thread.origin_of` allows -- recorded by `schedule_task`, for
+    a job the person this firing acts for wrote, a chat thread of this tenant's -- and the entry
+    lands only where `origin_thread.append_when_idle` lets it: never into a live run."""
+    from felix.jobs import origin_thread
+    from felix.jobs import store as jobs_store
+
+    spec = manifest.spec.scheduling
+    if jobs_store.scheduled_by(job, SCHEDULE_TASK) is None or spec is None or not spec.report_back:
+        return None
+    if not answer.strip():
+        return None
+    thread = origin_thread.origin_of(ctx, tenant_id, ctx.auth.acting_for)
+    if thread is None:
+        return origin_thread.NOT_ELIGIBLE
+    from felix.governance.content_screening import screen_content
+
+    # The free marker scan, as a `notify` gets: this entry reaches the next turn's model there, which
+    # may run another manifest, so text that reads as an injection is not carried across.
+    verdict = await screen_content(answer, settings=settings, block_on_injection=True, redact_pii=False)
+    if verdict.denied:
+        return REPORT_SCREENED
+    return await origin_thread.append_when_idle(settings, tenant_id, thread, [task_report_entry(job, answer)])
+
+
 __all__ = [
+    "MAX_REPORT_CHARS",
+    "REPORT_SCREENED",
     "SCHEDULE_TASK",
     "SCHEDULING_TOOL_NAMES",
+    "TASK_REPORT_ENTRY_TYPE",
     "is_fired_task",
     "make_scheduling_tools",
+    "report_back",
+    "task_report_entry",
 ]

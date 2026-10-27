@@ -24,7 +24,8 @@ logger = logging.getLogger("felix.jobs.scheduler")
 CRON_ACTOR = CRON
 # On a task's firing, `RequestContext.extras[SCHEDULED_FROM_EXTRA]` is `{"thread_id", "created_by"}`:
 # the conversation `schedule_task` recorded (`payload.scheduled_by.thread_id`) and the job's writer.
-# `push/agent_tool.py` points a notice at that thread only when the writer is who the run acts for.
+# `jobs/origin_thread.py:origin_of` reads it -- for a `notify` the firing sends and for a task's report
+# of its answer -- and names that thread only when the writer is who the run acts for.
 SCHEDULED_FROM_EXTRA = "scheduled_from"
 
 
@@ -317,13 +318,17 @@ async def _invoke_job_manifest(
         finally:
             if firing is not None:
                 await firing.after()
-    answer = result.final.content if result.final else ""
-    if firing is not None:
-        return firing.result(str(answer or ""), req_ctx.extras, thread)
-    return {
-        "status": "ok",
-        "answer": answer,
-    }
+        answer = result.final.content if result.final else ""
+        if firing is not None:
+            return firing.result(str(answer or ""), req_ctx.extras, thread)
+        from felix.jobs.agent_tools import report_back
+
+        # A task's answer, into the conversation it was scheduled from.
+        report = await report_back(settings, tenant_id, job, resolved.manifest, req_ctx, str(answer or ""))
+    out: dict[str, Any] = {"status": "ok", "answer": answer}
+    if report is not None:
+        out["report"] = report
+    return out
 
 
 async def _start_job_workflow(settings: Settings, *, tenant_id: str, job: dict[str, Any]) -> dict[str, Any]:
