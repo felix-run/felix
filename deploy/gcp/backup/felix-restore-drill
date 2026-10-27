@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# felix-restore-drill: restore an off-VM backup into a throwaway Postgres and say whether it is
+# a backup. Reads from the bucket, not the local copy, because the bucket is what survives the
+# VM. Touches nothing of the running stack: its own container, no network, deleted on exit.
+#
+#   sudo felix-restore-drill              # the newest backup in the bucket
+#   sudo felix-restore-drill 20261028T031500Z
+#
+# Exit 0 only when the backup restored, is at the schema it recorded, and holds sessions.
+set -euo pipefail
+umask 077
+
+BUCKET="${FELIX_BACKUP_BUCKET:-gs://felix-507018-backups}"
+DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
+NAME=felix-drill-pg
+
+stamp="${1:-$(gcloud storage ls "$BUCKET/" | sed -E 's#.*/([0-9]{8}T[0-9]{6}Z)/$#\1#' | grep -E '^[0-9]{8}T' | sort | tail -1)}"
+[ -n "$stamp" ] || { echo "no backups in $BUCKET" >&2; exit 1; }
+
+mkdir -p "$DIR"
+work=$(mktemp -d "$DIR/drill.XXXXXX")
+cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$work"; }
+trap cleanup EXIT
+
+failures=0
+bad() { echo "  FAIL  $*"; failures=$((failures + 1)); }
+warn() { echo "  warn  $*"; }
+ok() { echo "  ok    $*"; }
+
+t0=$(date +%s)
+echo "Drill: $BUCKET/$stamp/"
+gcloud storage cp "$BUCKET/$stamp/*" "$work/" --quiet
+meta="$work/felix-$stamp.meta"
+dump="$work/felix-$stamp.dump"
+tgz="$work/felix-data-$stamp.tgz"
+for f in "$meta" "$dump" "$tgz"; do [ -s "$f" ] || { echo "missing $(basename "$f")" >&2; exit 1; }; done
+fetched=$(date +%s)
+
+# The image production runs, so pgvector and the major version match.
+pg="${FELIX_BACKUP_PG_CONTAINER:-$(docker ps --format '{{.Names}}' | grep -m1 postgres)}"
+image=$(docker inspect -f '{{.Config.Image}}' "$pg")
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker run -d --name "$NAME" --network none --memory 384m \
+  -e POSTGRES_USER=felix -e POSTGRES_PASSWORD=drill -e POSTGRES_DB=felix "$image" >/dev/null
+# Over TCP: the image's first-boot server listens on the socket only, so a socket check can
+# pass before the restart that ends initialisation and drop the restore halfway.
+for _ in $(seq 1 60); do
+  docker exec "$NAME" pg_isready -h 127.0.0.1 -U felix -d felix -q && break
+  sleep 1
+done
+docker exec "$NAME" pg_isready -h 127.0.0.1 -U felix -d felix -q || { echo "drill postgres did not start" >&2; exit 1; }
+
+if docker exec -i "$NAME" pg_restore -U felix -d felix --no-owner --exit-on-error <"$dump"; then
+  ok "pg_restore finished without an error"
+else
+  bad "pg_restore failed"
+fi
+restored=$(date +%s)
+
+q() { docker exec -i "$NAME" psql -U felix -d felix -At -v ON_ERROR_STOP=1 "$@"; }
+m() { awk -v k="$1" '$1 == k { print $2 }' "$meta"; }
+
+rev=$(q -c 'select version_num from alembic_version' 2>/dev/null || echo none)
+if [ "$rev" = "$(m alembic)" ]; then ok "schema at $rev, as recorded"; else bad "schema $rev, the backup recorded $(m alembic)"; fi
+
+events=$(q -c 'select count(*) from session_events' 2>/dev/null || echo 0)
+if [ "$events" -gt 0 ]; then ok "$events session events"; else bad "no session events"; fi
+
+newest=$(q -c 'select coalesce(max(case when ts > 1e11 then ts / 1000 else ts end), 0)::bigint from session_events' 2>/dev/null || echo 0)
+taken=$(date -u -d "$(echo "$stamp" | sed -E 's/(....)(..)(..)T(..)(..)(..)Z/\1-\2-\3 \4:\5:\6/')" +%s)
+if [ "$newest" -ge "$(m newest_event)" ]; then
+  ok "newest session event $(((taken - newest) / 60)) min before the backup"
+else
+  bad "newest session event is older than the one recorded at backup time"
+fi
+
+# Counts were taken just before the dump, so a restored table can only hold as many rows or
+# more. Fewer is the nightly retention sweep at worst, so it warns rather than fails.
+echo
+printf '  %-28s %12s %12s\n' table at-backup restored
+while read -r _ want table; do
+  # </dev/null: `docker exec -i` would otherwise read the rest of this loop's input.
+  got=$(q -c "select count(*) from public.\"$table\"" </dev/null 2>/dev/null || echo missing)
+  mark=""
+  if [ "$got" = missing ]; then mark="  <- missing"; failures=$((failures + 1))
+  elif [ "$got" -lt "$want" ]; then mark="  <- fewer"; fi
+  printf '  %-28s %12s %12s%s\n' "$table" "$want" "$got" "$mark"
+done < <(grep '^table ' "$meta")
+echo
+
+if gzip -t "$tgz"; then
+  files=$(tar tzf "$tgz" | grep -vc '/$' || true)
+  if [ "$files" -ge "$(m files)" ]; then
+    ok "object store: $files files (recorded $(m files))"
+  else
+    warn "object store: $files files, fewer than the $(m files) recorded"
+  fi
+else
+  bad "object store archive is corrupt"
+fi
+
+echo
+echo "  download $((fetched - t0))s, restore $((restored - fetched))s, backup age $((($(date +%s) - taken) / 3600))h"
+if [ "$failures" -eq 0 ]; then
+  echo "DRILL PASSED: $stamp restores."
+else
+  echo "DRILL FAILED: $failures check(s) above."
+  exit 1
+fi

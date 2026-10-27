@@ -81,6 +81,12 @@ shell, Claude Code's `!` prefix — it refuses before doing anything, unless you
 answers every confirmation yes and prints each one. `--yes` still stops if durable runs are in
 flight: restarting the worker under them is a decision to make interactively.
 
+### Backups
+
+`roll.sh` dumps only at upgrades, onto the VM's own disk. [`backup/`](backup/README.md) adds
+daily disk snapshots, a nightly dump of Postgres and the object store to a GCS bucket the VM
+cannot delete from, and a restore drill that proves the newest copy restores.
+
 ## Helm
 
 ```bash
