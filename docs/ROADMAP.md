@@ -656,9 +656,10 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       one-shot tasks are swept after `FELIX_SCHEDULED_TASK_RETENTION_DAYS`. *Follow-ups:*
       `cancel_scheduled` runs without an approval (a cancel only removes work, but a model can
       cancel a person's task unasked); the per-caller cap is read then written, so two concurrent
-      `schedule_task` calls can both pass it; a task does not yet report back into the thread that
-      scheduled it (`scheduled_by.thread_id` is recorded for that), except through a `notify` it
-      sends (`notify` PR 2 below); a durable or workflow run a task
+      `schedule_task` calls can both pass it; a task's report back into the thread that scheduled it
+      (`spec.scheduling.report_back`, *landed*) is skipped when a run is going on there, not
+      retried, a firing that errors reports nothing, and every firing of a recurring task adds an
+      in-context entry (no per-thread cap, nor only the latest report per task kept in context); a durable or workflow run a task
       starts just before its writer's token expires is not clamped to that expiry, so it may run
       on past it by up to the run's own TTL. *Landed:* `notify`, PR 1 of 3:
       `spec.notify` binds a tool that sends a title and short message as a Web Push to the person

@@ -927,6 +927,12 @@ class SchedulingSpec(_Strict):
     #: first; no permission mode (`bypass` included) waives an approval on `schedule_task`, whichever
     #: rule asked. `false` adds no rule.
     approval: bool = True
+    #: When a task's firing answers, add the answer to the conversation the task was scheduled
+    #: from, as an assistant entry the next turn there reads -- the way the person finds out what
+    #: the task found without a `notify`. Only into a chat thread of the writer's that exists and
+    #: has no run going on; the run records what became of it (`report`). `false` leaves the
+    #: answer in the job's run history only.
+    report_back: bool = True
 
 
 class NotifySpec(_Strict):

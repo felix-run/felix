@@ -2240,6 +2240,11 @@
           "default": true,
           "title": "Approval",
           "type": "boolean"
+        },
+        "report_back": {
+          "default": true,
+          "title": "Report Back",
+          "type": "boolean"
         }
       },
       "title": "SchedulingSpec",

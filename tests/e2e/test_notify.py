@@ -142,18 +142,23 @@ async def test_a_scheduled_task_notifies_only_the_person_who_scheduled_it(
             "thread_id": "default:e2e-notify",
         }
 
-        # The thread she asked from now ends on the notice, as the history route shows it.
+        # The thread she asked from now ends on the notice, then the task's report of its answer
+        # (`spec.scheduling.report_back`), as the history route shows it.
         history = await app.client.get("/chat/history/e2e-notify", headers=ALICE)
         assert history.status_code == 200, history.text
-        last = history.json()["messages"][-1]
-        assert (last["role"], last["kind"], last["content"]) == ("assistant", "custom", notice_text)
+        shown, last = history.json()["messages"][-2:]
+        assert (shown["role"], shown["kind"], shown["content"]) == ("assistant", "custom", notice_text)
+        assert (last["role"], last["kind"]) == ("assistant", "custom")
+        assert last["content"].endswith("\n\ntold her"), last
 
         # Linked onto the thread's leaf and now its leaf, so the next turn continues after it.
         snap = await _transcript(app, ALICE, "e2e-notify")
-        *earlier, notice = snap["transcript"]
+        *earlier, notice, report = snap["transcript"]
         assert notice["metadata"]["type"] == "notice", notice
         assert notice["metadata"]["parent_id"] == earlier[-1]["id"]
-        assert snap["leafId"] == notice["id"]
+        assert report["metadata"]["type"] == "task_report", report
+        assert report["metadata"]["parent_id"] == notice["id"]
+        assert snap["leafId"] == report["id"]
 
         await _chat(app, ALICE, "e2e-notify", "Thanks!")
         thanks = next(
@@ -161,8 +166,8 @@ async def test_a_scheduled_task_notifies_only_the_person_who_scheduled_it(
             for i in (await _transcript(app, ALICE, "e2e-notify"))["transcript"]
             if i["content"] == "Thanks!"
         )
-        assert thanks["metadata"]["parent_id"] == notice["id"]
-        # For alice, not the model: the turn after it was prompted without it.
+        assert thanks["metadata"]["parent_id"] == report["id"]
+        # The notice is for alice, not the model: the turn after it was prompted without it.
         assert "Thanks!" in [str(m.content) for m in app.spy.prompts[6]]
         assert not any("Released with key" in str(m.content) for m in app.spy.prompts[6])
 
@@ -263,7 +268,8 @@ async def test_a_task_paused_and_resumed_by_its_writer_stays_a_task(
         assert fired.status_code == 200 and fired.json()["status"] == "ok", fired.text
         assert _tool_result(app.spy.prompts[6])["thread"] == "appended"
         assert alice.decrypt(sent[0]["body"])["thread_id"] == "default:e2e-notify"
-        assert (await _transcript(app, ALICE, "e2e-notify"))["transcript"][-1]["metadata"]["type"] == "notice"
+        ended = (await _transcript(app, ALICE, "e2e-notify"))["transcript"][-2:]
+        assert [e["metadata"]["type"] for e in ended] == ["notice", "task_report"]
         assert (await _transcript(app, BOB, "e2e-bob"))["transcript"] == bobs_before
 
 

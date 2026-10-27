@@ -2527,6 +2527,23 @@ sub-less API key's `api_key`, an inbound trigger's `trigger:<id>`, a machine act
 one. A plugin authenticator that gives many people one subject is not detectable here; avoiding
 that is the operator's responsibility.
 
+**A task's answer goes back to its conversation.** When a task's firing answers, the answer is
+added to the conversation the task was scheduled from (`spec.scheduling.report_back`, on by
+default), so the person learns what it found and the next turn there can talk about it. The entry
+is `custom`, in context, in the **assistant** role -- never `user`, because the text is a model's
+answer, possibly over pages or tool output it read, and must not reach the next turn as the
+person's own words. It lands only where a firing's `notify` may write (`jobs/origin_thread.py`):
+the thread `schedule_task` recorded, for a job the person the firing acts for wrote, a chat thread
+of the tenant's (no harness thread such as `job:`), one that exists, and never while a run is
+going on in it -- a firing that finds one records `report: run_live` and adds nothing, so a report
+can be missed but never splits a turn. The answer is cut at 16,000 characters; the job's run
+history keeps it whole. The answer has had what any reply gets -- the firing manifest's reply
+controls (PII guardrails, `final_response` judges) and secret masking on every write to the log --
+and then the marker scan a `notify` gets (`screen_content`): an answer that reads as an injection
+is recorded `report: screened` and not added, since the next turn there may run another manifest.
+Each firing adds an entry, so a recurring task at a short interval grows the conversation's
+context by its answer every time. `report_back: false` leaves the answer in the run history alone.
+
 **Agent-authored workflows.** `spec.workflow_authoring` binds `workflow_catalog`, `check_workflow`,
 `save_workflow`, `list_my_workflows` and `run_workflow`. A workflow the agent saves is an ordinary
 one, owned by the person the conversation acts for. The owner is their issuer-qualified key
