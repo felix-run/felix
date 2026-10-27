@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Literal
 
-from felix.manifests.schema import Manifest, any_limit
+from felix.manifests.schema import Manifest, any_limit, child_agent_names
 from felix.manifests.secret_refs import PlaintextSecretError, assert_no_plaintext_secrets
 
 
@@ -95,6 +96,17 @@ def assert_stdio_env_allowed(manifest: Manifest) -> None:
 Route = tuple[str, str]  # (the field that names it, the route id)
 
 
+def _allowed_providers(manifest: Manifest) -> set[str]:
+    """`auth.outbound.providers`, normalised; empty means unpinned."""
+    return {str(p).strip().lower() for p in (manifest.spec.auth.outbound.providers or []) if str(p).strip()}
+
+
+def _cost_cap_declared(manifest: Manifest) -> bool:
+    """An explicitly declared `limits.max_cost_usd`; the filled-in default does not count."""
+    limits = getattr(manifest.spec, "limits", None)
+    return limits is not None and getattr(limits, "max_cost_usd", None) is not None
+
+
 def _named(pairs: list[tuple[str, str | None]]) -> list[Route]:
     return [(field, rid.strip()) for field, rid in pairs if rid and rid.strip()]
 
@@ -160,9 +172,7 @@ def assert_outbound_providers_allowed(manifest: Manifest, settings: Any | None =
     still route to OpenAI or Workers AI. Checked at compile so a violation fails the
     build with a clear message rather than at the first model call.
     """
-    allowed = {
-        str(p).strip().lower() for p in (manifest.spec.auth.outbound.providers or []) if str(p).strip()
-    }
+    allowed = _allowed_providers(manifest)
     if not allowed:
         return
 
@@ -204,9 +214,7 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
     The escape hatch is `spec.model.price`, for the routes built from `spec.model`. Every
     other route is billed at catalog rates, so it must route to a priced model.
     """
-    limits = getattr(manifest.spec, "limits", None)
-    declared = getattr(limits, "max_cost_usd", None) if limits is not None else None
-    if declared is None:
+    if not _cost_cap_declared(manifest):
         return
     priced_by_manifest = bool(manifest.spec.model.price)
     catalog = _routes_at_catalog_rates(manifest)
@@ -236,6 +244,65 @@ def assert_cost_limit_is_measurable(manifest: Manifest, settings: Any | None = N
             "spec.model and the routes built from it; route anything billed at catalog rates to a "
             "priced model; or drop the limit."
         )
+
+
+RequestModelRefusal = Literal["model_provider_not_allowed", "model_unpriced", "model_not_priced_by_manifest"]
+
+
+def request_model_refusal(manifest: Manifest, model_id: str, settings: Any) -> RequestModelRefusal | None:
+    """Why a request's `model` override may not run on this manifest, as a wire code, or None.
+
+    The override replaces `spec.model.id` for one turn (the planner's too), so the manifest's own
+    rules apply to it: `auth.outbound.providers` was otherwise a statement any `chat:write`
+    caller could route around with one field. Under a declared `limits.max_cost_usd` it must be
+    priced. The override keeps `spec.model.price`, which the author set for the routes the
+    manifest names, so with one set the override must be one of those; any other route would be
+    metered at rates chosen for a different model.
+    """
+    from felix.model_catalog import is_priced
+    from felix.patterns.model import parse_model_routes
+
+    route = parse_model_routes(settings).get(model_id)
+    if route is None:
+        return None  # unknown ids are reported by the model layer, not here
+    allowed = _allowed_providers(manifest)
+    if allowed and route.provider.lower() not in allowed:
+        return "model_provider_not_allowed"
+    if not _cost_cap_declared(manifest):
+        return None
+    if manifest.spec.model.price:
+        named = {rid for _, rid in _routes_priced_by_spec_model(manifest, settings)}
+        return None if model_id in named else "model_not_priced_by_manifest"
+    return None if is_priced(route.model) else "model_unpriced"
+
+
+async def request_model_tree_refusal(
+    manifest: Manifest,
+    model_id: str,
+    settings: Any,
+    *,
+    tenant_id: str,
+    children: Mapping[str, Manifest | None] | None = None,
+) -> RequestModelRefusal | None:
+    """`request_model_refusal` for the manifest and every sub-agent the override reaches.
+
+    `_child_input` hands the override to each child turn, and each child compiles from its own
+    manifest, so an unpinned router could otherwise carry a caller's route into a child pinned
+    to another provider. `children` is the tree a pin check already resolved; when it is empty
+    the tree is resolved here, the same walk `build_agent` makes.
+    """
+    refusal = request_model_refusal(manifest, model_id, settings)
+    if refusal is not None or not child_agent_names(manifest.spec):
+        return refusal
+    tree: dict[str, Manifest | None] = dict(children or {})
+    if not tree:
+        from felix.manifests.pin import sub_agents_hash
+
+        await sub_agents_hash(settings, tenant_id, manifest, resolved_out=tree)
+    for child in tree.values():
+        if child is not None and (refusal := request_model_refusal(child, model_id, settings)) is not None:
+            return refusal
+    return None
 
 
 def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
