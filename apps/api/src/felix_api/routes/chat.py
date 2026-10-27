@@ -2342,9 +2342,30 @@ async def chat_rewind(
                 summarize = bool(
                     getattr(getattr(resolved.manifest.spec, "session", None), "branch_summary", True)
                 )
+            from felix.manifests.governance import GovernanceError, validate_for_run
+            from felix.manifests.pin import ManifestDriftError, check_thread_pin
             from felix.patterns.model import build_model
 
-            model = build_model(settings, resolved.manifest.spec.model)
+            try:
+                # A turn of it would be refused for either, and the summary sends the same history.
+                await check_thread_pin(
+                    settings=settings,
+                    tenant_id=auth.tenant_id,
+                    thread_id=thread,
+                    manifest=resolved.manifest,
+                    version=resolved.version,
+                )
+                validate_for_run(resolved.manifest, settings)
+                model = build_model(settings, resolved.manifest.spec.model)
+            except (GovernanceError, ManifestDriftError) as exc:
+                # The summary is written without a model then, as for a manifest that no longer
+                # resolves; the rewind itself calls no model and is not refused.
+                logger.warning(
+                    "rewind summary on %s: %s may not run a model (%s); summarising without one",
+                    loggable(thread, limit=200),
+                    loggable(manifest_id, limit=200),
+                    loggable(str(exc), limit=500),
+                )
         except LookupError, ValueError:
             model = None
     if summarize is None:
@@ -3161,6 +3182,25 @@ async def chat_compact(
     except (LookupError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=f"unknown_manifest:{body.manifest}") from exc
     _require_inbound_auth(resolved.manifest, auth)
+    from felix.manifests.governance import GovernanceError, validate_for_run
+    from felix.manifests.pin import ManifestDriftError, check_thread_pin
+
+    # What a turn of this manifest on this thread is refused for, compaction is too: it sends
+    # the thread's history to the same model.
+    try:
+        await check_thread_pin(
+            settings=settings,
+            tenant_id=auth.tenant_id,
+            thread_id=thread,
+            manifest=resolved.manifest,
+            version=resolved.version,
+        )
+    except ManifestDriftError as exc:
+        raise HTTPException(status_code=409, detail=client_safe_message(exc)) from exc
+    try:
+        validate_for_run(resolved.manifest, settings)
+    except GovernanceError as exc:
+        raise HTTPException(status_code=422, detail=client_safe_message(exc)) from exc
 
     from felix.patterns.model import build_model
     from felix.session.compaction import CompactingSessionStrategy

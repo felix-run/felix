@@ -1995,15 +1995,10 @@ async def build_agent(
         )
 
         # Governance compile checks (frameworks + plaintext secret policy).
-        from felix.manifests.governance import (
-            apply_transparency_notice,
-            assert_cost_limit_is_measurable,
-            validate_governance,
-        )
+        from felix.manifests.governance import apply_transparency_notice, validate_for_run
         from felix.manifests.secret_refs import resolve_outbound_secrets
 
-        validate_governance(m, deps.settings)
-        assert_cost_limit_is_measurable(m, deps.settings)
+        validate_for_run(m, deps.settings)
         # The conversation's chosen style, at the end of the prompt (the notice goes at the top).
         # Only for the agent the request names: its children compiled above, with it on
         # `deps.compiling`.

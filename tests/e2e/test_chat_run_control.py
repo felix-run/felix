@@ -436,7 +436,7 @@ async def test_answering_a_ui_prompt_nobody_asked_reports_ok_anyway(boot: Any) -
 # --- compaction ----------------------------------------------------------------------------
 
 
-def _tiny_window_manifest() -> Any:
+def _tiny_window_manifest(name: str = "e2e-tiny-window", **spec: Any) -> Any:
     """A manifest that keeps nothing recent, so two turns are already compactable.
 
     `keep_recent_tokens: 0` is a legal value the schema allows and, until the route stopped
@@ -449,7 +449,7 @@ def _tiny_window_manifest() -> Any:
         {
             "apiVersion": "felix/v1",
             "kind": "Agent",
-            "metadata": {"name": "e2e-tiny-window"},
+            "metadata": {"name": name},
             "spec": {
                 "pattern": "react",
                 "tools": ["calculator"],
@@ -461,6 +461,7 @@ def _tiny_window_manifest() -> Any:
                     "keep_recent_tokens": 0,
                     "compaction_enabled": True,
                 },
+                **spec,
             },
         }
     )
@@ -532,3 +533,130 @@ async def test_compacting_against_an_unknown_manifest_is_a_404(boot: Any) -> Non
         )
         assert resp.status_code == 404, resp.text
         assert resp.json()["detail"] == "unknown_manifest:no-such-manifest"
+
+
+# --- the manifest's own rules on the calls that build its model without compiling it ------------
+
+# Pinned to a provider the test's model route is not: a turn of it is refused at compile, and
+# compaction and a rewind's summary build the same `spec.model` without compiling.
+_OFF_PIN = {"auth": {"inbound": {"allow_anonymous": True}, "outbound": {"providers": ["anthropic"]}}}
+
+
+async def _two_turns(app: Booted, thread: str) -> None:
+    """Two turns under the tiny-window manifest, unpinned, so there is something to summarise."""
+    for text in ("first message here", "second message here"):
+        resp = await app.client.post(
+            "/chat",
+            json={
+                "manifest": "e2e-tiny-window",
+                "thread_id": thread,
+                "messages": [{"role": "user", "content": text}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+
+async def test_compaction_under_a_manifest_its_pin_refuses_calls_no_model(boot: Any) -> None:
+    thread = "e2e-compact-off-pin"
+    manifests = {
+        "e2e-tiny-window": _tiny_window_manifest(),
+        "e2e-off-pin": _tiny_window_manifest("e2e-off-pin", **_OFF_PIN),
+    }
+    async with boot([_answer("one"), _answer("two"), _answer("a summary")], manifests=manifests) as app:
+        await _two_turns(app, thread)
+        calls_before = len(app.spy.prompts)
+
+        resp = await app.client.post("/chat/compact", json={"thread_id": thread, "manifest": "e2e-off-pin"})
+        assert resp.status_code == 422, resp.text
+        assert "anthropic" in resp.json()["detail"], resp.json()
+        assert len(app.spy.prompts) == calls_before, "a refused manifest's summariser must not run"
+
+
+async def test_a_rewind_under_a_manifest_its_pin_refuses_summarises_without_a_model(boot: Any) -> None:
+    """The rewind is navigation and still happens; only its summary loses the model."""
+    thread = "e2e-rewind-off-pin"
+    manifests = {
+        "e2e-tiny-window": _tiny_window_manifest(),
+        "e2e-off-pin": _tiny_window_manifest("e2e-off-pin", **_OFF_PIN),
+    }
+    async with boot([_answer("one"), _answer("two"), _answer("a summary")], manifests=manifests) as app:
+        await _two_turns(app, thread)
+        target = (await _snapshot(app, thread))["transcript"][0]["id"]
+        calls_before = len(app.spy.prompts)
+
+        resp = await app.client.post(
+            "/chat/rewind", json={"thread_id": thread, "event_id": target, "manifest": "e2e-off-pin"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("branch_summary"), resp.json()
+        assert len(app.spy.prompts) == calls_before, "a refused manifest's summariser must not run"
+
+
+async def test_compaction_under_an_unmeasurable_cost_cap_calls_no_model(boot: Any) -> None:
+    """The other half of the build's checks: a declared `max_cost_usd` on a route nothing prices."""
+    import json
+
+    from tests.support.e2e import scripted_model_routes
+
+    routes = {
+        **scripted_model_routes(),
+        "e2e-unpriced": {"provider": "scripted", "model": "no-such-wire-model"},
+    }
+    thread = "e2e-compact-unpriced"
+    manifests = {
+        "e2e-tiny-window": _tiny_window_manifest(),
+        "e2e-capped": _tiny_window_manifest(
+            "e2e-capped", model={"id": "e2e-unpriced"}, limits={"max_cost_usd": 1.0}
+        ),
+    }
+    script = [_answer("one"), _answer("two"), _answer("a summary")]
+    async with boot(script, manifests=manifests, env={"FELIX_MODEL_ROUTES": json.dumps(routes)}) as app:
+        await _two_turns(app, thread)
+        calls_before = len(app.spy.prompts)
+
+        resp = await app.client.post("/chat/compact", json={"thread_id": thread, "manifest": "e2e-capped"})
+        assert resp.status_code == 422, resp.text
+        assert "e2e-unpriced" in resp.json()["detail"], resp.json()
+        assert len(app.spy.prompts) == calls_before
+
+
+# A thread whose first turns ran under a `pin_compile` manifest is that manifest's: a turn of any
+# other is refused (`ManifestDriftError`), so compaction and a rewind's summary must be too.
+_PINNED = {"governance": {"pin_compile": True}}
+
+
+def _pinned_thread_manifests() -> dict[str, Any]:
+    return {
+        "e2e-tiny-window": _tiny_window_manifest("e2e-tiny-window", **_PINNED),
+        "e2e-other": _tiny_window_manifest("e2e-other"),
+    }
+
+
+async def test_compaction_of_a_pinned_thread_under_another_manifest_is_refused(boot: Any) -> None:
+    thread = "e2e-compact-pinned"
+    script = [_answer("one"), _answer("two"), _answer("a summary")]
+    async with boot(script, manifests=_pinned_thread_manifests()) as app:
+        await _two_turns(app, thread)
+        calls_before = len(app.spy.prompts)
+
+        resp = await app.client.post("/chat/compact", json={"thread_id": thread, "manifest": "e2e-other"})
+        assert resp.status_code == 409, resp.text
+        assert len(app.spy.prompts) == calls_before, "another manifest's summariser must not run"
+
+
+async def test_a_rewind_of_a_pinned_thread_under_another_manifest_summarises_without_a_model(
+    boot: Any,
+) -> None:
+    thread = "e2e-rewind-pinned"
+    script = [_answer("one"), _answer("two"), _answer("a summary")]
+    async with boot(script, manifests=_pinned_thread_manifests()) as app:
+        await _two_turns(app, thread)
+        target = (await _snapshot(app, thread))["transcript"][0]["id"]
+        calls_before = len(app.spy.prompts)
+
+        resp = await app.client.post(
+            "/chat/rewind", json={"thread_id": thread, "event_id": target, "manifest": "e2e-other"}
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json().get("branch_summary"), resp.json()
+        assert len(app.spy.prompts) == calls_before, "another manifest's summariser must not run"
