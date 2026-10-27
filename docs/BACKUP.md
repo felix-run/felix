@@ -15,6 +15,10 @@ backup nobody has restored is a hypothesis.
 Back up Postgres and the object store together, from the same moment, so an artifact row
 never points at an object the copy does not have. Valkey is deliberately not backed up.
 
+On a single GCE VM running the Compose stack, [`deploy/gcp/backup/`](../deploy/gcp/backup/README.md)
+puts all of this on a schedule: nightly copies to a bucket, disk snapshots, and a drill that
+restores the newest copy and checks it.
+
 ## Postgres
 
 ```bash

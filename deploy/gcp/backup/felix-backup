@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# felix-backup: nightly copy of the Felix VM's state, off the VM.
+#
+# Installed at /usr/local/sbin/felix-backup, run as root by felix-backup.timer.
+# One run writes three files to $DIR, then copies them to $BUCKET/<stamp>/:
+#   felix-<stamp>.meta        schema revision, newest session event, object-store file count
+#                             and per-table row counts (`table <count> <name>`), taken just
+#                             BEFORE the dump, so the
+#                             restore drill has something to compare against
+#   felix-<stamp>.dump        pg_dump -Fc of the felix database (the system of record)
+#   felix-data-<stamp>.tgz    the fs object store (attachments, artifacts, exports)
+# The dump is taken before the tar, so every row in it points at an object the tar holds.
+# Settings come from /etc/default/felix-backup (deploy/gcp/backup/README.md); the defaults are
+# the reference deployment's, as in roll.sh.
+set -euo pipefail
+umask 077
+
+BUCKET="${FELIX_BACKUP_BUCKET:-gs://felix-507018-backups}"
+DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
+VOLUME="${FELIX_BACKUP_DATA_VOLUME:-felix_felix-data}"
+KEEP_LOCAL_DAYS="${FELIX_BACKUP_KEEP_LOCAL_DAYS:-3}"
+PING="${FELIX_BACKUP_PING_URL:-}" # optional dead-man's switch: alerts when a night is MISSED
+PG="${FELIX_BACKUP_PG_CONTAINER:-}" # default: the one running container named *postgres*
+
+ping() { [ -z "$PING" ] || curl -fsS -m 10 --retry 3 "$PING$1" >/dev/null || true; }
+fail() {
+  echo "felix-backup: $*" >&2
+  ping /fail
+  exit 1
+}
+trap 'fail "failed at line $LINENO"' ERR
+ping /start
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+pg="${PG:-$(docker ps --format '{{.Names}}' | grep -m1 postgres)}" || fail "no postgres container running"
+data=$(docker volume inspect -f '{{.Mountpoint}}' "$VOLUME") || fail "no volume $VOLUME"
+mkdir -p "$DIR"
+meta="$DIR/felix-$stamp.meta"
+dump="$DIR/felix-$stamp.dump"
+tgz="$DIR/felix-data-$stamp.tgz"
+
+q() { docker exec -i "$pg" psql -U felix -d felix -At -v ON_ERROR_STOP=1 "$@"; }
+
+# Written to .part and renamed on success, so a failed run never leaves a file that looks
+# like a backup.
+{
+  echo "stamp $stamp"
+  echo "alembic $(q -c 'select version_num from alembic_version')"
+  # ts is epoch seconds as a float; read milliseconds too, should a row carry them.
+  echo "newest_event $(q -c 'select coalesce(max(case when ts > 1e11 then ts / 1000 else ts end), 0)::bigint from session_events')"
+  echo "files $(find "$data" -type f | wc -l)"
+  q <<'SQL' | sed 's/^/table /'
+select (xpath('/row/c/text()', query_to_xml(
+  format('select count(*) as c from public.%I', table_name), false, true, '')))[1]::text
+  || ' ' || table_name
+from information_schema.tables
+where table_schema = 'public' and table_type = 'BASE TABLE'
+order by 1;
+SQL
+} >"$meta.part"
+mv "$meta.part" "$meta"
+
+docker exec "$pg" pg_dump -U felix -d felix -Fc --no-owner >"$dump.part"
+docker exec -i "$pg" pg_restore -l <"$dump.part" | grep -q 'TABLE DATA public session_events' ||
+  fail "the dump does not list session_events data"
+mv "$dump.part" "$dump"
+
+tar czf "$tgz.part" -C "$data" .
+gzip -t "$tgz.part"
+mv "$tgz.part" "$tgz"
+
+# gcloud verifies each upload's checksum. The VM's account may create objects but not
+# delete or overwrite them, and the bucket's retention policy holds each one for 7 days.
+gcloud storage cp "$meta" "$dump" "$tgz" "$BUCKET/$stamp/" --quiet
+
+# Only this script's own files: roll.sh's felix-pre-* dumps are the upgrade rollbacks.
+find "$DIR" -maxdepth 1 -type f \( -name 'felix-2*' -o -name 'felix-data-2*' \) \
+  -mtime +"$KEEP_LOCAL_DAYS" -delete
+
+echo "felix-backup: $BUCKET/$stamp/ — dump $(du -h "$dump" | cut -f1), data $(du -h "$tgz" | cut -f1)"
+ping ""
