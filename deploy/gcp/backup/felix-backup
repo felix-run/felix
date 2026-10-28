@@ -58,7 +58,7 @@ select (xpath('/row/c/text()', query_to_xml(
   || ' ' || table_name
 from information_schema.tables
 where table_schema = 'public' and table_type = 'BASE TABLE'
-order by 1;
+order by table_name;
 SQL
 } >"$meta.part"
 mv "$meta.part" "$meta"
