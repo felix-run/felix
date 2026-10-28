@@ -9,6 +9,9 @@
 # Exit 0 only when the backup restored, is at the schema it recorded, and holds sessions.
 set -euo pipefail
 umask 077
+# systemd's PATH (and root's cron) leaves out /snap/bin, which is where gcloud lives on GCE's
+# Ubuntu images, so the upload would fail with "gcloud: command not found" after the dump.
+export PATH="$PATH:/snap/bin"
 
 BUCKET="${FELIX_BACKUP_BUCKET:-gs://felix-507018-backups}"
 DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
