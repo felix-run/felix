@@ -251,6 +251,7 @@ def test_the_wrapper_is_the_strategy_to_whoever_reads_it() -> None:
 def test_clearing_runs_inside_replay_screening() -> None:
     """Screening sees the stubbed render, so a cleared screenshot is never paid to screen again."""
     from felix.governance.image_screening import ScreenedSessionStrategy
+    from felix.governance.summary_screening import SummaryScreeningStrategy
 
     manifest = parse_manifest(
         {
@@ -266,4 +267,7 @@ def test_clearing_runs_inside_replay_screening() -> None:
     inner = object()
     view = model_view_strategy(inner, manifest, make_settings())
     assert isinstance(view, ScreenedSessionStrategy)
-    assert isinstance(view._inner, ClearingSessionStrategy) and view._inner._inner is inner
+    assert isinstance(view._inner, ClearingSessionStrategy)
+    # Innermost, the summaries the strategy writes are screened (`governance.summary_screening`).
+    summaries = view._inner._inner
+    assert isinstance(summaries, SummaryScreeningStrategy) and summaries._inner is inner

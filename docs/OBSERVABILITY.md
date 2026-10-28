@@ -111,6 +111,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_imported_skills_unscreened` | `manifest_id` | A manifest offers a skill built on a GitHub import with content screening off: what the skill tools return of it is checked by the free injection markers only, with no scoring model or decider. |
 | `felix_content_screening` | `manifest_id`, `tool`, `action` | Screening ran; `action` says what it did. `image_unscreened`: an untrusted tool returned images with no `image_model` to screen them, and they were quarantined. |
 | `felix_inbound_screening` | `manifest_id`, `surface`, `action` | Inbound screening acted on a user turn (`surface=turn`) or on MCP tool-call arguments (`surface=tool_arguments`); `action` is `denied`, `quarantined` or `unavailable`. |
+| `felix_summary_withheld` | `manifest_id`, `reason` | A conversation summary a session strategy wrote was not stored: content screening `flagged` it, or it could not be screened (`unavailable`). The thread keeps its recent window and summarises again on a later turn. |
 | `felix_secret_masking` | `manifest_id`, `tool` | A secret was masked out of tool output. |
 | `felix_approval_required` | `manifest_id`, `tool`, `rule` | A call paused for human approval. |
 | `felix_approval_unattended_refused` | `manifest_id`, `tool`, `rule` | A gated call in an unattended run (a scheduled job, or anything it started) refused at once because the rule does not set `allow_unattended`: no approval row, no push, no wait. Also a `policy_deny` audit row with `control: approvals`. |

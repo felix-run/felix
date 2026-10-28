@@ -3253,11 +3253,19 @@ async def chat_compact(
         value = getattr(strategy_spec, field, None)
         return default if value is None else int(value)
 
-    strategy = CompactingSessionStrategy(
-        reserve_tokens=_budget("reserve_tokens", 16384),
-        keep_recent_tokens=_budget("keep_recent_tokens", 20000),
-        context_window_tokens=_budget("context_window_tokens", 128000),
-        enabled=True,
+    from felix.governance.summary_screening import screen_summaries
+
+    # Built here rather than by the compile, so screened here too: the summary this writes is
+    # replayed into every later turn, as a turn's own compaction's is (`model_view_strategy`).
+    strategy = screen_summaries(
+        CompactingSessionStrategy(
+            reserve_tokens=_budget("reserve_tokens", 16384),
+            keep_recent_tokens=_budget("keep_recent_tokens", 20000),
+            context_window_tokens=_budget("context_window_tokens", 128000),
+            enabled=True,
+        ),
+        resolved.manifest,
+        settings,
     )
     try:
         model = build_model(settings, resolved.manifest.spec.model)
