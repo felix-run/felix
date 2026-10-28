@@ -28,6 +28,14 @@ from felix.session.store import InMemorySessionStore
 from felix.session.tree import annotate_and_append, rewind_to
 from felix.session.types import AppendableEvent, SessionRenderOpts
 
+from tests.support.fencing import unnamed
+
+
+def _fenced(text: str) -> str:
+    """`fence_untrusted` as a captured prompt reads once `unnamed` has mapped its fresh name."""
+    return unnamed(fence_untrusted(text))
+
+
 INCOMING = [ChatMessage(role="user", content="next")]
 SYS = ("system", "sys", None, None)
 NEXT = ("user", "next", None, None)
@@ -44,7 +52,7 @@ class _Model:
         self.calls: list[list[tuple[str, str | None]]] = []
 
     async def chat(self, messages: list[ChatMessage], tools: Any, opts: Any = None) -> ModelChatResult:
-        self.calls.append([(m.role, m.content) for m in messages])
+        self.calls.append([(m.role, unnamed(m.content) if m.content is not None else None) for m in messages])
         if self.fail:
             raise RuntimeError("provider down")
         is_prefix = (messages[0].content or "").startswith(TURN_PREFIX_PROMPT)
@@ -244,7 +252,7 @@ async def test_keep_turns_counts_events_and_forces_a_compaction_inside_the_windo
     assert model.calls == [
         [
             ("system", STRUCTURED_SUMMARY_PROMPT + UNTRUSTED_NOTICE),
-            ("user", fence_untrusted("[User]: m0\n[Assistant]: m1")),
+            ("user", _fenced("[User]: m0\n[Assistant]: m1")),
         ]
     ]
 
@@ -439,7 +447,7 @@ async def test_a_pinned_opening_is_led_by_its_progress_and_lost_on_every_later_r
 
     assert _shape(made) == [SYS, _prefix("PFX"), ("user", "REQ", None, None), *_KEPT_STEPS, NEXT]
     assert [c[1][1] for c in model.calls] == [
-        fence_untrusted(
+        _fenced(
             f"[User]: REQ\n[Assistant tool calls]: read_file({{'path': 'f0'}})\n[Tool result]: {_body(0)}"
         )
     ]
@@ -475,7 +483,7 @@ async def test_a_pinned_opening_is_led_by_its_progress_and_lost_on_every_later_r
     ]
     # The stored lead (prefix only) is folded into the second prefix call, under an empty request.
     assert [c[1][1] for c in model.calls] == [
-        fence_untrusted(
+        _fenced(
             "[User]: \n"
             f"[Earlier in this turn, summarised]: {turn_prefix_message('PFX').content}\n"
             "[Assistant tool calls]: read_file({'path': 'f1'})\n"
@@ -741,7 +749,7 @@ async def test_the_summariser_transcript_and_the_recorded_file_ops() -> None:
     (call,) = model.calls
     assert call[1] == (
         "user",
-        fence_untrusted(
+        _fenced(
             '[User]: please read(path="notes.md")\n'
             "[Assistant]: writing now\n"
             "[Assistant tool calls]: write_file({'path': 'out.py'})\n"
