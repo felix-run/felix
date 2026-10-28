@@ -173,7 +173,7 @@ async def list_my_repos(request: Request, q: str = "") -> Any:
     try:
         listed = await github_api.list_reachable(request.app.state.settings, token, q=q[:100])
     except github_api.GitHubReadError as exc:
-        logger.warning("listing repositories failed: %s", exc)
+        logger.warning("listing repositories failed: %s", loggable(exc, limit=300))
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     return ReposOut.model_validate(listed)
 
@@ -230,7 +230,7 @@ async def _reachable_repo(request: Request, owner: str, repo: str) -> tuple[str,
     try:
         found = await github_api.get_repo(request.app.state.settings, token, full_name)
     except github_api.GitHubReadError as exc:
-        logger.warning("reading %s failed: %s", loggable(full_name, limit=200), exc)
+        logger.warning("reading %s failed: %s", loggable(full_name, limit=200), loggable(exc, limit=300))
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     if found is None:
         return _refusal(
@@ -267,7 +267,9 @@ async def list_repo_items(
             request.app.state.settings, token, full_name, kind=kind, state=state, q=q[:100]
         )
     except github_api.GitHubReadError as exc:
-        logger.warning("listing items of %s failed: %s", loggable(full_name, limit=200), exc)
+        logger.warning(
+            "listing items of %s failed: %s", loggable(full_name, limit=200), loggable(exc, limit=300)
+        )
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     return RepoItemsOut.model_validate(listed)
 
@@ -292,7 +294,11 @@ async def get_repo_item(
     try:
         item = await github_api.get_item(request.app.state.settings, token, full_name, number)
     except github_api.GitHubReadError as exc:
-        logger.warning("reading %s#%d failed: %s", loggable(full_name, limit=200), number, exc)
+        # The error names the request path, which carries the caller's owner, name and number, so it
+        # goes through `loggable` like they do.
+        logger.warning(
+            "reading %s failed: %s", loggable(f"{full_name}#{number}", limit=220), loggable(exc, limit=300)
+        )
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     if item is None:
         return _refusal(404, "item_not_found", f"{full_name} has no issue or pull request #{number}")
@@ -331,7 +337,7 @@ async def open_thread_repo(thread_id: str, body: OpenRepoRequest, request: Reque
         repo = await github_api.get_repo(settings, token, body.full_name)
     except github_api.GitHubReadError as exc:
         # Caller-supplied, so through `loggable` like any untrusted text that reaches a log line.
-        logger.warning("reading %s failed: %s", loggable(body.full_name, limit=200), exc)
+        logger.warning("reading %s failed: %s", loggable(body.full_name, limit=200), loggable(exc, limit=300))
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     if repo is None:
         return _refusal(
