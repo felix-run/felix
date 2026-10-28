@@ -439,7 +439,7 @@ def task_report_entry(job: dict[str, Any], answer: str, *, failed: bool = False)
     a model's answer, possibly over what a tool fetched, and must not read as the person's words.
     ``failed``: ``answer`` is the run's recorded error (`scheduler._job_error_message`), so the
     conversation hears the task did not finish rather than nothing."""
-    from felix.session.types import AppendableEvent
+    from felix.session.types import CONTEXT_KEY, AppendableEvent
 
     payload = job.get("payload") or {}
     # `schedule_task` bounds a title; a writer re-saving the job over `PUT /jobs` can store any value.
@@ -448,7 +448,16 @@ def task_report_entry(job: dict[str, Any], answer: str, *, failed: bool = False)
     text = answer
     if len(text) > MAX_REPORT_CHARS:
         text = f"{text[:MAX_REPORT_CHARS]}\n\n[cut short; the whole answer is in the task's run history]"
-    metadata = {"type": TASK_REPORT_ENTRY_TYPE, "task": job["name"], "title": title, "in_context": True}
+    # Keyed by the task, so only its newest report stays in context (`session.types.CONTEXT_KEY`):
+    # a recurring task's every firing would otherwise grow each later turn by an answer the newest
+    # one supersedes. The conversation still shows them all.
+    metadata = {
+        "type": TASK_REPORT_ENTRY_TYPE,
+        "task": job["name"],
+        "title": title,
+        "in_context": True,
+        CONTEXT_KEY: f"{TASK_REPORT_ENTRY_TYPE}:{job['name']}",
+    }
     if failed:
         text = f"The task did not finish: {text}"
         metadata["failed"] = True

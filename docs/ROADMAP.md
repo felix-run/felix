@@ -658,9 +658,9 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       cancel a person's task unasked); the per-caller cap is read then written, so two concurrent
       `schedule_task` calls can both pass it; a task's report back into the thread that scheduled it
       (`spec.scheduling.report_back`, *landed*; one kept out by a live run now waits on the thread
-      and lands when the run ends, and a firing that errors reports that it did not finish) still
-      leaves every firing of a recurring task adding an in-context entry (no per-thread cap, nor
-      only the latest report per task kept in context); a report waiting on a thread whose live
+      and lands when the run ends, a firing that errors reports that it did not finish, and only a
+      task's newest report stays in context, `metadata.context_key`, though every report stays in
+      the conversation's log and transcript); a report waiting on a thread whose live
       run died with its process waits for the thread's next run to end (dropped after a day), is
       not re-checked against `report_back` or the job on delivery, and a thread deleted between
       the firing's check and its queueing write comes back holding only the report (the push

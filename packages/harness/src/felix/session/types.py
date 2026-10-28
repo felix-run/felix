@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -222,6 +223,36 @@ def include_in_llm_context(e: SessionEvent) -> bool:
     }
 
 
+# An entry's `metadata.context_key`: of the entries on a branch that share one, only the newest
+# reaches the model. For an entry that restates something rather than adding to it -- a recurring
+# task's latest report (`jobs/agent_tools.py:task_report_entry`) -- where every earlier copy would
+# grow each later turn's context and say nothing the newest does not. The person still sees them all.
+CONTEXT_KEY = "context_key"
+
+
+def context_events(events: Iterable[SessionEvent]) -> list[SessionEvent]:
+    """The events of ``events`` (a branch, in order) that reach the model: `include_in_llm_context`,
+    less an entry a newer one with the same `CONTEXT_KEY` replaced. Every render reads its history
+    through this, so an entry cannot be in context for one session strategy and out for another."""
+    events = list(events)
+    newest: dict[str, int] = {}
+    for i, e in enumerate(events):
+        key = context_key_of(e)
+        if key is not None:
+            newest[key] = i
+    return [
+        e
+        for i, e in enumerate(events)
+        if include_in_llm_context(e) and ((key := context_key_of(e)) is None or newest[key] == i)
+    ]
+
+
+def context_key_of(e: SessionEvent) -> str | None:
+    """A custom entry's `CONTEXT_KEY`, when it is a non-empty string; anything else is no key."""
+    key = (e.metadata or {}).get(CONTEXT_KEY) if e.kind == "custom" else None
+    return key if isinstance(key, str) and key else None
+
+
 CLIENT_ENTRY_LABEL = "[entry added by the client, not by the operator]"
 
 
@@ -270,7 +301,7 @@ def retained_turn(e: SessionEvent) -> dict[str, Any]:
     # Stored as the model sees it, so a replayed checkpoint cannot restore a tier the live
     # history would not grant.
     role, content = _model_role_and_content(e)
-    return {
+    turn = {
         "role": role,
         "content": content,
         "tool_call_id": e.tool_call_id,
@@ -278,6 +309,12 @@ def retained_turn(e: SessionEvent) -> dict[str, Any]:
         "tool_calls": e.tool_calls,
         "metadata": {k: metadata[k] for k in _REPLAYED_METADATA_KEYS if metadata.get(k)},
     }
+    # Beside the turn, not in what the converter reads: a replay drops a kept entry a newer one
+    # with the same key replaced since the checkpoint (`compaction._replay`), as a re-walk would.
+    key = context_key_of(e)
+    if key is not None:
+        turn[CONTEXT_KEY] = key
+    return turn
 
 
 def chat_message_from_parts(
@@ -373,6 +410,7 @@ def analyze_wake(events: list[SessionEvent]) -> WakeState:
 
 __all__ = [
     "CLIENT_ENTRY_LABEL",
+    "CONTEXT_KEY",
     "AppendableEvent",
     "EventKind",
     "GetEventsOpts",
@@ -386,6 +424,8 @@ __all__ = [
     "analyze_wake",
     "chat_message_from_parts",
     "chat_message_to_event",
+    "context_events",
+    "context_key_of",
     "event_to_chat_message",
     "include_in_llm_context",
     "retained_turn",

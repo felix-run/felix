@@ -2648,7 +2648,7 @@ async def append_custom_entry(
 ) -> dict[str, Any]:
     """Persist a custom (UI/plugin) entry. Set ``in_context`` to include it in the LLM."""
     from felix.session.tree import annotate_and_append
-    from felix.session.types import AppendableEvent
+    from felix.session.types import CONTEXT_KEY, AppendableEvent
 
     auth = _auth_from_request(request)
     settings = request.app.state.settings
@@ -2659,6 +2659,12 @@ async def append_custom_entry(
     md = dict(body.metadata or {})
     md["in_context"] = bool(body.in_context)
     md["type"] = "custom"
+    key = md.get(CONTEXT_KEY)
+    if key is not None:
+        # A client may key its own entries, so only its newest status line stays in context -- in
+        # its own namespace, never one the harness writes: a task's report keyed `task_report:x`
+        # could otherwise be dropped from the model's context by a client entry carrying the same.
+        md[CONTEXT_KEY] = f"client:{key}" if isinstance(key, str) and key else None
     ids = await annotate_and_append(
         get_session_store(settings, tenant_id=auth.tenant_id).open(thread),
         [

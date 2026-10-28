@@ -833,3 +833,31 @@ async def test_a_system_role_custom_entry_reaches_the_model_as_a_user_turn(boot:
     assert carriers, "the in-context entry never reached the model; the test proves nothing"
     assert all(m.role == "user" for m in carriers), [m.role for m in carriers]
     assert (carriers[0].content or "").startswith(CLIENT_ENTRY_LABEL)
+
+
+async def test_a_client_keyed_entry_keeps_only_its_newest_in_context(boot: Any) -> None:
+    """A client keys its own status line (`metadata.context_key`) so only the newest reaches the
+    model; the key lands in the client's own namespace, so it cannot match one the harness writes
+    -- a task's report, `task_report:<name>` -- and drop that from context."""
+    thread = "e2e-custom-keyed"
+    async with boot([_answer(), _answer("after")]) as app:
+        await _seed(app, thread)
+        for text in ("progress: 1 of 3", "progress: 2 of 3"):
+            added = await app.client.post(
+                "/chat/sessions/custom",
+                json={
+                    "thread_id": thread,
+                    "role": "assistant",
+                    "content": text,
+                    "in_context": True,
+                    "metadata": {"context_key": "task_report:release"},
+                },
+            )
+            assert added.status_code == 200, added.text
+        await _seed(app, thread, "where are we?")
+        prompt = [str(m.content) for m in app.spy.prompts[-1]]
+        snap = await app.client.get(f"/chat/sessions/{thread}")
+
+    assert "progress: 2 of 3" in prompt and "progress: 1 of 3" not in prompt, prompt
+    keyed = [e for e in snap.json()["transcript"] if e["kind"] == "custom"]
+    assert [e["metadata"]["context_key"] for e in keyed] == ["client:task_report:release"] * 2

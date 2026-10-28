@@ -11,14 +11,16 @@ from felix.hooks import run_before_compact, run_compact_failed
 from felix.patterns.types import ChatMessage
 from felix.security.fencing import fence
 from felix.session.types import (
+    CONTEXT_KEY,
     AppendableEvent,
     GetEventsOpts,
     Session,
     SessionEvent,
     SessionRenderOpts,
     chat_message_from_parts,
+    context_events,
+    context_key_of,
     event_to_chat_message,
-    include_in_llm_context,
     retained_turn,
 )
 
@@ -578,7 +580,7 @@ class _LatestSummary:
 
     def rewalk_events(self, branch: list[SessionEvent]) -> list[SessionEvent]:
         """The branch's context events past what the summary covers: what a re-walk renders."""
-        raw = [e for e in branch if include_in_llm_context(e) and e.seq > self.covered]
+        raw = [e for e in context_events(branch) if e.seq > self.covered]
         if self.first_kept_id and self.tail is None:
             kept_from = next(
                 (e for e in raw if (e.metadata or {}).get("event_id") == self.first_kept_id),
@@ -757,14 +759,17 @@ class CompactingSessionStrategy:
         """
         if latest.tail is None or latest.event is None or request.force:
             return None
-        post = [e for e in branch if e.seq > latest.event.seq]
+        post = context_events([e for e in branch if e.seq > latest.event.seq])
+        # A kept entry a newer one replaced since the checkpoint: out, as the re-walk leaves it,
+        # so whether it reaches the model does not turn on which of the two paths the budget takes.
+        replaced = {key for e in post if (key := context_key_of(e)) is not None}
         out = [ChatMessage(role="system", content=request.system_prompt)]
         # Empty when a split compaction had nothing before the cut turn to summarise.
         summary = latest.message()
         if summary:
             out.append(summary)
         for item in latest.tail:
-            if isinstance(item, dict):
+            if isinstance(item, dict) and item.get(CONTEXT_KEY) not in replaced:
                 # The same conversion history uses. Checkpoints written before `metadata`
                 # was recorded still carry `tool_calls`, which is the part a provider needs.
                 out.append(
@@ -777,7 +782,7 @@ class CompactingSessionStrategy:
                         metadata=item.get("metadata"),
                     )
                 )
-        out.extend(event_to_chat_message(e) for e in post if include_in_llm_context(e))
+        out.extend(event_to_chat_message(e) for e in post)
         out.extend(request.incoming)
         # `out` already ends with the incoming turn, so it is counted twice, as it always was.
         hist_tokens = estimate_messages_tokens(out) + estimate_messages_tokens(request.incoming)

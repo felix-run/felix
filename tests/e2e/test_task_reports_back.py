@@ -158,3 +158,33 @@ async def test_a_task_that_fails_says_so_in_the_conversation(
     assert report.metadata["failed"] is True
     # Written for readers, never the exception's own text (`scheduler._job_error_message`).
     assert "upstream exploded" not in report.content and run["error"] in report.content
+
+
+async def test_only_a_tasks_newest_report_reaches_the_next_turn(
+    boot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recurring task reports every firing; each report restates the task's answer, so only the
+    newest stays in context. The conversation still shows both."""
+    from felix.jobs import scheduler
+    from felix.jobs import store as jobs_store
+
+    newer = "The release shipped at 10:02 UTC; the hotfix is out too."
+    script = [*_script()[:3], ScriptedTurn(content=newer), ScriptedTurn(content="It shipped.")]
+    async with boot(script, env=ENV, manifests={"helper": _manifest()}) as app:
+        await _turn(app, "Tell me tomorrow whether the release shipped.")
+        await _fire(app, monkeypatch)
+        (job,) = await jobs_store.list_jobs(app.settings, "default")
+        await scheduler.fire_job(
+            app.settings, "default", job, started_at=scheduler.now_ms(), trigger="manual"
+        )
+        reports = await _reports(app)
+        await _turn(app, "When did it ship?")
+        prompt = app.spy.prompts[-1]
+
+    assert [r.content for r in reports] == [
+        f"[Scheduled task: Release check]\n\n{ANSWER}",
+        f"[Scheduled task: Release check]\n\n{newer}",
+    ]
+    seen = [str(m.content) for m in prompt]
+    assert f"[Scheduled task: Release check]\n\n{newer}" in seen, seen
+    assert f"[Scheduled task: Release check]\n\n{ANSWER}" not in seen, seen
