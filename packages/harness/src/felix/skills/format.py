@@ -13,7 +13,7 @@ Pure: no I/O and no settings. Rules a permissive validator would not apply:
 - A bundle is capped in SKILL.md size, file count and total size, and frontmatter in size
   and nesting depth. YAML anchors and aliases are refused, and an unknown frontmatter key
   must hold a scalar or a flat list or map of scalars.
-- A fence line may carry trailing spaces or tabs.
+- A fence line may carry trailing spaces or tabs, and a leading byte-order mark is ignored.
 - Lengths are counted in code points, not UTF-16 units.
 """
 
@@ -248,8 +248,10 @@ def clamp_description(content: str, max_len: int = MAX_DESCRIPTION_CHARS) -> str
 
 
 def split_frontmatter(content: str) -> tuple[str, str] | None:
-    """(yaml text, body) between the `---` fences, or None when there are none."""
-    match = FRONTMATTER_RE.match(content)
+    """(yaml text, body) between the `---` fences, or None when there are none. A leading
+    byte-order mark is not part of the file's text: an editor that writes one would otherwise
+    produce a SKILL.md the catalog loads and this validation refuses."""
+    match = FRONTMATTER_RE.match(content.removeprefix("\ufeff"))
     if not match:
         return None
     return match.group(1), match.group(2)

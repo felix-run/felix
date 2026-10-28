@@ -87,11 +87,9 @@ async def _catalog_for(
     )
     if declared_only:
         # Nothing reached the catalogue except through a ref, so asking the catalogue is
-        # exact -- and it is the only answer that survives a rename. A skill's own SKILL.md
-        # frontmatter supplies its catalogue name, so a ref naming `foo` whose package
-        # declares `name: bar` is entry `bar`; matching the ref would report it undeclared
-        # while the response said `declared_only: true`, which reads as a bug rather than
-        # as the frontmatter-wins rule it is.
+        # exact. A ref resolves by a skill's frontmatter name: one naming `foo` whose package
+        # sits in `foo/` but declares `name: bar` finds nothing and is the unresolved entry
+        # `foo` (the loader warns that the directory and the name differ).
         declared = set(catalog.skills)
     else:
         declared = {str(getattr(ref, "name", "") or "") for ref in refs} & set(catalog.skills)
@@ -114,7 +112,8 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
     with the largest payload on the surface. `GET /{manifest}/{skill}` is where a body lives.
 
     `model_invocable` surfaces what `catalog.list_public()` filters out: a skill with
-    `disable_model_invocation` is in the catalog and *not* offered to the model, which is
+    `disable_model_invocation`, or a declared ref nothing answered, is in the catalog and *not*
+    offered to the model -- not listed, and not activatable by a model that guesses it -- which is
     invisible from the model's side by construction and is exactly what an operator is
     checking when they ask why a skill never fires.
     """
@@ -132,7 +131,7 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
             "version": skill.version,
             "active": skill.name in active,
             "has_body": bool(skill.body),
-            "model_invocable": not skill.disable_model_invocation,
+            "model_invocable": catalog.get_invocable(skill.name) is not None,
             # False means "reachable but never asked for": present because it is on the
             # host, not because this manifest named it. The model is offered it either way.
             "declared": skill.name in declared,
@@ -194,7 +193,7 @@ async def get_skill(manifest_name: str, skill_name: str, request: Request) -> di
         "filename": PurePosixPath(skill.path).name if skill.path else None,
         "metadata": redact_json(skill.metadata),
         "active": skill.name in active,
-        "model_invocable": not skill.disable_model_invocation,
+        "model_invocable": catalog.get_invocable(skill.name) is not None,
         "declared": skill.name in declared,
         "source": skill.source,
         "body": redact_text(skill.body, secrets),

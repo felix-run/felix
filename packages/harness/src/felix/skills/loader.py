@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from felix.bounded_cache import BoundedCache
-from felix.skills.format import MAX_FRONTMATTER_CHARS, is_valid_skill_name
+from felix.logging_setup import loggable
+from felix.skills.format import MAX_DESCRIPTION_CHARS, MAX_FRONTMATTER_CHARS, is_valid_skill_name
 from felix.skills.format import parse_skill_md as parse_skill_md_format
 from felix.skills.types import Skill, SkillCatalog
 
@@ -31,6 +32,20 @@ _KEY_SEGMENT_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # A version may carry dots (`1.2.0`) which a name may not, but is otherwise the same
 # shape: one segment, no separators, not a traversal.
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+# Advisories already logged, by what they are about. A catalog is rebuilt on every request (the
+# bundled one every few seconds), so a warning about a SKILL.md that has not changed would repeat
+# on each one; it is said once an hour per subject instead.
+_ADVISED = BoundedCache(1024, ttl_s=3600.0)
+
+
+def _advise(subject: str, message: str, *args: object) -> None:
+    """``logger.warning(message, *args)``, once an hour per (``subject``, ``message``)."""
+    key = f"{subject}\0{message}"
+    if _ADVISED.get(key) is None:
+        _ADVISED[key] = True
+        logger.warning(message, *args)
 
 
 def _safe_segment(value: str, pattern: re.Pattern[str], *, limit: int = 64) -> bool:
@@ -153,17 +168,31 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
     if read is None:
         return None
     meta, body = read
-    name = (meta.get("name") or fallback_name).strip().lower()
+    written = (meta.get("name") or fallback_name).strip()
+    name = written.lower()
+    shown = loggable(name, limit=80)
+    subject = path or name
     description = (meta.get("description") or "").strip()
     if not description:
-        logger.warning("skill %s missing description; skipping", name)
+        _advise(subject, "skill %s missing description; skipping", shown)
         return None
+    # agentskills.io's client guide: a cosmetic problem warns and the skill still loads.
+    if name != written:
+        _advise(subject, "skill name %r is not lowercase; loaded as %r", loggable(written, limit=80), shown)
     if not is_valid_skill_name(name):
-        logger.warning("skill name %r invalid; loading with warnings", name)
+        _advise(subject, "skill name %r invalid; loading with warnings", shown)
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        _advise(
+            subject,
+            "skill %s: description is %d characters; the catalog lists the first %d",
+            shown,
+            len(description),
+            MAX_DESCRIPTION_CHARS,
+        )
     disable = meta.get("disable-model-invocation", "").lower() in {"true", "1", "yes"}
     return Skill(
         name=name,
-        description=description[:1024],
+        description=description[:MAX_DESCRIPTION_CHARS],
         body=body,
         path=path,
         version=meta.get("version"),
@@ -177,9 +206,13 @@ def _xml_escape(value: str) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# The tool-activation wording of agentskills.io's client guide, plus where a skill's relative
+# paths resolve: this harness has no file-read activation, so a bundle file is reached by name.
 _CATALOG_PREAMBLE = (
     "You have access to the following skills. Use activate_skill to load full instructions "
-    "when a task matches a skill description. Only names and descriptions are listed here."
+    "when a task matches a skill description. Only names and descriptions are listed here. "
+    "A path a skill's instructions name (references/…, scripts/…, assets/…) is relative to "
+    "that skill: read it with read_skill_file and the skill's name."
 )
 
 
@@ -427,21 +460,84 @@ def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
         return None
 
 
+# The walk's bounds, from agentskills.io's client guide ("max depth of 4-6 levels, max 2000
+# directories"): `FELIX_SKILLS_DIR` is an operator's path, and pointed at a checkout or a home
+# directory an unbounded walk would read every SKILL.md under it on a request.
+MAX_SCAN_DEPTH = 6
+MAX_SCAN_DIRS = 2000
+# Never a skill, and often huge.
+_SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _skill_dirs(root: Path) -> list[Path]:
+    """Each directory under ``root`` holding a `SKILL.md`, in a stable order.
+
+    A skill directory is a leaf: nothing beneath it is another skill, so a `SKILL.md` an author
+    keeps under `references/` as an example is a file of that skill, not a second one. ``root``
+    itself is the exception, as it always was: a `SKILL.md` there is a skill and the walk still
+    goes on below it. Hidden directories, `node_modules` and symlinked directories are skipped
+    (`rglob` never followed a link either, and one can loop), and the walk stops at
+    `MAX_SCAN_DEPTH` levels and `MAX_SCAN_DIRS` directories, with a warning when it does.
+    """
+    found: list[Path] = []
+    queue: list[tuple[Path, int]] = [(root, 0)]
+    seen = 0
+    while queue:
+        directory, depth = queue.pop(0)
+        seen += 1
+        if seen > MAX_SCAN_DIRS:
+            _advise(str(root), "skills dir %s: stopped after %d directories", root, MAX_SCAN_DIRS)
+            break
+        if (directory / "SKILL.md").is_file():
+            found.append(directory)
+            if depth > 0:
+                continue
+        if depth >= MAX_SCAN_DEPTH:
+            continue
+        try:
+            children = sorted(p for p in directory.iterdir() if p.is_dir() and not p.is_symlink())
+        except OSError:
+            continue
+        queue.extend(
+            (child, depth + 1)
+            for child in children
+            if not child.name.startswith(".") and child.name not in _SKIPPED_DIRS
+        )
+    return found
+
+
 def load_skills_from_dir(root: Path) -> SkillCatalog:
-    """Discover SKILL.md directories and root .md skill files under ``root``."""
+    """Discover the `<dir>/SKILL.md` packages under ``root`` (agentskills.io's layout).
+
+    The first found of a name wins (breadth first, then by path), and a later one is logged as
+    shadowed. A name that differs from its directory loads, with a warning: the spec asks them
+    to match, and a `spec.skills` ref resolves by the frontmatter name, not the folder.
+    """
     catalog = SkillCatalog()
     if not root.is_dir():
         return catalog
-    for skill_md in root.rglob("SKILL.md"):
-        skill = _read_skill_file(skill_md, fallback_name=skill_md.parent.name)
-        if skill and skill.name not in catalog.skills:
-            catalog.skills[skill.name] = skill
-    for md in root.glob("*.md"):
-        if md.name.upper() == "SKILL.MD":
+    for directory in _skill_dirs(root):
+        skill = _read_skill_file(directory / "SKILL.md", fallback_name=directory.name)
+        if skill is None:
             continue
-        skill = _read_skill_file(md, fallback_name=md.stem)
-        if skill and skill.name not in catalog.skills:
-            catalog.skills[skill.name] = skill
+        if skill.name != directory.name and directory != root:
+            _advise(
+                str(directory),
+                "skill %s: its directory is %r; the spec asks the two to match",
+                loggable(skill.name, limit=80),
+                loggable(directory.name, limit=80),
+            )
+        kept = catalog.skills.get(skill.name)
+        if kept is not None:
+            _advise(
+                str(directory),
+                "skill %s at %s is shadowed by %s",
+                loggable(skill.name, limit=80),
+                directory,
+                kept.path,
+            )
+            continue
+        catalog.skills[skill.name] = skill
     return catalog
 
 
@@ -545,6 +641,16 @@ async def host_catalog(bundled_dir: Path | None = None) -> SkillCatalog:
     host = SkillCatalog()
     for root in roots:
         bundled = await _bundled_catalog(root)
+        for name, skill in bundled.skills.items():
+            if name in host.skills:
+                # The later root wins, as it always has; the spec asks that it be said.
+                _advise(
+                    f"{skill.path}\0{host.skills[name].path}",
+                    "skill %s from %s shadows the one at %s",
+                    loggable(name, limit=80),
+                    skill.path,
+                    host.skills[name].path,
+                )
         # A copy: the cached catalog is shared between requests, and callers mutate theirs.
         host.skills.update(bundled.skills)
     return host
@@ -695,12 +801,19 @@ async def load_manifest_skills(
             object_store=object_store,
         )
         if skill is None:
-            # Placeholder description so list_skills still surfaces the ref.
+            # Kept, marked, so the management API still reports the ref (`has_body: false`);
+            # `unresolved` keeps it out of the prompt catalog and the skill tools.
+            _advise(
+                f"{tenant_id}\0{name}",
+                "skill %s is declared but no source has it",
+                loggable(str(name), limit=80),
+            )
             skill = Skill(
                 name=str(name),
-                description=f"Skill '{name}' (body not found; activate may be empty).",
+                description=f"Skill '{name}' (body not found).",
                 body="",
                 version=str(version) if version else None,
+                unresolved=True,
             )
         catalog.skills[skill.name] = skill
     return catalog

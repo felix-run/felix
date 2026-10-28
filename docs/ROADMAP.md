@@ -897,6 +897,38 @@ onto the library's import gate instead.
 - [ ] **MCP servers as a skill-import source.** `mcp:` sources into library drafts, each file
       verified against the entry's digest, size and frontmatter, lineage keyed on the digest set.
 
+### Agent Skills runtime against agentskills.io (2026-10-28)
+
+An audit of the catalog runtime (discovery, catalog, activation, resources) against the
+agentskills.io specification and its client-integration guide. The library, import and publish
+side was already conformant. Four PRs, landed in order:
+
+- [ ] **Runtime spec conformance** (`fix/skills-spec-conformance`):
+  - Discovery takes only `<dir>/SKILL.md`. Root `*.md` files and a SKILL.md nested in another
+    skill are no longer skills. The walk skips hidden dirs and `node_modules`, is bounded, and
+    logs shadowing.
+  - Cosmetic problems warn and load.
+  - A `disable-model-invocation` skill or an unresolved ref is hidden from the skill tools, not
+    only from the prompt.
+  - The catalog block is sorted, and the `name` argument enumerates the invocable skills.
+  - The activation body is capped, `license`, `compatibility` and `allowed-tools` are relayed as
+    information, and symlinks are listed consistently.
+  - A BOM no longer fails strict validation.
+  - New `felix skills validate <dir>`.
+- [ ] **Per-thread activation**: derive "active" from the thread's session log, drop the
+      `skill_activation` table, exempt `activate_skill` results from clearing, and re-inject
+      after compaction.
+  - Today activation is stored per (tenant, manifest), so `list_skills` says `active: true` in
+    a thread whose model never saw the body.
+  - An authored skill reports when it becomes usable (next turn once published).
+- [ ] **`/skill-name <params>`**: the harness runs the governed `activate_skill` before the
+      first model step. The body arrives as a screened tool result, never as user-turn text. A
+      declared prompt of the same name wins.
+- [ ] **`run_skill_script`**: `spec.skill_scripts`, run through the isolated shell runner under
+      `FELIX_SKILL_SCRIPT_INTERPRETERS`, active trusted skills only.
+- Decided: `allowed-tools` (experimental in the spec) is surfaced and never enforced or used to
+  skip approvals. A third party's SKILL.md must not loosen governance.
+
 ### Auth audit (2026-10-12)
 
 A read of authentication, per-route authorization and tenancy against v0.14.1, landed as four PRs.

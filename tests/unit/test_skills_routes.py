@@ -217,14 +217,17 @@ async def test_a_name_no_skill_anywhere_defines_is_not_found(skills_dir: Path) -
 async def test_a_declared_skill_with_no_body_still_lists(skills_dir: Path) -> None:
     """The loader substitutes a placeholder rather than failing the compile, so the manifest
     works and the ref is visible. Reporting it as an error here would hide the useful fact:
-    `has_body` is false, and activating it hands the model nothing."""
+    `has_body` is false, and the model is not offered it (`model_invocable: false`)."""
     client, settings = await _client(skills_dir)
     async with client:
         await _store_manifest(settings, "triage", ["never-written"])
-        resp = await client.get("/skills/triage/never-written", headers=_auth("sk-skills"))
+        one = await client.get("/skills/triage/never-written", headers=_auth("sk-skills"))
+        listing = await client.get("/skills/triage", headers=_auth("sk-skills"))
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["body"] == ""
+    assert one.status_code == 200, one.text
+    assert one.json()["body"] == "" and one.json()["model_invocable"] is False
+    entry = {i["name"]: i for i in listing.json()["items"]}["never-written"]
+    assert (entry["has_body"], entry["declared"], entry["model_invocable"]) == (False, True, False)
 
 
 async def test_active_state_is_reported_from_the_store_a_turn_writes(skills_dir: Path) -> None:
