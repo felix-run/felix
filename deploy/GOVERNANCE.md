@@ -309,16 +309,23 @@ summaries are model output over the whole thread, user turns and tool results in
 and are stored as written. A judge scores by, in order of preference: `spec.decider`
 when the rule sets `decider: true` (the probability the text meets `criteria`, as written), the
 chat model in `model`, and the heuristic — each failure falls through to the next, so a decider
-outage degrades a judge rather than opening it. On tool output, the judges that will score with
+outage degrades a judge rather than opening it. A model judge whose reply carries no score counts
+as a failure too and is scored by the heuristic: the eval judge's own stand-in for that case is
+"non-empty", which would pass any text. On tool output, the judges that will score with
 the heuristic run first, one at a time — they are free, and one that denies spares every model
 call — and the decider and model judges then run together; a tool result passes only if every
 judge passes it, as before, and the denial named is the first heuristic one, else the first of the
 rest in the manifest's order. A decider-scored judge sends the judged text to the
 decider's provider, and only judges text up to 8,000 characters — anything longer is scored by the
-model judge or the heuristic, which read all of it, rather than by a prefix. Treat a decider judge
-as a quality control, not a security boundary: the text it judges can argue for its own verdict
-(Jev is not adversarially robust), so untrusted tool output belongs behind `content_screening`,
-not behind a judge alone. Tenant
+model judge or the heuristic, which read all of it, rather than by a prefix. The model judge reads
+the judged text (and the request, when there is one) fenced in a region the text cannot close,
+under a system prompt that calls it untrusted data and says to ignore any instruction or score
+inside it; `criteria` stays outside the fence as the instruction. The `llm` decision provider tells
+its model the same of the state it is given, and the model injection screener reads the screened
+text fenced the same way. Treat a model or decider judge as a quality control, not a security
+boundary all the same: a fence is a convention the model is told to honour, and the text it judges
+can still argue for its own verdict (Jev is not adversarially robust), so untrusted tool output
+belongs behind `content_screening`, not behind a judge alone. Tenant
 isolation is application-level `tenant_id` by default; enable Postgres RLS
 with migration `0006_tenant_rls` and `FELIX_DATABASE_RLS=true`
 (sets `app.tenant_id` / `app.rls_bypass` GUCs per transaction). Every table except
