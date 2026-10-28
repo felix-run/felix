@@ -453,7 +453,16 @@ def make_skill_tools(
         )
         if task and not arguments:
             prompt = f"{prompt}\n\n{task}"
-        out = await fork_runner(agent, prompt, skill.fork_model)
+        try:
+            out = await fork_runner(
+                agent, prompt, skill.fork_model, outer_call_id=getattr(ctx, "tool_call_id", None)
+            )
+        except Exception:
+            # A wrapper on `task` raised -- screening, an approver's edit the validator refused: audited
+            # as the failure it is, and answered with a fact rather than the exception's text.
+            logger.warning("forked skill %s failed", skill.name, exc_info=True)
+            _audit("fork", skill.name, status="fork_failed", ctx=ctx, library=_label(skill), by=by)
+            return json.dumps({"error": "fork_failed", "name": skill.name, "agent": agent})
         if is_wrapper_deny(out):
             # A control on `task` refused it -- an approval, a policy, a limit: passed on as the deny it
             # is, so the run counts this call as refused like any other.

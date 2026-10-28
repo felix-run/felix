@@ -513,6 +513,11 @@ class _ReactAgent:
         ids = [m.tool_call_id for m in interrupted if m.tool_call_id]
         if not thread_id or not ids:
             return
+        # And the `task` call a forked skill made inside an interrupted `activate_skill`, whose gate
+        # carries that call's id (`delegation.fork_call_id`), not one the transcript holds.
+        from felix.tools.delegation import fork_call_id
+
+        ids = [*ids, *(fork_call_id(i) for i in ids)]
         try:
             from felix.tools import client_requests
 

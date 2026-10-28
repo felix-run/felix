@@ -275,12 +275,17 @@ class ForkRunner:
     def bind(self, governed_task: Tool | None) -> None:
         self._task = governed_task
 
-    async def __call__(self, agent: str, prompt: str, model_id: str | None) -> ToolOutput:
+    async def __call__(
+        self, agent: str, prompt: str, model_id: str | None, *, outer_call_id: str | None = None
+    ) -> ToolOutput:
         if self._task is None:
             return tool_error_output("permission_denied", "[skill] this agent's task tool is not available")
         req = try_get_context()
-        call_id = f"fork_{uuid.uuid4().hex[:16]}"
-        model = await _vetted_model(self.lead, model_id, req, self.children) if req is not None else None
+        # Derived from the `activate_skill` call the model made (`fork_call_id`), so whatever the inner
+        # call leaves behind -- an approval row, a client's tool card -- is found by the id in the
+        # transcript: a run interrupted mid-fork closes the gate it was waiting on (felix#531).
+        call_id = fork_call_id(outer_call_id) if outer_call_id else f"fork_{uuid.uuid4().hex[:16]}"
+        model = await _vetted_model(self.lead, model_id, req) if req is not None else None
         if model:
             self.model_overrides[call_id] = model
         try:
@@ -292,14 +297,16 @@ class ForkRunner:
             self.model_overrides.pop(call_id, None)
 
 
-async def _vetted_model(
-    manifest: Manifest,
-    model_id: str | None,
-    req: RequestContext,
-    children: Mapping[str, tuple[Agent, str, Manifest]],
-) -> str | None:
+def fork_call_id(outer_call_id: str) -> str:
+    """The id of the `task` call a forked skill makes inside the `activate_skill` call ``outer_call_id``."""
+    return f"{outer_call_id}:fork"
+
+
+async def _vetted_model(manifest: Manifest, model_id: str | None, req: RequestContext) -> str | None:
     """``model_id`` when the deployment defines that route and governance would let a caller ask
-    for it on ``manifest`` and every child; otherwise None, and the agent's own model runs."""
+    for it on ``manifest`` and every agent below it -- the whole tree, resolved as the chat route
+    resolves it, since a delegating child hands the model on to its own sub-agents; otherwise None,
+    and the agent's own model runs."""
     if not model_id:
         return None
     from felix.manifests.governance import request_model_tree_refusal
@@ -312,7 +319,6 @@ async def _vetted_model(
             model_id,
             req.settings,
             tenant_id=req.auth.tenant_id,
-            children={name: entry[2] for name, entry in children.items()},
         )
         if model_id in parse_model_routes(req.settings)
         else "unknown_route"

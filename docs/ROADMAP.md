@@ -952,9 +952,11 @@ side was already conformant. Four PRs, landed in order:
     no provenance marker in the log.
 - [x] **Forked skills** (`feat/skill-fork`; `context: fork`, `agent:`, `model:`): the skill runs in a
       delegation child as a call of the governed `task` tool, and only its answer returns. Open:
-      `pre/post_tool_use` hooks on `task` fire for `activate_skill`, not for the fork's `task`
-      call (the compile warns); a manifest without `spec.delegation` cannot fork (no
-      general-purpose child).
+      the tool runner's per-call layer (manifest and plugin tool hooks, the `tool_call` audit row)
+      runs for `activate_skill`, not for the fork's inner `task` call -- decide whether a fork
+      should go through the runner; a fork costs two `max_tool_calls`; the approval prompt for a
+      fork shows the skill body before the model's task (no `approval_preview` yet); a manifest
+      without `spec.delegation` cannot fork (no general-purpose child).
 - [ ] **`run_skill_script`**: `spec.skill_scripts`, run through the isolated shell runner under
       `FELIX_SKILL_SCRIPT_INTERPRETERS`, active trusted skills only.
 - Decided: `allowed-tools` (experimental in the spec) is surfaced and never enforced or used to

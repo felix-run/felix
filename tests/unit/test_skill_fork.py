@@ -60,8 +60,11 @@ class _Runner:
         self.answer = answer
         self.calls: list[tuple[str, str, str | None]] = []
 
-    async def __call__(self, agent: str, prompt: str, model: str | None) -> Any:
+    async def __call__(
+        self, agent: str, prompt: str, model: str | None, *, outer_call_id: str | None = None
+    ) -> Any:
         self.calls.append((agent, prompt, model))
+        self.outer_call_id = outer_call_id
         return self.answer
 
 
@@ -216,5 +219,33 @@ async def test_a_route_a_child_s_governance_refuses_is_dropped() -> None:
     route, settings = await _routes()
     pinned = _manifest(auth={"inbound": {"allow_anonymous": True}, "outbound": {"providers": ["nobody"]}})
     lead = _manifest(delegation={"agents": [{"name": "helper"}]})  # a lead whose delegation this is
+    # Resolved as the chat route resolves a request model's tree: from the tenant's store.
+    from felix.manifests.store import put_version
+
+    await put_version(settings, "t", "helper", pinned)
     task, _ = await _through(route, settings, lead=lead, child=pinned)
     assert task.seen[0][1] is None
+
+
+async def test_the_inner_call_s_id_is_derived_from_the_activation_s() -> None:
+    """So an approval it waits on, or a client's tool card, is found by the id the transcript holds."""
+    from felix.tools.delegation import fork_call_id
+
+    overrides: dict[str, str] = {}
+    task = _Task(overrides)
+    ids: list[str] = []
+
+    async def execute(args: dict[str, Any], ctx: Any) -> str:
+        ids.append(ctx.tool_call_id)
+        return "answer"
+
+    task.execute = execute  # type: ignore[method-assign]
+    runner = ForkRunner(
+        {"helper": (object(), "Helps.", _manifest())}, lead=_manifest(), model_overrides=overrides
+    )  # type: ignore[dict-item]
+    runner.bind(task)  # type: ignore[arg-type]
+    async with async_run_with_context(
+        RequestContext(settings=make_settings(), auth=AuthContext(tenant_id="t"))
+    ):
+        await runner("helper", "job", None, outer_call_id="toolu_9")
+    assert ids == [fork_call_id("toolu_9")]
