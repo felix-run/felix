@@ -34,6 +34,7 @@ from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 
 from tests.support.factories import make_settings
+from tests.support.fencing import unnamed
 
 TENANT = "t-extract"
 MANIFEST = "m"
@@ -237,7 +238,7 @@ async def test_the_excerpt_reaches_the_model_fenced() -> None:
         capture=MemoryCapture(enabled=True, max_facts=3, min_chars=10),
         model=model,
     )
-    prompt = model.prompts[0]
+    prompt = unnamed(model.prompts[0])
     # Assert the *neutralised* forms. Counting raw tokens passed even with the fence
     # removed entirely: the payload carries one of each on its own, so a bare unwrapped
     # blob satisfied every count.
