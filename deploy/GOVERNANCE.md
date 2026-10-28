@@ -2545,8 +2545,17 @@ answer, possibly over pages or tool output it read, and must not reach the next 
 person's own words. It lands only where a firing's `notify` may write (`jobs/origin_thread.py`):
 the thread `schedule_task` recorded, for a job the person the firing acts for wrote, a chat thread
 of the tenant's (no harness thread such as `job:`), one that exists, and never while a run is
-going on in it -- a firing that finds one records `report: run_live` and adds nothing, so a report
-can be missed but never splits a turn. The answer is cut at 16,000 characters; the job's run
+going on in it, so a report never splits a turn. A firing that finds a run going on records
+`report: queued`: the entry waits on the thread's row (the newest 20 are kept) and is added when
+that run ends -- a turn's end, or a durable run's -- by whichever process ends it, taken once under
+the row lock. While it waits it is masked as the log would mask it, and no read of the thread's
+metadata returns it. A run that died with its process leaves it waiting for the thread's next run to
+end; one that has waited more than a day is dropped instead. Delivery does not check again that
+`report_back` is still on or the job still exists, and a thread deleted in the moment between the
+firing's check and its queueing write can come back holding only the report.
+A firing that fails reports that too, with the run's recorded error (written for readers, never the
+exception's text), so the conversation hears the task did not finish rather than nothing. The
+answer is cut at 16,000 characters; the job's run
 history keeps it whole. The answer has had what any reply gets -- the firing manifest's reply
 controls (PII guardrails, `final_response` judges) and secret masking on every write to the log --
 and then the marker scan a `notify` gets (`screen_content`): an answer that reads as an injection
