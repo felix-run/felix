@@ -950,8 +950,11 @@ side was already conformant. Four PRs, landed in order:
     of its own. `/name` and `preload` run in react agents only (a router or `plan_execute` gets
     neither; a preload there logs a warning). The harness's synthetic assistant turn carries
     no provenance marker in the log.
-- [ ] **Forked skills** (`context: fork`, `agent:`, `model:`): the skill runs in a delegation child
-      and only its result returns.
+- [x] **Forked skills** (`feat/skill-fork`; `context: fork`, `agent:`, `model:`): the skill runs in a
+      delegation child as a call of the governed `task` tool, and only its answer returns. Open:
+      `pre/post_tool_use` hooks on `task` fire for `activate_skill`, not for the fork's `task`
+      call (the compile warns); a manifest without `spec.delegation` cannot fork (no
+      general-purpose child).
 - [ ] **`run_skill_script`**: `spec.skill_scripts`, run through the isolated shell runner under
       `FELIX_SKILL_SCRIPT_INTERPRETERS`, active trusted skills only.
 - Decided: `allowed-tools` (experimental in the spec) is surfaced and never enforced or used to

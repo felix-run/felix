@@ -549,6 +549,20 @@ manifests served there. The audit row of each activation says who asked (`by`: `
 skill the conversation deactivated stays deactivated. `/name` and `preload` run in react agents,
 the only pattern that runs tools itself; a compile whose pattern cannot run a preload says so.
 
+A skill whose frontmatter says `context: fork` runs in a subagent instead: `activate_skill` hands
+its instructions and the model's `task` to one of the manifest's `spec.delegation.agents` (the one
+`agent:` names) as a call of the manifest's *governed* `task` tool -- so every control that names
+`task` holds for it: an approval, a policy, the limits and their peer hops, the permission mode, the
+child's own inbound auth, `subagent_stop` -- and returns only that agent's answer, as untrusted
+output content screening reads (a deny is passed on as one). The instructions never enter the
+conversation and nothing is retained. `pre_tool_use`/`post_tool_use` hooks are the exception: the
+tool runner fires them around `activate_skill`, the call the model made, and the compile warns when
+a manifest has such hooks on `task` and skills that fork. A `model:` the skill asks for is used only
+if the deployment defines that route and request-model governance would let a caller ask for it on
+this manifest and its children; it reaches the `task` handler by a harness-minted call id, never
+through the model-facing schema. An imported skill nobody has adopted never forks, since its
+instructions would become the subagent's own turn, and a forked skill is never preloaded.
+
 An activated skill stays in view for the rest of its conversation, within limits. Retention re-shows
 the *logged* result -- masked and screened when it was first returned -- as an ordinary user message
 ahead of the history (never a transient one, which the wires send after the newest turn), with every

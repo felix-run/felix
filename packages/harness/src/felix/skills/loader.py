@@ -16,6 +16,7 @@ from felix.logging_setup import loggable
 from felix.skills.discovery import advise, load_skills_from_dir
 from felix.skills.format import MAX_DESCRIPTION_CHARS, MAX_FRONTMATTER_CHARS, is_valid_skill_name
 from felix.skills.format import parse_skill_md as parse_skill_md_format
+from felix.skills.format import xml_escape as _xml_escape
 from felix.skills.types import Skill, SkillCatalog
 
 logger = logging.getLogger("felix.skills.loader")
@@ -25,7 +26,9 @@ logger = logging.getLogger("felix.skills.loader")
 _LEGACY_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 # Keys a nested `metadata:` map may not supply: they decide which skill this is, what the
 # model is told about it, and whether the model is offered it at all.
-_RESERVED_KEYS = frozenset({"name", "description", "disable-model-invocation", "user-invocable"})
+_RESERVED_KEYS = frozenset(
+    {"name", "description", "disable-model-invocation", "user-invocable", "context", "agent", "model"}
+)
 # Keys whose value is the text as written even when YAML reads a list: Claude Code writes
 # `argument-hint: [issue-number]`, and the hint is the brackets and all.
 _RAW_TEXT_KEYS = frozenset({"argument-hint"})
@@ -195,12 +198,10 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
         disable_model_invocation=disable,
         user_invocable=user_invocable,
         argument_hint=meta.get("argument-hint") or None,
+        fork=meta.get("context", "").lower() == "fork",
+        fork_agent=meta.get("agent") or None,
+        fork_model=meta.get("model") or None,
     )
-
-
-def _xml_escape(value: str) -> str:
-    """Escape text interpolated into the skills catalog block."""
-    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 # The tool-activation wording of agentskills.io's client guide, plus where a skill's relative
@@ -210,6 +211,12 @@ _CATALOG_PREAMBLE = (
     "when a task matches a skill description. Only names and descriptions are listed here. "
     "A path a skill's instructions name (references/…, scripts/…, assets/…) is relative to "
     "that skill: read it with read_skill_file and the skill's name."
+)
+
+
+_FORK_PREAMBLE = (
+    'A skill marked context="fork" runs in a subagent: call activate_skill with its name and a '
+    "task, and you get back only that agent's answer."
 )
 
 
@@ -228,16 +235,26 @@ def skill_catalog_xml(catalog: SkillCatalog) -> str:
     if not public:
         return ""
     untrusted = any(s.untrusted for s in public)
-    lines = [_CATALOG_PREAMBLE, *([_UNTRUSTED_PREAMBLE] if untrusted else []), "<available_skills>"]
+    forks = any(s.fork and not s.untrusted for s in public)
+    lines = [
+        _CATALOG_PREAMBLE,
+        *([_FORK_PREAMBLE] if forks else []),
+        *([_UNTRUSTED_PREAMBLE] if untrusted else []),
+        "<available_skills>",
+    ]
     for skill in public:
         # Escaped: name and description come from a SKILL.md in the tenant object store,
         # and this block is appended to the *system prompt*. A description containing
         # "</description></skill></available_skills>" would otherwise break out of the
         # catalog and append attacker-chosen text to the highest-trust surface there is.
         name = _xml_escape(skill.name)
+        # A forked skill runs in a subagent: the model passes `task` and reads only its answer.
+        fork = ' context="fork"' if skill.fork else ""
         if not skill.untrusted:
             description = _xml_escape(skill.description)
-            lines.append(f'  <skill name="{name}">\n    <description>{description}</description>\n  </skill>')
+            lines.append(
+                f'  <skill name="{name}"{fork}>\n    <description>{description}</description>\n  </skill>'
+            )
             continue
         # A third party's description, in the highest-trust surface there is: fenced as such, and
         # withheld outright when it reads like an injection -- the name still lists the skill.

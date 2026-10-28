@@ -234,15 +234,13 @@ def _fenced_payload(activation: Activation) -> str:
     return json.dumps(_payload(activation.content)).replace("<", "\\u003c")
 
 
-def _attr(value: str) -> str:
-    return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
-
-
 def retained_messages(lost: list[Activation], view: RetainedView, catalog: Any) -> list[ChatMessage]:
     """The activations a render lost, as the model reads them back: whole where the view allows,
     otherwise a line saying to activate again. A normal user message ahead of the history, never a
     transient one -- those are sent after the newest turn, where a skill would outrank the person."""
     from felix_ai.types import ChatMessage
+
+    from felix.skills.format import xml_escape
 
     blocks: list[str] = []
     again: list[str] = []
@@ -258,7 +256,7 @@ def retained_messages(lost: list[Activation], view: RetainedView, catalog: Any) 
                 else ""
             )
             blocks.append(
-                f'<retained_skill name="{_attr(activation.name)}"{label}>\n'
+                f'<retained_skill name="{xml_escape(activation.name)}"{label}>\n'
                 "You activated this skill earlier in this conversation; its activate_skill result is "
                 f"repeated here because the turn it was on is no longer shown.{caveat}\n"
                 f"{_fenced_payload(activation)}\n</retained_skill>"

@@ -34,6 +34,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from felix.context import RequestContext, try_get_context
@@ -45,7 +46,7 @@ from felix.security.host_allowlist import EgressBound
 from felix.side_events import emit as emit_side_event
 from felix.tools import task_workspace
 from felix.tools.errors import tool_error_output
-from felix.tools.types import Tool, ToolOutput, define_tool
+from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool
 from felix.tools.workspace_scope import bound_workspace_thread
 
 if TYPE_CHECKING:
@@ -93,6 +94,7 @@ def make_task_tool(
     manifest_hooks: ManifestHooks | None = None,
     egress: EgressBound = EgressBound(),
     worktree: bool = False,
+    model_overrides: dict[str, str] | None = None,
 ) -> Tool:
     """`task(agent, prompt)` over `children`: manifest name -> (compiled agent, description, the
     manifest it compiled from), in declaration order. `ceiling` is the delegating agent's own
@@ -132,66 +134,30 @@ def make_task_tool(
             raise ValueError("background is not enabled for this agent's delegation")
         return {"agent": agent, "prompt": prompt, "background": in_background}
 
-    async def handler(args: Mapping[str, Any]) -> ToolOutput:
+    async def handler(args: Mapping[str, Any], ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         name = str(args["agent"])
         child, _description_text, manifest = children[name]
-        req = try_get_context()
+        # A forked skill's vetted `model:` (`ForkRunner`), keyed by the call id it minted: never a
+        # field of the model-facing schema, so the model cannot pick its children's models.
+        call_id = getattr(ctx, "tool_call_id", None)
+        model_id = model_overrides.pop(call_id, None) if model_overrides is not None and call_id else None
+        req, refused = _admit(name, manifest, tag="task")
         if req is None:
-            # Fail closed, like `limits`: without a context there is no caller to admit.
-            return tool_error_output("permission_denied", f"[task] no request context to run agent '{name}'")
-        try:
-            # The model chose this child, so it must not be a way past the child's own door:
-            # a caller who could not call it by name cannot reach it through `task` either.
-            enforce_inbound_auth(manifest, req.auth)
-        except InboundAuthError as exc:
-            logger.info("task_child_refused agent=%s reason=%s", name, loggable(str(exc), limit=200))
-            return tool_error_output("permission_denied", f"[task] the caller may not run agent '{name}'")
-        # The route marks a turn it screened, and the first agent to screen consumes the mark.
-        # A parent with screening off never consumes it, so it would reach the child -- and
-        # this prompt was written by the model, often from tool output, not by the caller the
-        # route screened. The child screens what it is handed.
-        req.extras.pop(INBOUND_SCREENED_EXTRA, None)
+            return refused
         if args["background"]:
             return await _start_in_background(
                 req, name, manifest, str(args["prompt"]), ceiling, max_background, egress
             )
-        child_thread = _child_thread_id(req.thread_id) if req.thread_id else ""
-        workspace = await task_workspace.prepare(req, child_thread, wanted=worktree)
-        if not isinstance(workspace, task_workspace.ChildWorkspace):
-            return workspace
-        await emit_side_event(req.thread_id, "subagent_start", {"agent": name, "background": False})
-        result = None
-        req.limit_state.ceilings.append(ceiling)
-        try:
-            with bound_workspace_thread(workspace.thread):
-                result = await child.invoke(
-                    InvokeInput(messages=[ChatMessage(role="user", content=str(args["prompt"]))])
-                )
-        except Exception:
-            # The child's own failure is the operator's to read; the model gets a fact it can
-            # act on (retry, or do the job itself) rather than another agent's traceback.
-            logger.warning("task_child_failed agent=%s", name, exc_info=True)
-        finally:
-            req.limit_state.ceilings.remove(ceiling)
-            # Every way out, cancellation included: where its work is, and a worktree it left
-            # nothing in removed. Shielded, so a cancellation that keeps arriving cannot cut it short.
-            where = await asyncio.shield(task_workspace.finish_foreground(req, workspace))
-            outcome = "ok" if result is not None else "error"
-            await emit_side_event(req.thread_id, "subagent_end", {"agent": name, "outcome": outcome})
-        if result is None:
-            failed = f"[task] agent '{name}' failed before answering"
-            return tool_error_output("provider_error", f"{failed}\n\n{where}" if where else failed)
-        answer = str(result.final.content or "") if result.final else ""
-        reply = answer or f"[task] agent '{name}' returned no answer"
-        if where:
-            reply = f"{reply}\n\n{where}"
-        if manifest_hooks is not None and manifest_hooks.has("subagent_stop"):
-            observed = await manifest_hooks.fire(
-                "subagent_stop", {"agent": name, "outcome": outcome, "answer": answer}
-            )
-            if observed.contexts:
-                reply = f"{reply}\n\n{observed.context_block()}"
-        return reply
+        return await _run_foreground(
+            req,
+            name,
+            child,
+            str(args["prompt"]),
+            ceiling=ceiling,
+            worktree=worktree,
+            manifest_hooks=manifest_hooks,
+            model_id=model_id,
+        )
 
     return define_tool(
         name=TASK_TOOL_NAME,
@@ -209,6 +175,154 @@ def make_task_tool(
         # (`_start_in_background`), since a worker run would not inherit it.
         read_only=True,
     )
+
+
+def _admit(name: str, manifest: Manifest, *, tag: str) -> tuple[RequestContext | None, ToolOutput]:
+    """Admit a run of the child ``name``: `(request, "")`, or `(None, refusal)`. The one door both
+    `task` and a forked skill go through; a rule added here holds for each."""
+    req = try_get_context()
+    if req is None:
+        # Fail closed, like `limits`: without a context there is no caller to admit.
+        return None, tool_error_output(
+            "permission_denied", f"[{tag}] no request context to run agent '{name}'"
+        )
+    try:
+        # The model chose this child, so it must not be a way past the child's own door: a caller
+        # who could not call it by name cannot reach it through `task` or a skill either.
+        enforce_inbound_auth(manifest, req.auth)
+    except InboundAuthError as exc:
+        logger.info("%s_child_refused agent=%s reason=%s", tag, name, loggable(str(exc), limit=200))
+        return None, tool_error_output("permission_denied", f"[{tag}] the caller may not run agent '{name}'")
+    # The route marks a turn it screened, and the first agent to screen consumes the mark. A parent
+    # with screening off never consumes it, so it would reach the child -- and this prompt was
+    # written by the model (or a skill), often from tool output, not by the caller the route
+    # screened. The child screens what it is handed.
+    req.extras.pop(INBOUND_SCREENED_EXTRA, None)
+    return req, ""
+
+
+async def _run_foreground(
+    req: RequestContext,
+    name: str,
+    child: Agent,
+    prompt: str,
+    *,
+    ceiling: EffectiveLimits,
+    worktree: bool,
+    manifest_hooks: ManifestHooks | None,
+    model_id: str | None = None,
+) -> ToolOutput:
+    """Run ``child`` on ``prompt`` in this run and answer what it said: the `task` tool's foreground
+    path, and a forked skill's (`ForkRunner`). The caller has already admitted the call."""
+    child_thread = _child_thread_id(req.thread_id) if req.thread_id else ""
+    workspace = await task_workspace.prepare(req, child_thread, wanted=worktree)
+    if not isinstance(workspace, task_workspace.ChildWorkspace):
+        return workspace
+    await emit_side_event(req.thread_id, "subagent_start", {"agent": name, "background": False})
+    result = None
+    req.limit_state.ceilings.append(ceiling)
+    try:
+        with bound_workspace_thread(workspace.thread):
+            result = await child.invoke(
+                InvokeInput(messages=[ChatMessage(role="user", content=prompt)], model_id=model_id)
+            )
+    except Exception:
+        # The child's own failure is the operator's to read; the model gets a fact it can
+        # act on (retry, or do the job itself) rather than another agent's traceback.
+        logger.warning("task_child_failed agent=%s", name, exc_info=True)
+    finally:
+        req.limit_state.ceilings.remove(ceiling)
+        # Every way out, cancellation included: where its work is, and a worktree it left
+        # nothing in removed. Shielded, so a cancellation that keeps arriving cannot cut it short.
+        where = await asyncio.shield(task_workspace.finish_foreground(req, workspace))
+        outcome = "ok" if result is not None else "error"
+        await emit_side_event(req.thread_id, "subagent_end", {"agent": name, "outcome": outcome})
+    if result is None:
+        failed = f"[task] agent '{name}' failed before answering"
+        return tool_error_output("provider_error", f"{failed}\n\n{where}" if where else failed)
+    answer = str(result.final.content or "") if result.final else ""
+    reply = answer or f"[task] agent '{name}' returned no answer"
+    if where:
+        reply = f"{reply}\n\n{where}"
+    if manifest_hooks is not None and manifest_hooks.has("subagent_stop"):
+        observed = await manifest_hooks.fire(
+            "subagent_stop", {"agent": name, "outcome": outcome, "answer": answer}
+        )
+        if observed.contexts:
+            reply = f"{reply}\n\n{observed.context_block()}"
+    return reply
+
+
+@dataclass(slots=True)
+class ForkRunner:
+    """How a skill whose frontmatter says `context: fork` runs (`skills/tools.py`): as a call of this
+    manifest's *governed* `task` tool, bound once the governance stack has wrapped it (`bind`). So
+    every control that names `task` -- an approval, a policy, the limits' peer hops, the permission
+    mode -- holds for a fork as for the model's own `task` call, and the child runs on `task`'s path,
+    `subagent_stop` included. A `model:` the skill asks for reaches the `task` handler by the call
+    id this mints (`model_overrides`), and only when the deployment defines the route and
+    request-model governance would let a caller ask for it on this manifest and its children."""
+
+    children: Mapping[str, tuple[Agent, str, Manifest]]
+    lead: Manifest
+    model_overrides: dict[str, str]
+    _task: Tool | None = None
+
+    @property
+    def agents(self) -> tuple[str, ...]:
+        return tuple(self.children)
+
+    def bind(self, governed_task: Tool | None) -> None:
+        self._task = governed_task
+
+    async def __call__(self, agent: str, prompt: str, model_id: str | None) -> ToolOutput:
+        if self._task is None:
+            return tool_error_output("permission_denied", "[skill] this agent's task tool is not available")
+        req = try_get_context()
+        call_id = f"fork_{uuid.uuid4().hex[:16]}"
+        model = await _vetted_model(self.lead, model_id, req, self.children) if req is not None else None
+        if model:
+            self.model_overrides[call_id] = model
+        try:
+            return await self._task.executor.execute(
+                {"agent": agent, "prompt": prompt},
+                ToolInvocationCtx(thread_id=getattr(req, "thread_id", None), tool_call_id=call_id),
+            )
+        finally:
+            self.model_overrides.pop(call_id, None)
+
+
+async def _vetted_model(
+    manifest: Manifest,
+    model_id: str | None,
+    req: RequestContext,
+    children: Mapping[str, tuple[Agent, str, Manifest]],
+) -> str | None:
+    """``model_id`` when the deployment defines that route and governance would let a caller ask
+    for it on ``manifest`` and every child; otherwise None, and the agent's own model runs."""
+    if not model_id:
+        return None
+    from felix.manifests.governance import request_model_tree_refusal
+    from felix.patterns.model import parse_model_routes
+
+    # A typo, or a route this install never had, is dropped rather than handed to a child to fail on.
+    refusal = (
+        await request_model_tree_refusal(
+            manifest,
+            model_id,
+            req.settings,
+            tenant_id=req.auth.tenant_id,
+            children={name: entry[2] for name, entry in children.items()},
+        )
+        if model_id in parse_model_routes(req.settings)
+        else "unknown_route"
+    )
+    if refusal is None:
+        return model_id
+    logger.warning(
+        "forked skill asked for model %s (%s); the agent's own is used", loggable(model_id, limit=80), refusal
+    )
+    return None
 
 
 async def _start_in_background(
