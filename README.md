@@ -387,8 +387,8 @@ Core also exposes open registries, callable at import time, each selected by ord
 A plugin carries its own manifest config under `spec.extensions.<name>` — the one field exempt
 from the schema's `extra="forbid"` — and reads it from the pattern build context.
 
-Agent Skills need no code at all: drop a `SKILL.md` under the directory named by
-`FELIX_SKILLS_DIR`, or upload one per tenant to the object store. A manifest with
+Agent Skills need no code at all: put a skill at `<FELIX_SKILLS_DIR>/<name>/SKILL.md` (check it
+with `felix skills validate`), or upload one per tenant to the object store. A manifest with
 `spec.skill_authoring.enabled` lets its agent draft skills into the tenant's library; a draft
 enters no catalog until it is published, and publishing is gated — a failing security scan always
 blocks, `FELIX_SKILL_PUBLISH_MIN_QUALITY` (0 = off) sets a floor on the 0-100 review score, and
