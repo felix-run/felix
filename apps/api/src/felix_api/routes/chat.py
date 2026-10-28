@@ -3167,7 +3167,27 @@ async def chat_ask(body: AskRequest, request: Request) -> dict[str, Any]:
         raise
 
 
-@router.post("/compact", responses=LEASE_REFUSALS)
+@router.post(
+    "/compact",
+    responses={
+        **LEASE_REFUSALS,
+        422: {
+            "model": ChatRefusalOut,
+            "description": "The manifest may not run a model: its provider pin, an unmeasurable cost "
+            "cap, a framework's requirement, or a credential it names that is not registered.",
+        },
+        502: {
+            "model": ChatRefusalOut,
+            "description": "`compaction_failed`: the summariser's model call failed, so nothing was "
+            "compacted and the thread is as it was.",
+        },
+        503: {
+            "model": ChatRefusalOut,
+            "description": "The manifest's model provider, or a secret it names, is not configured on "
+            "this deployment.",
+        },
+    },
+)
 async def chat_compact(
     body: CompactRequest, request: Request, lease_token: LeaseToken = None
 ) -> dict[str, Any]:
@@ -3203,7 +3223,7 @@ async def chat_compact(
         raise HTTPException(status_code=422, detail=client_safe_message(exc)) from exc
 
     from felix.patterns.model import build_model
-    from felix.session.compaction import CompactingSessionStrategy
+    from felix.session.compaction import COMPACT_FAILED, CompactingSessionStrategy
     from felix.session.thread_state import update_thread_meta
 
     session = get_session_store(settings, tenant_id=auth.tenant_id).open(thread)
@@ -3229,21 +3249,36 @@ async def chat_compact(
         context_window_tokens=_budget("context_window_tokens", 128000),
         enabled=True,
     )
-    model = build_model(settings, resolved.manifest.spec.model)
+    try:
+        model = build_model(settings, resolved.manifest.spec.model)
+    except Exception as exc:
+        # A provider the deployment has not configured, a secret it does not hold: what a turn of
+        # this manifest answers for the same build, not a 500.
+        http = _http_from_invoke_prep(exc)
+        if http is not None:
+            raise http from exc
+        raise
     await update_thread_meta(
         settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="compaction"
     )
-    # The middleware context carries the tenant but no manifest; the summarizer's usage
-    # row should name the manifest this thread runs, not fall to an empty one.
-    ctx = get_context()
-    async with async_run_with_context(replace(ctx, manifest_id=body.manifest, thread_id=thread)):
-        result = await strategy.compact_now(
-            session,
-            model=model,
-            system_prompt="",
-            instructions=body.instructions,
-            reason="manual",
-        )
-    await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
+    try:
+        # The middleware context carries the tenant but no manifest; the summarizer's usage
+        # row should name the manifest this thread runs, not fall to an empty one.
+        ctx = get_context()
+        async with async_run_with_context(replace(ctx, manifest_id=body.manifest, thread_id=thread)):
+            result = await strategy.compact_now(
+                session,
+                model=model,
+                system_prompt="",
+                instructions=body.instructions,
+                reason="manual",
+            )
+    finally:
+        # However it ended: a thread left in `compaction` reads as one still being compacted.
+        await update_thread_meta(settings=settings, tenant_id=auth.tenant_id, thread_id=thread, phase="idle")
+    if result.get("outcome") == COMPACT_FAILED:
+        # The summariser raised, so nothing was compacted; the render kept the thread as it was.
+        # Not a 200: `ok: true` here read as done to every client that checked the status.
+        raise HTTPException(status_code=502, detail="compaction_failed")
     snapshot = await gather_thread_snapshot(settings=settings, tenant_id=auth.tenant_id, thread=thread)
     return {**result, "thread_id": thread, "snapshot": snapshot}
