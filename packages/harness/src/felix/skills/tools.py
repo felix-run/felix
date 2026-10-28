@@ -43,16 +43,18 @@ _ACTIVATION_FIELDS = (
 )
 
 
+# The handlers' argument shapes. Each tool's own model is built from one of these by `_with_names`,
+# which also writes the `name` field's description.
 class _SkillNameArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, description="Skill name to activate or deactivate.")
+    name: str = Field(min_length=1)
 
 
 class _ReadFileArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, description="Skill name, as list_skills shows it.")
+    name: str = Field(min_length=1)
     path: str = Field(
         min_length=1,
         max_length=512,
@@ -65,36 +67,17 @@ class _ReadFileArgs(BaseModel):
 MAX_ENUM_NAMES = 64
 
 
-def _enum(names: list[str]) -> dict[str, Any] | None:
-    return {"enum": names} if 0 < len(names) <= MAX_ENUM_NAMES else None
-
-
-def _name_args(names: list[str], description: str) -> type[BaseModel]:
-    """`{name}` with the names the model may use as an `enum` in the schema, as agentskills.io's
+def _with_names(base: type[BaseModel], names: list[str], description: str) -> type[BaseModel]:
+    """``base`` with the names the model may use as an `enum` on `name`, as agentskills.io's
     client guide suggests. Schema only: validation stays a plain string, so a name outside the
     catalog still reaches the handler and is answered (and audited) as `unknown_skill`."""
-    extra = _enum(names)
-    return create_model(
-        "_SkillNameArgs",
-        __base__=_SkillNameArgs,
-        name=(str, Field(min_length=1, description=description, json_schema_extra=extra)),
-    )
+    extra = {"enum": names} if 0 < len(names) <= MAX_ENUM_NAMES else None
+    field = Field(min_length=1, description=description, json_schema_extra=extra)
+    return create_model(base.__name__, __base__=base, name=(str, field))
 
 
-def _read_file_args(names: list[str]) -> type[BaseModel]:
-    extra = _enum(names)
-    return create_model(
-        "_ReadFileArgs",
-        __base__=_ReadFileArgs,
-        name=(
-            str,
-            Field(min_length=1, description="Skill name, as list_skills shows it.", json_schema_extra=extra),
-        ),
-    )
-
-
-def _list_dir_bundle(root: Path) -> list[str]:
-    """Up to one more than `MAX_BUNDLE_FILES` paths, so a caller can say the list was cut.
+def _list_dir_bundle(root: Path) -> tuple[list[str], bool]:
+    """At most `MAX_BUNDLE_FILES` paths, and whether there were more.
 
     Only what `_read_host_file` would serve: a symlink is listed when it resolves inside the
     skill, and left out when it leads elsewhere -- listing a file the reader refuses is a
@@ -110,8 +93,8 @@ def _list_dir_bundle(root: Path) -> list[str]:
             if bundle_path_issue(rel) is None and p.resolve().is_relative_to(base):
                 files.append(rel)
             if len(files) > MAX_BUNDLE_FILES:
-                return files
-    return files
+                return files[:MAX_BUNDLE_FILES], True
+    return files, False
 
 
 def _library_of(skill: Skill) -> str:
@@ -135,9 +118,9 @@ def _bundle_root(skill: Skill) -> Path | None:
     return Path(skill.path).parent
 
 
-async def bundle_files(skill: Skill, *, settings: Any | None, tenant_id: str) -> list[str]:
-    """The paths `read_skill_file` can serve for ``skill``, SKILL.md excluded. A host skill lists
-    at most `MAX_BUNDLE_FILES` + 1, the extra one only saying the listing was cut.
+async def bundle_files(skill: Skill, *, settings: Any | None, tenant_id: str) -> tuple[list[str], bool]:
+    """The paths `read_skill_file` can serve for ``skill``, SKILL.md excluded -- at most
+    `MAX_BUNDLE_FILES` of them -- and whether the listing was cut there.
 
     A library version lists its saved files; a host skill its directory. A raw object-store
     skill lists nothing: the store has no listing, though a path the body names still reads.
@@ -147,10 +130,11 @@ async def bundle_files(skill: Skill, *, settings: Any | None, tenant_id: str) ->
 
         lib = get_skill_library_store(settings, owner=_library_of(skill))
         rows = await lib.list_files(tenant_id, skill.name, skill.version)
-        return [str(r["path"]) for r in rows if r["path"] != "SKILL.md"]
+        paths = [str(r["path"]) for r in rows if r["path"] != "SKILL.md"]
+        return paths[:MAX_BUNDLE_FILES], len(paths) > MAX_BUNDLE_FILES
     root = _bundle_root(skill)
     if root is None:
-        return []
+        return [], False
     return await asyncio.to_thread(_list_dir_bundle, root)
 
 
@@ -326,14 +310,14 @@ def make_skill_tools(
             (key, skill.metadata[field]) for field, key in _ACTIVATION_FIELDS if skill.metadata.get(field)
         )
         try:
-            files = await bundle_files(skill, settings=settings, tenant_id=tenant_id)
+            files, cut = await bundle_files(skill, settings=settings, tenant_id=tenant_id)
         except Exception:
             logger.warning("bundle listing failed for skill %s", skill.name, exc_info=True)
-            files = []
+            files, cut = [], False
         if files:
             # Named, not inlined: the body says when to read one, and read_skill_file does.
-            result["files"] = files[:MAX_BUNDLE_FILES]
-            if len(files) > MAX_BUNDLE_FILES:
+            result["files"] = files
+            if cut:
                 result["files_truncated"] = True
         if skill.source == "library":
             result["version"] = skill.version
@@ -402,14 +386,14 @@ def make_skill_tools(
                 "Activate a named skill and return its full instructions. "
                 "Call when a task matches a skill description."
             ),
-            args=_name_args(names, "Skill name to activate."),
+            args=_with_names(_SkillNameArgs, names, "Skill name to activate."),
             handler=_activate,
             relays_untrusted=True,
         ),
         define_tool(
             name="deactivate_skill",
             description="Deactivate a named skill for this agent.",
-            args=_name_args(names, "Skill name to deactivate."),
+            args=_with_names(_SkillNameArgs, names, "Skill name to deactivate."),
             handler=_deactivate,
         ),
         define_tool(
@@ -418,7 +402,7 @@ def make_skill_tools(
                 "Read one file from a skill's bundle (references/, scripts/, assets/, evals/), "
                 "as activate_skill listed it. Text only."
             ),
-            args=_read_file_args(names),
+            args=_with_names(_ReadFileArgs, names, "Skill name, as list_skills shows it."),
             handler=_read_file,
             replay_safe=True,
             read_only=True,

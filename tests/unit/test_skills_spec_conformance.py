@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from felix.skills import loader
+from felix.skills import discovery, loader
 from felix.skills.format import MAX_BUNDLE_FILES, split_frontmatter, validate_skill_bundle
 from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import MAX_ACTIVATION_CHARS, make_skill_tools
@@ -89,8 +89,8 @@ def test_hidden_and_dependency_directories_are_not_walked(tmp_path: Path) -> Non
 
 def test_the_walk_is_depth_bounded(tmp_path: Path) -> None:
     """A skill directory at exactly `MAX_SCAN_DEPTH` levels loads; one level deeper does not."""
-    at_limit = "/".join(f"a{i}" for i in range(loader.MAX_SCAN_DEPTH - 1))
-    past_limit = "/".join(f"d{i}" for i in range(loader.MAX_SCAN_DEPTH))
+    at_limit = "/".join(f"a{i}" for i in range(discovery.MAX_SCAN_DEPTH - 1))
+    past_limit = "/".join(f"d{i}" for i in range(discovery.MAX_SCAN_DEPTH))
     _write(tmp_path, f"{at_limit}/ok/SKILL.md", _skill_md("ok"))
     _write(tmp_path, f"{past_limit}/too-deep/SKILL.md", _skill_md("too-deep"))
     assert loader.load_skills_from_dir(tmp_path).names() == ["ok"]
@@ -100,7 +100,7 @@ def test_the_walk_stops_after_max_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The root counts as one directory, then its children in name order."""
-    monkeypatch.setattr(loader, "MAX_SCAN_DIRS", 3)
+    monkeypatch.setattr(discovery, "MAX_SCAN_DIRS", 3)
     for name in ("s1", "s2", "s3"):
         _write(tmp_path, f"{name}/SKILL.md", _skill_md(name))
     with caplog.at_level(logging.WARNING, logger="felix.skills.loader"):

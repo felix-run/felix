@@ -13,6 +13,7 @@ from typing import Any
 
 from felix.bounded_cache import BoundedCache
 from felix.logging_setup import loggable
+from felix.skills.discovery import advise, load_skills_from_dir
 from felix.skills.format import MAX_DESCRIPTION_CHARS, MAX_FRONTMATTER_CHARS, is_valid_skill_name
 from felix.skills.format import parse_skill_md as parse_skill_md_format
 from felix.skills.types import Skill, SkillCatalog
@@ -32,20 +33,6 @@ _KEY_SEGMENT_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # A version may carry dots (`1.2.0`) which a name may not, but is otherwise the same
 # shape: one segment, no separators, not a traversal.
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-
-
-# Advisories already logged, by what they are about. A catalog is rebuilt on every request (the
-# bundled one every few seconds), so a warning about a SKILL.md that has not changed would repeat
-# on each one; it is said once an hour per subject instead.
-_ADVISED = BoundedCache(1024, ttl_s=3600.0)
-
-
-def _advise(subject: str, message: str, *args: object) -> None:
-    """``logger.warning(message, *args)``, once an hour per (``subject``, ``message``)."""
-    key = f"{subject}\0{message}"
-    if _ADVISED.get(key) is None:
-        _ADVISED[key] = True
-        logger.warning(message, *args)
 
 
 def _safe_segment(value: str, pattern: re.Pattern[str], *, limit: int = 64) -> bool:
@@ -174,15 +161,15 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
     subject = path or name
     description = (meta.get("description") or "").strip()
     if not description:
-        _advise(subject, "skill %s missing description; skipping", shown)
+        advise(subject, "skill %s missing description; skipping", shown)
         return None
     # agentskills.io's client guide: a cosmetic problem warns and the skill still loads.
     if name != written:
-        _advise(subject, "skill name %r is not lowercase; loaded as %r", loggable(written, limit=80), shown)
+        advise(subject, "skill name %r is not lowercase; loaded as %r", loggable(written, limit=80), shown)
     if not is_valid_skill_name(name):
-        _advise(subject, "skill name %r invalid; loading with warnings", shown)
+        advise(subject, "skill name %r invalid; loading with warnings", shown)
     if len(description) > MAX_DESCRIPTION_CHARS:
-        _advise(
+        advise(
             subject,
             "skill %s: description is %d characters; the catalog lists the first %d",
             shown,
@@ -450,7 +437,7 @@ async def _library_catalog(
     return {s.name: s for s in skills if s is not None}
 
 
-def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
+def read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
     """One file's skill, or None. A file that cannot be read or parsed is logged and
     skipped; it must not take the rest of the directory's catalog down with it."""
     try:
@@ -458,87 +445,6 @@ def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
     except Exception:
         logger.warning("skill file %s could not be read; skipped", path, exc_info=True)
         return None
-
-
-# The walk's bounds, from agentskills.io's client guide ("max depth of 4-6 levels, max 2000
-# directories"): `FELIX_SKILLS_DIR` is an operator's path, and pointed at a checkout or a home
-# directory an unbounded walk would read every SKILL.md under it on a request.
-MAX_SCAN_DEPTH = 6
-MAX_SCAN_DIRS = 2000
-# Never a skill, and often huge.
-_SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
-
-
-def _skill_dirs(root: Path) -> list[Path]:
-    """Each directory under ``root`` holding a `SKILL.md`, in a stable order.
-
-    A skill directory is a leaf: nothing beneath it is another skill, so a `SKILL.md` an author
-    keeps under `references/` as an example is a file of that skill, not a second one. ``root``
-    itself is the exception, as it always was: a `SKILL.md` there is a skill and the walk still
-    goes on below it. Hidden directories, `node_modules` and symlinked directories are skipped
-    (`rglob` never followed a link either, and one can loop), and the walk stops at
-    `MAX_SCAN_DEPTH` levels and `MAX_SCAN_DIRS` directories, with a warning when it does.
-    """
-    found: list[Path] = []
-    queue: list[tuple[Path, int]] = [(root, 0)]
-    seen = 0
-    while queue:
-        directory, depth = queue.pop(0)
-        seen += 1
-        if seen > MAX_SCAN_DIRS:
-            _advise(str(root), "skills dir %s: stopped after %d directories", root, MAX_SCAN_DIRS)
-            break
-        if (directory / "SKILL.md").is_file():
-            found.append(directory)
-            if depth > 0:
-                continue
-        if depth >= MAX_SCAN_DEPTH:
-            continue
-        try:
-            children = sorted(p for p in directory.iterdir() if p.is_dir() and not p.is_symlink())
-        except OSError:
-            continue
-        queue.extend(
-            (child, depth + 1)
-            for child in children
-            if not child.name.startswith(".") and child.name not in _SKIPPED_DIRS
-        )
-    return found
-
-
-def load_skills_from_dir(root: Path) -> SkillCatalog:
-    """Discover the `<dir>/SKILL.md` packages under ``root`` (agentskills.io's layout).
-
-    The first found of a name wins (breadth first, then by path), and a later one is logged as
-    shadowed. A name that differs from its directory loads, with a warning: the spec asks them
-    to match, and a `spec.skills` ref resolves by the frontmatter name, not the folder.
-    """
-    catalog = SkillCatalog()
-    if not root.is_dir():
-        return catalog
-    for directory in _skill_dirs(root):
-        skill = _read_skill_file(directory / "SKILL.md", fallback_name=directory.name)
-        if skill is None:
-            continue
-        if skill.name != directory.name and directory != root:
-            _advise(
-                str(directory),
-                "skill %s: its directory is %r; the spec asks the two to match",
-                loggable(skill.name, limit=80),
-                loggable(directory.name, limit=80),
-            )
-        kept = catalog.skills.get(skill.name)
-        if kept is not None:
-            _advise(
-                str(directory),
-                "skill %s at %s is shadowed by %s",
-                loggable(skill.name, limit=80),
-                directory,
-                kept.path,
-            )
-            continue
-        catalog.skills[skill.name] = skill
-    return catalog
 
 
 # How long a bundled catalog is reused without re-checking the directory.
@@ -644,7 +550,7 @@ async def host_catalog(bundled_dir: Path | None = None) -> SkillCatalog:
         for name, skill in bundled.skills.items():
             if name in host.skills:
                 # The later root wins, as it always has; the spec asks that it be said.
-                _advise(
+                advise(
                     f"{skill.path}\0{host.skills[name].path}",
                     "skill %s from %s shadows the one at %s",
                     loggable(name, limit=80),
@@ -803,7 +709,7 @@ async def load_manifest_skills(
         if skill is None:
             # Kept, marked, so the management API still reports the ref (`has_body: false`);
             # `unresolved` keeps it out of the prompt catalog and the skill tools.
-            _advise(
+            advise(
                 f"{tenant_id}\0{name}",
                 "skill %s is declared but no source has it",
                 loggable(str(name), limit=80),

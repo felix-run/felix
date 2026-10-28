@@ -16,7 +16,7 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
 
 | Stage | Modules | What they own |
 |---|---|---|
-| Load | `loader.py`, `types.py`, `store.py`, `tools.py`, `suggest.py` | Host dirs + library + operator uploads → `SkillCatalog`; the four skill tools; per-manifest activation rows; the decider hint |
+| Load | `loader.py`, `discovery.py`, `types.py`, `store.py`, `tools.py`, `suggest.py` | Host dirs + library + operator uploads → `SkillCatalog`; the four skill tools; per-manifest activation rows; the decider hint |
 | Format | `format.py`, `binary.py`, `plugin.py`, `semver.py` | SKILL.md parse/validate and bundle path allowlist; base64 assets; `plugin.json`; version bumps |
 | Library | `library.py`, `library_store.py`, `library_keys.py`, `sources.py`, `copy_rule.py`, `authoring.py` | Draft/publish/rollback/reject/archive/adopt/promote; rows; owner and object-key spelling; per-source rules; imported-text lineage; agent tools |
 | Import | `github.py`, `importer.py`, `sighting_store.py`, `upstream.py`, `upstream_store.py`, `bundle_diff.py`, `update_notify.py` | Pinned GitHub fetch and allowlist; import as draft; cooldown clock; origin checks, diffs, updates; `skill.update_available` webhooks |
@@ -26,7 +26,7 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
 ## From skill to activation
 
 1. **Bundled or operator skills.** `skills/<name>/SKILL.md` in the repo and `FELIX_SKILLS_DIR` are
-   the host catalog (`skills/loader.py:host_catalog`). Discovery (`loader.py:_skill_dirs`) takes
+   the host catalog (`skills/loader.py:host_catalog`). Discovery (`discovery.py:_skill_dirs`) takes
    only `<dir>/SKILL.md`, treats a skill directory as a leaf, skips hidden dirs and `node_modules`,
    and is bounded (`MAX_SCAN_DEPTH`, `MAX_SCAN_DIRS`). Loading is lenient as agentskills.io's
    client guide asks: a missing description or unreadable YAML skips; a bad name, a name unlike
