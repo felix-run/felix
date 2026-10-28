@@ -108,9 +108,9 @@ async def summarize_abandoned_branch(
         try:
             # Fenced, with the data notice, as the other two summarisers are: the abandoned
             # branch carries tool output like any transcript.
-            from felix.session.compaction import _UNTRUSTED_NOTICE, SUMMARIZER_INPUT_CHARS, fence_untrusted
+            from felix.session.compaction import _UNTRUSTED_NOTICE, clip_transcript, fence_untrusted
 
-            text = fence_untrusted(serialize_conversation(abandoned)[:SUMMARIZER_INPUT_CHARS])
+            text = fence_untrusted(clip_transcript(serialize_conversation(abandoned)))
             prompt = STRUCTURED_SUMMARY_PROMPT + _UNTRUSTED_NOTICE
             if instructions:
                 prompt = f"{prompt}\n\nFocus: {instructions}"

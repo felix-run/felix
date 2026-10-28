@@ -54,6 +54,22 @@ _FENCE_TAG = "untrusted_transcript"
 # the `summarizing:N` strategy. One number, so retuning it for a larger-context summariser moves
 # every one of them.
 SUMMARIZER_INPUT_CHARS = 120_000
+
+
+def clip_transcript(text: str, limit: int = SUMMARIZER_INPUT_CHARS) -> str:
+    """`text`, or its first quarter and last three quarters of `limit` with the cut marked.
+
+    A transcript cut to its head kept how the conversation began and dropped where it had got
+    to, which is what a summary for continued work most needs. The head usually holds the goal
+    and the tail the current state, so both are kept; the middle is what goes.
+    """
+    if len(text) <= limit:
+        return text
+    head = limit // 4
+    tail = limit - head
+    return f"{text[:head]}\n\n[… {len(text) - limit} characters omitted …]\n\n{text[-tail:]}"
+
+
 _SUMMARY_FENCE_TAG = "conversation_summary"
 
 
@@ -1147,9 +1163,7 @@ async def _summarize_history(
     result = await model.chat(
         [
             ChatMessage(role="system", content=STRUCTURED_SUMMARY_PROMPT + _UNTRUSTED_NOTICE + prev + focus),
-            ChatMessage(
-                role="user", content=fence_untrusted(plan.history_transcript()[:SUMMARIZER_INPUT_CHARS])
-            ),
+            ChatMessage(role="user", content=fence_untrusted(clip_transcript(plan.history_transcript()))),
         ],
         [],
         ModelChatOptions(isolate_cache=True),
@@ -1167,9 +1181,7 @@ async def _summarize_turn_prefix(
     result = await model.chat(
         [
             ChatMessage(role="system", content=TURN_PREFIX_PROMPT + _UNTRUSTED_NOTICE + focus),
-            ChatMessage(
-                role="user", content=fence_untrusted(plan.prefix_transcript()[:SUMMARIZER_INPUT_CHARS])
-            ),
+            ChatMessage(role="user", content=fence_untrusted(clip_transcript(plan.prefix_transcript()))),
         ],
         [],
         ModelChatOptions(isolate_cache=True, max_tokens=TURN_PREFIX_MAX_TOKENS),
