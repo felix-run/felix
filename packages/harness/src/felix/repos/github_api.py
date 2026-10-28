@@ -1,4 +1,5 @@
-"""GitHub, read as the person: the repositories their App authorization reaches.
+"""GitHub, read as the person: the repositories their App authorization reaches, and the issues
+and pull requests in one of them.
 
 A GitHub App's user token sees exactly the repositories where the App is installed *and* the
 person has access, so that intersection is all this can list — it cannot count the repositories
@@ -9,7 +10,7 @@ replace.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
 if TYPE_CHECKING:
@@ -126,14 +127,172 @@ async def get_repo(
     cannot reach it for them (not installed there, or the person has no access)."""
     from felix.auth.github import client_scope
 
-    owner, _, name = full_name.partition("/")
-    if not owner or not name or "/" in name:
+    segments = _segments(full_name)
+    if segments is None:
         return None
+    owner, name = segments
     async with client_scope(client, settings) as http:
         try:
-            body = await _get(http, f"/repos/{quote(owner, safe='')}/{quote(name, safe='')}", token)
+            body = await _get(http, f"/repos/{owner}/{name}", token)
         except GitHubReadError as exc:
             if exc.status in {403, 404}:
                 return None
             raise
     return body if isinstance(body, dict) else None
+
+
+# Issues and pull requests, for starting a conversation from one. GitHub's issues listing carries
+# pull requests too (each with a `pull_request` key), so one walk serves both kinds and the kind is
+# filtered here, as `q` is — the same client-side filtering `list_reachable` does, over a bounded
+# walk, rather than GitHub's search API, which has a far smaller rate limit of its own.
+MAX_ITEMS = 30
+MAX_ITEM_PAGES = 5
+# An issue's body is whatever its author wrote, up to GitHub's 65,536 characters. A client puts it
+# in a composer, where a body past this is not read; the cut is marked by `body_truncated`.
+MAX_BODY_CHARS = 20_000
+
+ItemKind = Literal["issue", "pull"]
+ItemState = Literal["open", "closed", "all"]
+
+
+def _segments(full_name: str) -> tuple[str, str] | None:
+    """`owner/name` as two URL-safe path segments, or None for anything that is not that shape.
+
+    A segment of dots alone is refused: quoted, it is still `..`, which a URL resolves upward and
+    would turn `/repos/../user` into a read of a different endpoint with the person's token.
+    """
+    owner, _, name = full_name.partition("/")
+    if not owner or not name or "/" in name or {owner, name} & {".", ".."}:
+        return None
+    return quote(owner, safe=""), quote(name, safe="")
+
+
+def _html_url(full_name: str, kind: str, number: int) -> str:
+    """The item's page, built from values already checked rather than taken from the response."""
+    from felix.auth.github import GITHUB_URL
+
+    return f"{GITHUB_URL}/{full_name}/{'pull' if kind == 'pull' else 'issues'}/{number}"
+
+
+def item_view(raw: dict[str, Any], full_name: str, *, kind: ItemKind | None = None) -> dict[str, Any]:
+    """The fields a client shows for an issue or pull request. `kind` overrides the shape check,
+    for an object from the pulls API, which carries no `pull_request` key of its own."""
+    resolved: ItemKind = kind or ("pull" if isinstance(raw.get("pull_request"), dict) else "issue")
+    user = raw.get("user")
+    number = int(raw.get("number") or 0)
+    return {
+        "number": number,
+        "kind": resolved,
+        "title": str(raw.get("title") or ""),
+        "state": str(raw.get("state") or ""),
+        "html_url": _html_url(full_name, resolved, number),
+        # A deleted account is `null` on GitHub's side.
+        "author": str(user.get("login") or "") if isinstance(user, dict) else "",
+        "updated_at": str(raw.get("updated_at") or ""),
+    }
+
+
+async def list_items(
+    settings: Settings,
+    token: str,
+    full_name: str,
+    *,
+    kind: ItemKind | Literal["all"] = "all",
+    state: ItemState = "open",
+    q: str = "",
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """The repository's issues and pull requests as this person sees them, most recently updated
+    first, at most `MAX_ITEMS`, filtered by kind and by `q` against the title.
+
+    `full_name` is the repository `get_repo` answered with, so reachability is already settled.
+    A repository with issues turned off answers the issues listing with 410; its pull requests are
+    then read from the pulls listing instead, and it has no issues to list.
+    """
+    from felix.auth.github import client_scope
+
+    segments = _segments(full_name)
+    if segments is None:
+        raise GitHubReadError(400, "not an owner/name repository")
+    owner, name = segments
+    needle = q.strip().lower()
+    items: list[dict[str, Any]] = []
+    truncated = False
+    params: dict[str, Any] = {"state": state, "sort": "updated", "direction": "desc", "per_page": PER_PAGE}
+    path, pulls_only = f"/repos/{owner}/{name}/issues", False
+    async with client_scope(client, settings) as http:
+        page = 1
+        while True:
+            try:
+                batch = await _get(http, path, token, {**params, "page": page})
+            except GitHubReadError as exc:
+                if exc.status != 410 or pulls_only or page != 1:
+                    raise
+                if kind == "issue":
+                    break
+                path, pulls_only = f"/repos/{owner}/{name}/pulls", True
+                continue
+            if not isinstance(batch, list):
+                raise GitHubReadError(502, f"GET {path} answered something other than a list")
+            for raw in batch:
+                if not isinstance(raw, dict):
+                    continue
+                view = item_view(raw, full_name, kind="pull" if pulls_only else None)
+                if kind != "all" and view["kind"] != kind:
+                    continue
+                if needle and needle not in view["title"].lower():
+                    continue
+                if len(items) == MAX_ITEMS:
+                    truncated = True
+                    break
+                items.append(view)
+            if truncated or len(batch) < PER_PAGE:
+                break
+            if page == MAX_ITEM_PAGES:
+                # More on GitHub than one listing walks: narrow with `q`.
+                truncated = True
+                break
+            page += 1
+    return {"repository": full_name, "items": items, "truncated": truncated}
+
+
+async def get_item(
+    settings: Settings, token: str, full_name: str, number: int, *, client: httpx.AsyncClient | None = None
+) -> dict[str, Any] | None:
+    """One issue or pull request with its body, or None when the repository has no such number.
+
+    The body is the author's markdown, returned as text and nothing else: it is third-party input,
+    and whatever reads it decides what it is.
+    """
+    from felix.auth.github import client_scope
+
+    segments = _segments(full_name)
+    if segments is None:
+        return None
+    owner, name = segments
+    async with client_scope(client, settings) as http:
+        try:
+            raw = await _get(http, f"/repos/{owner}/{name}/issues/{int(number)}", token)
+            kind: ItemKind | None = None
+        except GitHubReadError as exc:
+            if exc.status == 404:
+                return None
+            if exc.status != 410:
+                raise
+            # Issues turned off: the number can still be a pull request.
+            try:
+                raw = await _get(http, f"/repos/{owner}/{name}/pulls/{int(number)}", token)
+            except GitHubReadError as inner:
+                if inner.status == 404:
+                    return None
+                raise
+            kind = "pull"
+    if not isinstance(raw, dict):
+        raise GitHubReadError(502, "an issue read answered something other than an object")
+    body = raw.get("body")
+    text = body if isinstance(body, str) else ""
+    return {
+        **item_view(raw, full_name, kind=kind),
+        "body": text[:MAX_BODY_CHARS],
+        "body_truncated": len(text) > MAX_BODY_CHARS,
+    }

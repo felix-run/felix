@@ -2,6 +2,9 @@
 
 - `GET /github/repos?q=` lists the repositories your GitHub App authorization reaches — where the
   App is installed and you have access — with the App's install link for the rest.
+- `GET /github/repos/{owner}/{repo}/items` lists one of those repositories' issues and pull
+  requests, and `GET .../items/{number}` reads one with its body, for starting a conversation from
+  it. The body is the author's text, returned as data.
 - `POST /chat/sessions/{thread_id}/workspace/repo` clones one of them into the thread's own
   checkout, where the agent's workspace and shell tools then work (`felix.repos.checkouts`).
 - `GET` and `DELETE` on the same path report and remove it.
@@ -13,9 +16,9 @@ connection (`felix.auth.github_connections`). No route returns a GitHub token.
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from felix.logging_setup import loggable
 from pydantic import BaseModel, Field
@@ -173,6 +176,127 @@ async def list_my_repos(request: Request, q: str = "") -> Any:
         logger.warning("listing repositories failed: %s", exc)
         return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
     return ReposOut.model_validate(listed)
+
+
+class RepoItemOut(BaseModel):
+    """An issue or pull request, as a list shows it."""
+
+    number: int
+    kind: Literal["issue", "pull"]
+    title: str
+    # `open` or `closed`, as GitHub says it; a merged pull request is `closed`.
+    state: str
+    # Built from the repository and number, never taken from GitHub's answer.
+    html_url: str
+    # The author's login; empty for an account GitHub has since deleted.
+    author: str
+    updated_at: str
+
+
+class RepoItemsOut(BaseModel):
+    repository: str
+    # Most recently updated first, at most 30.
+    items: list[RepoItemOut]
+    # More matched than the listing returns, or more on GitHub than one listing walks: narrow with `q`.
+    truncated: bool
+
+
+class RepoItemDetailOut(RepoItemOut):
+    # The author's markdown, as GitHub returns it: third-party text, never rendered or acted on here.
+    body: str
+    # The body was longer than the 20,000 characters returned.
+    body_truncated: bool
+
+
+# GitHub's own rules are narrower (an owner is alphanumerics and single hyphens); this is the shape
+# `OpenRepoRequest` accepts, so a repository either route can name is one the other can.
+_RepoSegment = Annotated[str, Path(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9._-]+$")]
+_ITEM_RESPONSES: dict[int | str, dict[str, Any]] = {**_REFUSALS, 404: {"model": RepoErrorOut}}
+
+
+async def _reachable_repo(request: Request, owner: str, repo: str) -> tuple[str, str] | JSONResponse:
+    """(the caller's access token, the repository's canonical `owner/name`), or the refusal.
+
+    Reachability is asked of GitHub first, as the checkout route asks it, so a repository the App
+    cannot reach for the caller is the same `repository_unreachable` there and here.
+    """
+    from felix.repos import github_api
+
+    got = await _caller_token(request)
+    if isinstance(got, JSONResponse):
+        return got
+    _, _, _, token = got
+    full_name = f"{owner}/{repo}"
+    try:
+        found = await github_api.get_repo(request.app.state.settings, token, full_name)
+    except github_api.GitHubReadError as exc:
+        logger.warning("reading %s failed: %s", loggable(full_name, limit=200), exc)
+        return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
+    if found is None:
+        return _refusal(
+            404,
+            "repository_unreachable",
+            f"the GitHub App cannot reach {full_name} for you: install it there, or ask for access",
+        )
+    # GitHub's spelling of the name, so the items' links agree with the repository's own page.
+    return token, str(found.get("full_name") or full_name)
+
+
+@github_router.get("/repos/{owner}/{repo}/items", response_model=RepoItemsOut, responses=_ITEM_RESPONSES)
+async def list_repo_items(
+    request: Request,
+    owner: _RepoSegment,
+    repo: _RepoSegment,
+    q: str = "",
+    kind: Literal["all", "issue", "pull"] = "all",
+    state: Literal["open", "closed", "all"] = "open",
+) -> Any:
+    """Issues and pull requests in a repository you can reach, most recently updated first.
+
+    `q` narrows by title (case-insensitive, over what one listing walks); `kind` to issues or pull
+    requests. Read as you, through the GitHub App.
+    """
+    from felix.repos import github_api
+
+    reached = await _reachable_repo(request, owner, repo)
+    if isinstance(reached, JSONResponse):
+        return reached
+    token, full_name = reached
+    try:
+        listed = await github_api.list_items(
+            request.app.state.settings, token, full_name, kind=kind, state=state, q=q[:100]
+        )
+    except github_api.GitHubReadError as exc:
+        logger.warning("listing items of %s failed: %s", loggable(full_name, limit=200), exc)
+        return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
+    return RepoItemsOut.model_validate(listed)
+
+
+@github_router.get(
+    "/repos/{owner}/{repo}/items/{number}", response_model=RepoItemDetailOut, responses=_ITEM_RESPONSES
+)
+async def get_repo_item(
+    request: Request,
+    owner: _RepoSegment,
+    repo: _RepoSegment,
+    number: Annotated[int, Path(ge=1, le=2_147_483_647)],
+) -> Any:
+    """One issue or pull request in a repository you can reach, with its body (markdown, at most
+    20,000 characters, `body_truncated` when cut). The body is its author's text, returned as data."""
+    from felix.repos import github_api
+
+    reached = await _reachable_repo(request, owner, repo)
+    if isinstance(reached, JSONResponse):
+        return reached
+    token, full_name = reached
+    try:
+        item = await github_api.get_item(request.app.state.settings, token, full_name, number)
+    except github_api.GitHubReadError as exc:
+        logger.warning("reading %s#%d failed: %s", loggable(full_name, limit=200), number, exc)
+        return _refusal(502, "github_unavailable", GITHUB_UNAVAILABLE)
+    if item is None:
+        return _refusal(404, "item_not_found", f"{full_name} has no issue or pull request #{number}")
+    return RepoItemDetailOut.model_validate(item)
 
 
 @checkout_router.post(

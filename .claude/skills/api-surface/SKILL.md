@@ -46,7 +46,7 @@ pinning — that is a security bug, not a shortcut.
 | `artifacts.py`, `files.py`, `documents.py`, `memory.py`, `skills.py`, `skill_library.py` | tenant data APIs, mounted at `/artifacts`, `/files`, `/documents`, `/memory`, `/skills`, `/skill-library`; each gates on its own `<name>:read` / `<name>:write` scope (`auth/mgmt.py`) |
 | `skill_import.py`, `skill_quality.py` | more of `/skill-library`: import/browse/upstream (`/-/browse`, `/{name}/-/upstream`) and feedback/evals (`/-/feedback`, `/{name}/evals`) |
 | `auth_github.py` | GitHub login under `/auth/github` (device, token, actions, authorize/callback/exchange), `/auth` methods, `/github/connection` (the caller's own) and `/github/connections` (`github:admin`) |
-| `repos.py` | `GET /github/repos` (the caller's repos, grouped by installation); a thread's repo checkout under `/chat/sessions` |
+| `repos.py` | `GET /github/repos` (the caller's repos, grouped by installation), and `/github/repos/{owner}/{repo}/items[/{number}]` (one reachable repo's issues and PRs, read as the caller); a thread's repo checkout under `/chat/sessions` |
 | `push.py` | `/push` web-push subscriptions and the VAPID key (gated on `approvals:read`) |
 | `heartbeats.py` | `/heartbeats`: the caller's own heartbeats (`felix/jobs/heartbeat.py`) -- list, enrol/turn off (`PUT`, body `{enabled}` only), remove, run now (409 `heartbeat_running`); a named non-shared person; `heartbeats:read` / `heartbeats:write` |
 | `auth_google.py` | Google sign-in by redirect under `/auth/google` (authorize/callback/exchange), for the accounts on `FELIX_GOOGLE_ACCOUNTS` only |
