@@ -549,6 +549,26 @@ manifests served there. The audit row of each activation says who asked (`by`: `
 skill the conversation deactivated stays deactivated. `/name` and `preload` run in react agents,
 the only pattern that runs tools itself; a compile whose pattern cannot run a preload says so.
 
+A skill whose frontmatter says `context: fork` runs in a subagent instead: `activate_skill` hands
+its instructions and the model's `task` to one of the manifest's `spec.delegation.agents` (the one
+`agent:` names) as a call of the manifest's *governed* `task` tool -- so every control that names
+`task` holds for it: an approval, a policy, the limits and their peer hops, the permission mode, the
+child's own inbound auth, `subagent_stop` -- and returns only that agent's answer, as untrusted
+output content screening reads (a deny is passed on as one). The instructions never enter the
+conversation and nothing is retained. The tool runner's own per-call layer is the exception: it
+runs around `activate_skill`, the call the model made, not around the `task` call a fork makes
+inside it -- so manifest `pre_tool_use`/`post_tool_use` hooks, plugin `before_tool`/`after_tool`
+hooks and the `tool_call` audit row keyed on `task` do not see a fork (the skill's own `fork`
+audit row does, and the compile warns about manifest hooks on `task`); name `activate_skill` too
+where such a hook must hold. A fork counts as two tool calls against `max_tool_calls` (the
+activation and its `task` call) and one peer hop. The inner call's id is derived from the
+activation's (`<id>:fork`), so an approval it waits on is withdrawn when the run is interrupted,
+like any other call's (felix#531). A `model:` the skill asks for is used only if the deployment
+defines that route and request-model governance would let a caller ask for it on this manifest and
+every agent below it; it reaches the `task` handler by a harness-minted call id, never
+through the model-facing schema. An imported skill nobody has adopted never forks, since its
+instructions would become the subagent's own turn, and a forked skill is never preloaded.
+
 An activated skill stays in view for the rest of its conversation, within limits. Retention re-shows
 the *logged* result -- masked and screened when it was first returned -- as an ordinary user message
 ahead of the history (never a transient one, which the wires send after the newest turn), with every

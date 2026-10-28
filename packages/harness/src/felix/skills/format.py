@@ -247,6 +247,12 @@ def clamp_description(content: str, max_len: int = MAX_DESCRIPTION_CHARS) -> str
     return f"{content[:start]}{value}{content[end:]}"
 
 
+def xml_escape(value: str) -> str:
+    """Skill text -- a name, a description -- as it may sit inside a tag or an attribute of a block
+    the harness writes into a prompt: the one escape every such block uses, so none is weaker."""
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
 def split_frontmatter(content: str) -> tuple[str, str] | None:
     """(yaml text, body) between the `---` fences, or None when there are none. A leading
     byte-order mark is not part of the file's text: an editor that writes one would otherwise
@@ -469,4 +475,5 @@ __all__ = [
     "update_skill_md_frontmatter",
     "validate_skill_bundle",
     "validate_skill_name",
+    "xml_escape",
 ]

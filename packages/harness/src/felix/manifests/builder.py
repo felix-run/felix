@@ -2304,6 +2304,25 @@ async def build_agent(
         # The reader for what `spec.artifacts` spills, bound before the governance block below.
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
+        # The delegation children, mapped once: `task` and a forked skill reach the same agents under the
+        # same ceiling (`tools/delegation.py`).
+        delegation_children = (
+            {
+                ref.name: (delegates[ref.name], ref.description, deps.compiled_manifests[ref.name])
+                for ref in m.spec.delegation.agents
+            }
+            if m.spec.delegation is not None
+            else {}
+        )
+        delegation_ceiling = effective_limits(m.spec.limits)
+        # A forked skill's `model:`, handed to the `task` handler by call id (`delegation.ForkRunner`).
+        task_model_overrides: dict[str, str] = {}
+        fork_runner = None
+        # `spec.hooks`, built once: the loop, the tool runner, `task` and a forked skill fire the same set.
+        manifest_hooks: ManifestHooks | None = (
+            ManifestHooks(list(m.spec.hooks), m.metadata.name) if m.spec.hooks else None
+        )
+
         skill_suggester = None
         # `/name` and `preload`: the `activate_skill` calls a run starts with (`skills/invocation.py`).
         skill_preamble = None
@@ -2334,6 +2353,42 @@ async def build_agent(
                 settings=deps.settings,
                 owner=deps.skill_owner if personal else None,
             )
+            # `context: fork` skills run as calls of the governed `task` tool, bound below.
+            if delegation_children:
+                from fnmatch import fnmatch
+
+                from felix.tools.delegation import TASK_TOOL_NAME as TASK
+                from felix.tools.delegation import ForkRunner
+
+                fork_runner = ForkRunner(delegation_children, lead=m, model_overrides=task_model_overrides)
+                if any(s.fork for s in catalog.skills.values()) and any(
+                    h.event in ("pre_tool_use", "post_tool_use")
+                    and (not h.tools or any(fnmatch(TASK, p) for p in h.tools))
+                    for h in m.spec.hooks
+                ):
+                    # The tool runner fires these around the call the model made -- `activate_skill`
+                    # for a fork -- never around the `task` call the fork makes inside it.
+                    logger.warning(
+                        "manifest %s has pre/post_tool_use hooks on task and skills that run in a subagent; "
+                        "a fork fires them for activate_skill, not for task",
+                        m.metadata.name,
+                    )
+                for skill in catalog.skills.values():
+                    if skill.fork and skill.fork_agent and skill.fork_agent not in delegation_children:
+                        logger.warning(
+                            "skill %s runs in agent %s, which manifest %s does not delegate to",
+                            skill.name,
+                            skill.fork_agent,
+                            m.metadata.name,
+                        )
+            elif any(s.fork for s in catalog.skills.values()):
+                # Said at compile rather than discovered when one is activated -- hidden skills too:
+                # a person's `/name` reaches a skill the model is never offered.
+                logger.warning(
+                    "manifest %s has skills that run in a subagent (context: fork) but no "
+                    "spec.delegation to run them in",
+                    m.metadata.name,
+                )
             skill_tools = {
                 t.name: t
                 for t in make_skill_tools(
@@ -2342,6 +2397,7 @@ async def build_agent(
                     session_store=session_store,
                     # The ids of the calls the harness makes for a person (`skills/invocation.py`).
                     person_calls=person_calls,
+                    fork_runner=fork_runner,
                     tenant_id=tenant_id,
                     manifest_id=m.metadata.name,
                     settings=deps.settings,
@@ -2414,11 +2470,6 @@ async def build_agent(
             except Exception:
                 logger.debug("active facts inject failed", exc_info=True)
 
-        # `spec.hooks`, built once: the loop, the tool runner and the `task` tool fire the same set.
-        manifest_hooks: ManifestHooks | None = (
-            ManifestHooks(list(m.spec.hooks), m.metadata.name) if m.spec.hooks else None
-        )
-
         # Delegation → the `task` tool. Bound last of the spec's tools, so the collision check
         # below sees every other one, and before the governance pipeline, so policies,
         # approvals, limits and content screening wrap it like any other tool. Not in a
@@ -2442,16 +2493,14 @@ async def build_agent(
                 )
             resolved.append(
                 make_task_tool(
-                    {
-                        ref.name: (delegates[ref.name], ref.description, deps.compiled_manifests[ref.name])
-                        for ref in m.spec.delegation.agents
-                    },
-                    ceiling=effective_limits(m.spec.limits),
+                    delegation_children,
+                    ceiling=delegation_ceiling,
                     background=m.spec.delegation.background,
                     manifest_hooks=manifest_hooks,
                     max_background=m.spec.delegation.max_background,
                     egress=egress,
                     worktree=m.spec.delegation.worktree,
+                    model_overrides=task_model_overrides,
                 )
             )
             if m.spec.delegation.background:
@@ -2556,6 +2605,12 @@ async def build_agent(
                 settings=deps.settings if deps.settings is not None else get_settings(),
             )
         resolved = apply_workspace_scope(resolved, m.spec.workspace.scope)
+        if fork_runner is not None:
+            # The `task` tool every governance wrapper has wrapped: what a forked skill calls, so a
+            # control on `task` holds for a fork too.
+            from felix.tools.delegation import TASK_TOOL_NAME as _TASK
+
+            fork_runner.bind(next((t for t in resolved if t.name == _TASK), None))
 
         final_prompt = (
             system_prompt or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."

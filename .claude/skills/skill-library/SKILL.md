@@ -80,6 +80,19 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    `$ARGUMENTS[N]` and `$N` are substituted (`arguments.with_arguments`, bounded); a body that never
    names `$ARGUMENTS` gets `ARGUMENTS:` appended. `SkillCatalog.get_activatable` is the predicate for
    an activation already in a thread; the round runs through `react._tool_round`, as the model's do.
+8. **Forked skills.** Frontmatter `context: fork` (`Skill.fork`, with `agent` -> `fork_agent`,
+   `model` -> `fork_model`; all reserved from nested `metadata:`) makes `activate_skill` run the skill
+   in a delegation child instead of returning its body: `tools/delegation.py:ForkRunner`, built by the
+   builder over the same children map `task` gets and bound to the *governed* `task` tool once every
+   wrapper has wrapped it, calls that tool -- so approvals, policies, limits, permission mode and
+   `subagent_stop` hold for a fork as for `task` (tool-runner `pre/post_tool_use` hooks fire for
+   `activate_skill` instead; the compile warns). A vetted `model:` (route defined, lead's tree allows
+   it) reaches the `task` handler through `model_overrides` keyed by a minted call id. The child's
+   turn is `<skill_instructions>` plus the model's `task` (or the person's substituted arguments); a
+   wrapper deny is passed on, an error is `fork_failed`, an answer is untrusted output; a fork is
+   never an activation, so nothing is retained and it is never preloaded. An imported skill nobody
+   adopted never forks (`fork_refused`); no delegation, or an `agent:` outside it, is
+   `fork_unavailable` (and warns at compile).
 
 Manifest fields (`manifests/schema.py`): `skills` (`SkillRef`: name, description, version, preload),
 `skills_declared_only`, `personal_skills` (`off` / `read` / `write`), `skill_authoring`
