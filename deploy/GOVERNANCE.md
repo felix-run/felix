@@ -531,8 +531,10 @@ the *logged* result -- masked and screened when it was first returned -- as an o
 ahead of the history (never a transient one, which the wires send after the newest turn), with every
 `<` escaped so the body cannot close its block, and labelled `untrusted="true"` for an imported skill.
 Only a skill the compile's catalog still offers is re-shown: archiving, unpublishing or undeclaring
-one takes it out of every conversation that activated it, and one that changed since is named rather
-than repeated. Retained text is capped at 128K characters a render, newest activation first; the
+one stops it being re-shown in every conversation that activated it (its original result stays in
+any turn the strategy still renders), and one that changed since is named rather than repeated.
+Retained text is a user-role message: an imported skill's body, which reached the model as a tool
+result, is re-shown in the user tier, labelled and fenced. Retained text is capped at 128K characters a render, newest activation first; the
 rest are named, and activating one again sends it.
 
 **Skill bodies are the one place model-written text can become instructions**, so they are held

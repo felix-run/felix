@@ -80,27 +80,38 @@ def _payload(content: str | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-async def _branch_seqs(session: Session) -> set[int] | None:
+def _branch_of(shape: list[Any], session: Any) -> set[int] | None:
     """The sequence numbers on the thread's active branch, or None for a log with no tree."""
     from felix.session.tree import active_branch_events
 
-    skeletons = getattr(session, "get_event_skeletons", None)
-    shape = await skeletons() if skeletons is not None else await session.get_events()
     branch = active_branch_events(shape, session_id=getattr(session, "id", ""))
     return {e.seq for e in branch} if len(branch) != len(shape) else None
 
 
-async def thread_activations(session: Session) -> dict[str, Activation]:
-    """Each skill active on ``session``'s branch, by name, in the order activated."""
+async def thread_activations(
+    session: Session, *, whole_log: list[Any] | None = None
+) -> dict[str, Activation]:
+    """Each skill active on ``session``'s branch, by name, in the order activated.
+
+    ``whole_log`` is the thread's every event, already read -- a render's own read, which
+    `SkillRetentionStrategy` reuses so retention costs a turn no transaction of its own.
+    """
     from felix.session.types import GetEventsOpts
 
-    # Only the skill tools' results: the rest of the log -- every other tool's output -- is never
-    # read whole on a render (`test_compaction_bounded_read`). The name check below still runs,
-    # for a store that does not filter on `names`.
-    results = await session.get_events(
-        GetEventsOpts(kinds=["tool_result"], names=[ACTIVATE_TOOL, DEACTIVATE_TOOL])
-    )
-    on_branch = await _branch_seqs(session)
+    if whole_log is not None:
+        results = [e for e in whole_log if e.kind == "tool_result"]
+        on_branch = _branch_of(whole_log, session)
+    else:
+        # Only the skill tools' results: the rest of the log -- every other tool's output -- is
+        # never read whole on a render (`test_compaction_bounded_read`). The name check below
+        # still runs, for a store that does not filter on `names`.
+        results = await session.get_events(
+            GetEventsOpts(kinds=["tool_result"], names=[ACTIVATE_TOOL, DEACTIVATE_TOOL])
+        )
+        skeletons = getattr(session, "get_event_skeletons", None)
+        on_branch = _branch_of(
+            await skeletons() if skeletons is not None else await session.get_events(), session
+        )
     active: dict[str, Activation] = {}
     for event in sorted(results, key=lambda e: e.seq):
         if event.name not in (ACTIVATE_TOOL, DEACTIVATE_TOOL):
@@ -171,7 +182,8 @@ def retained_view(active: dict[str, Activation], catalog: Any) -> RetainedView:
     and `activate_skill`'s `already_active` answer agree on which instructions the model has.
 
     A skill the catalog no longer offers (archived, unpublished, undeclared, hidden) is dropped:
-    an operator who takes a skill away takes it out of every conversation that activated it.
+    an operator who takes a skill away stops it being re-shown in every conversation that
+    activated it. Its original result stays in any render that still holds that turn.
     """
     whole: dict[str, Activation] = {}
     stale: list[Activation] = []
@@ -200,22 +212,6 @@ def _fenced_payload(activation: Activation) -> str:
     return json.dumps(_payload(activation.content)).replace("<", "\\u003c")
 
 
-_RETAINED_OPEN = '<retained_skill name="'
-
-
-def _retained_name(message: ChatMessage) -> str | None:
-    """The skill a retained block names, for a message retention wrote; None for any other."""
-    content = message.content or ""
-    if message.role != "user" or not content.startswith(_RETAINED_OPEN):
-        return None
-    end = content.find('"', len(_RETAINED_OPEN))
-    if end < 0:
-        return None
-    return (
-        content[len(_RETAINED_OPEN) : end].replace("&lt;", "<").replace("&quot;", '"').replace("&amp;", "&")
-    )
-
-
 def _attr(value: str) -> str:
     return value.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
 
@@ -240,7 +236,7 @@ def retained_messages(lost: list[Activation], view: RetainedView, catalog: Any) 
                 else ""
             )
             blocks.append(
-                f'{_RETAINED_OPEN}{_attr(activation.name)}"{label}>\n'
+                f'<retained_skill name="{_attr(activation.name)}"{label}>\n'
                 "You activated this skill earlier in this conversation; its activate_skill result is "
                 f"repeated here because the turn it was on is no longer shown.{caveat}\n"
                 f"{_fenced_payload(activation)}\n</retained_skill>"
@@ -256,6 +252,26 @@ def retained_messages(lost: list[Activation], view: RetainedView, catalog: Any) 
     return [ChatMessage(role="user", content=block) for block in blocks]
 
 
+class _RecordingSession:
+    """``session`` as an inner render sees it, remembering an unfiltered `get_events` read."""
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+        self.whole_log: list[Any] | None = None
+
+    async def get_events(self, opts: Any = None) -> Any:
+        events = await self._session.get_events(opts)
+        if opts is None or not any(
+            getattr(opts, field, None) is not None
+            for field in ("from_seq", "to_seq", "limit", "kinds", "names")
+        ):
+            self.whole_log = list(events)
+        return events
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+
 class SkillRetentionStrategy:
     """A session strategy whose renders keep every active skill's instructions in view."""
 
@@ -264,15 +280,22 @@ class SkillRetentionStrategy:
         self._catalog = catalog
 
     async def render(self, session: Any, incoming: list[ChatMessage], opts: Any) -> list[ChatMessage]:
-        rendered = await self._inner.render(session, incoming, opts)
-        active = await thread_activations(session)
+        reads = _RecordingSession(session)
+        rendered = await self._inner.render(reads, incoming, opts)
+        # Every strategy reads the whole log on a turn with nothing compacted yet; that read already
+        # holds every activation. Only a render that read less (a summary covers the start) reads
+        # the activations itself -- a plain turn's transaction count does not move.
+        active = await thread_activations(session, whole_log=reads.whole_log)
         if not active:
             return rendered
-        shown = {m.tool_call_id for m in rendered if m.role == "tool" and m.tool_call_id}
-        # And what an enclosing compile's retention already put back: a router and the child it
-        # forwards the thread to both wrap the strategy, and the child must not repeat it.
-        already = {n for m in rendered if (n := _retained_name(m)) is not None}
-        lost = [a for a in active.values() if a.tool_call_id not in shown and a.name not in already]
+        # Only `activate_skill` results count as shown: a write-back may reuse a call id, and a
+        # message's text is anyone's to write -- neither may stand in for the real activation.
+        shown = {
+            m.tool_call_id
+            for m in rendered
+            if m.role == "tool" and m.name == ACTIVATE_TOOL and m.tool_call_id
+        }
+        lost = [a for a in active.values() if a.tool_call_id not in shown]
         if not lost:
             return rendered
         retained = retained_messages(lost, retained_view(active, self._catalog), self._catalog)
@@ -292,9 +315,15 @@ class SkillRetentionStrategy:
 
 def retain_skills(strategy: Any, catalog: Any) -> Any:
     """``strategy`` keeping the active skills of ``catalog`` in view. Composed by the builder once
-    the catalog is loaded, for a compile that binds the skill tools."""
+    the catalog is loaded, for a compile that binds the skill tools.
+
+    Once: a strategy already retaining is returned with this catalog in its place, so a compile
+    handed an enclosing one's strategy never shows a skill twice. Decided by type, never by what
+    a rendered message says -- that text is anyone's to write."""
     if strategy is None:
         return strategy
+    if isinstance(strategy, SkillRetentionStrategy):
+        return SkillRetentionStrategy(strategy._inner, catalog)
     return SkillRetentionStrategy(strategy, catalog)
 
 
