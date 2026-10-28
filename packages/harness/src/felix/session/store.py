@@ -16,6 +16,7 @@ from felix.session import heads
 from felix.session.types import (
     CONTEXT_KEY,
     SKELETON_METADATA_KEYS,
+    TREE_METADATA_KEYS,
     AppendableEvent,
     GetEventsOpts,
     Session,
@@ -872,26 +873,16 @@ def screenable_text(event_type: str, payload: dict[str, Any]) -> str:
 
 
 def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> AppendableEvent:
-    known_kinds: set[str] = {
-        "message",
-        "tool_call",
-        "tool_result",
-        "thinking",
-        "audit",
-        "compaction",
-        "model_change",
-        "thinking_level_change",
-        "branch_summary",
-        "custom",
-        "label",
-        "session_info",
-        "user",
-        "assistant",
-        "tool",
-        "system",
-    }
-    kind: SessionEventKind | str = event_type if event_type in known_kinds else "message"
+    # What a write-back adds: a message, a tool's result, or an entry. Never a kind the harness writes
+    # for itself -- a `compaction` or a `session_summary` audit is read as the thread's summary, and
+    # one from here replaced the history before it with whatever its `retainedTail` said.
+    writable_kinds: set[str] = {"message", "tool_result", "custom", "user", "assistant", "tool"}
+    kind: SessionEventKind | str = event_type if event_type in writable_kinds else "message"
     metadata = payload.get("metadata") or payload.get("meta")
+    if isinstance(metadata, dict):
+        # Where the event lands is the store's to say (`TREE_METADATA_KEYS`): a chosen `event_id`
+        # replaced the event it matched in every render, and a `parent_id` grafted this one anywhere.
+        metadata = {k: v for k, v in metadata.items() if k not in TREE_METADATA_KEYS}
     if isinstance(metadata, dict) and metadata.get(CONTEXT_KEY) is not None:
         # A writer from outside keys its own entries in its own namespace, as a client's are
         # (`/chat/sessions/custom`): never one the harness writes, where it could drop the

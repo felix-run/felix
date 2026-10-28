@@ -2648,7 +2648,7 @@ async def append_custom_entry(
 ) -> dict[str, Any]:
     """Persist a custom (UI/plugin) entry. Set ``in_context`` to include it in the LLM."""
     from felix.session.tree import annotate_and_append
-    from felix.session.types import CONTEXT_KEY, AppendableEvent
+    from felix.session.types import CONTEXT_KEY, AppendableEvent, caller_metadata
 
     auth = _auth_from_request(request)
     settings = request.app.state.settings
@@ -2656,7 +2656,7 @@ async def append_custom_entry(
     if thread is None:
         raise HTTPException(status_code=400, detail="invalid_thread_id")
     await _refuse_unless_driver(request, thread, lease_token)
-    md = dict(body.metadata or {})
+    md = caller_metadata(body.metadata)
     md["in_context"] = bool(body.in_context)
     md["type"] = "custom"
     key = md.get(CONTEXT_KEY)

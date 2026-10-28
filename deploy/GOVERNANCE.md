@@ -502,7 +502,15 @@ compaction cut through (also reference material), a recalled memory, or a
 `POST /chat/sessions/custom` entry. That last one takes its `role` from the caller and is
 stored as written, but a `system`-role entry with `in_context: true` is sent as a user turn marked as added by the
 client, on live history and on a compaction checkpoint alike (`session/types.py`,
-`_model_role_and_content`).
+`_model_role_and_content`). Its `metadata` is the caller's own, less what the harness reads to place
+or render an event (`RESERVED_METADATA_KEYS`): no `event_id` or `parent_id`, so it lands at the end
+of the branch and cannot stand in for another event or graft itself where the model would read a
+history the transcript does not show; no `attachments`, so it sends the model no image, which `/chat`
+allows only on a user's own turn; no `thinking`; and no `pinned`, which kept an entry through every
+window and compaction, so repeated ones grew each turn's context past what the manifest's strategy
+bounds. A queue's write-back (`/internal/sessions/{id}/events`) cannot choose where its event lands
+or pin it either, and writes only a message, a tool result or an entry: any other kind is stored as a
+message, so it cannot write a `compaction` the strategies would read as the thread's summary.
 
 **Skill bodies are the one place model-written text can become instructions**, so they are held
 to a review step. The catalogue names skills in the system tier and `activate_skill` returns a
