@@ -106,3 +106,55 @@ async def test_report_back_off_leaves_the_conversation_alone(
     assert run["result"]["answer"] == ANSWER
     assert "report" not in run["result"]
     assert reports == []
+
+
+async def test_a_report_kept_out_by_a_live_run_lands_when_a_turn_there_ends(
+    boot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The firing finds a run going on in the conversation (marked as a turn marks it); the report
+    waits on the thread, and the end of the next turn there adds it -- the turn loop's own settle,
+    not a test helper."""
+    from felix.workspace_notes import mark_run_active, mark_run_idle
+
+    script = [*_script()[:3], ScriptedTurn(content="Yes, it's out."), ScriptedTurn(content="10:02.")]
+    async with boot(script, env=ENV, manifests={"helper": _manifest()}) as app:
+        await _turn(app, "Tell me tomorrow whether the release shipped.")
+        await mark_run_active("default", f"default:{THREAD}")
+        try:
+            run = await _fire(app, monkeypatch)
+            held = await _reports(app)
+        finally:
+            await mark_run_idle("default", f"default:{THREAD}")
+        await _turn(app, "Anything else?")
+        landed = await _reports(app)
+        await _turn(app, "When did it ship?")
+        prompt = app.spy.prompts[-1]
+
+    assert run["result"]["report"] == "queued"
+    assert held == []
+    (report,) = landed
+    assert report.content == f"[Scheduled task: Release check]\n\n{ANSWER}"
+    seen = [(m.role, str(m.content)) for m in prompt]
+    assert ("assistant", report.content) in seen, seen
+
+
+async def test_a_task_that_fails_says_so_in_the_conversation(
+    boot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = [
+        *_script()[:2],
+        ScriptedTurn(error=RuntimeError("upstream exploded")),
+        ScriptedTurn(content="ok"),
+    ]
+    async with boot(script, env=ENV, manifests={"helper": _manifest()}) as app:
+        await _turn(app, "Tell me tomorrow whether the release shipped.")
+        run = await _fire(app, monkeypatch)
+        reports = await _reports(app)
+
+    assert run["status"] == "error"
+    assert run["result"]["report"] == "appended"
+    (report,) = reports
+    assert report.content.startswith("[Scheduled task: Release check]\n\nThe task did not finish: ")
+    assert report.metadata["failed"] is True
+    # Written for readers, never the exception's own text (`scheduler._job_error_message`).
+    assert "upstream exploded" not in report.content and run["error"] in report.content

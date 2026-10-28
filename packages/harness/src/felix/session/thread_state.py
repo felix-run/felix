@@ -22,7 +22,7 @@ the first one, until a write through this module forgets it (see that function).
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +56,11 @@ _NULLABLE = frozenset({"session_name", "parent_session_id", "model_id", "output_
 # the two apart: after a deliberate rewind the newest event is on the abandoned branch too.
 LEAF_TRACKED_KEY = "leaf_v"
 LEAF_TRACKED_VERSION = 2
+
+# Where `push_thread_queue` keeps a thread's queues, by name. Bookkeeping like the leaf keys, never
+# session metadata: what waits there is not masked for a reader and is not this module's to show, so
+# no read of a thread's metadata returns it (`_public`).
+QUEUES_KEY = "queues"
 
 
 def leaf_is_tracked(labels_json: dict[str, Any] | None) -> bool:
@@ -213,13 +218,47 @@ def _row_meta(stored: dict[str, Any] | None) -> dict[str, Any]:
     """Defaults under a row's own keys, so a key added to `_default_meta` later still answers."""
     meta = _default_meta()
     meta.update(stored or {})
-    # Bookkeeping for the leaf column, not session metadata.
+    # Bookkeeping for the leaf column and the queues, not session metadata.
     meta.pop(LEAF_TRACKED_KEY, None)
     meta.pop(LEAF_EPOCH_KEY, None)
+    meta.pop(QUEUES_KEY, None)
     for key in ("labels", "feedback"):
         if isinstance(meta.get(key), dict):
             meta[key] = dict(meta[key])
     return meta
+
+
+def _public(meta: dict[str, Any]) -> dict[str, Any]:
+    """The memory arm's entry as a read returns it: without the queues, as `_row_meta` leaves them."""
+    out = dict(meta)
+    out.pop(QUEUES_KEY, None)
+    return out
+
+
+async def _mutate_row[T](
+    settings: Settings, tenant_id: str, thread_id: str, change: Callable[[dict[str, Any]], T]
+) -> tuple[T, dict[str, Any] | None]:
+    """The Postgres arm's locked read-modify-write of a thread's row: ``change`` edits a copy of the
+    stored metadata and answers what the caller wants back; the copy is written with its revision
+    and column bumped, unless ``change`` answers falsy -- nothing to write. ``(answer, stored)``,
+    ``stored`` None when nothing was written."""
+    async with _writing(settings, tenant_id, thread_id) as db:
+        # A new row starts at this process's leaf: no replica has stored one for the thread,
+        # so the one this process holds is all there is. It is not marked tracked -- this
+        # process may not have served the thread's latest append -- so the next turn's
+        # `resolve_leaf` takes the log's newest event over it. An existing row keeps its own.
+        row = await _locked_row(
+            db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=_mem_get_leaf(thread_id)
+        )
+        stored = dict(row.labels_json or {})
+        answer = change(stored)
+        if not answer:
+            return answer, None
+        _bump(stored)
+        row.labels_json = stored
+        row.updated_at = _column_seconds(stored)
+        await db.commit()
+    return answer, stored
 
 
 async def _locked_row(
@@ -337,6 +376,76 @@ async def persist_leaf(
     _set_leaf_epoch(thread_id, epoch)
 
 
+def _pushed(meta: dict[str, Any], name: str, items: list[dict[str, Any]], *, front: bool, keep: int) -> bool:
+    queues = dict(meta.get(QUEUES_KEY) or {})
+    current = list(queues.get(name) or [])
+    queues[name] = ([*items, *current] if front else [*current, *items])[-keep:]
+    meta[QUEUES_KEY] = queues
+    return True
+
+
+def _taken(meta: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    queues = dict(meta.get(QUEUES_KEY) or {})
+    taken = list(queues.pop(name, None) or [])
+    if taken:
+        if queues:
+            meta[QUEUES_KEY] = queues
+        else:
+            meta.pop(QUEUES_KEY, None)
+    return taken
+
+
+async def push_thread_queue(
+    *,
+    settings: Settings | None,
+    tenant_id: str,
+    thread_id: str,
+    name: str,
+    items: list[dict[str, Any]],
+    keep: int,
+    front: bool = False,
+) -> None:
+    """Add ``items`` to the thread's queue ``name`` in one locked write, keeping the newest ``keep``;
+    ``front`` puts them back ahead of what is there (a delivery that could not land them).
+
+    With `take_thread_queue`, a queue two processes share: a writer on the worker and a reader
+    on the API, which `tree.leaf_lock` (one process) does not serialise. Each is a single
+    read-modify-write under the row lock, so an item is taken once and none is lost between them.
+    No read of the thread's metadata returns a queue (`QUEUES_KEY`)."""
+    if not items:
+        return
+    if _use_memory(settings):
+        meta = _mem_meta(thread_id)
+        _pushed(meta, name, items, front=front, keep=keep)
+        _bump(meta)
+        return
+    assert settings is not None
+    await _mutate_row(
+        settings, tenant_id, thread_id, lambda meta: _pushed(meta, name, items, front=front, keep=keep)
+    )
+
+
+async def take_thread_queue(
+    *, settings: Settings | None, tenant_id: str, thread_id: str, name: str
+) -> list[dict[str, Any]]:
+    """Remove and return the thread's queue ``name``, in one locked write; empty, and nothing
+    written, when there is none. See `push_thread_queue`."""
+    if _use_memory(settings):
+        meta = _meta_by_thread.get(thread_id)
+        taken = _taken(meta, name) if meta is not None else []
+        if taken and meta is not None:
+            _bump(meta)
+        return taken
+    assert settings is not None
+    # The common case, read without a lock or a write -- from the row, not the request memo, which
+    # a turn ending here filled before another process pushed.
+    row = await _read_row(settings, tenant_id, thread_id)
+    if row is None or not ((row.labels_json or {}).get(QUEUES_KEY) or {}).get(name):
+        return []
+    taken, _ = await _mutate_row(settings, tenant_id, thread_id, lambda meta: _taken(meta, name))
+    return taken
+
+
 async def load_leaf(
     *,
     settings: Settings | None,
@@ -362,23 +471,15 @@ async def update_thread_meta(
         meta = _mem_meta(thread_id)
         _merge_fields(meta, fields)
         _bump(meta)
-        return dict(meta)
+        return _public(meta)
 
     assert settings is not None
-    async with _writing(settings, tenant_id, thread_id) as db:
-        # A new row starts at this process's leaf: no replica has stored one for the thread,
-        # so the one this process holds is all there is. It is not marked tracked -- this
-        # process may not have served the thread's latest append -- so the next turn's
-        # `resolve_leaf` takes the log's newest event over it. An existing row keeps its own.
-        row = await _locked_row(
-            db, tenant_id=tenant_id, thread_id=thread_id, leaf_event_id=_mem_get_leaf(thread_id)
-        )
-        stored = dict(row.labels_json or {})
-        _merge_fields(stored, fields)
-        _bump(stored)
-        row.labels_json = stored
-        row.updated_at = _column_seconds(stored)
-        await db.commit()
+
+    def change(meta: dict[str, Any]) -> bool:
+        _merge_fields(meta, fields)
+        return True
+
+    _, stored = await _mutate_row(settings, tenant_id, thread_id, change)
     return _row_meta(stored)
 
 
@@ -392,7 +493,7 @@ async def get_thread_meta(
         # A read: an unknown thread answers defaults without gaining an entry, as Postgres
         # answers a missing `thread_state` row without inserting one.
         meta = _meta_by_thread.get(thread_id)
-        return dict(meta) if meta is not None else _default_meta()
+        return _public(meta) if meta is not None else _default_meta()
     assert settings is not None
     return await _read_meta(settings, tenant_id, thread_id)
 
@@ -713,6 +814,7 @@ __all__ = [
     "LEAF_TRACKED_VERSION",
     "PREVIEW_CHARS",
     "PREVIEW_KEY",
+    "QUEUES_KEY",
     "backfill_preview",
     "claim_thread",
     "get_thread_meta",
@@ -724,7 +826,9 @@ __all__ = [
     "masked_preview",
     "note_first_message",
     "persist_leaf",
+    "push_thread_queue",
     "reset_thread_meta_for_tests",
+    "take_thread_queue",
     "thread_exists",
     "thread_preview",
     "threads_missing_preview",

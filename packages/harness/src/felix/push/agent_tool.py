@@ -65,6 +65,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from felix.governance.permission_mode import NOTIFY_TOOL_NAME
 from felix.jobs import origin_thread
+from felix.session import idle_append
 from felix.tools.refusal import ToolRefused, require_person
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, define_tool
 
@@ -92,9 +93,9 @@ NOTICE_ENTRY_TYPE = "notice"
 # What became of the notice in the conversation it links to (the result's `thread`), when it was
 # not added there.
 _THREAD_NOTES = {
-    origin_thread.RUN_LIVE: "a run is going on in the conversation it links to, so it was not added there",
-    origin_thread.MISSING: "the conversation it links to does not exist, so it was not added there",
-    origin_thread.FAILED: "it could not be added to the conversation it links to",
+    idle_append.RUN_LIVE: "a run is going on in the conversation it links to, so it was not added there",
+    idle_append.MISSING: "the conversation it links to does not exist, so it was not added there",
+    idle_append.FAILED: "it could not be added to the conversation it links to",
 }
 
 # One limiter per process: an in-process one is the counter, so a fresh one per call counts nothing.
@@ -314,8 +315,8 @@ class _Notices:
 
     async def append(self, thread_id: str, title: str, body: str) -> str:
         """Add the notice to `thread_id` (`notice_entry`); what became of it, an `origin_thread` value.
-        Only into a conversation that exists and has no run going on (`origin_thread.append_when_idle`)."""
-        return await origin_thread.append_when_idle(
+        Only into a conversation that exists and has no run going on (`idle_append.append_when_idle`)."""
+        return await idle_append.append_when_idle(
             self.settings, self.tenant_id, thread_id, [notice_entry(title, body)]
         )
 
@@ -421,7 +422,7 @@ def notice_entry(title: str, body: str) -> AppendableEvent:
 def _outcome(delivered: int, push_note: str | None, thread: str) -> dict[str, Any]:
     """The result the model reads: how many browsers took it, the channels that delivered it, what
     became of it in the conversation it links to, and a note saying why anything did not."""
-    appended = thread == origin_thread.APPENDED
+    appended = thread == idle_append.APPENDED
     channels = [*(["push"] if delivered else []), *(["thread"] if appended else [])]
     notes = [n for n in (push_note, _THREAD_NOTES.get(thread)) if n]
     if appended and push_note:

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from felix.auth.actors import CRON
 from felix.config import Settings
@@ -16,6 +16,9 @@ from felix.jobs import store as jobs_store
 from felix.jobs.schedule import ScheduleError, parse_schedule
 from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage, InvokeInput
+
+if TYPE_CHECKING:
+    from felix.manifests.schema import Manifest
 
 logger = logging.getLogger("felix.jobs.scheduler")
 
@@ -289,35 +292,40 @@ async def _invoke_job_manifest(
             if firing.refusal is not None:
                 return firing.refusal
             prompt = firing.prompt
-        # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
-        # credential's manifest pin -- and the thread's compile pin, as every other way into a
-        # run checks them. A job used to compile straight past both, so `jobs:write` reached any
-        # manifest in the tenant. A refusal raises, and is recorded as the run's error.
-        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
-        if firing is not None:
-            # After the checks above, which judged the manifest as stored.
-            resolved.manifest = firing.adjust(resolved.manifest)
-        # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
-        # it like any user turn; a refusal raises and is recorded as an error run.
-        messages = [ChatMessage(role="user", content=prompt)]
         try:
-            agent = await build_tenant_agent(
-                settings,
-                manifest=resolved.manifest,
-                sub_agents=resolved.sub_agents,
-                tools=provider,
-                tenant_id=tenant_id,
-                # The tenant's library only: a writer's personal skills are not recorded with the
-                # job, and a job running on them would follow instructions its readers cannot see.
-                skill_owner=None,
-                # The writer's memory, though: a job runs for its writer, whose person key the
-                # recorded caller carried (`AuthContext.person`).
-                person=auth.person,
-            )
-            result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
-        finally:
+            # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
+            # credential's manifest pin -- and the thread's compile pin, as every other way into a
+            # run checks them. A job used to compile straight past both, so `jobs:write` reached any
+            # manifest in the tenant. A refusal raises, and is recorded as the run's error.
+            await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
             if firing is not None:
-                await firing.after()
+                # After the checks above, which judged the manifest as stored.
+                resolved.manifest = firing.adjust(resolved.manifest)
+            # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
+            # it like any user turn; a refusal raises and is recorded as an error run.
+            messages = [ChatMessage(role="user", content=prompt)]
+            try:
+                agent = await build_tenant_agent(
+                    settings,
+                    manifest=resolved.manifest,
+                    sub_agents=resolved.sub_agents,
+                    tools=provider,
+                    tenant_id=tenant_id,
+                    # The tenant's library only: a writer's personal skills are not recorded with the
+                    # job, and a job running on them would follow instructions its readers cannot see.
+                    skill_owner=None,
+                    # The writer's memory, though: a job runs for its writer, whose person key the
+                    # recorded caller carried (`AuthContext.person`).
+                    person=auth.person,
+                )
+                result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
+            finally:
+                if firing is not None:
+                    await firing.after()
+        except Exception as exc:
+            if firing is not None:
+                raise  # a heartbeat's failure is recorded by `fire_job`, as before; it has no report
+            return await _failed_task(settings, tenant_id, job, resolved.manifest, req_ctx, exc)
         answer = result.final.content if result.final else ""
         if firing is not None:
             return firing.result(str(answer or ""), req_ctx.extras, thread)
@@ -326,6 +334,32 @@ async def _invoke_job_manifest(
         # A task's answer, into the conversation it was scheduled from.
         report = await report_back(settings, tenant_id, job, resolved.manifest, req_ctx, str(answer or ""))
     out: dict[str, Any] = {"status": "ok", "answer": answer}
+    if report is not None:
+        out["report"] = report
+    return out
+
+
+def _error_result(job: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    """A run that raised, as its record keeps it: logged with the exception, recorded with
+    `_job_error_message` -- written for the readers of `GET /jobs/{name}/runs`, never its text."""
+    logger.error("job_invoke_failed name=%s", loggable(str(job.get("name")), limit=200), exc_info=exc)
+    return {"status": "error", "error": _job_error_message(exc)}
+
+
+async def _failed_task(
+    settings: Settings,
+    tenant_id: str,
+    job: dict[str, Any],
+    manifest: Manifest,
+    ctx: RequestContext,
+    exc: Exception,
+) -> dict[str, Any]:
+    """A firing that raised, recorded as `fire_job` records one -- and, for a task, reported to the
+    conversation it was scheduled from, so the person hears it did not finish rather than nothing."""
+    from felix.jobs.agent_tools import report_back
+
+    out = _error_result(job, exc)
+    report = await report_back(settings, tenant_id, job, manifest, ctx, out["error"], failed=True)
     if report is not None:
         out["report"] = report
     return out
@@ -489,10 +523,7 @@ async def fire_job(
             try:
                 result = await work(settings, tenant_id=tenant_id, job=job)
             except Exception as exc:
-                logger.exception("job_invoke_failed name=%s", loggable(str(job.get("name")), limit=200))
-                # Written here, never the exception's text: the run record is returned by
-                # `GET /jobs/{name}/runs` and `POST /jobs/{name}/run`.
-                result = {"status": "error", "error": _job_error_message(exc)}
+                result = _error_result(job, exc)
         result["trigger"] = trigger
         if requested_by:
             result["requested_by"] = requested_by

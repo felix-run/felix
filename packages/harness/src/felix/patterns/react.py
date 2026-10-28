@@ -531,9 +531,13 @@ class _ReactAgent:
     async def _settle_notes(self, tenant_id: str, notes_thread: str) -> None:
         """Unmark the run, then flush its notes: a note that saw the mark and was queued after the
         run's last model call reaches the log here rather than waiting for a next run. One queued
-        after this flush is delivered at the thread's next run."""
+        after this flush is delivered at the thread's next run. Then what a scheduled task reported
+        while the run was live, which waited for it to end (`session/idle_append.py:append_or_queue`)."""
         await mark_run_idle(tenant_id, notes_thread)
         await self._record_workspace_notes(notes_thread, await drain_workspace_notes(tenant_id, notes_thread))
+        from felix.session.idle_append import deliver_pending
+
+        await deliver_pending(self.settings, tenant_id, notes_thread)
 
     async def _append_produced(
         self,

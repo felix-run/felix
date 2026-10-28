@@ -13,6 +13,8 @@ being restated.
 
 from __future__ import annotations
 
+import re
+
 from felix.auth.context import assert_valid_tenant_id
 
 # A suffix carrying either delimiter could forge a tenant prefix or a reserved
@@ -175,6 +177,22 @@ def thread_belongs_to_tenant(tenant_id: str, thread_id: str) -> bool:
     return thread_id.startswith(prefix) and len(thread_id) > len(prefix)
 
 
+# No `:` -- a chat client cannot make a thread with one (`thread_ids.effective_thread_id`), while
+# every thread the harness mints for itself has one (`job:`, `channel:`, `a2a:`, `workflow:`,
+# `fiber:`) -- so a recorded origin naming a harness thread is neither linked nor written to.
+_THREAD_SUFFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]*")
+
+
+def openable_thread(tenant_id: str, thread_id: object) -> bool:
+    """Whether a recorded thread id is a chat thread this tenant's person could open: the tenant's
+    own (`thread_ids.thread_belongs_to_tenant`), with a suffix of plain id characters -- no path,
+    scheme or `..` for a client to follow, and no `:`, which only the harness's own threads have."""
+    if not isinstance(thread_id, str) or not thread_belongs_to_tenant(tenant_id, thread_id):
+        return False
+    suffix = thread_id[len(tenant_id) + 1 :]
+    return _THREAD_SUFFIX.fullmatch(suffix) is not None and ".." not in suffix
+
+
 # Named now that this is imported across workspace members: `_usable_tenant` is the second
 # line of defence behind `assert_valid_tenant_id` and not part of the contract, and
 # `_compose` is private on purpose (see its docstring).
@@ -185,6 +203,7 @@ __all__ = [
     "channel_thread_id",
     "effective_thread_id",
     "eval_thread_id",
+    "openable_thread",
     "thread_belongs_to_tenant",
     "workflow_run_key",
     "workflow_thread_id",

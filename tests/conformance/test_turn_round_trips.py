@@ -30,10 +30,12 @@ postgres_only = pytest.mark.parametrize("store_settings", ["postgres"], indirect
 
 # A plain turn on the `quick` manifest, one transaction each: the in-flight run check, the pin's
 # `thread_state` read, the skill library, memory facts, the leaf, the render, and the user's and
-# the reply's appends (`append_batch` and `store_leaf` apiece). `store_leaf` is its own on
-# purpose (a failed leaf write must not lose the events). Exact, per path: a saving updates the
+# the reply's appends (`append_batch` and `store_leaf` apiece), and at the end the read for what a
+# scheduled task reported while the turn ran (`idle_append.deliver_pending`). `store_leaf` is its own
+# on purpose (a failed leaf write must not lose the events); so is that read, which the request's
+# memo would answer from before a worker queued anything. Exact, per path: a saving updates the
 # number here in the same diff, so a later regression cannot hide inside the slack it left.
-TURN_TRANSACTIONS = {"/chat": 10, "/chat/stream": 10}
+TURN_TRANSACTIONS = {"/chat": 11, "/chat/stream": 11}
 
 
 def _thread() -> str:
