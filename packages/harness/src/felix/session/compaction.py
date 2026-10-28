@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from felix.hooks import run_before_compact, run_compact_failed
 from felix.patterns.types import ChatMessage
-from felix.security.fencing import fence
+from felix.security.fencing import fence, fence_fresh
 from felix.session.types import (
     CONTEXT_KEY,
     AppendableEvent,
@@ -64,13 +64,15 @@ def fence_untrusted(text: str) -> str:
     transcripts, and what it extracts is later injected into prompts, so an unfenced
     extractor is a direct injection-to-persistence-to-injection path.
 
-    Both directions are neutralized inside the payload, case- and
-    whitespace-insensitively: `</untrusted_transcript >` with one space used to walk
-    straight through an exact-match replace. The shared implementation lives in
-    `felix.security.fencing` because this rule was hand-rolled in three places and
-    drifted three ways.
+    The region is `<untrusted_transcript-<12 hex>>`, named anew for each call
+    (`fencing.fence_fresh`), so no spelling of its close -- a fullwidth lookalike included --
+    can be forged; every `untrusted_transcript…` marker inside is neutralised, so none can be
+    opened either. Each caller sends the fenced text once (a summariser's input, a side
+    question, a memory-extraction excerpt) and nothing stores it, so a new name per call costs
+    no cached prefix. The shared implementation lives in `felix.security.fencing` because this
+    rule was hand-rolled in three places and drifted three ways.
     """
-    return fence(text or "", _FENCE_TAG)
+    return fence_fresh(text or "", _FENCE_TAG)[0]
 
 
 def clip_transcript(text: str, limit: int = SUMMARIZER_INPUT_CHARS) -> str:

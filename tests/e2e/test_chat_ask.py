@@ -16,6 +16,7 @@ from felix_ai.providers.scripted import ScriptedTurn
 from felix_ai.types import ToolCall
 
 from tests.support.e2e import Booted
+from tests.support.fencing import unnamed
 from tests.support.mgmt_keys import ADMIN, READER, WRITER, bearer, scoped_keys
 
 THREAD = "e2e-ask"
@@ -180,7 +181,7 @@ async def test_the_transcript_is_fenced_against_a_message_that_closes_it(boot: A
         assert resp.status_code == 200, resp.text
         await _ask(app, "what did the user ask?")
 
-    sent = str(app.spy.prompts[-1][-1].content)
+    sent = unnamed(str(app.spy.prompts[-1][-1].content))
     assert sent.lower().count("</untrusted_transcript") == 1, "the forged tag was neutralised"
     after_fence = sent.split("</untrusted_transcript>", 1)[1]
     assert after_fence.strip() == "Side question: what did the user ask?", (
