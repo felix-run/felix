@@ -199,8 +199,10 @@ compaction:
 ## Permissions
 
 `settings.json` pre-approves the read-only and routine loop (`uv run ruff/ty/felix`, the `make`
-gates — `check`, `check-ci`, `test-cov`, `e2e`, `eval`, `schema`, `bundle` — the test wrapper, the
-toolkit validator, read-only `docker compose` and `gh`), asks before anything that
+gates — `check`, `check-ci`, `test-cov`, `e2e`, `eval`, `schema`, `bundle`, `toolkit`, `contract`,
+`contract-check`, `lock-check`, `deps-age`, `compose-check`, `helm-lint` — the test wrapper, the
+eval counter-smoke, the toolkit validator, `gitleaks detect/protect`, read-only `git fetch`/`ls-remote`/`ls-tree`,
+read-only `docker compose` and `gh`), asks before anything that
 mutates infrastructure (`make up/down`, migrations, `docker build`, `helm`, `kubectl`, cloud CLIs,
 `git push`, `gh pr create/merge`), and denies reading `.env`, `secrets/`, `data/`, `workspace/`,
 and `.venv/`.
