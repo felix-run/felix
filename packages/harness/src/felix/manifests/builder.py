@@ -2305,6 +2305,8 @@ async def build_agent(
         _bind_artifact_reader(resolved, m, deps, tenant_id)
 
         skill_suggester = None
+        # `/name` and `preload`: the `activate_skill` calls a run starts with (`skills/invocation.py`).
+        skill_preamble = None
         # Whether the catalog offers a skill built on an import (`apply_content_screening`).
         imported_skills = False
 
@@ -2315,12 +2317,15 @@ async def build_agent(
             skill_catalog_xml,
         )
         from felix.skills.activation import READ_FILE_TOOL, retain_skills, wants_skills
+        from felix.skills.invocation import PersonCalls
+        from felix.skills.invocation import skill_preamble as make_skill_preamble
 
         authoring = m.spec.skill_authoring.enabled and deps.settings is not None
         # A caller's own skills are reachable only through the skill tools, so asking for them
         # binds the tools as declaring a skill does; otherwise the field would load nothing.
         personal = m.spec.personal_skills != "off"
         if wants_skills(m.spec, (t.name for t in resolved), authoring_available=deps.settings is not None):
+            person_calls = PersonCalls()
             catalog = await load_manifest_skills(
                 list(m.spec.skills),
                 tenant_id=tenant_id,
@@ -2335,6 +2340,8 @@ async def build_agent(
                     catalog,
                     # Which skills are active is read from the thread's own log.
                     session_store=session_store,
+                    # The ids of the calls the harness makes for a person (`skills/invocation.py`).
+                    person_calls=person_calls,
                     tenant_id=tenant_id,
                     manifest_id=m.metadata.name,
                     settings=deps.settings,
@@ -2345,6 +2352,7 @@ async def build_agent(
             # Active skills put back where a strategy dropped the turn that activated them -- only
             # those this catalog still offers, so taking a skill away takes it out of old threads.
             session_strategy = retain_skills(session_strategy, catalog)
+            skill_preamble = make_skill_preamble(catalog, list(m.spec.skills), session_store, person_calls)
             # Ensure skill tools exist when skills are declared (or authored) but not listed;
             # `read_skill_file` rides along with any of them, since `activate_skill` names files
             # only it can read.
@@ -2638,9 +2646,18 @@ async def build_agent(
                 "tools_retrieval": m.spec.tools_retrieval,
                 "decider": decider,
                 "skill_suggester": skill_suggester,
+                "skill_preamble": skill_preamble,
                 "procedural_memory": m.spec.procedural_memory,
             }
         )
+        if skill_preamble is not None and skill_preamble.preload and not skill_preamble.consumed:
+            # Only a pattern that runs tools itself (react, and what wraps it) can activate a skill
+            # before its first step; said once per compile rather than left a field that does nothing.
+            logger.warning(
+                "manifest %s preloads skills, but pattern %r does not run them",
+                m.metadata.name,
+                m.spec.pattern,
+            )
         from felix.governance.inbound import apply_inbound_controls
 
         # Outermost: the user turn is screened before anything else sees it, and the

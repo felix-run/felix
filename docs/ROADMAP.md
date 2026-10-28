@@ -935,9 +935,23 @@ side was already conformant. Four PRs, landed in order:
     `activate_skill` calls in one parallel batch both return the body (both read the log
     before the batch is appended). Retained text is not counted inside a compacting
     strategy's budget; the 128K cap bounds it instead.
-- [ ] **`/skill-name <params>`**: the harness runs the governed `activate_skill` before the
-      first model step. The body arrives as a screened tool result, never as user-turn text. A
-      declared prompt of the same name wins.
+- [x] **`/skill-name <params>`** (`feat/skill-slash-invocation`):
+  - The harness runs the governed `activate_skill` before the first model step. The body arrives
+    as a screened tool result, never as user-turn text, and a declared prompt of the same name
+    wins.
+  - `SkillRef.preload` activates a declared skill once per conversation.
+  - `user-invocable`, `argument-hint`, `$ARGUMENTS` / `$N` are honoured; a
+    `disable-model-invocation` skill is still the person's to run.
+  - Only a turn a chat route marks as the person's runs `/name`; a person's privileges (a
+    model-hidden skill, `arguments`) go by harness-minted call id, once.
+  - Open: `/v1/models` `commands` lists prompts only; skills with their `argument_hint` are on
+    `GET /skills/{manifest}`. `/v1` counts as a person's surface though its caller may be an
+    agent, and A2A/MCP callers do not: decide whether `disable-model-invocation` needs a scope
+    of its own. `/name` and `preload` run in react agents only (a router or `plan_execute` gets
+    neither; a preload there logs a warning). The harness's synthetic assistant turn carries
+    no provenance marker in the log.
+- [ ] **Forked skills** (`context: fork`, `agent:`, `model:`): the skill runs in a delegation child
+      and only its result returns.
 - [ ] **`run_skill_script`**: `spec.skill_scripts`, run through the isolated shell runner under
       `FELIX_SKILL_SCRIPT_INTERPRETERS`, active trusted skills only.
 - Decided: `allowed-tools` (experimental in the spec) is surfaced and never enforced or used to

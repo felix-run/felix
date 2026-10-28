@@ -40,6 +40,11 @@ class Skill:
     # management API can report it (`has_body: false`), but the model is never offered it:
     # agentskills.io's client guide hides what cannot be activated rather than listing it.
     unresolved: bool = False
+    # `user-invocable: false` (Claude Code's frontmatter): the person cannot run it as `/name`;
+    # only the model activates it. `disable-model-invocation` is the reverse.
+    user_invocable: bool = True
+    # `argument-hint`: what `/name` takes, for a client listing commands (`[issue-number]`).
+    argument_hint: str | None = None
 
     def listed_description(self) -> str:
         """The description as the model is shown it -- in the system-prompt catalog and by
@@ -77,6 +82,20 @@ class SkillCatalog:
         a model that guesses the name is told it does not exist, as for any other name."""
         skill = self.skills.get(name)
         return skill if skill is not None and _invocable(skill) else None
+
+    def get_for_user(self, name: str) -> Skill | None:
+        """``name`` when the person may run it as `/name`: resolved and `user-invocable` -- which a
+        skill hidden from the model (`disable-model-invocation`) still is, as in Claude Code."""
+        skill = self.skills.get(name)
+        return skill if skill is not None and not skill.unresolved and skill.user_invocable else None
+
+    def get_activatable(self, name: str) -> Skill | None:
+        """``name`` when an activation of it may stand: offered to the model, or runnable by a person.
+
+        Which of the three asks: a *new* activation by the model is `get_invocable`, a new one by a
+        person's `/name` is `get_for_user`, and an activation already in a thread -- retained,
+        listed, deactivated -- is this, since either of them may have made it."""
+        return self.get_invocable(name) or self.get_for_user(name)
 
     def names(self) -> list[str]:
         return sorted(self.skills)

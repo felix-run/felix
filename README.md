@@ -388,7 +388,9 @@ A plugin carries its own manifest config under `spec.extensions.<name>` — the 
 from the schema's `extra="forbid"` — and reads it from the pattern build context.
 
 Agent Skills need no code at all: put a skill at `<FELIX_SKILLS_DIR>/<name>/SKILL.md` (check it
-with `felix skills validate`), or upload one per tenant to the object store. A manifest with
+with `felix skills validate`), or upload one per tenant to the object store. In a react agent, a person
+runs one by typing `/skill-name args` in a chat turn, and a manifest can start every conversation
+with one (`spec.skills: [{name: x, preload: true}]`). A manifest with
 `spec.skill_authoring.enabled` lets its agent draft skills into the tenant's library; a draft
 enters no catalog until it is published, and publishing is gated — a failing security scan always
 blocks, `FELIX_SKILL_PUBLISH_MIN_QUALITY` (0 = off) sets a floor on the 0-100 review score, and

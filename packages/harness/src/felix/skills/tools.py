@@ -16,6 +16,8 @@ from felix.logging_setup import loggable
 from felix.skills.activation import (
     ACTIVATE_TOOL,
     ACTIVATED_KEY,
+    ARGUMENTS_DIGEST_KEY,
+    ARGUMENTS_KEY,
     DEACTIVATE_TOOL,
     DEACTIVATED_KEY,
     DIGEST_KEY,
@@ -65,6 +67,14 @@ class _SkillNameArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1)
+
+
+class _ActivateArgs(_SkillNameArgs):
+    arguments: str | None = Field(
+        default=None,
+        max_length=16_000,
+        description="Leave unset: set by the harness when a person runs the skill as /name.",
+    )
 
 
 class _ReadFileArgs(BaseModel):
@@ -207,6 +217,7 @@ def make_skill_tools(
     *,
     session_store: Any | None,
     tenant_id: str,
+    person_calls: Any | None = None,
     manifest_id: str,
     settings: Any | None = None,
     object_store: Any | None = None,
@@ -221,7 +232,13 @@ def make_skill_tools(
     """
 
     def _audit(
-        action: str, skill: str, *, status: str, ctx: ToolInvocationCtx | None, library: str = ""
+        action: str,
+        skill: str,
+        *,
+        status: str,
+        ctx: ToolInvocationCtx | None,
+        library: str = "",
+        by: str = "",
     ) -> None:
         """Name the skill in the trail, which the generic tool-call event cannot.
 
@@ -251,6 +268,8 @@ def make_skill_tools(
             manifest_id=manifest_id,
             payload={
                 "action": action,
+                # `person` (their `/name`), `preload` (the manifest's) or `model`, for an activation.
+                **({"by": by} if by else {}),
                 "skill": loggable(skill, limit=64),
                 "thread_id": getattr(ctx, "thread_id", None) or "",
                 "tool_call_id": getattr(ctx, "tool_call_id", None) or "",
@@ -311,34 +330,50 @@ def make_skill_tools(
         text = json.dumps(payload)
         return untrusted_output(text) if any(s.untrusted for s in public) else text
 
-    async def _activate(args: _SkillNameArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-        skill = catalog.get_invocable(args.name)
+    async def _activate(args: _ActivateArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+        # Who asked, by the call's id (`invocation.PersonCalls`): a person's `/name` may reach a skill
+        # hidden from the model and pass arguments, the manifest's preload may reach one; the model
+        # may do neither. Its `arguments` would put model-chosen text inside the instructions, which
+        # retention then re-shows as the skill's for the rest of the conversation.
+        by = (person_calls.claim(getattr(_ctx, "tool_call_id", None)) if person_calls else None) or "model"
+        if by == "person":
+            skill = catalog.get_for_user(args.name)
+        else:
+            skill = (
+                catalog.get_activatable(args.name) if by == "preload" else catalog.get_invocable(args.name)
+            )
         if skill is None:
-            _audit("activate", args.name, status="unknown_skill", ctx=_ctx)
+            _audit("activate", args.name, status="unknown_skill", ctx=_ctx, by=by)
             return json.dumps({"error": "unknown_skill", "name": args.name})
+        arguments = args.arguments if by == "person" else None
         active = await _active(_ctx)
-        instructions = activation_instructions(skill)
-        digest = instructions_digest(instructions)
+        instructions = activation_instructions(skill, arguments)
+        digest = instructions_digest(activation_instructions(skill))
+        arguments_digest = instructions_digest(arguments) if arguments else None
         # Only what retention can still show whole (`activation.retained_view`): an activation past
-        # its budget, or of instructions that have changed since, is sent again.
-        if skill.name in retained_view(active, catalog).whole:
+        # its budget, of a body that has changed since, or with other arguments, is sent again.
+        shown = retained_view(active, catalog).whole.get(skill.name)
+        if shown is not None and shown.digest == digest and shown.arguments_digest == arguments_digest:
             # The same instructions are already in this conversation, and kept in view
             # (`activation.SkillRetentionStrategy`): sending them again only spends context.
-            _audit("activate", skill.name, status="already_active", ctx=_ctx, library=_label(skill))
+            _audit("activate", skill.name, status="already_active", ctx=_ctx, library=_label(skill), by=by)
             return json.dumps(
                 {
                     "already_active": skill.name,
                     "note": "its instructions are earlier in this conversation; follow them",
                 }
             )
-        _audit("activate", skill.name, status="ok", ctx=_ctx, library=_label(skill))
+        _audit("activate", skill.name, status="ok", ctx=_ctx, library=_label(skill), by=by)
         result: dict[str, Any] = {
             ACTIVATED_KEY: skill.name,
             "active_skills": sorted(
-                {skill.name, *(n for n in active if catalog.get_invocable(n) is not None)}
+                {skill.name, *(n for n in active if catalog.get_activatable(n) is not None)}
             ),
             INSTRUCTIONS_KEY: instructions,
             DIGEST_KEY: digest,
+            **({ARGUMENTS_KEY: arguments, ARGUMENTS_DIGEST_KEY: arguments_digest} if arguments else {}),
+            # Said rather than silently dropped: arguments are a person's to pass, through `/name`.
+            **({"arguments_ignored": True} if args.arguments and not arguments else {}),
         }
         if len(skill.body) > MAX_ACTIVATION_CHARS:
             result["truncated"] = True
@@ -364,6 +399,9 @@ def make_skill_tools(
 
     async def _read_file(args: _ReadFileArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         skill = catalog.get_invocable(args.name)
+        if skill is None and catalog.get_activatable(args.name) is not None:
+            # A skill hidden from the model that a person ran here: its own files are part of it.
+            skill = catalog.get_activatable(args.name) if args.name in await _active(_ctx) else None
         if skill is None:
             return json.dumps({"error": "unknown_skill", "name": args.name})
         problem = bundle_path_issue(args.path)
@@ -397,7 +435,7 @@ def make_skill_tools(
         # Resolved first, like `activate`, so the trail never records a model-supplied string
         # under `status="ok"`. The result is the record: the thread's log is what says the
         # skill is no longer active (`activation.thread_activations`).
-        skill = catalog.get_invocable(args.name)
+        skill = catalog.get_activatable(args.name)
         active = await _active(_ctx)
         active.pop(args.name, None)
         if skill is None:
@@ -405,7 +443,7 @@ def make_skill_tools(
         else:
             _audit("deactivate", skill.name, status="ok", ctx=_ctx, library=_label(skill))
         # As `activate`: this caller's names.
-        mine = [n for n in active if catalog.get_invocable(n) is not None]
+        mine = [n for n in active if catalog.get_activatable(n) is not None]
         return json.dumps({DEACTIVATED_KEY: args.name, "active_skills": mine})
 
     names = [s.name for s in catalog.list_public()]
@@ -414,6 +452,7 @@ def make_skill_tools(
             name=LIST_TOOL,
             description="List available skills (name, description, and whether active in this conversation).",
             handler=_list,
+            read_only=True,
             relays_untrusted=True,
         ),
         define_tool(
@@ -422,11 +461,14 @@ def make_skill_tools(
                 "Activate a named skill and return its full instructions. "
                 "Call when a task matches a skill description."
             ),
-            args=_with_names(_SkillNameArgs, names, "Skill name to activate."),
+            args=_with_names(_ActivateArgs, names, "Skill name to activate."),
             handler=_activate,
             # Never spilled to an artifact: the body is the instructions, and a preview of them
             # is not something the model can follow (`artifacts.UNSPILLED_SOURCES`).
             source=INSTRUCTIONS_SOURCE,
+            # Nothing outside the conversation changes: an activation is its result in the log
+            # (`activation.thread_activations`), so plan mode lets a person's `/name` through.
+            read_only=True,
             relays_untrusted=True,
         ),
         define_tool(
@@ -434,6 +476,7 @@ def make_skill_tools(
             description="Stop following a skill activated earlier in this conversation.",
             args=_with_names(_SkillNameArgs, names, "Skill name to deactivate."),
             handler=_deactivate,
+            read_only=True,
         ),
         define_tool(
             name=READ_FILE_TOOL,
