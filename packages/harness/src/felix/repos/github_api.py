@@ -153,6 +153,14 @@ MAX_BODY_CHARS = 20_000
 
 ItemKind = Literal["issue", "pull"]
 ItemState = Literal["open", "closed", "all"]
+# Whether the issues listing could be read: `disabled` is a repository with issues turned off
+# (GitHub's 410), `forbidden` a token without the App's Issues permission (403) — GitHub documents
+# the issues endpoints under Issues alone, so a Pull-requests-only App is refused them, pull
+# requests included. Either way pull requests come from the pulls API instead, and a client can
+# say "pull requests only" rather than "no open issues".
+IssueAccess = Literal["ok", "disabled", "forbidden"]
+# What the issues endpoints answer when the pulls API can stand in.
+_ISSUES_UNREADABLE: dict[int, IssueAccess] = {410: "disabled", 403: "forbidden"}
 
 
 def _segments(full_name: str) -> tuple[str, str] | None:
@@ -206,8 +214,10 @@ async def list_items(
     first, at most `MAX_ITEMS`, filtered by kind and by `q` against the title.
 
     `full_name` is the repository `get_repo` answered with, so reachability is already settled.
-    A repository with issues turned off answers the issues listing with 410; its pull requests are
-    then read from the pulls listing instead, and it has no issues to list.
+    When the issues listing cannot be read — issues turned off (410), or a token without the
+    Issues permission (403) — pull requests are read from the pulls listing instead, and
+    `issue_access` says which. A 403 the pulls listing also answers (a rate limit, say) is raised
+    from there.
     """
     from felix.auth.github import client_scope
 
@@ -220,14 +230,16 @@ async def list_items(
     truncated = False
     params: dict[str, Any] = {"state": state, "sort": "updated", "direction": "desc", "per_page": PER_PAGE}
     path, pulls_only = f"/repos/{owner}/{name}/issues", False
+    access: IssueAccess = "ok"
     async with client_scope(client, settings) as http:
         page = 1
         while True:
             try:
                 batch = await _get(http, path, token, {**params, "page": page})
             except GitHubReadError as exc:
-                if exc.status != 410 or pulls_only or page != 1:
+                if exc.status not in _ISSUES_UNREADABLE or pulls_only or page != 1:
                     raise
+                access = _ISSUES_UNREADABLE[exc.status]
                 if kind == "issue":
                     break
                 path, pulls_only = f"/repos/{owner}/{name}/pulls", True
@@ -253,7 +265,7 @@ async def list_items(
                 truncated = True
                 break
             page += 1
-    return {"repository": full_name, "items": items, "truncated": truncated}
+    return {"repository": full_name, "items": items, "truncated": truncated, "issue_access": access}
 
 
 async def get_item(
@@ -277,9 +289,10 @@ async def get_item(
         except GitHubReadError as exc:
             if exc.status == 404:
                 return None
-            if exc.status != 410:
+            if exc.status not in _ISSUES_UNREADABLE:
                 raise
-            # Issues turned off: the number can still be a pull request.
+            # Issues turned off, or not readable with this token: the number can still be a pull
+            # request. One that is an issue then reads as not found, which is all this token can see.
             try:
                 raw = await _get(http, f"/repos/{owner}/{name}/pulls/{int(number)}", token)
             except GitHubReadError as inner:

@@ -346,7 +346,12 @@ async def test_the_item_listing_is_capped_and_says_so(
         sparse = await app.client.get(
             "/github/repos/acme/widgets/items", params={"kind": "pull"}, headers=bearer
         )
-        assert sparse.json() == {"repository": "acme/widgets", "items": [], "truncated": True}
+        assert sparse.json() == {
+            "repository": "acme/widgets",
+            "items": [],
+            "truncated": True,
+            "issue_access": "ok",
+        }
 
 
 async def test_a_person_reads_one_item_with_its_body(
@@ -403,10 +408,11 @@ async def test_a_repository_with_issues_turned_off_still_lists_its_pull_requests
         listed = await app.client.get("/github/repos/acme/widgets/items", headers=bearer)
         assert listed.status_code == 200, listed.text
         assert [(i["number"], i["kind"]) for i in listed.json()["items"]] == [(2, "pull")]
+        assert listed.json()["issue_access"] == "disabled"
         issues = await app.client.get(
             "/github/repos/acme/widgets/items", params={"kind": "issue"}, headers=bearer
         )
-        assert issues.json()["items"] == []
+        assert issues.json()["items"] == [] and issues.json()["issue_access"] == "disabled"
 
         pull = await app.client.get("/github/repos/acme/widgets/items/2", headers=bearer)
         assert (
@@ -414,6 +420,35 @@ async def test_a_repository_with_issues_turned_off_still_lists_its_pull_requests
         )
         gone = await app.client.get("/github/repos/acme/widgets/items/1", headers=bearer)
         assert gone.status_code == 404 and gone.json()["error"] == "item_not_found"
+
+
+async def test_an_app_without_the_issues_permission_still_lists_pull_requests(
+    boot: Any, fake_github: FakeGitHub, tmp_path: Any
+) -> None:
+    # GitHub documents the issues endpoints under the Issues permission alone, so an App with
+    # Pull requests but not Issues is refused them outright, pull requests included (403).
+    _items_fixture(fake_github)
+    fake_github.issues_forbidden.add("acme/widgets")
+    async with boot([], env=_env(tmp_path)) as app:
+        bearer = await _sign_in(app.client)
+        listed = await app.client.get("/github/repos/acme/widgets/items", headers=bearer)
+        assert listed.status_code == 200, listed.text
+        assert [(i["number"], i["kind"]) for i in listed.json()["items"]] == [(2, "pull")]
+        # Said, so a client shows "pull requests only" rather than "no open issues".
+        assert listed.json()["issue_access"] == "forbidden"
+        issues = await app.client.get(
+            "/github/repos/acme/widgets/items", params={"kind": "issue"}, headers=bearer
+        )
+        assert issues.json() == {
+            "repository": "acme/widgets",
+            "items": [],
+            "truncated": False,
+            "issue_access": "forbidden",
+        }
+        pull = await app.client.get("/github/repos/acme/widgets/items/2", headers=bearer)
+        assert pull.status_code == 200 and pull.json()["kind"] == "pull"
+        unseen = await app.client.get("/github/repos/acme/widgets/items/1", headers=bearer)
+        assert unseen.status_code == 404 and unseen.json()["error"] == "item_not_found"
 
 
 async def test_items_of_a_repository_the_app_cannot_reach_for_you_are_refused(
@@ -459,12 +494,14 @@ async def test_a_github_failure_reading_items_answers_in_fixed_words(
     _items_fixture(fake_github)
     async with boot([], env=_env(tmp_path)) as app:
         bearer = await _sign_in(app.client)
-        # The repository is reachable; GitHub then fails the issues read itself.
-        fake_github.items_status = 500
-        for path in ("/github/repos/acme/widgets/items", "/github/repos/acme/widgets/items/1"):
-            answer = await app.client.get(path, headers=bearer)
-            assert answer.status_code == 502, answer.text
-            assert answer.json() == {
-                "error": "github_unavailable",
-                "message": "GitHub could not be reached or answered unexpectedly; try again shortly",
-            }
+        # The repository is reachable; GitHub then fails the issues read itself. A 403 the pulls
+        # API repeats (a rate limit, not a missing permission) is a failure too, not an empty list.
+        for status in (500, 403):
+            fake_github.items_status = status
+            for path in ("/github/repos/acme/widgets/items", "/github/repos/acme/widgets/items/1"):
+                answer = await app.client.get(path, headers=bearer)
+                assert answer.status_code == 502, (status, answer.text)
+                assert answer.json() == {
+                    "error": "github_unavailable",
+                    "message": "GitHub could not be reached or answered unexpectedly; try again shortly",
+                }
