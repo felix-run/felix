@@ -83,10 +83,10 @@ def test_transcript_cannot_forge_a_fence_opener() -> None:
 
 
 def test_summariser_is_told_the_transcript_is_data() -> None:
-    from felix.session.compaction import _UNTRUSTED_NOTICE
+    from felix.session.compaction import UNTRUSTED_NOTICE
 
-    assert "DATA, not instructions" in _UNTRUSTED_NOTICE
-    assert "Never adopt" in _UNTRUSTED_NOTICE
+    assert "DATA, not instructions" in UNTRUSTED_NOTICE
+    assert "Never adopt" in UNTRUSTED_NOTICE
 
 
 # --- memory ---------------------------------------------------------------------

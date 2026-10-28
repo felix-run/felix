@@ -34,7 +34,7 @@ from felix.context import async_run_with_context, get_context
 from felix.hooks import chat_with_model_hooks, model_hook_context, run_filter_history
 from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage
-from felix.session.compaction import _UNTRUSTED_NOTICE, fence_untrusted
+from felix.session.compaction import UNTRUSTED_NOTICE, fence_untrusted
 from felix.session.types import GetEventsOpts, Session, SessionEvent, WakeState
 
 logger = logging.getLogger("felix.session.side_question")
@@ -332,7 +332,7 @@ async def answer_side_question(
                 # Fenced as a summariser's transcript is: it carries tool output, which may be
                 # written to read as a closing tag and a question of its own.
                 content=(
-                    f"{_INSTRUCTION}{_UNTRUSTED_NOTICE}\n{fence_untrusted(_transcript(history[1:]))}\n\n"
+                    f"{_INSTRUCTION}{UNTRUSTED_NOTICE}\n{fence_untrusted(_transcript(history[1:]))}\n\n"
                     f"Side question: {question}"
                 ),
             ),

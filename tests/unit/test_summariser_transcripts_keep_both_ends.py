@@ -51,6 +51,8 @@ def _events(*names: str) -> list[SessionEvent]:
 
 
 def _both_ends(shown: str, first: str, last: str) -> None:
+    # The shared cap, not a limit of the call site's own: the split itself is pinned below.
+    assert SUMMARIZER_INPUT_CHARS < len(shown) < SUMMARIZER_INPUT_CHARS + 500
     assert f"{first}-start" in shown, "the head was dropped"
     assert f"{last}-end" in shown, "the tail was dropped"
     assert "characters omitted" in shown

@@ -16,9 +16,9 @@ from felix.hooks import get_agent_hooks
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 from felix.session.compaction import (
-    _UNTRUSTED_NOTICE,
     STRUCTURED_SUMMARY_PROMPT,
     TURN_PREFIX_PROMPT,
+    UNTRUSTED_NOTICE,
     CompactingSessionStrategy,
     fence_untrusted,
     summary_message,
@@ -243,7 +243,7 @@ async def test_keep_turns_counts_events_and_forces_a_compaction_inside_the_windo
     }
     assert model.calls == [
         [
-            ("system", STRUCTURED_SUMMARY_PROMPT + _UNTRUSTED_NOTICE),
+            ("system", STRUCTURED_SUMMARY_PROMPT + UNTRUSTED_NOTICE),
             ("user", fence_untrusted("[User]: m0\n[Assistant]: m1")),
         ]
     ]
@@ -263,7 +263,7 @@ async def test_compact_now_forces_a_manual_pass_and_reports_the_message_count() 
     assert prep["custom_instructions"] == "FOCUS"
     assert prep["will_retry"] is False
     assert prep["ctx"] == {"session_id": "acme:char-compact-now"}
-    assert model.calls[0][0] == ("system", STRUCTURED_SUMMARY_PROMPT + _UNTRUSTED_NOTICE + "\nFocus: FOCUS")
+    assert model.calls[0][0] == ("system", STRUCTURED_SUMMARY_PROMPT + UNTRUSTED_NOTICE + "\nFocus: FOCUS")
     (checkpoint,) = await _checkpoints(session)
     assert checkpoint.metadata["reason"] == "manual"
     assert checkpoint.metadata["retainedTail"] == [_item("user", "q1"), _item("assistant", "a1")]

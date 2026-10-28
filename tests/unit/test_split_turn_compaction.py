@@ -17,12 +17,12 @@ from felix.hooks import get_agent_hooks, reset_agent_hooks
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
 from felix.session.compaction import (
-    _UNTRUSTED_NOTICE,
     OPENING_MESSAGE_MAX_CHARS,
     STRUCTURED_SUMMARY_PROMPT,
     SUMMARY_LABEL,
     TURN_PREFIX_LABEL,
     TURN_PREFIX_PROMPT,
+    UNTRUSTED_NOTICE,
     CompactingSessionStrategy,
     turn_prefix_message,
 )
@@ -172,7 +172,7 @@ async def test_a_split_turn_keeps_its_request_verbatim_and_summarises_its_early_
     assert OPENING not in (history_call[-1].content or ""), "the request was summarised into history"
     assert EARLIER in (history_call[-1].content or "")
     (prefix_call,) = model.prefix
-    assert _UNTRUSTED_NOTICE in (prefix_call[0].content or "")
+    assert UNTRUSTED_NOTICE in (prefix_call[0].content or "")
     transcript = prefix_call[-1].content or ""
     assert transcript.startswith("<untrusted_transcript>"), (
         "the prefix summariser read an unfenced transcript"
