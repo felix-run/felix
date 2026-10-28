@@ -421,11 +421,21 @@ metered at those rates. A refusal is `400 model_provider_not_allowed:<id>`, `mod
 or `model_not_priced_by_manifest:<id>`. A durable run checks again when it resumes, so a run that
 outlives a route-table or manifest change fails rather than running on a route now refused.
 
+Three calls build `spec.model` without compiling the manifest: a side question, `/chat/compact`,
+and the summary a rewind writes of the branch it leaves. Each makes the build's checks first
+(`validate_for_run`), so a manifest whose turns are refused for its pin or an unmeasurable cost cap
+does not reach a model through them either. They also honour the thread's `pin_compile` record, so
+on a thread a pinned manifest owns, naming another manifest does not send its history to that
+manifest's model. A side question and `/chat/compact` answer with the reason, `422` for a check and
+`409` for the pin. A rewind is not refused, since it calls no model itself: its summary is written
+without one, as it is when the named manifest no longer resolves.
+
 Not yet covered, so nobody assumes more:
 
 - `spec.decider` resolves through `FELIX_DECISION_ROUTES`, a separate table, and is not pinned.
-- The rewind summary and `/chat/compact` build `spec.model` without the compile check. That only
-  matters once a manifest already violates its pin, because its turns are refused by then.
+- The memory consolidation sweep checks the provider pin but not `max_cost_usd` measurability.
+- An eval's LLM judge (`rubric.judge_model`) is sent the agent's answer whatever its manifest's
+  `providers` says.
 
 **Sub-agents inherit the caller's admission.** `spec.auth.inbound` is checked on the manifest
 a request names — the router — and not again on each sub-agent it compiles. A child's own

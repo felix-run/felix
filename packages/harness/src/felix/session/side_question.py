@@ -215,7 +215,7 @@ async def _rendered(
 async def _admitted(settings: Settings, auth: Any, tenant_id: str, thread_id: str) -> tuple[str, Any]:
     """The thread's own manifest, admitted as `prepare_tenant_invoke` and the compile admit a
     turn of it — inbound auth, the compile pin, the governance checks — with nothing written."""
-    from felix.manifests.governance import assert_cost_limit_is_measurable, validate_governance
+    from felix.manifests.governance import validate_for_run
     from felix.manifests.inbound_auth import enforce_inbound_auth
     from felix.manifests.pin import check_thread_pin
     from felix.runtime import resolve_tenant_manifest
@@ -235,8 +235,7 @@ async def _admitted(settings: Settings, auth: Any, tenant_id: str, thread_id: st
         version=resolved.version,
         resolved_out=resolved.sub_agents,
     )
-    validate_governance(manifest, settings)
-    assert_cost_limit_is_measurable(manifest, settings)
+    validate_for_run(manifest, settings)
     return manifest_id, manifest
 
 

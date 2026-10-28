@@ -305,6 +305,17 @@ async def request_model_tree_refusal(
     return None
 
 
+def validate_for_run(manifest: Manifest, settings: Any | None = None) -> None:
+    """Every check a manifest must pass before anything runs a model on its behalf, in one place.
+
+    The build makes these before compiling a turn. A route that builds `spec.model` without
+    compiling (a side question, `/chat/compact`, a rewind's summary) makes them too, or the
+    provider pin and the measurable cost cap would hold for turns and not for those calls.
+    """
+    validate_governance(manifest, settings)
+    assert_cost_limit_is_measurable(manifest, settings)
+
+
 def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
     """Every check a manifest must pass before it is *stored*, in one place.
 
@@ -447,6 +458,7 @@ __all__ = [
     "assert_stdio_env_allowed",
     "manifest_warnings",
     "transparency_notice_text",
+    "validate_for_run",
     "validate_for_write",
     "validate_governance",
 ]
