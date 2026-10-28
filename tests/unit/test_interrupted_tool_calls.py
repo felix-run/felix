@@ -302,3 +302,49 @@ async def test_a_resumed_run_withdraws_the_gates_its_interrupted_calls_left_open
     row = await approvals.get_approval(settings, "default", gate["id"])
     assert row is not None and (row["status"], row["decision_note"]) == ("denied", "interrupted")
     assert await client_requests.pending(thread) == []
+
+
+async def test_a_resumed_run_withdraws_the_gate_a_forked_skill_left_open() -> None:
+    """A forked skill's `task` call waits on its approval under an id derived from the
+    `activate_skill` call the transcript holds (`delegation.fork_call_id`); interrupted, that gate
+    is withdrawn with the call, not left for an approver to grant for nobody."""
+    from felix.approvals import store as approvals
+    from felix.config import Settings
+    from felix.tools.delegation import fork_call_id
+
+    settings = Settings(database_url="memory://interrupted-fork-gate", object_store="memory", redis_url="")
+    thread = "default:forked-and-gone"
+    gate = await approvals.create_pending(
+        settings,
+        "default",
+        tool_name="task",
+        call_signature="sig-fork",
+        manifest_id="test",
+        args={},
+        thread_id=thread,
+        tool_call_id=fork_call_id("call_skill"),
+    )
+    model = _Capturing()
+    agent = _ReactAgent(
+        tools=[UNSAFE],
+        pattern="react",
+        manifest_id="test",
+        manifest_version="1",
+        system_prompt="s",
+        model_spec=None,
+        settings=settings,
+        recursion_limit=3,
+    )
+    agent._resolve_model = lambda _i: model  # type: ignore[method-assign]
+    await agent.invoke(
+        InvokeInput(
+            messages=[
+                _assistant_calling("charge", "call_skill"),
+                ChatMessage(role="user", content="[continue]"),
+            ],
+            thread_id=thread,
+        )
+    )
+
+    row = await approvals.get_approval(settings, "default", gate["id"])
+    assert row is not None and (row["status"], row["decision_note"]) == ("denied", "interrupted")

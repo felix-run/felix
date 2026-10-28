@@ -45,6 +45,13 @@ class Skill:
     user_invocable: bool = True
     # `argument-hint`: what `/name` takes, for a client listing commands (`[issue-number]`).
     argument_hint: str | None = None
+    # `context: fork` (Claude Code's frontmatter): the skill runs in a subagent -- one of the
+    # manifest's `delegation.agents`, `fork_agent` if it names one -- and only that agent's answer
+    # returns; its instructions never enter this conversation. `fork_model` is the model it asks for,
+    # used only where request-model governance allows it (`tools/delegation.py:make_fork_runner`).
+    fork: bool = False
+    fork_agent: str | None = None
+    fork_model: str | None = None
 
     def listed_description(self) -> str:
         """The description as the model is shown it -- in the system-prompt catalog and by

@@ -131,6 +131,13 @@ class SkillPreamble:
                     # opening instructions.
                     logger.warning("preloaded skill %s is imported and not adopted; not activated", name)
                     continue
+                if skill.fork:
+                    # A fork is never an activation, so "once" could not hold: every turn would run
+                    # the subagent again. A forked skill is run when asked, not preloaded.
+                    logger.warning(
+                        "preloaded skill %s runs in a subagent (context: fork); not preloaded", name
+                    )
+                    continue
                 if name in seen or (invoked is not None and invoked[0] == name):
                     continue
                 call_id = self.person_calls.mint(PRELOAD_PREFIX)

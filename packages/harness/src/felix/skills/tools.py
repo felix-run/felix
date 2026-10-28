@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -39,9 +39,22 @@ from felix.skills.format import (
     MAX_BUNDLE_FILES,
     MAX_SKILL_MD_CHARS,
     bundle_path_issue,
+    xml_escape,
 )
 from felix.skills.types import Skill, SkillCatalog
-from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool, untrusted_output
+from felix.tools.errors import read_tool_error_code
+from felix.tools.types import (
+    Tool,
+    ToolInvocationCtx,
+    ToolOutput,
+    define_tool,
+    is_wrapper_deny,
+    tool_output_content,
+    untrusted_output,
+)
+
+if TYPE_CHECKING:
+    from felix.tools.delegation import ForkRunner
 
 logger = logging.getLogger("felix.skills.tools")
 
@@ -74,6 +87,11 @@ class _ActivateArgs(_SkillNameArgs):
         default=None,
         max_length=16_000,
         description="Leave unset: set by the harness when a person runs the skill as /name.",
+    )
+    task: str | None = Field(
+        default=None,
+        max_length=16_000,
+        description='For a skill marked context="fork": the job, with every fact the subagent needs.',
     )
 
 
@@ -218,6 +236,7 @@ def make_skill_tools(
     session_store: Any | None,
     tenant_id: str,
     person_calls: Any | None = None,
+    fork_runner: ForkRunner | None = None,
     manifest_id: str,
     settings: Any | None = None,
     object_store: Any | None = None,
@@ -346,6 +365,8 @@ def make_skill_tools(
             _audit("activate", args.name, status="unknown_skill", ctx=_ctx, by=by)
             return json.dumps({"error": "unknown_skill", "name": args.name})
         arguments = args.arguments if by == "person" else None
+        if skill.fork:
+            return await _fork(skill, arguments, args.task, by, _ctx)
         active = await _active(_ctx)
         instructions = activation_instructions(skill, arguments)
         digest = instructions_digest(activation_instructions(skill))
@@ -396,6 +417,66 @@ def make_skill_tools(
             if newest:
                 result["newest_version"] = newest
         return _relayed(skill, json.dumps(result))
+
+    async def _fork(
+        skill: Skill, arguments: str | None, task: str | None, by: str, ctx: ToolInvocationCtx | None
+    ) -> ToolOutput:
+        """Run a `context: fork` skill in a delegation child and answer what it said. Never an
+        activation: its instructions stay out of this conversation, so nothing is retained."""
+        if skill.untrusted:
+            # The instructions become the child's own turn: a third party's text must not be.
+            _audit("fork", skill.name, status="fork_refused", ctx=ctx, library=_label(skill), by=by)
+            return json.dumps(
+                {
+                    "error": "fork_refused",
+                    "name": skill.name,
+                    "detail": "an imported skill nobody has adopted does not run in a subagent",
+                }
+            )
+        agents = fork_runner.agents if fork_runner is not None else ()
+        agent = skill.fork_agent or (agents[0] if agents else None)
+        if fork_runner is None or agent is None or agent not in agents:
+            _audit("fork", skill.name, status="fork_unavailable", ctx=ctx, library=_label(skill), by=by)
+            return json.dumps(
+                {
+                    "error": "fork_unavailable",
+                    "name": skill.name,
+                    "detail": f"this skill runs in a subagent ({agent or 'none named'}), and this "
+                    "agent cannot delegate to it",
+                }
+            )
+        # A person's arguments go where the body asks, as for any activation; the model says what the
+        # job is instead.
+        instructions = activation_instructions(skill, arguments)
+        prompt = (
+            f'<skill_instructions name="{xml_escape(skill.name)}">\n{instructions}\n</skill_instructions>'
+        )
+        if task and not arguments:
+            prompt = f"{prompt}\n\n{task}"
+        try:
+            out = await fork_runner(
+                agent, prompt, skill.fork_model, outer_call_id=getattr(ctx, "tool_call_id", None)
+            )
+        except Exception:
+            # A wrapper on `task` raised -- screening, an approver's edit the validator refused: audited
+            # as the failure it is, and answered with a fact rather than the exception's text.
+            logger.warning("forked skill %s failed", skill.name, exc_info=True)
+            _audit("fork", skill.name, status="fork_failed", ctx=ctx, library=_label(skill), by=by)
+            return json.dumps({"error": "fork_failed", "name": skill.name, "agent": agent})
+        if is_wrapper_deny(out):
+            # A control on `task` refused it -- an approval, a policy, a limit: passed on as the deny it
+            # is, so the run counts this call as refused like any other.
+            _audit("fork", skill.name, status="fork_denied", ctx=ctx, library=_label(skill), by=by)
+            return out
+        answer = tool_output_content(out)
+        if read_tool_error_code(out) is not None:
+            # Refused or failed -- admission, a limit, the agent raising: said as an error, never
+            # passed off as the agent's answer.
+            _audit("fork", skill.name, status="fork_failed", ctx=ctx, library=_label(skill), by=by)
+            return json.dumps({"error": "fork_failed", "name": skill.name, "agent": agent, "detail": answer})
+        _audit("fork", skill.name, status="ok", ctx=ctx, library=_label(skill), by=by)
+        # The child's answer can carry anything its tools read: screened as a `task` answer is.
+        return untrusted_output(json.dumps({"ran": skill.name, "agent": agent, "result": answer}))
 
     async def _read_file(args: _ReadFileArgs, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
         skill = catalog.get_invocable(args.name)
