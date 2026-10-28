@@ -199,6 +199,9 @@ class RepoItemsOut(BaseModel):
     items: list[RepoItemOut]
     # More matched than the listing returns, or more on GitHub than one listing walks: narrow with `q`.
     truncated: bool
+    # `ok`; `disabled` (issues turned off) or `forbidden` (the GitHub App has no Issues permission)
+    # list pull requests only, read from the pulls API.
+    issue_access: Literal["ok", "disabled", "forbidden"] = "ok"
 
 
 class RepoItemDetailOut(RepoItemOut):

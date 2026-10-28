@@ -3055,6 +3055,16 @@
       },
       "RepoItemsOut": {
         "properties": {
+          "issue_access": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "disabled",
+              "forbidden"
+            ],
+            "title": "Issue Access",
+            "type": "string"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/RepoItemOut"
