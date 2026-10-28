@@ -37,6 +37,7 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
                    → permission mode
                      → artifact spill
                        → workspace scope
+                         → subagent trace
    ```
 
    The comment `order matters` in the source is load-bearing. Each `apply_*` clones every tool with
@@ -67,8 +68,11 @@ manifest declares becomes either a bound tool, a prompt fragment, or a wrapper a
    - Depends on the thread's permission mode → permission mode, just outside approvals: plan mode
      refuses a non-read-only tool before anyone is asked to approve it, and the mode it resolves is
      what `waives_approval` reads inside approvals (`governance/permission_mode.py`).
-   - Sets what the call runs *against* rather than judging it → workspace scope, outermost, so an
-     approval's preview reads the same directory the call will write.
+   - Sets what the call runs *against* rather than judging it → workspace scope, so an approval's
+     preview reads the same directory the call will write.
+   - Reports the call rather than governing it → subagent trace, outermost: while a foreground
+     `task` child runs it emits `subagent_tool` frames to the parent's stream, and a report should
+     describe what the call came to after every control (`tools/subagent_trace.py`).
 4. Emit an audit event (`audit/emit.py`) when the control fires — a control with no audit trail is
    invisible to `/audit` and to `deploy/GOVERNANCE.md` claims.
 5. Test in `tests/unit/test_manifest_governance.py` (fires when configured) and

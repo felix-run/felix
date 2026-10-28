@@ -224,6 +224,7 @@ EXPECTED_WRAPPER_ORDER = [
     "apply_permission_mode",
     "apply_artifact_spill",
     "apply_workspace_scope",
+    "apply_subagent_trace",
 ]
 
 
