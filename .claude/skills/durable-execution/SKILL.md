@@ -145,188 +145,19 @@ No scheduler, no cron; no worker, nothing runs, `run_fiber_loop` included. Each 
 is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SCHEDULES` in
 `tests/unit/test_worker_cron_tasks.py` pins the whole table — read it there rather than from a copy.
 
-Plugin `cron_tasks` become `plugin_<name>` every minute via `_register_plugin_cron_tasks`, which only
-the worker's startup hook calls. Each built-in task is wrapped in `_instrumented`; plugin runners are not. Jobs:
-`jobs/scheduler.py:run_due_jobs_all_tenants` binds each tenant with `rls_tenant`,
-`jobs/store.py:claim_run` compare-and-sets `next_run_at` and refuses a job whose `last_status` is
-`running` unless `last_run_at` is older than `RUNNING_STALE_MS` (6 h: three times a run's
-longest wall clock plus a last approval wait), so a run outlasting its interval is not fired beside
-itself; refused, the due time stays put and the first tick after the run fires it once.
-`POST /jobs/{name}/run` takes the same mark (`claim_manual_run`) and answers `409 {"error":
-"job_running"}` while it stands. `fire_job` clears it on every exit, the outer `except` and a
-cancellation included (`_clear_running`), through `finish_run`, which compare-and-sets on
-`last_run_at` so a run reclaimed as stale cannot clear its reclaimer's mark. `PUT /jobs/{name}` with
-`enabled: false` clears a mark (`DISABLED_WHILE_RUNNING`), the operator's override for a dead worker. A firing is unattended (`RequestContext.unattended`, from
-`AuthContext.scheduled`), so a gated tool without `allow_unattended` is refused at once rather than
-holding the sweep for the rule's ttl. `fire_job` runs as `cron` on behalf of the
-job's last writer (`created_by`, with the scopes recorded in `created_auth`) through
-`runtime.prepare_tenant_invoke`, so the manifest's inbound auth applies; a job with no recorded
-writer runs with no scopes. Fibers and jobs record and replay a caller through one module,
-`auth/recorded.py` (`record_caller` / `replay_caller`); an API-key writer's job scopes are cut to the
-key's current ones at each firing (`scheduler._current_api_key_scopes`). A job with a `workflow_id`
-(`0043_job_workflow`) starts a workflow run instead (`scheduler._start_job_workflow`): the same
-identity, `payload.inputs` as the inputs, `workflows:write` required of the recorded scopes, the
-run's `trigger` `job:<name>` and its id in the job run's `result.workflow_run_id`. The job keeps
-`workflow_revision` from its write and `start_run(revision=)` refuses any other
-(`RevisionChanged`), so a later editor's steps never run on the writer's scopes. `start_run`'s
-refusals share `engine.StartRefused` and its written `message`; it audits every start. A
-`FELIX_TRIGGERS` entry with a `WorkflowTarget` starts a run too (`routes/triggers.py`: prepared
-before the rate limit, started after): `triggers.workflow_inputs` maps the payload to inputs by JSON
-Pointer, checks each against the declared schema (`ports.value_mismatch`), and lists the sender's
-strings, objects, arrays and `$delivery` as the run's `untrusted_inputs`
-(`0044_workflow_run_untrusted`). `runs.fences_prompts` (any untrusted input, or a `trigger:` run)
-makes `kinds.render_prompt(fenced=)` wrap every value an agent step is given in a per-prompt
-`data-<hex>` tag and append `FENCE_NOTE`. `WorkflowTarget.revision` is required (`_parse_target`,
-so boot fails without it) and passed to `start_run`, so no save -- a person's or an agent's -- changes
-what a trigger starts.
-`jobs/schedule.py:parse_schedule` reads the grammar — seconds, `every:30s` / `@every 5m`, the
-`@daily`-style macros, five-field cron in UTC, and a one-shot `at:<ISO-8601 with offset>` — and a
-schedule outside it is refused, never guessed. An empty schedule is manual only: the sweep skips it and
-only `POST /jobs/{name}/run` fires it. A one-shot's `next_run_at` is set by the write that sets its
-schedule (`put_job`, refused if past) and its claim clears it, so it fires once; one with no due time
-is never swept.
-
-`spec.scheduling` binds `jobs/agent_tools.py`: `schedule_task` writes a job named `task-<hex>` on the
-compiling manifest as the caller (`created_by` = `acting_for`, `created_auth` = `creator_auth`), with
-`payload.scheduled_by` marking it a task (only this tool writes it; `PUT /jobs` ignores a caller's, keeping the stored one for the same writer); `list_scheduled` / `cancel_scheduled` see only tasks whose
-`scheduled_by` names this manifest and whose writer is the caller. Refused: no named caller, no
-`jobs:write`, a shared subject (a sub-less API key's `api_key`, a trigger run's `trigger:<id>`, a
-machine actor acting for no one; a plugin authenticator handing out a shared subject is the operator's
-problem, since the list cannot know it),
-scheduled work (`AuthContext.scheduled`: set by `job_auth`, recorded by `auth/recorded.py`, so a
-workflow a job starts carries it into its agent steps), the `max_tasks` cap, a recurring
-gap under `min_interval_minutes` (a cron's next 200 firings walked), an `at:` over 366 days out. The
-same checks (`_AgentTasks.admit`) run in `schedule_task`'s approval preview, so a refused call is denied
-with no approval row and no wait. `permission_mode.UNWAIVABLE_TOOLS` holds `schedule_task`, so
-no mode waives an approval on it, whichever rule asked. A task records its writer's token expiry in `created_auth.expires_at`;
-`fire_job` refuses and disables a job past it (`CREDENTIAL_EXPIRED`). Retention
-(`retention._sweep_fired_tasks`, `FELIX_SCHEDULED_TASK_RETENTION_DAYS`) deletes agent tasks that will not run again (a fired one-shot, or disabled on expiry), per tenant,
-re-reading each before the delete; a disabled task holds no place under `max_tasks`. With
-`approval: true` the builder adds the `permission_mode.SCHEDULING_APPROVAL` rule unless a manifest rule without `when_args`
-names `schedule_task` literally (a glob does not count).
-
-`spec.workflow_authoring` binds `workflows/agent_tools.py`: `workflow_catalog` (kinds, config
-schemas, `WorkflowSpec`'s schema, and a manifest's step tools through `tool_step.step_tools`, less
-the authoring tools; serialized by `workflows/present.py`, which the `/workflows` routes share),
-`check_workflow` (`engine.check_runnable` + `_AgentWorkflows.check_reach`: `kinds`, `max_steps`,
-the 4,000-character agent prompt cap, and `manifests` over `engine.named_manifests`, the one rule
-for which steps name a manifest),
-`save_workflow`, `list_my_workflows`, `run_workflow`. A saved workflow's `created_by` is
-`AuthContext.skill_owner` (issuer-qualified; refused when None) and its `authored_via` is
-`agent:<manifest>`. `store.put_workflow(owner=)` checks that pair under the row lock, before the
-revision precondition, and raises `WorkflowNotOwned`. A save is also checked against
-`engine.admitted_manifests`, the admission a run's start makes. `authored_via` is what made the latest save, so a route save adopts the
-workflow. The creator's own save (`writer_owner == created_by`) leaves `owner:agent:<manifest>`
-(`store._replaced_via`), which `_AgentWorkflows.holds` lets the agent run but `is_mine` not edit;
-anyone else's leaves `""`. A create mints `wf-<hex>` with `precondition=ABSENT`; a replace passes the revision it read.
-
-`save_workflow` and `run_workflow` refuse `RequestContext.unattended` and a workflow thread
-(`thread_ids.is_workflow_thread`). `admit` also runs in the approval preview. `run_workflow` calls
-`engine.start_run(trigger="agent:<manifest>", untrusted_inputs=<every input>)`, and `StartRefused.message`
-is relayed. `max_active_runs` counts the non-terminal runs of the person's workflows from this agent.
-`run_approval` adds `workflow_run_rule`. Under `auto` the builder passes that rule object to
-`apply_approvals(conditional=)`, matched by identity, so no manifest rule can copy its id. The
-wrapper asks `Tool.approval_condition` (`_AgentWorkflows.run_needs_approval`) and gates when it
-raises. The condition (`run_reach`) walks the edges from the supplied inputs. A reached `tool_call`
-step counts by its tool (`_changes_by_tool`, through `step_tools`); every other kind outside
-`_INERT_STEP_KINDS` (`approval`, `branch`) always counts, `agent_turn` included: `step_tools` sees
-neither a composite's sub-agents nor a tool that failed to bind, nor memory capture. A tool counts as
-non-writing only if it is `read_only and not is_peer` (so `task` counts as writing). A
-call `admit_run` refuses also gates. `run_binding` binds an approval to the revision, and `run`
-starts that revision. Under `auto` any manifest rule matching `run_workflow` suppresses the harness
-rule. `admit_run` holds the run's checks. The rule is waivable and not in `BUILTIN_APPROVALS`.
-The preview shows the whole definition as escaped JSON and maps a non-refusal failure to
-`unavailable`. With `approval: true` the builder adds the `permission_mode.WORKFLOW_SAVE_APPROVAL` rule, unless a manifest
-rule without `when_args` names `save_workflow` literally. `UNWAIVABLE_TOOLS` and `UNWAIVABLE_RULE_IDS`
-both hold it.
-
-**Heartbeats** (`jobs/heartbeat.py`, `routes/heartbeats.py`). `spec.heartbeat` is the operator's;
-`PUT /heartbeats/{manifest}` (`heartbeats:write`, `require_person`) resolves the manifest (404), runs
-its inbound auth as the firing's caller (`scheduler.job_auth` over the would-be job) and only then
-answers `no_heartbeat` (422), so a refused caller learns nothing. `enrol` writes job
-`hb-<manifest>-<sha256(person)[:12]>` as the person (`creator_auth`; `expires_at` = the token's `exp`
-only when `scheduler.rechecks_at_firing` says no firing can re-check the credential -- not an API
-key, not a configured Felix sign-in), `first_run_at` the next slot, payload `{"scheduled_by": {"tool":
-"heartbeat", "manifest", "thread_id"}, "fresh_thread": true}` -- the thread the person's conversation
-`{tenant}:hb-<16 hex>`, made by `thread_state.claim_thread` (titled, kept across re-enrols while it
-exists). `jobs_store.scheduled_by(job, tool)` is the one reader of that record (it must name the
-job's own manifest), used by heartbeats, `schedule_task`'s listing, `is_fired_task`, the firing's
-`SCHEDULED_FROM_EXTRA` and `PUT /jobs`' carry-forward. `_invoke_job_manifest` asks
-`hb.begin_firing` for a `Firing` (None for a plain job): its `prompt` is the *current* checklist,
-never the payload; `refusal` when the manifest dropped its heartbeat (disabled, `NO_HEARTBEAT`) --
-and `hb.manifest_missing` disables one whose manifest no longer resolves (`NO_MANIFEST`); `adjust`
-applies `model` and the lower of `max_turns` and the manifest's own bounds after
-`prepare_tenant_invoke`; `after` prunes; `result` records `quiet` (`extras[SENT_THIS_RUN_EXTRA] == 0`)
-and the answer cut to 500. `keep_schedule_current` moves a drifted schedule with
-`jobs_store.set_schedule` (one conditional UPDATE, never an upsert). `hb.over_daily_cap` (in
-`begin_firing`, after the schedule refresh) makes `refusal` a `skipped` result (`reason: daily_cap`)
-once `jobs_store.count_runs_since(..., utc_day_start(now))` -- every status but `SKIPPED`, manual runs
-included -- reaches `max_firings_per_day` (None, the default, caps nothing); `fire_job` records
-`skipped` as its own status rather than `error`, and the job stays enabled. `fire_job`'s cancelled
-and failed paths go through `_end_abnormally`, which records the run (`CANCELLED`, under
-`asyncio.shield`; `EXECUTION_FAILED`) *before* `_clear_running`, so every firing counts.
-`hb.cap_warnings` (via `governance.manifest_warnings`) warns when an explicit cap is below
-`schedule.most_firings_per_utc_day`. `record_run` then trims every job to `FELIX_JOB_RUNS_KEEP`
-(`trim_runs`: newest by `(started_at, run_id)`, at most `TRIM_BATCH` per call, never a non-skipped run
-of the current UTC day, so the cap's count survives a small keep; contract in
-`tests/conformance/test_jobs_store.py`). Firing-thread retention is
-`prune_firing_threads` over `session/prune.py` (`threads_under`, `delete_threads` -- the one
-definition of deleting a thread whole, which retention's memory arm also uses; contract in
-`tests/conformance/test_session_prune.py`), keeping the newest `keep_threads` firing-minted threads
-and never the conversation. An expired enrolment takes `fire_job`'s credential-expired path with
-`hb.CREDENTIAL_EXPIRED`. e2e: `tests/e2e/test_heartbeat.py`.
+Jobs are claimed with a compare-and-set on `next_run_at`, and a `running` mark holds off a second
+firing until it is older than `RUNNING_STALE_MS`; a firing is unattended and runs as the job's
+recorded writer. The
+claim and clear paths, the schedule grammar, `spec.scheduling`'s `schedule_task` tools, and
+heartbeats are in [references/jobs.md](references/jobs.md).
 
 ## Workflows
 
-An authored workflow (`felix/workflows/`) is a DAG of typed steps, wired output port to input
-port. `schema.py:WorkflowSpec` validates structure on parse; `ports.py` holds port types and
-`port_mismatch` (advisory: it accepts what it cannot judge); `check.py:check()` resolves every
-step's ports and returns them beside its `Problem`s (`ProblemCode` is a closed `Literal` a client
-switches on) — it *returns*, because a half-wired draft must save and only a run refuses one.
-Step kinds are an open registry (`kinds.py:register_step_kind`, built in: `agent_turn`,
-`tool_call`, `approval`, `branch`); a kind's `ports()` is pure, and `kind`/`config` stay open on
-parse so a stored row naming an uninstalled kind still loads. A kind that raises is a
-`kind_error` on its step, never an exception out of the check. Every step has the implicit control
-input `when`; the workflow's inputs are the outputs of the non-step node `trigger`.
-`store.py` replaces a definition whole and bumps `version`; the row's `revision`
-(`<generation>.<version>`, the generation fixed at creation so a re-created id never reuses one)
-is the one `precondition` — a revision string, `ABSENT` (create only), or `None` — matching HTTP's
-`If-Match` / `If-None-Match: *`; revisions compare as written on both arms. A miss raises
-`WorkflowConflict` with the current row, a Postgres create race included. Contract:
-`tests/conformance/test_workflows_store.py`.
-
-**Runs** (`engine.py`, `executors.py`, `runs.py`). `start_run` refuses a definition with problems
-or a kind with no executor (`not_runnable`; `RUNNABLE_KINDS` is `executors.EXECUTORS`' keys — a
-plugin kind has none), checks the starter against each named manifest's inbound rules
-(`NotPermitted`) and **pins** it (`pins_json`; the child's `pin` forces `pin_compile`), caps a
-tenant at `MAX_ACTIVE_RUNS_PER_TENANT`, records the starter with `durability/runs.py:record_caller`,
-and writes a `workflow_runs` row (definition snapshot) plus an orchestrator fiber
-(`kind: workflow_run`, op `workflow`) that calls `advance` and parks `POLL_MS`. `advance` polls
-in-flight steps, starts what is ready (at most `MAX_CHILD_STEPS_IN_FLIGHT` agent and tool steps), and saves
-under the `version` CAS only when something changed. Each kind's `start`/`poll`/`stop` is its
-executor. An `agent_turn` is a child durable chat on `thread_ids.workflow_thread_id`, its fiber id
-derived from run and step (a replay or a second claim adopts it, `RunInProgress` included), started
-as the starter — or with no context when none was recorded — and bounded by the run's deadline and
-the manifest's own TTL; a child's error text is logged and the step gets a written message. An
-`tool_call` is a child fiber of kind `workflow_tool` (op `tool`, `tool_step.py`): it resolves the
-step's `manifest` as the starter, holds it to the pin (forced), compiles it and calls the named tool
-through the governed executor — every wrapper applies, approvals included — after checking the tool
-is still bound and its live input schema still takes what the step sends (`schema_drift`) and
-screening the arguments as MCP does. `tool_began` is checkpointed before the call; a replayed claim
-repeats it only for a `replay_safe` tool. A client tool (`spec.client_tools`) has no client to
-answer it and is refused (`step_refusal`). `step_tools` is what `GET /workflows/-/tools` lists for
-the editor: the same `runtime.governed_tools` compile, as the caller, less what `step_refusal`
-refuses — so the listing, the MCP server and the step agree on a manifest's tools. A tool input
-keeps the tool's own argument name (`pullNumber`), not the port-name alphabet. An
-`approval` is found by signature (`approvals.store.find_by_signature`, any status) before
-`create_pending`; a lapsed or swept one fails the step. Stopping (cancel, expiry, fail-fast) calls
-every unfinished step's `stop`: `fibers.stop_fiber` by derived id plus `steer.request_abort`, and
-`close_interrupted` for approvals. A buried orchestrator fails its run (`_after_terminal` →
-`orchestrator_ended`). `_start_step` and `_bound` fail a step whose outputs pass `MAX_STEP_OUTPUT_BYTES`
-(128 KiB) or whose inputs or outputs would take the run's record past `MAX_RUN_RECORD_BYTES` (4 MiB),
-and cut a step's error to `MAX_STEP_ERROR_CHARS`. `save_run` clears `auth`/`pins` on the save that
-ends a run, and `retention_sweep` deletes finished runs after `FELIX_WORKFLOW_RUN_RETENTION_DAYS`. Contracts: `tests/conformance/test_workflow_runs_store.py`,
-`tests/unit/test_workflow_engine.py`, `tests/e2e/test_workflow_runs.py`.
+An authored workflow (`felix/workflows/`) is a DAG of typed steps (`schema.py:WorkflowSpec`), run by
+an orchestrator fiber (`kind: workflow_run`) that calls `engine.advance`; each `agent_turn` and
+`tool_call` step is a child fiber, and every governance wrapper applies to a tool step. The store,
+the check, the step executors, the size caps, and `spec.workflow_authoring`'s agent tools are in
+[references/workflows.md](references/workflows.md).
 
 ## memory:// and tests
 
