@@ -66,6 +66,8 @@ class FakeGitHub:
     # issues listing serves both. Repositories in `issues_disabled` answer it with 410.
     issues: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     issues_disabled: set[str] = field(default_factory=set)
+    # Repositories whose issues endpoints answer 403, as for an App with no Issues permission.
+    issues_forbidden: set[str] = field(default_factory=set)
     # Status for the issues and pulls reads only, after the repository read has answered 200.
     items_status: int | None = None
 
@@ -159,6 +161,8 @@ class FakeGitHub:
             return httpx.Response(self.items_status, json={"message": "boom"})
         if what == "issues" and full in self.issues_disabled:
             return httpx.Response(410, json={"message": "Issues are disabled for this repo"})
+        if what == "issues" and full in self.issues_forbidden:
+            return httpx.Response(403, json={"message": "Resource not accessible by integration"})
         items = self.issues.get(full, [])
         if what == "pulls":
             # The pulls API's objects carry no `pull_request` key: they are pull requests.
