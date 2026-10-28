@@ -15,6 +15,20 @@ from felix_ai.types import ChatMessage, ModelClient
 
 from felix.hooks import chat_with_model_hooks, model_hook_context
 from felix.patterns.model import record_model_usage
+from felix.security.fencing import fence_as_data
+
+#: The region a run's subtask notes are handed on in: to the next subtask, a replan and the
+#: synthesis. Each note is a subtask's answer, which carries whatever its tools read, so the
+#: model reading them is told they are data.
+NOTES_TAG = "subtask_notes"
+
+
+def notes_block(notes: list[str]) -> str:
+    """The run's notes so far, fenced as data, or "(nothing yet)"."""
+    if not notes:
+        return "(nothing yet)"
+    return fence_as_data("\n".join(notes), NOTES_TAG, "the notes earlier subtasks of this run wrote")
+
 
 #: Stop reasons that mean a subtask did not finish the work it was given.
 #:
@@ -86,7 +100,7 @@ def _replan_request(
         *messages,
         ChatMessage(
             role="user",
-            content=("Progress so far:\n" + ("\n".join(notes) or "(nothing yet)"))
+            content=("Progress so far:\n" + notes_block(notes))
             + f"\n\nSubtask {index + 1} ({step}) did not complete: {step_stop}."
             + "\nReturn a revised numbered list for the remaining work only.",
         ),

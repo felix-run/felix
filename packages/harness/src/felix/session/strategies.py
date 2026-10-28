@@ -148,9 +148,18 @@ class SummarizingSessionStrategy:
 
         if model is not None:
             try:
-                from felix.session.compaction import _UNTRUSTED_NOTICE, fence_untrusted
+                from felix.patterns.model import ModelChatOptions
+                from felix.session.compaction import (
+                    _UNTRUSTED_NOTICE,
+                    SUMMARIZER_INPUT_CHARS,
+                    fence_untrusted,
+                )
 
-                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)
+                # Capped as compaction's transcript is: an unbounded history overflows the
+                # summariser's own context, and the call fails on exactly the long threads it is for.
+                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)[
+                    :SUMMARIZER_INPUT_CHARS
+                ]
                 result = await model.chat(
                     [
                         ChatMessage(
@@ -165,6 +174,9 @@ class SummarizingSessionStrategy:
                         ChatMessage(role="user", content=fence_untrusted(text)),
                     ],
                     [],
+                    # A side request with a prefix of its own, as compaction's is: it must not
+                    # spend, or write, the conversation's prompt cache.
+                    ModelChatOptions(isolate_cache=True),
                 )
                 summary_text = result.message.content
                 from felix.session.compaction import meter_summarizer
