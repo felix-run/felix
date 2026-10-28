@@ -1,4 +1,4 @@
-"""A fake github.com + api.github.com at the transport, for the GitHub login tests.
+"""A fake github.com + api.github.com at the transport, for the GitHub login and repos tests.
 
 Shared by `tests/unit/test_auth_github.py` and `tests/e2e/test_github_login.py` so both drive
 the same GitHub: the device flow, `/user`, one membership read per org, and the Actions OIDC
@@ -62,6 +62,12 @@ class FakeGitHub:
     # Per-person repos (#470): what this person's App token reaches.
     installations: list[dict[str, Any]] = field(default_factory=list)
     installation_repos: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    # A repository's issues and pull requests (`issue(...)`), keyed by its full name; GitHub's
+    # issues listing serves both. Repositories in `issues_disabled` answer it with 410.
+    issues: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    issues_disabled: set[str] = field(default_factory=set)
+    # Status for the issues and pulls reads only, after the repository read has answered 200.
+    items_status: int | None = None
 
     def issue_web_code(self, code_challenge: str, answer: dict[str, Any] | None = None) -> str:
         """What github.com does when the person approves: a code bound to this PKCE challenge."""
@@ -124,6 +130,8 @@ class FakeGitHub:
             per = int(request.url.params.get("per_page", "30"))
             repos = self.installation_repos.get(inst, [])
             return httpx.Response(200, json={"repositories": repos[(page - 1) * per : page * per]})
+        if path.startswith("/repos/") and path.count("/") >= 4:
+            return self._repo_items(request)
         if path.startswith("/repos/"):
             full = path.removeprefix("/repos/")
             for repos in self.installation_repos.values():
@@ -137,6 +145,39 @@ class FakeGitHub:
         status, state = self.memberships.get(org, (404, ""))
         organization = {"login": org, "id": self.org_ids.get(org.lower())}
         return httpx.Response(status, json={"state": state, "organization": organization})
+
+    def _reachable(self, full: str) -> bool:
+        return any(r["full_name"] == full for repos in self.installation_repos.values() for r in repos)
+
+    def _repo_items(self, request: httpx.Request) -> httpx.Response:
+        """`/repos/{o}/{r}/issues[/{n}]` and `/pulls[/{n}]`, as a person's App token reads them."""
+        _, _, owner, name, what, *rest = request.url.path.split("/")
+        full = f"{owner}/{name}"
+        if what not in {"issues", "pulls"} or len(rest) > 1 or not self._reachable(full):
+            return httpx.Response(404, json={"message": "Not Found"})
+        if self.items_status is not None:
+            return httpx.Response(self.items_status, json={"message": "boom"})
+        if what == "issues" and full in self.issues_disabled:
+            return httpx.Response(410, json={"message": "Issues are disabled for this repo"})
+        items = self.issues.get(full, [])
+        if what == "pulls":
+            # The pulls API's objects carry no `pull_request` key: they are pull requests.
+            items = [
+                {k: v for k, v in i.items() if k != "pull_request"} for i in items if "pull_request" in i
+            ]
+        if rest:
+            for item in items:
+                if str(item["number"]) == rest[0]:
+                    return httpx.Response(200, json=item)
+            return httpx.Response(404, json={"message": "Not Found"})
+        params = request.url.params
+        state = params.get("state", "open")
+        chosen = [i for i in items if state == "all" or i["state"] == state]
+        assert params.get("sort") == "updated" and params.get("direction") == "desc", params
+        chosen.sort(key=lambda i: (i["updated_at"], i["number"]), reverse=True)
+        page = int(params.get("page", "1"))
+        per = int(params.get("per_page", "30"))
+        return httpx.Response(200, json=chosen[(page - 1) * per : page * per])
 
     def _exchange_code(self, form: dict[str, str]) -> httpx.Response:
         import base64
@@ -240,3 +281,29 @@ def repo(full_name: str, *, push: bool = True, size: int = 12, archived: bool = 
         "size": size,
         "permissions": {"pull": True, "push": push, "admin": False},
     }
+
+
+def issue(
+    number: int,
+    title: str,
+    *,
+    pull: bool = False,
+    state: str = "open",
+    author: str | None = "octo",
+    updated_at: str = "2026-10-01T00:00:00Z",
+    body: str | None = "",
+) -> dict[str, Any]:
+    """An issue as `GET /repos/{o}/{r}/issues` returns it; a pull request carries `pull_request`."""
+    item: dict[str, Any] = {
+        "number": number,
+        "title": title,
+        "state": state,
+        "user": {"login": author} if author is not None else None,
+        "updated_at": updated_at,
+        "body": body,
+        # GitHub sends its own link; the harness builds one rather than passing this through.
+        "html_url": f"https://evil.example/{number}",
+    }
+    if pull:
+        item["pull_request"] = {"url": "https://api.github.com/..."}
+    return item
