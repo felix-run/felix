@@ -9,8 +9,8 @@ is not one, and a rewind or a fork past it takes it away with the turns it was o
 The instructions must also stay where the model can read them (agentskills.io's client guide:
 exempt skill content from pruning). Clearing never stubs an `activate_skill` result
 (`session/clearing.py`); a strategy that drops whole turns -- windowed, compacting, summarising
--- can still leave one behind, and `SkillRetentionStrategy` puts the logged result back, as a
-transient user message ahead of the history, for every active skill the render lost.
+-- can still leave one behind, and `SkillRetentionStrategy` puts the logged result back, as an
+ordinary user message ahead of the history, for every active skill the render lost.
 """
 
 from __future__ import annotations
@@ -40,8 +40,11 @@ ACTIVATED_KEY = "activated"
 DEACTIVATED_KEY = "deactivated"
 INSTRUCTIONS_KEY = "instructions"
 VERSION_KEY = "version"
-# A digest of the instructions, written beside them: the logged copy of the instructions may have
-# been secret-masked, so it is the digest a later activation compares, never the text.
+ARGUMENTS_KEY = "arguments"
+ARGUMENTS_DIGEST_KEY = "arguments_digest"
+# A digest of the skill's body as `activation_instructions` gives it (no arguments), written beside
+# the instructions: the logged copy may have been masked, so it is the digest a later activation and
+# retention compare, never the text -- and never text rebuilt from what the log says.
 DIGEST_KEY = "digest"
 
 
@@ -61,6 +64,9 @@ class Activation:
     content: str
     # `instructions_digest` of what the model was told to follow; None for a result without one.
     digest: str | None = None
+    # `instructions_digest` of the arguments a person's `/name` passed; None without any. A digest,
+    # like `digest`: the logged arguments may have been masked or screened.
+    arguments_digest: str | None = None
 
 
 def _payload(content: str | None) -> dict[str, Any]:
@@ -96,6 +102,15 @@ async def thread_activations(
     ``whole_log`` is the thread's every event, already read -- a render's own read, which
     `SkillRetentionStrategy` reuses so retention costs a turn no transaction of its own.
     """
+    active, _seen = await thread_history(session, whole_log=whole_log)
+    return active
+
+
+async def thread_history(
+    session: Session, *, whole_log: list[Any] | None = None
+) -> tuple[dict[str, Activation], set[str]]:
+    """`thread_activations`, and every skill the branch ever activated -- one since deactivated
+    included, which a `preload` must not undo."""
     from felix.session.types import GetEventsOpts
 
     if whole_log is not None:
@@ -113,6 +128,7 @@ async def thread_activations(
             await skeletons() if skeletons is not None else await session.get_events(), session
         )
     active: dict[str, Activation] = {}
+    seen: set[str] = set()
     for event in sorted(results, key=lambda e: e.seq):
         if event.name not in (ACTIVATE_TOOL, DEACTIVATE_TOOL):
             continue
@@ -124,6 +140,7 @@ async def thread_activations(
             continue
         name = data.get(ACTIVATED_KEY)
         if isinstance(name, str) and name:
+            seen.add(name)
             active.pop(name, None)
             active[name] = Activation(
                 name=name,
@@ -131,8 +148,9 @@ async def thread_activations(
                 tool_call_id=event.tool_call_id,
                 content=event.content or "",
                 digest=data.get(DIGEST_KEY),
+                arguments_digest=data.get(ARGUMENTS_DIGEST_KEY),
             )
-    return active
+    return active, seen
 
 
 async def activations_for(session_store: Any, thread_id: str | None) -> dict[str, Activation]:
@@ -160,10 +178,14 @@ def wants_skills(spec: Any, tool_names: Iterable[str], *, authoring_available: b
 MAX_RETAINED_CHARS = 128 * 1024
 
 
-def activation_instructions(skill: Any) -> str:
-    """The instructions `activate_skill` hands the model for ``skill``: its body, capped."""
+def activation_instructions(skill: Any, arguments: str | None = None) -> str:
+    """The instructions `activate_skill` hands the model for ``skill``: its body with ``arguments``
+    substituted (`arguments.with_arguments`), capped either way."""
+    from felix.skills.arguments import with_arguments
     from felix.skills.format import MAX_SKILL_MD_CHARS
 
+    if arguments:
+        return with_arguments(skill.body, arguments, limit=MAX_SKILL_MD_CHARS) or "(no body)"
     return skill.body[:MAX_SKILL_MD_CHARS] or "(no body)"
 
 
@@ -190,7 +212,7 @@ def retained_view(active: dict[str, Activation], catalog: Any) -> RetainedView:
     over: list[Activation] = []
     used = 0
     for activation in reversed(list(active.values())):
-        skill = catalog.get_invocable(activation.name)
+        skill = catalog.get_activatable(activation.name)
         if skill is None:
             continue
         if activation.digest != instructions_digest(activation_instructions(skill)):
@@ -226,7 +248,7 @@ def retained_messages(lost: list[Activation], view: RetainedView, catalog: Any) 
     again: list[str] = []
     for activation in lost:
         if activation.name in view.whole:
-            skill = catalog.get_invocable(activation.name)
+            skill = catalog.get_activatable(activation.name)
             imported = bool(skill is not None and skill.untrusted)
             label = ' untrusted="true"' if imported else ""
             caveat = (

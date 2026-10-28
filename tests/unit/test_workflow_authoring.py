@@ -824,7 +824,7 @@ async def test_auto_asks_only_when_a_supplied_value_reaches_a_tool_that_changes_
     settings: Settings,
 ) -> None:
     await _held(settings, "reads", [_tool_step("calc", "calculator")], [_edge("trigger", "value", "calc")])
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     assert await _needs(settings, "reads", {"value": 1}) is False, "a read-only tool changes nothing"
     assert await _needs(settings, "writes", {"value": 1}) is True
     assert await _needs(settings, "writes", {"other": 1}) is False, "no supplied value reaches it"
@@ -838,7 +838,7 @@ async def test_auto_counts_a_tool_it_cannot_find_as_one_that_changes_things(sett
 
 async def test_a_run_the_tool_refuses_now_still_counts_as_needing_approval(settings: Settings) -> None:
     """It may be admitted by the time it runs; the preview refuses it first, asking no one."""
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     assert await _needs(settings, "writes", {"value": 1}, _auth("bob")) is True
 
 
@@ -884,7 +884,7 @@ async def test_auto_follows_a_value_past_a_step_that_changes_nothing(
 ) -> None:
     """A branch or an approval gate acts on nothing outside the run, so it never asks itself; what
     it leads to does, as far down the edges as the value goes."""
-    for workflow_id, tool in [("reads", "calculator"), ("writes", "activate_skill")]:
+    for workflow_id, tool in [("reads", "calculator"), ("writes", "write_file")]:
         edges = [_edge("trigger", "value", "gate", into), _edge("gate", out, "act")]
         await _held(settings, workflow_id, [_gate(kind), _tool_step("act", tool)], edges)
     assert await _needs(settings, "reads", {"value": True}) is False
@@ -992,7 +992,7 @@ async def _run_call(
 async def test_auto_runs_a_read_only_reach_at_once_and_holds_a_writing_one(settings: Settings) -> None:
     tools = await _compiled(settings, workflow_authoring={})
     await _held(settings, "reads", [_tool_step("calc", "calculator")], [_edge("trigger", "value", "calc")])
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
 
     rows, done = await _run_call(settings, tools, "reads", {"value": "2+2", "other": ""})
     assert rows == [] and done is not None and "run_id" in done, done
@@ -1003,7 +1003,7 @@ async def test_auto_runs_a_read_only_reach_at_once_and_holds_a_writing_one(setti
         ("run_workflow", "workflow_authoring.run_workflow.auto")
     ]
     preview = json.dumps(rows[0])
-    assert "activate_skill" in preview and "changes_things" in preview
+    assert "write_file" in preview and "changes_things" in preview
 
 
 async def test_always_holds_every_run_and_an_operators_own_rule_ignores_the_condition(
@@ -1053,7 +1053,7 @@ async def test_bypass_waives_the_run_approval_unlike_the_saves() -> None:
         workflow_authoring={"run_approval": "always"},
         permissions={"allowed_modes": ["default", "bypass"]},
     )
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     rows, done = await _run_call(settings, tools, "writes", {"value": "x", "other": ""}, thread=thread)
     assert rows == [] and done is not None and "run_id" in done, done
 
@@ -1061,10 +1061,10 @@ async def test_bypass_waives_the_run_approval_unlike_the_saves() -> None:
 async def test_an_approval_binds_the_revision_and_the_run_starts_that_revision(settings: Settings) -> None:
     from felix.workflows.agent_tools import _AgentWorkflows
 
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     flows = _AgentWorkflows(settings, tenant_id=TENANT, manifest_id=MANIFEST, spec=WorkflowAuthoringSpec())
     before = await flows.run_binding({"workflow_id": "writes"})
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     after = await flows.run_binding({"workflow_id": "writes"})
     assert before and after and before != after, "a save is a different call to approve"
 
@@ -1093,13 +1093,13 @@ async def test_a_grant_for_one_revision_does_not_run_another(settings: Settings)
     from felix.approvals import store as approvals_store
 
     tools = await _compiled(settings, workflow_authoring={"run_approval": "always"})
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     inputs = {"value": "x", "other": ""}
     rows, _ = await _run_call(settings, tools, "writes", inputs)
     [first] = rows
     await approvals_store.decide(settings, TENANT, first["id"], decision="approved", decided_by="alice")
     # A new revision lands while the grant waits to be spent.
-    await _held(settings, "writes", [_tool_step("act", "activate_skill")], [_edge("trigger", "value", "act")])
+    await _held(settings, "writes", [_tool_step("act", "write_file")], [_edge("trigger", "value", "act")])
     rows, done = await _run_call(settings, tools, "writes", inputs)
     assert done is None, "the grant was for the revision the approver saw"
     assert [r["id"] for r in rows if r["status"] == "pending" and r["id"] != first["id"]], rows

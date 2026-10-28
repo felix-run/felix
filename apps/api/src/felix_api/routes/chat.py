@@ -984,6 +984,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
                 thread_id=thread,
                 model_id=model_id,
                 execution=execution,
+                person_turn=True,
                 # With the sub-agent digest: a durable run carrying stored authority is pinned on
                 # resume whatever the manifest says, so its children are part of what it runs.
                 pin=await pin_fields_for(
@@ -1022,6 +1023,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
                     thread_id=thread,
                     model_id=model_id,
                     tenant_id=auth.tenant_id,
+                    person_turn=True,
                 )
             )
         except ModelGatewayError as exc:
@@ -1443,6 +1445,7 @@ async def chat_stream(
                 thread_id=thread,
                 model_id=model_id,
                 execution=execution,
+                person_turn=True,
                 # With the sub-agent digest: a durable run carrying stored authority is pinned on
                 # resume whatever the manifest says, so its children are part of what it runs.
                 pin=await pin_fields_for(
@@ -1517,6 +1520,7 @@ async def chat_stream(
                         thread_id=thread,
                         model_id=model_id,
                         tenant_id=auth.tenant_id,
+                        person_turn=True,
                     )
                 )
                 cursor: int | None = None

@@ -208,6 +208,10 @@ class SkillRef(_Strict):
     # catalogue — so the two are deliberately separate.
     description: str | None = None
     version: str | None = None
+    # Start every conversation with this skill activated: the harness calls `activate_skill` for
+    # it before the model's first step, once per conversation (`skills/invocation.py`). An imported
+    # skill nobody has adopted is never preloaded.
+    preload: bool = False
 
 
 class McpServerRef(_Strict):

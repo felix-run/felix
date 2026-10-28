@@ -36,6 +36,10 @@ class InvokeInput:
     # manifest's `spec.model` values. A caller may only *lower* `max_tokens`: the react
     # loop clamps it to the manifest's ceiling before the model sees it.
     model_options: ModelChatOptions | None = None
+    # The newest user turn is a person's own, typed into a chat surface (`/chat`, `/v1`). Only then
+    # is a `/skill-name` in it run for them (`skills/invocation.py`): a turn a model wrote -- a
+    # `task` prompt, a plan step, an A2A peer's message -- may name a skill hidden from the model.
+    person_turn: bool = False
 
 
 @dataclass(slots=True)

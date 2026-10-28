@@ -243,6 +243,9 @@ class _ReactAgent:
     tools_retrieval: Any | None = None
     # `spec.skill_suggestion`, built: suggests one skill per turn as a transient hint.
     skill_suggester: Any | None = None
+    # `skills.invocation.SkillPreamble`: `activate_skill` calls the harness makes before the first
+    # model step, for a person's `/name` and the manifest's `preload` skills.
+    skill_preamble: Any | None = None
     # `spec.decider`, built: a metered decision provider, or None when the manifest has none.
     decider: MeteredDecider | None = None
     procedural_memory: Any | None = None
@@ -1067,6 +1070,130 @@ class _ReactAgent:
         )
         return messages
 
+    async def _tool_round(
+        self,
+        input: InvokeInput,
+        tenant_id: str,
+        assistant: ChatMessage,
+        messages: list[ChatMessage],
+        produced: list[ChatMessage],
+        round_: _ToolRound,
+        *,
+        usage: Any,
+        emit_events: bool,
+    ) -> AsyncIterator[Event]:
+        """One round of ``assistant``'s tool calls: logged first, run as a batch with side events
+        drained as it goes, results appended. What it ends on is left in ``round_``. The model's
+        rounds and the harness's own (`_run_skill_preamble`) both run through here, so a client sees
+        the same frames for either and a change to how a round runs is made once.
+        """
+        calls = list(assistant.tool_calls or [])
+        for call in calls:
+            if not call.id:
+                call.id = f"call_{uuid.uuid4().hex[:12]}"
+            if emit_events:
+                yield Event(
+                    event="tool_start",
+                    data={"name": call.name, "input": call.args, "id": call.id},
+                )
+                yield Event(
+                    event="tool_execution_update",
+                    data={"name": call.name, "id": call.id, "status": "running"},
+                )
+
+        # Written ahead of the batch, not with its results. A run that dies mid-batch
+        # -- a worker restart, a lost fiber lease, a cancel -- left no trace of calls
+        # that may already have taken effect: the message was appended only once the
+        # whole batch returned. A re-run then re-asked the model from the user's turn,
+        # and it issued the same writes again (felix-run/felix#531). Logged first, an
+        # unfinished call is in the history, and `_interrupted_tool_results` closes it
+        # on the next run as "may have already taken effect" rather than letting it be
+        # issued blind. The results follow below.
+        await self._append_produced(input.thread_id, [assistant], usage=usage)
+
+        # Side events are drained *while* the batch runs, not after it. A gated
+        # tool blocks inside `run_batch` in `wait_for_decision` for up to its
+        # rule's TTL, and the `approval_required` frame that asks for the
+        # decision is queued at block time -- so draining afterwards flushed it
+        # in the same beat as `tool_end`, after the answer had already been
+        # given. Measured: a stream blocked on a gated call for 75s carried no
+        # `approval_required` at all, and the client showed a tool card sitting
+        # at `running` with nothing to say why. The same applies to
+        # `tool_request` and `ui_request`, which block the same way.
+        batch = asyncio.create_task(
+            self._tools.run_batch(
+                calls,
+                thread_id=input.thread_id,
+                tenant_id=tenant_id,
+            )
+        )
+        try:
+            if emit_events:
+                while True:
+                    for side in await drain_side_events(input.thread_id):
+                        yield Event(event=str(side["event"]), data=dict(side["data"]))
+                    if batch.done():
+                        break
+                    await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
+            tool_msgs, batch_fatal, all_terminate, batch_denied = await batch
+        except BaseException:
+            # The batch no longer inherits cancellation from this frame, so a
+            # client that hangs up mid-tool would otherwise leave it running.
+            batch.cancel()
+            raise
+        for tool_msg in tool_msgs:
+            if emit_events:
+                yield Event(event="tool_end", data=_tool_end_data(tool_msg))
+                yield Event(
+                    event="tool_execution_update",
+                    data={
+                        "name": tool_msg.name,
+                        "id": tool_msg.tool_call_id,
+                        "status": "complete",
+                    },
+                )
+            messages.append(tool_msg)
+            produced.append(tool_msg)
+
+        await self._append_produced(input.thread_id, tool_msgs)
+        round_.fatal, round_.all_terminate, round_.denied = batch_fatal, all_terminate, batch_denied
+
+    async def _run_skill_preamble(
+        self,
+        input: InvokeInput,
+        tenant_id: str,
+        messages: list[ChatMessage],
+        produced: list[ChatMessage],
+        round_: _ToolRound,
+        *,
+        emit_events: bool,
+    ) -> AsyncIterator[Event]:
+        """Activate the skills a person ran as `/name`, and the manifest's `preload` skills, before
+        the model's first step (`skills/invocation.py`). The calls go through the tool runner --
+        every governance wrapper, the `before_tool` hooks, the audit -- and are logged as an
+        assistant turn and its results, as if the model had made them, so the thread reads back the
+        activation exactly as one the model asked for."""
+        if self.skill_preamble is None:
+            return
+        calls = await self.skill_preamble.calls(
+            input.thread_id, list(input.messages), person_turn=getattr(input, "person_turn", False)
+        )
+        if not calls:
+            return
+        assistant = ChatMessage(role="assistant", content="", tool_calls=calls)
+        messages.append(assistant)
+        produced.append(assistant)
+        # What a person's call may do is granted by its id (`invocation.PersonCalls`), and only while
+        # this round runs: an id a refused call never spent dies with it, whatever the model sees.
+        self.skill_preamble.person_calls.open()
+        try:
+            async for ev in self._tool_round(
+                input, tenant_id, assistant, messages, produced, round_, usage=None, emit_events=emit_events
+            ):
+                yield ev
+        finally:
+            self.skill_preamble.person_calls.close()
+
     async def _deliver_follow_ups(
         self,
         tenant_id: str,
@@ -1257,6 +1384,13 @@ class _ReactAgent:
             produced: list[ChatMessage] = list(input.messages)
             await self._append_produced(input.thread_id, [m for m in input.messages if m.role == "user"])
             await self._note_preview(input)
+            # The person's `/name` and the manifest's preloads, right after their turn and ahead of
+            # any steer held for this run.
+            preamble = _ToolRound()
+            async for ev in self._run_skill_preamble(
+                input, tenant_id, messages, produced, preamble, emit_events=emit_events
+            ):
+                yield ev
             if input.thread_id:
                 # A steer sent while the thread was idle is held for the next run and delivered
                 # here, after that run's own turn. The loop below only drains steers between tool
@@ -1280,7 +1414,11 @@ class _ReactAgent:
             # Every refusal in the run, across rounds. `any_denied` is the *last* batch's: #311 made
             # `final_response.status` say whether the run ended on a refusal, so a run that recovered
             # after one still reads `ok`. The count is what tells that run apart from one with none.
-            denied_calls = 0
+            # A refused preamble call -- an approval denied, plan mode -- is a refusal like any other.
+            denied_calls = preamble.denied
+            # A `before_tool` hook that ends the run, or a fatal call, ends it here too -- before the
+            # model's first step, as it would after any round of the model's own.
+            fatal = preamble.fatal
             last_stop: StopReason = "end_turn"
             # The newest model call's usage block, for `done`. The last call's prompt is the
             # whole branch as the model saw it, so this is also how full the context is.
@@ -1326,6 +1464,8 @@ class _ReactAgent:
         try:
             stop_continuations = 0
             for _step in range(self.recursion_limit):
+                if fatal is not None or preamble.all_terminate:
+                    break
                 if input.thread_id and await is_aborted(tenant_id, input.thread_id):
                     await self._append_produced(
                         input.thread_id, [final] if final.content else [], status="aborted"
@@ -1496,74 +1636,19 @@ class _ReactAgent:
                         continue
                     break
 
-                for call in assistant.tool_calls:
-                    if not call.id:
-                        call.id = f"call_{uuid.uuid4().hex[:12]}"
-                    if emit_events:
-                        yield Event(
-                            event="tool_start",
-                            data={"name": call.name, "input": call.args, "id": call.id},
-                        )
-                        yield Event(
-                            event="tool_execution_update",
-                            data={"name": call.name, "id": call.id, "status": "running"},
-                        )
-
-                # Written ahead of the batch, not with its results. A run that dies mid-batch
-                # -- a worker restart, a lost fiber lease, a cancel -- left no trace of calls
-                # that may already have taken effect: the message was appended only once the
-                # whole batch returned. A re-run then re-asked the model from the user's turn,
-                # and it issued the same writes again (felix-run/felix#531). Logged first, an
-                # unfinished call is in the history, and `_interrupted_tool_results` closes it
-                # on the next run as "may have already taken effect" rather than letting it be
-                # issued blind. The results follow below.
-                await self._append_produced(input.thread_id, [assistant], usage=usage_block)
-
-                # Side events are drained *while* the batch runs, not after it. A gated
-                # tool blocks inside `run_batch` in `wait_for_decision` for up to its
-                # rule's TTL, and the `approval_required` frame that asks for the
-                # decision is queued at block time -- so draining afterwards flushed it
-                # in the same beat as `tool_end`, after the answer had already been
-                # given. Measured: a stream blocked on a gated call for 75s carried no
-                # `approval_required` at all, and the client showed a tool card sitting
-                # at `running` with nothing to say why. The same applies to
-                # `tool_request` and `ui_request`, which block the same way.
-                batch = asyncio.create_task(
-                    self._tools.run_batch(
-                        list(assistant.tool_calls),
-                        thread_id=input.thread_id,
-                        tenant_id=tenant_id,
-                    )
-                )
-                try:
-                    if emit_events:
-                        while True:
-                            for side in await drain_side_events(input.thread_id):
-                                yield Event(event=str(side["event"]), data=dict(side["data"]))
-                            if batch.done():
-                                break
-                            await asyncio.wait({batch}, timeout=SIDE_EVENT_POLL_SECONDS)
-                    tool_msgs, batch_fatal, all_terminate, batch_denied = await batch
-                except BaseException:
-                    # The batch no longer inherits cancellation from this frame, so a
-                    # client that hangs up mid-tool would otherwise leave it running.
-                    batch.cancel()
-                    raise
-                for tool_msg in tool_msgs:
-                    if emit_events:
-                        yield Event(event="tool_end", data=_tool_end_data(tool_msg))
-                        yield Event(
-                            event="tool_execution_update",
-                            data={
-                                "name": tool_msg.name,
-                                "id": tool_msg.tool_call_id,
-                                "status": "complete",
-                            },
-                        )
-                    messages.append(tool_msg)
-                    produced.append(tool_msg)
-
-                await self._append_produced(input.thread_id, tool_msgs)
+                round_ = _ToolRound()
+                async for ev in self._tool_round(
+                    input,
+                    tenant_id,
+                    assistant,
+                    messages,
+                    produced,
+                    round_,
+                    usage=usage_block,
+                    emit_events=emit_events,
+                ):
+                    yield ev
+                batch_fatal, all_terminate, batch_denied = round_.fatal, round_.all_terminate, round_.denied
                 any_denied = bool(batch_denied)
                 denied_calls += batch_denied
                 if batch_fatal is not None:
@@ -1700,6 +1785,7 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         tools_retrieval=ctx.get("tools_retrieval"),
         decider=ctx.get("decider"),
         skill_suggester=ctx.get("skill_suggester"),
+        skill_preamble=_consumed(ctx.get("skill_preamble")),
         procedural_memory=ctx.get("procedural_memory"),
         reply_screen=ctx.get("reply_screen"),
         manifest_hooks=ctx.get("hooks"),
@@ -1709,6 +1795,22 @@ def build_react_agent(ctx: PatternBuildContext) -> Agent:
         compact_after_turn=compact_after,
         output_schema=ctx.get("output_schema"),
     )
+
+
+def _consumed(preamble: Any) -> Any:
+    """``preamble``, marked as run by a pattern (`skills.invocation.SkillPreamble.consumed`)."""
+    if preamble is not None:
+        preamble.consumed = True
+    return preamble
+
+
+@dataclass(slots=True)
+class _ToolRound:
+    """What one tool round ended on, for the loop that ran it (`ReactAgent._tool_round`)."""
+
+    fatal: FatalCall | None = None
+    all_terminate: bool = False
+    denied: int = 0
 
 
 async def _build_react(ctx: PatternBuildContext) -> Agent:

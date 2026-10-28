@@ -193,8 +193,13 @@ def _catalog_with_hidden() -> SkillCatalog:
     return SkillCatalog(
         skills={
             "shown": Skill(name="shown", description="Shown.", body="shown body"),
+            # Hidden from everyone: not offered to the model, and not a person's to run either.
             "secret": Skill(
-                name="secret", description="Hidden.", body="secret body", disable_model_invocation=True
+                name="secret",
+                description="Hidden.",
+                body="secret body",
+                disable_model_invocation=True,
+                user_invocable=False,
             ),
             "missing": Skill(name="missing", description="(body not found)", unresolved=True),
         }
