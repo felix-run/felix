@@ -431,12 +431,14 @@ MAX_REPORT_CHARS = 16_000
 REPORT_SCREENED = "screened"
 
 
-def task_report_entry(job: dict[str, Any], answer: str) -> AppendableEvent:
+def task_report_entry(job: dict[str, Any], answer: str, *, failed: bool = False) -> AppendableEvent:
     """The entry a task's answer leaves in the conversation it was scheduled from.
 
     `custom` with `in_context` set and the `assistant` role: the agent's own answer, which the next
     turn there reads, so the person can ask about what the task found. Never `user` -- the text is
-    a model's answer, possibly over what a tool fetched, and must not read as the person's words."""
+    a model's answer, possibly over what a tool fetched, and must not read as the person's words.
+    ``failed``: ``answer`` is the run's recorded error (`scheduler._job_error_message`), so the
+    conversation hears the task did not finish rather than nothing."""
     from felix.session.types import AppendableEvent
 
     payload = job.get("payload") or {}
@@ -446,11 +448,12 @@ def task_report_entry(job: dict[str, Any], answer: str) -> AppendableEvent:
     text = answer
     if len(text) > MAX_REPORT_CHARS:
         text = f"{text[:MAX_REPORT_CHARS]}\n\n[cut short; the whole answer is in the task's run history]"
+    metadata = {"type": TASK_REPORT_ENTRY_TYPE, "task": job["name"], "title": title, "in_context": True}
+    if failed:
+        text = f"The task did not finish: {text}"
+        metadata["failed"] = True
     return AppendableEvent(
-        kind="custom",
-        role="assistant",
-        content=f"[Scheduled task: {title}]\n\n{text}",
-        metadata={"type": TASK_REPORT_ENTRY_TYPE, "task": job["name"], "title": title, "in_context": True},
+        kind="custom", role="assistant", content=f"[Scheduled task: {title}]\n\n{text}", metadata=metadata
     )
 
 
@@ -461,16 +464,21 @@ async def report_back(
     manifest: Manifest,
     ctx: RequestContext,
     answer: str,
+    *,
+    failed: bool = False,
 ) -> str | None:
-    """Add a task's answer to the conversation it was scheduled from; what became of it, an
-    `origin_thread` value, or None when there is nothing to report: a firing that is not this
-    manifest's task, a manifest with `spec.scheduling.report_back` off, or an empty answer.
+    """Add a task's answer -- or, ``failed``, its run's error -- to the conversation it was scheduled
+    from; what became of it, an `origin_thread` value, or None when there is nothing to report: a
+    firing that is not this manifest's task, a manifest with `spec.scheduling.report_back` off, or
+    an empty answer.
 
     The conversation is the one `origin_thread.origin_of` allows -- recorded by `schedule_task`, for
     a job the person this firing acts for wrote, a chat thread of this tenant's -- and the entry
-    lands only where `origin_thread.append_when_idle` lets it: never into a live run."""
+    lands only where `idle_append.append_when_idle` lets it: never into a live run, whose end it
+    waits for instead (`idle_append.append_or_queue`)."""
     from felix.jobs import origin_thread
     from felix.jobs import store as jobs_store
+    from felix.session import idle_append
 
     spec = manifest.spec.scheduling
     if jobs_store.scheduled_by(job, SCHEDULE_TASK) is None or spec is None or not spec.report_back:
@@ -487,7 +495,8 @@ async def report_back(
     verdict = await screen_content(answer, settings=settings, block_on_injection=True, redact_pii=False)
     if verdict.denied:
         return REPORT_SCREENED
-    return await origin_thread.append_when_idle(settings, tenant_id, thread, [task_report_entry(job, answer)])
+    entry = task_report_entry(job, answer, failed=failed)
+    return await idle_append.append_or_queue(settings, tenant_id, thread, [entry])
 
 
 __all__ = [

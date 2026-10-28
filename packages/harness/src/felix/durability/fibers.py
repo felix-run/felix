@@ -946,6 +946,11 @@ async def _after_terminal(settings: Settings, row: dict[str, Any]) -> None:
 
     if row.get("kind") == DURABLE_CHAT_KIND:
         await _notify_run_finished(settings, row)
+        # A durable run is live between its turns too, so what a scheduled task reported meanwhile
+        # waited for this, not for a turn's end (`session/idle_append.py:append_or_queue`).
+        from felix.session.idle_append import deliver_pending
+
+        await deliver_pending(settings, str(row.get("tenant_id") or ""), str(row.get("thread_id") or ""))
     if row.get("kind") == "workflow_run":  # `felix.workflows.engine.ORCHESTRATOR_KIND`
         # A buried orchestrator would otherwise leave its run `running` for good.
         try:

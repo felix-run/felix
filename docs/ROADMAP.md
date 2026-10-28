@@ -657,9 +657,14 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       `cancel_scheduled` runs without an approval (a cancel only removes work, but a model can
       cancel a person's task unasked); the per-caller cap is read then written, so two concurrent
       `schedule_task` calls can both pass it; a task's report back into the thread that scheduled it
-      (`spec.scheduling.report_back`, *landed*) is skipped when a run is going on there, not
-      retried, a firing that errors reports nothing, and every firing of a recurring task adds an
-      in-context entry (no per-thread cap, nor only the latest report per task kept in context); a durable or workflow run a task
+      (`spec.scheduling.report_back`, *landed*; one kept out by a live run now waits on the thread
+      and lands when the run ends, and a firing that errors reports that it did not finish) still
+      leaves every firing of a recurring task adding an in-context entry (no per-thread cap, nor
+      only the latest report per task kept in context); a report waiting on a thread whose live
+      run died with its process waits for the thread's next run to end (dropped after a day), is
+      not re-checked against `report_back` or the job on delivery, and a thread deleted between
+      the firing's check and its queueing write comes back holding only the report (the push
+      inserts a missing row); a durable or workflow run a task
       starts just before its writer's token expires is not clamped to that expiry, so it may run
       on past it by up to the run's own TTL. *Landed:* `notify`, PR 1 of 3:
       `spec.notify` binds a tool that sends a title and short message as a Web Push to the person
