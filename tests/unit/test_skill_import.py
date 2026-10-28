@@ -1071,7 +1071,6 @@ def _catalog(*skills: Any) -> Any:
 
 
 async def test_list_skills_is_relayed_output_when_it_lists_an_imported_skill() -> None:
-    from felix.skills.store import get_skill_activation_store
     from felix.skills.tools import make_skill_tools
     from felix.skills.types import Skill
     from felix.tools.types import is_untrusted_output
@@ -1079,7 +1078,7 @@ async def test_list_skills_is_relayed_output_when_it_lists_an_imported_skill() -
     async def listing(*skills: Skill) -> Any:
         tools = make_skill_tools(
             _catalog(*skills),
-            activation_store=get_skill_activation_store(None),
+            session_store=None,
             tenant_id="acme",
             manifest_id="m",
         )
@@ -1094,7 +1093,6 @@ async def test_list_skills_is_relayed_output_when_it_lists_an_imported_skill() -
 
 
 async def test_list_skills_withholds_an_injected_imported_description_as_the_catalog_does() -> None:
-    from felix.skills.store import get_skill_activation_store
     from felix.skills.tools import make_skill_tools
     from felix.skills.types import Skill
     from felix.tools.types import tool_output_content
@@ -1104,7 +1102,7 @@ async def test_list_skills_withholds_an_injected_imported_description_as_the_cat
     house = Skill(name="house-rules", description="Ours.")
     tools = make_skill_tools(
         _catalog(split, quiet, house),
-        activation_store=get_skill_activation_store(None),
+        session_store=None,
         tenant_id="acme",
         manifest_id="m",
     )
@@ -1138,7 +1136,6 @@ async def test_relayed_imported_text_gets_the_marker_scan_with_screening_off(ena
     the operator's skill, and every other trusted tool, are left as the manifest says."""
     from felix.manifests.builder import apply_content_screening
     from felix.manifests.schema import ContentScreening
-    from felix.skills.store import get_skill_activation_store
     from felix.skills.tools import make_skill_tools
     from felix.skills.types import Skill
     from felix.tools.types import tool_output_content
@@ -1148,9 +1145,7 @@ async def test_relayed_imported_text_gets_the_marker_scan_with_screening_off(ena
         Skill(name="refunds", description="Theirs.", body=hostile, source="library", untrusted=True),
         Skill(name="house-rules", description="Ours.", body=hostile, source="library"),
     )
-    tools = make_skill_tools(
-        catalog, activation_store=get_skill_activation_store(None), tenant_id="acme", manifest_id="m"
-    )
+    tools = make_skill_tools(catalog, session_store=None, tenant_id="acme", manifest_id="m")
     wrapped = {
         t.name: t
         for t in apply_content_screening(tools, ContentScreening(enabled=enabled), "m", imported_skills=True)

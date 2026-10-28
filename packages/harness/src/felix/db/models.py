@@ -223,15 +223,6 @@ class Approval(Base):
     )
 
 
-class SkillActivation(Base):
-    __tablename__ = "skill_activation"
-
-    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    manifest_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    active_skills: Mapped[list[Any]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"), default=list)
-    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
-
-
 class SkillRow(Base):
     """A skill in a tenant's library. `live_version` is what catalogs load; null is archived."""
 
@@ -947,7 +938,6 @@ __all__ = [
     "Plan",
     "PushSubscriptionRow",
     "SessionEventRow",
-    "SkillActivation",
     "SkillFileRow",
     "SkillRow",
     "SkillVersionRow",

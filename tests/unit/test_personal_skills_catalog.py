@@ -16,16 +16,17 @@ from typing import Any
 import pytest
 from felix.config import Settings
 from felix.manifests.loader import ManifestParseError, parse_manifest
+from felix.session.store import InMemorySessionStore
 from felix.skills.copy_rule import digest
 from felix.skills.library_keys import ORG_OWNER
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.loader import load_manifest_skills
-from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import make_skill_tools
 from felix.storage import MemoryObjectStore
 from felix.tools.types import ToolInvocationCtx, tool_output_content
 
 from tests.support.factories import make_settings
+from tests.support.skill_threads import call_in_thread
 
 ALICE, BOB = "iss|alice", "iss|bob"
 
@@ -207,10 +208,12 @@ async def test_the_host_still_wins_over_a_personal_skill_of_its_name(
 # -- the skill tools --------------------------------------------------------------------------------
 
 
-def _tools(catalog: Any, settings: Settings, store: MemoryObjectStore, activation: Any) -> dict[str, Any]:
+def _tools(
+    catalog: Any, settings: Settings, store: MemoryObjectStore, sessions: Any = None
+) -> dict[str, Any]:
     tools = make_skill_tools(
         catalog,
-        activation_store=activation,
+        session_store=sessions,
         tenant_id="acme",
         manifest_id="m",
         settings=settings,
@@ -238,8 +241,8 @@ async def test_a_personal_skills_files_are_read_from_its_own_library(
         **{"references/how.md": "Tenant way.", "references/tenant-only.md": "Tenant only."},
     )
     await _publish(settings, store, ALICE, "notes", "Alice's notes", **{"references/how.md": "Alice's way."})
-    alice = _tools(await _catalog(settings, store, ALICE), settings, store, InMemorySkillActivationStore())
-    org = _tools(await _catalog(settings, store, None), settings, store, InMemorySkillActivationStore())
+    alice = _tools(await _catalog(settings, store, ALICE), settings, store)
+    org = _tools(await _catalog(settings, store, None), settings, store)
 
     activated = json.loads(await _call(alice["activate_skill"], {"name": "notes"}))
     assert activated["files"] == ["references/how.md"], "her listing, not the tenant's"
@@ -253,22 +256,31 @@ async def test_a_personal_skills_files_are_read_from_its_own_library(
     )
 
 
-async def test_activation_tells_a_caller_only_their_own_catalogs_names(
+async def test_activation_tells_a_caller_only_their_own_threads_skills(
     settings: Settings, store: MemoryObjectStore
 ) -> None:
-    """Activation is stored per manifest, shared by its callers; what one activated must not
-    come back to another as a name only the first one's catalog holds."""
+    """Two callers of one manifest, one session store, a skill both catalogs hold: Alice's
+    activation in her conversation is not active in Bob's, so his model is handed the body."""
     await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
-    await _publish(settings, store, ALICE, "alice-secret-plan", "Alice's plan")
-    shared = InMemorySkillActivationStore()
-    alice = _tools(await _catalog(settings, store, ALICE), settings, store, shared)
-    bob = _tools(await _catalog(settings, store, BOB), settings, store, shared)
+    sessions = InMemorySessionStore(tenant_id="acme")
+    alice = _tools(await _catalog(settings, store, ALICE), settings, store, sessions)
+    bob = _tools(await _catalog(settings, store, BOB), settings, store, sessions)
 
-    await _call(alice["activate_skill"], {"name": "alice-secret-plan"})
-    activated = json.loads(await _call(bob["activate_skill"], {"name": "notes"}))
-    assert activated["active_skills"] == ["notes"]
-    deactivated = json.loads(await _call(bob["deactivate_skill"], {"name": "notes"}))
-    assert deactivated["active_skills"] == []
+    await call_in_thread(
+        alice["activate_skill"], {"name": "notes"}, session_store=sessions, thread_id="acme:alice"
+    )
+    listed = json.loads(
+        await call_in_thread(
+            bob["list_skills"], {}, session_store=sessions, thread_id="acme:bob", call_id="ls"
+        )
+    )
+    assert next(s for s in listed if s["name"] == "notes")["active"] is False
+    activated = json.loads(
+        await call_in_thread(
+            bob["activate_skill"], {"name": "notes"}, session_store=sessions, thread_id="acme:bob"
+        )
+    )
+    assert "instructions" in activated and activated["active_skills"] == ["notes"]
 
 
 async def test_a_skills_newest_version_is_its_own_librarys(
@@ -279,8 +291,8 @@ async def test_a_skills_newest_version_is_its_own_librarys(
     await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes")
     await _publish(settings, store, ORG_OWNER, "notes", "The tenant's notes", version="0.2.0", live=False)
     await _publish(settings, store, ALICE, "notes", "Alice's notes")
-    alice = _tools(await _catalog(settings, store, ALICE), settings, store, InMemorySkillActivationStore())
-    org = _tools(await _catalog(settings, store, None), settings, store, InMemorySkillActivationStore())
+    alice = _tools(await _catalog(settings, store, ALICE), settings, store)
+    org = _tools(await _catalog(settings, store, None), settings, store)
 
     assert json.loads(await _call(alice["activate_skill"], {"name": "notes"}))["newest_version"] == "0.1.0"
     assert json.loads(await _call(org["activate_skill"], {"name": "notes"}))["newest_version"] == "0.2.0"

@@ -207,6 +207,7 @@ class _SkillAuthor:
         personal: frozenset[str] = frozenset(),
         tenant: frozenset[str] = frozenset(),
         declared: frozenset[str] = frozenset(),
+        declared_only: bool = False,
         write_personal: bool = False,
         owner: str | None = None,
     ) -> None:
@@ -215,6 +216,7 @@ class _SkillAuthor:
         self.settings, self.tenant_id, self.manifest_id = settings, tenant_id, manifest_id
         self.mode, self.max_pending, self.object_store = mode, max_pending, object_store
         self.auto_eval = auto_eval
+        self.declared_only = declared_only
         self.personal, self.tenant, self.declared = personal, tenant, declared
         self.write_personal = write_personal
         self.org = get_skill_library_store(settings, owner=ORG_OWNER)
@@ -456,7 +458,30 @@ class _SkillAuthor:
             result["eval_id"] = eval_id
         if composed.personal:
             result["library"] = "personal"
+        result.update(self.availability(result, personal=composed.personal))
         return json.dumps(result)
+
+    def availability(self, result: dict[str, Any], *, personal: bool) -> dict[str, str]:
+        """When the agent can use what it just saved: the next turn compiles a fresh catalog,
+        which lists a skill once it is live -- never in the turn that saved it, whose catalog
+        was built before it existed."""
+        if self.declared_only and result["name"] not in self.declared:
+            return {
+                "available": "never",
+                "available_note": "this agent loads only the skills its manifest names "
+                "(skills_declared_only), and this one is not named there",
+            }
+        if result["status"] == "published":
+            return {
+                "available": "next_turn",
+                "available_note": "published: from the next turn it is in your skill list "
+                "and activate_skill returns it; not in this turn",
+            }
+        who = "the person whose library it is" if personal else "an operator"
+        return {
+            "available": "after_publish",
+            "available_note": f"a draft: it enters no skill list until {who} publishes it",
+        }
 
     async def preview(self, args: ToolInput, *, update: bool) -> str:
         """What an approver reads: the SKILL.md, and for an edit, the version it builds on and
@@ -486,6 +511,7 @@ def make_skill_authoring_tools(
     personal: frozenset[str] = frozenset(),
     tenant: frozenset[str] = frozenset(),
     declared: frozenset[str] = frozenset(),
+    declared_only: bool = False,
     write_personal: bool = False,
     owner: str | None = None,
 ) -> list[Tool]:
@@ -511,6 +537,7 @@ def make_skill_authoring_tools(
         personal=personal,
         tenant=tenant,
         declared=declared,
+        declared_only=declared_only,
         write_personal=write_personal,
         owner=owner,
     )

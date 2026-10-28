@@ -1,17 +1,17 @@
 """Agent Skills, as an operator can see them.
 
-The subsystem was complete and unreachable: a loader, a catalog, a per-manifest activation
-store with a `skill_activation` table and a Postgres arm, and three tools the model calls —
+The subsystem was complete and unreachable: a loader, a catalog, an activation store (since
+replaced by each thread's own log, `felix.skills.activation`), and three tools the model calls —
 and `grep -rn skill apps/api/src/felix_api/routes/` returned nothing. By this repo's own
 rule a surface nothing can reach is inert, and the question an operator actually asks about
 skills ("which of these is switched on, and what does the model see when it activates one?")
 had no answer that did not involve opening psql.
 
 Read-only, deliberately. Activation is a decision the *model* makes mid-turn on the evidence
-of a task, and the store is keyed by `(tenant, manifest)` rather than by thread — so an
-operator toggling a skill from outside would be reaching into shared state a run is
-concurrently reading, with no turn to attribute it to. Inspecting is the gap; a write
-surface is a different feature with a different argument, and the roadmap has it.
+of a task, and it belongs to the conversation it was made in: a skill is active in a thread when
+the thread's log holds its `activate_skill` result (`felix.skills.activation`). So these routes
+say what a manifest *can* reach, and `/activations/recent` says what was activated where; which
+skills a given conversation has on is that conversation's `list_skills`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from felix.auth.mgmt import (
 
 if TYPE_CHECKING:  # imports stay lazy at runtime; the annotations are the point
     from felix.config import Settings
-    from felix.skills.store import SkillActivationStore
     from felix.skills.types import SkillCatalog
 
 router = APIRouter(tags=["Skills"])
@@ -96,15 +95,9 @@ async def _catalog_for(
     return catalog, declared, declared_only
 
 
-def _active_store(settings: Settings) -> SkillActivationStore:
-    from felix.skills.store import get_skill_activation_store
-
-    return get_skill_activation_store(settings)
-
-
 @router.get("/{manifest_name}")
 async def list_skills(manifest_name: str, request: Request) -> dict[str, object]:
-    """Every skill this manifest can reach, and which are currently active.
+    """Every skill this manifest can reach.
 
     `has_body` rather than the body itself: progressive disclosure is the point of the
     design — the model is shown names and descriptions, and pays for the instructions only
@@ -122,14 +115,12 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
     tenant_id = tenant_id_from_request(request)
 
     catalog, declared, declared_only = await _catalog_for(settings, tenant_id, manifest_name)
-    active = await _active_store(settings).get_active(tenant_id, manifest_name)
 
     items = [
         {
             "name": skill.name,
             "description": skill.description,
             "version": skill.version,
-            "active": skill.name in active,
             "has_body": bool(skill.body),
             "model_invocable": catalog.get_invocable(skill.name) is not None,
             # False means "reachable but never asked for": present because it is on the
@@ -145,9 +136,6 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
         "manifest": manifest_name,
         "declared_only": declared_only,
         "items": items,
-        # Activation is stored per manifest for every caller; this caller is shown the names in
-        # their own catalog, never a name only someone else's personal library holds.
-        "active": [n for n in active if n in catalog.skills],
     }
 
 
@@ -175,7 +163,6 @@ async def get_skill(manifest_name: str, skill_name: str, request: Request) -> di
 
     from felix.secrets import collected_secret_values, redact_json, redact_text
 
-    active = await _active_store(settings).get_active(tenant_id, manifest_name)
     # Redacted, for the reason `routes/manifests.py` redacts a manifest on `manifests:read`:
     # this is the lower scope and an embedded credential must not ride out on it. The same
     # bytes reaching the *model* are already masked, because `activate_skill` is bound
@@ -192,7 +179,6 @@ async def get_skill(manifest_name: str, skill_name: str, request: Request) -> di
         # returning it tells a tenant-scoped caller the container's filesystem layout.
         "filename": PurePosixPath(skill.path).name if skill.path else None,
         "metadata": redact_json(skill.metadata),
-        "active": skill.name in active,
         "model_invocable": catalog.get_invocable(skill.name) is not None,
         "declared": skill.name in declared,
         "source": skill.source,
@@ -208,9 +194,8 @@ async def recent_activations(
 ) -> dict[str, object]:
     """Which skill activated on which turn, newest first.
 
-    The activation *store* answers "what is on now" and cannot answer this: it is keyed by
-    `(tenant, manifest)` and overwritten in place, so it holds no history at all. The audit
-    trail does — `activate_skill` emits a `tool_call` event like any other tool — and until
+    Activation lives in each thread's log, so no one place answers this across conversations.
+    The audit trail does — `activate_skill` emits a `tool_call` event like any other tool — and until
     now that event carried the tool's name and not its argument, so it recorded that a skill
     was activated without recording which one. `skills/tools.py` now names it.
 

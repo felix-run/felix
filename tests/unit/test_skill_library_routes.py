@@ -656,7 +656,6 @@ async def test_every_read_redacts_text_a_saver_or_the_scan_wrote(app: App) -> No
 
 async def test_list_and_activate_name_the_newest_version_an_update_must_cite(app: App) -> None:
     from felix.skills.loader import load_manifest_skills
-    from felix.skills.store import InMemorySkillActivationStore
     from felix.skills.tools import make_skill_tools
     from felix.tools.types import ToolInvocationCtx, tool_output_content
 
@@ -669,7 +668,7 @@ async def test_list_and_activate_name_the_newest_version_an_update_must_cite(app
         t.name: t
         for t in make_skill_tools(
             catalog,
-            activation_store=InMemorySkillActivationStore(),
+            session_store=None,
             tenant_id="acme",
             manifest_id="contributor",
             settings=app.settings,

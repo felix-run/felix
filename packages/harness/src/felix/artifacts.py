@@ -34,6 +34,7 @@ from felix.config import Settings
 from felix.db.session import _use_memory
 from felix.logging_setup import loggable
 from felix.manifests.schema import ArtifactsSpec
+from felix.skills.activation import INSTRUCTIONS_SOURCE
 from felix.tools.errors import tool_error_output
 from felix.tools.executor import wrap_tool
 from felix.tools.types import (
@@ -51,6 +52,9 @@ READ_ARTIFACT_TOOL = "read_artifact"
 # How the spill recognises the reader. By `source` rather than name, so a manifest's own
 # tool that happens to be called `read_artifact` is still spilled like any other.
 _READER_SOURCE = "artifacts"
+# Tools never spilled: the reader (above), and `activate_skill`, whose result is instructions the
+# model must read whole -- a preview and an artifact id would leave it a skill it cannot follow.
+UNSPILLED_SOURCES = frozenset({_READER_SOURCE, INSTRUCTIONS_SOURCE})
 
 # A spilled id is a uuid4 hex. A manifest id is looser, so it is bounded here rather
 # than trusted: both land in an object key, and a segment that is not what it looks
@@ -315,7 +319,7 @@ def apply_artifact_spill(
         # The reader is exempt. Its window may be larger than the threshold, and a window
         # that spilled would hand the model a new preview of the text it had just asked to
         # see — a loop, not a read.
-        if tool.source == _READER_SOURCE:
+        if tool.source in UNSPILLED_SOURCES:
             return tool
         inner = tool.executor
 

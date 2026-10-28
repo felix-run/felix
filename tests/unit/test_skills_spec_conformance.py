@@ -15,14 +15,19 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from felix.session.store import InMemorySessionStore
+from felix.session.tree import annotate_and_append
+from felix.session.types import chat_message_to_event
 from felix.skills import discovery, loader
 from felix.skills.format import MAX_BUNDLE_FILES, split_frontmatter, validate_skill_bundle
-from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import MAX_ACTIVATION_CHARS, make_skill_tools
 from felix.skills.types import Skill, SkillCatalog
 from felix.tools.types import Tool, ToolInvocationCtx, tool_input_schema, tool_output_content
+from felix_ai.types import ChatMessage
 from felix_cli.main import app as cli
 from typer.testing import CliRunner
+
+from tests.support.skill_threads import call_in_thread
 
 
 def _write(root: Path, rel: str, text: str) -> Path:
@@ -37,9 +42,7 @@ def _skill_md(name: str, description: str = "Does a thing. Use when asked.", ext
 
 
 def _tools(catalog: SkillCatalog) -> dict[str, Tool]:
-    tools = make_skill_tools(
-        catalog, activation_store=InMemorySkillActivationStore(), tenant_id="t", manifest_id="m"
-    )
+    tools = make_skill_tools(catalog, session_store=None, tenant_id="t", manifest_id="m")
     return {t.name: t for t in tools}
 
 
@@ -207,20 +210,42 @@ async def test_a_skill_hidden_from_the_catalog_cannot_be_activated(name: str) ->
     assert out == {"error": "unknown_skill", "name": name}
 
 
-async def test_a_hidden_name_never_appears_in_the_active_set(caplog: pytest.LogCaptureFixture) -> None:
-    """The stored set is per manifest; a name the model is not offered is filtered out of what
-    activate and deactivate report, and deactivating it is audited as unknown."""
-    store = InMemorySkillActivationStore()
-    await store.set_active("t", "m", ["secret", "missing"])
+async def test_a_hidden_name_never_appears_in_the_active_set() -> None:
+    """A thread that activated skills the catalog has since hidden: activate and deactivate report
+    only names the model is offered now."""
+    sessions = InMemorySessionStore(tenant_id="t")
+    # On the branch, as a turn appends them, so only the catalog filter can keep them out.
+    await annotate_and_append(
+        sessions.open("t:1"),
+        [
+            chat_message_to_event(
+                ChatMessage(
+                    role="tool",
+                    name="activate_skill",
+                    tool_call_id=f"old-{n}",
+                    content=json.dumps({"activated": n}),
+                )
+            )
+            for n in ("secret", "missing")
+        ],
+    )
     tools = {
         t.name: t
         for t in make_skill_tools(
-            _catalog_with_hidden(), activation_store=store, tenant_id="t", manifest_id="m"
+            _catalog_with_hidden(), session_store=sessions, tenant_id="t", manifest_id="m"
         )
     }
-    activated = await _call(tools["activate_skill"], {"name": "shown"})
-    assert isinstance(activated, dict) and activated["active_skills"] == ["shown"]
-    deactivated = await _call(tools["deactivate_skill"], {"name": "secret"})
+    activated = json.loads(
+        await call_in_thread(
+            tools["activate_skill"], {"name": "shown"}, session_store=sessions, thread_id="t:1"
+        )
+    )
+    assert activated["active_skills"] == ["shown"]
+    deactivated = json.loads(
+        await call_in_thread(
+            tools["deactivate_skill"], {"name": "secret"}, session_store=sessions, thread_id="t:1"
+        )
+    )
     assert deactivated == {"deactivated": "secret", "active_skills": ["shown"]}
 
 

@@ -14,7 +14,6 @@ from felix.db.models import (
     MemoryVector,
     Plan,
     SessionEventRow,
-    SkillActivation,
 )
 from felix.db.session import (
     get_engine,
@@ -37,7 +36,6 @@ __all__ = [
     "MemoryVector",
     "Plan",
     "SessionEventRow",
-    "SkillActivation",
     "get_engine",
     "get_session_factory",
     "rls_bypass",

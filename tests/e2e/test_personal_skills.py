@@ -171,9 +171,9 @@ async def test_a_sub_agent_compiles_with_its_callers_skills(boot: Any) -> None:
 
 
 async def test_the_skills_listing_is_the_callers_and_activation_says_whose_skill_ran(boot: Any) -> None:
-    """`/skills` lists what the caller's turn would compile. Activation is stored per manifest,
-    shared by its callers, so Bob is never shown Alice's activated name -- while the audit trail,
-    read by whoever holds `skills:read`, says which library each activation came from."""
+    """`/skills` lists what the caller's turn would compile, so Bob is never shown Alice's skill --
+    while the audit trail, read by whoever holds `skills:read`, says which library each activation
+    came from."""
     from felix.skills.library_keys import library_label
 
     activate = ToolCall(id="call-1", name="activate_skill", args={"name": "alice-drafts"})
@@ -202,11 +202,9 @@ async def test_the_skills_listing_is_the_callers_and_activation_says_whose_skill
     described = {i["name"]: i["description"] for i in hers["items"]}
     assert described["alice-drafts"] == "Alice's drafting habits"
     assert described["notes"] == "Alice's own notes"
-    assert hers["active"] == ["alice-drafts"]
     assert "alice-drafts" not in {i["name"] for i in his["items"]} and "bob-ledger" in {
         i["name"] for i in his["items"]
     }
-    assert his["active"] == [], "Alice's activation is not Bob's to see"
     assert {i["name"] for i in org_only["items"]} & {"alice-drafts", "bob-ledger"} == set()
     [row] = [r for r in recent["items"] if r["skill"] == "alice-drafts"]
     assert row["library"] == library_label(ALICE) and row["library"].startswith("~")

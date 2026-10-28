@@ -141,7 +141,6 @@ def _isolate_process_global_stores():
     from felix.session.tree import _epoch_by_thread, _leaf_by_thread
     from felix.skills import library_store as skill_library_store
     from felix.skills import quality_store as skill_quality_store
-    from felix.skills import store as skills_store
     from felix.usage import store as usage_store
     from felix.workflows.runs import reset_workflow_runs_for_tests
     from felix.workflows.store import reset_workflows_for_tests
@@ -153,10 +152,6 @@ def _isolate_process_global_stores():
         # A corpus that survives a test becomes another test's mysterious extra hit, and
         # retrieval tests assert on result *counts*, so the leak would look like a ranking bug.
         reset_documents_for_tests()
-        # Skill activation is keyed by (tenant, manifest), so one test switching a skill on
-        # is the next test.s starting state -- which is how a tenant-isolation assertion
-        # passes alone and fails in the file, reading as flakiness rather than a leak.
-        skills_store.clear_memory()
         # The skill library is the same shape: a draft one test saved would be another test's
         # pending count, and a skill it published would sit in every later catalog.
         skill_library_store.clear_memory()

@@ -14,7 +14,6 @@ from felix.session.strategies import get_session_strategy
 from felix.session.tree import annotate_and_append, fork_thread, get_event_id, get_leaf, rewind_to
 from felix.session.types import AppendableEvent
 from felix.skills.loader import load_manifest_skills, parse_skill_md, skill_catalog_xml
-from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import make_skill_tools
 from felix.steer import enqueue, should_cancel_remaining_tools
 from felix.tools.types import ToolInvocationCtx
@@ -55,10 +54,8 @@ async def test_skill_tools_activate() -> None:
         bundled_dir=Path(__file__).resolve().parents[2] / "skills",
         owner=None,
     )
-    store = InMemorySkillActivationStore()
     tools = {
-        t.name: t
-        for t in make_skill_tools(catalog, activation_store=store, tenant_id="t", manifest_id="quick")
+        t.name: t for t in make_skill_tools(catalog, session_store=None, tenant_id="t", manifest_id="quick")
     }
     listed = await tools["list_skills"].executor.execute({}, ToolInvocationCtx())
     data = json.loads(listed if isinstance(listed, str) else listed.content)

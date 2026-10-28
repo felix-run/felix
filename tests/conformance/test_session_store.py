@@ -195,6 +195,23 @@ async def test_kinds_filters_to_the_named_kinds(store: Any) -> None:
 
 
 @parametrized
+async def test_names_filters_to_the_named_tools(store: Any) -> None:
+    """How a render reads the skill tools' results without every other tool's output."""
+    session = store.open("t-names")
+    for content, name in (
+        ("a", "activate_skill"),
+        ("b", "read_file"),
+        ("c", None),
+        ("d", "deactivate_skill"),
+    ):
+        await session.append(AppendableEvent(kind="tool_result", role="tool", content=content, name=name))
+    events = await session.get_events(
+        GetEventsOpts(kinds=["tool_result"], names=["activate_skill", "deactivate_skill"])
+    )
+    assert [e.content for e in events] == ["a", "d"]
+
+
+@parametrized
 async def test_limit_takes_the_earliest_events(store: Any) -> None:
     session = store.open("t-limit")
     await _append_all(session, [_msg(str(i)) for i in range(5)])

@@ -903,7 +903,7 @@ An audit of the catalog runtime (discovery, catalog, activation, resources) agai
 agentskills.io specification and its client-integration guide. The library, import and publish
 side was already conformant. Four PRs, landed in order:
 
-- [ ] **Runtime spec conformance** (`fix/skills-spec-conformance`):
+- [x] **Runtime spec conformance** (#705):
   - Discovery takes only `<dir>/SKILL.md`. Root `*.md` files and a SKILL.md nested in another
     skill are no longer skills. The walk skips hidden dirs and `node_modules`, is bounded, and
     logs shadowing.
@@ -915,12 +915,26 @@ side was already conformant. Four PRs, landed in order:
     information, and symlinks are listed consistently.
   - A BOM no longer fails strict validation.
   - New `felix skills validate <dir>`.
-- [ ] **Per-thread activation**: derive "active" from the thread's session log, drop the
-      `skill_activation` table, exempt `activate_skill` results from clearing, and re-inject
-      after compaction.
-  - Today activation is stored per (tenant, manifest), so `list_skills` says `active: true` in
-    a thread whose model never saw the body.
-  - An authored skill reports when it becomes usable (next turn once published).
+- [x] **Per-thread activation** (`fix/skill-activation-per-thread`):
+  - "Active" is read from the thread's session log (`skills/activation.py`). Activation used to
+    be one row per (tenant, manifest), so `list_skills` said `active: true` in a thread whose
+    model never saw the body.
+  - The `skill_activation` table is dropped (migration `0047`), and `/skills/{manifest}` no
+    longer reports `active`.
+  - Activating the same instructions twice in a thread answers `already_active`.
+  - `activate_skill` results are never cleared or spilled, and are re-injected when compaction
+    or a window drops their turn.
+  - `create_skill` / `update_skill` say when the skill is usable: `next_turn`,
+    `after_publish`, or `never` under `skills_declared_only`.
+  - Retention re-shows only what the compile's catalog still offers, fenced, labelled when
+    imported, ahead of the history (not transient), within 128K characters a render. A queue
+    write-back under a skill tool's name is stored as `queue:<name>`.
+  - Open: whether a write-back may write a `tool_result` under *any* harness tool's name (the
+    skill tools are now refused; the general case is a harness-only provenance marker on real
+    results). A side question does not get retention, since it renders without a catalog. Two
+    `activate_skill` calls in one parallel batch both return the body (both read the log
+    before the batch is appended). Retained text is not counted inside a compacting
+    strategy's budget; the 128K cap bounds it instead.
 - [ ] **`/skill-name <params>`**: the harness runs the governed `activate_skill` before the
       first model step. The body arrives as a screened tool result, never as user-turn text. A
       declared prompt of the same name wins.
@@ -1232,8 +1246,6 @@ so under the meta-work budget only the first is exempt as a security defect; the
       `network.allowed_hosts` carefully, and its only reader turns it into a low-severity scan
       note. **Decide:** enforce it for the skill's tools, or say in the docs that it is a
       declaration, not a control.
-- [ ] **The skill activation store has no conformance arm.** `skills/store.py` has a Postgres
-      store and a twin; every other skill store is in `tests/conformance/`.
 - [ ] **The hosted workspace backend runs on Workers.** `deploy/cloudflare/workspace-gateway` is a
       Worker → Durable Object → Container chain that `FELIX_WORKSPACE_BACKEND=hosted` depends on,
       against CLAUDE.md's "no Workers / Durable Objects compute" and the non-goal below. It is
