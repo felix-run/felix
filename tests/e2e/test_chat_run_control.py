@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from felix_ai.providers.scripted import ScriptedTurn
 
 from tests.support.e2e import Booted, sent_turns
@@ -660,3 +661,64 @@ async def test_a_rewind_of_a_pinned_thread_under_another_manifest_summarises_wit
         assert resp.status_code == 200, resp.text
         assert resp.json().get("branch_summary"), resp.json()
         assert len(app.spy.prompts) == calls_before, "another manifest's summariser must not run"
+
+
+# --- a compaction that fails ---------------------------------------------------------------
+
+
+async def test_a_compaction_whose_summariser_fails_says_so_and_leaves_the_thread_idle(boot: Any) -> None:
+    """The summariser raised and nothing was compacted; the route used to answer 200 `ok: true`,
+    which every client read as done."""
+    thread = "e2e-compact-fails"
+    manifests = {"e2e-tiny-window": _tiny_window_manifest()}
+    script = [_answer("one"), _answer("two"), ScriptedTurn(error=RuntimeError("upstream exploded"))]
+    async with boot(script, manifests=manifests) as app:
+        await _two_turns(app, thread)
+        before = await _snapshot(app, thread)
+        resp = await app.client.post(
+            "/chat/compact", json={"thread_id": thread, "manifest": "e2e-tiny-window"}
+        )
+        after = await _snapshot(app, thread)
+
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == "compaction_failed"
+    assert "upstream exploded" not in resp.text
+    assert after["phase"] == "idle"
+    assert (after["leafId"], len(after["transcript"])) == (before["leafId"], len(before["transcript"]))
+
+
+async def test_a_compaction_that_raises_still_leaves_the_thread_idle(
+    boot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anything past the summariser -- the store, the hooks -- failing used to leave the thread in
+    `compaction` for good, which a client shows as a compaction still going on."""
+    from felix.session.compaction import CompactingSessionStrategy
+
+    async def _boom(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise RuntimeError("store went away")
+
+    thread = "e2e-compact-raises"
+    manifests = {"e2e-tiny-window": _tiny_window_manifest()}
+    async with boot([_answer("one"), _answer("two")], manifests=manifests) as app:
+        await _two_turns(app, thread)
+        monkeypatch.setattr(CompactingSessionStrategy, "compact_now", _boom)
+        with pytest.raises(RuntimeError):
+            await app.client.post("/chat/compact", json={"thread_id": thread, "manifest": "e2e-tiny-window"})
+        assert (await _snapshot(app, thread))["phase"] == "idle"
+
+
+async def test_compaction_reports_what_came_of_it(boot: Any) -> None:
+    thread_short, thread_long = "e2e-compact-outcome-short", "e2e-compact-outcome-long"
+    manifests = {"e2e-tiny-window": _tiny_window_manifest()}
+    script = [_answer("a"), _answer("b"), _answer("one"), _answer("two"), _answer("a summary")]
+    async with boot(script, manifests=manifests) as app:
+        await _seed(app, thread_short, "first")
+        await _seed(app, thread_short, "second")
+        short = await app.client.post("/chat/compact", json={"thread_id": thread_short, "manifest": "quick"})
+        await _two_turns(app, thread_long)
+        long = await app.client.post(
+            "/chat/compact", json={"thread_id": thread_long, "manifest": "e2e-tiny-window"}
+        )
+
+    assert (short.json()["ok"], short.json()["outcome"]) == (True, "nothing_to_compact")
+    assert (long.json()["ok"], long.json()["outcome"]) == (True, "compacted")
