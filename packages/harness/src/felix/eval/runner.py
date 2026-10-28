@@ -220,7 +220,7 @@ async def _maybe_llm_judge(
                 "eval decider judge %s failed (%s); asking the model", decider_id, type(exc).__name__
             )
     try:
-        from felix.eval.compare import llm_judge_score
+        from felix.governance.model_judge import llm_judge_score
         from felix.manifests.schema import ModelSpec
         from felix.patterns.model import build_model
 

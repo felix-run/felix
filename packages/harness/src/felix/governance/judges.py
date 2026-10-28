@@ -133,7 +133,7 @@ async def judge_score(
     if not _asks_model(judge, settings):
         return heuristic_judge_score(content, criteria)
     try:
-        from felix.eval.compare import llm_judge_score
+        from felix.governance.model_judge import llm_judge_score
         from felix.manifests.schema import ModelSpec
         from felix.patterns.model import build_model
 
@@ -145,9 +145,15 @@ async def judge_score(
             criteria=criteria,
             threshold=judge.threshold,
         )
-        return float(result.get("score") or 0.0)
     except Exception:
         return heuristic_judge_score(content, criteria)
+    if result.get("rule") != "llm_judge":
+        # The model gave no score, and what `llm_judge_score` stands in with is "non-empty",
+        # which passes any text at 1.0: the judged text had only to make the judge's reply
+        # unreadable to clear it. The criteria heuristic is the fallback this function names.
+        logger.warning("judge %s: the model gave no usable score; scoring with the heuristic", judge.name)
+        return heuristic_judge_score(content, criteria)
+    return float(result.get("score") or 0.0)
 
 
 __all__ = ["heuristic_judge_score", "judge_calls_out", "judge_score"]

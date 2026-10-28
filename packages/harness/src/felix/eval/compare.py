@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from felix.config import Settings
-from felix.eval.runner import _score_answer, start_run
+from felix.eval.runner import start_run
+from felix.governance.model_judge import (
+    JUDGE_SYSTEM,
+    JUDGED_ANSWER_TAG,
+    JUDGED_QUESTION_TAG,
+    judge_prompt,
+    llm_judge_score,
+)
 
 logger = logging.getLogger("felix.eval.compare")
 
@@ -145,57 +152,13 @@ async def run_comparative(
     }
 
 
-async def llm_judge_score(
-    model: Any,
-    *,
-    user_input: str,
-    answer: str,
-    criteria: str,
-    threshold: float = 0.7,
-) -> dict[str, Any]:
-    """Optional model-backed judge. Returns score in [0, 1]."""
-    prompt = (
-        f"Score the answer from 0.0 to 1.0 for this criteria.\n"
-        f"Criteria: {criteria}\n"
-        f"Question: {user_input}\n"
-        f"Answer: {answer}\n"
-        f'Reply with ONLY a JSON object: {{"score": 0.0, "reason": "..."}}'
-    )
-    try:
-        from felix.patterns.model import ModelChatOptions, record_model_usage
-        from felix.patterns.types import ChatMessage
-
-        result = await model.chat(
-            [ChatMessage(role="user", content=prompt)],
-            [],
-            ModelChatOptions(isolate_cache=True),
-        )
-        # Billed whether or not the reply parses. This call reached no meter at all, so every
-        # model-backed judge — tool, reply and eval — was spend outside `limits.max_cost_usd`.
-        record_model_usage(result, model, meta={"kind": "judge"})
-        text = (result.message.content or "").strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            data = json.loads(text[start : end + 1])
-            score = float(data.get("score") or 0)
-            score = max(0.0, min(1.0, score))
-            return {
-                "score": score,
-                "reason": str(data.get("reason") or ""),
-                "pass": score >= threshold,
-                "rule": "llm_judge",
-            }
-    except Exception:
-        logger.debug("llm judge failed", exc_info=True)
-    # Fall back to nonempty heuristic
-    ok, score, rule = _score_answer(answer, {"min_chars": 1})
-    return {"score": score, "pass": ok, "rule": rule, "reason": "fallback"}
-
-
 __all__ = [
+    "JUDGED_ANSWER_TAG",
+    "JUDGED_QUESTION_TAG",
+    "JUDGE_SYSTEM",
     "EvalHarness",
     "eval_harness_table",
+    "judge_prompt",
     "llm_judge_score",
     "pass_rate",
     "pass_rate_lift",
