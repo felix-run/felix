@@ -1,14 +1,16 @@
-"""`felix skills` — browse a GitHub repository's skills, import one into a server's library, and
-keep it current: `outdated` lists imported skills against their origins, `diff` shows what one's
-origin changed against the live version, `update` re-imports it as a draft, and `adopt` vouches
-for an imported version, saving it unchanged as an operator draft no longer judged as third-party text.
+"""`felix skills` — validate a local skill; browse a GitHub repository's skills, import one into a
+server's library, and keep it current: `outdated` lists imported skills against their origins,
+`diff` shows what one's origin changed against the live version, `update` re-imports it as a draft,
+and `adopt` vouches for an imported version, saving it unchanged as an operator draft no longer
+judged as third-party text.
 
-Each talks to a running server (`/skill-library/-/browse`, `/-/import`, `/-/upstream`,
-`/{name}/-/upstream`, `/{name}/-/update`, `/{name}/versions/{version}/adopt`) through
-`FelixClient`, authenticated the way `felix ingest-docs` is: `--api-key`/`FELIX_API_KEY`, else the
-token `felix login --save` kept for that server. The server does the fetching -- pinned to one
-commit, through its egress guard, within its `FELIX_SKILL_IMPORT_SOURCES` -- so nothing here
-reaches GitHub. An import or an update is a draft: this prints how to publish it once someone has
+`validate` reads a local directory and talks to nothing. Each of the others talks to a running
+server (`/skill-library/-/browse`, `/-/import`, `/-/upstream`, `/{name}/-/upstream`,
+`/{name}/-/update`, `/{name}/versions/{version}/adopt`) through `FelixClient`, authenticated the
+way `felix ingest-docs` is: `--api-key`/`FELIX_API_KEY`, else the token `felix login --save` kept
+for that server. The server does the fetching -- pinned to one commit, through its egress guard,
+within its `FELIX_SKILL_IMPORT_SOURCES` -- so nothing here reaches GitHub. An import or an update
+is a draft: this prints how to publish it once someone has
 read it.
 
 Every string that came from a repository is stripped of control characters before it reaches the
@@ -27,7 +29,9 @@ from typing import Any
 import typer
 
 skills_app = typer.Typer(
-    name="skills", help="Browse, import, update and adopt Agent Skills from GitHub.", no_args_is_help=True
+    name="skills",
+    help="Validate local Agent Skills; browse, import, update and adopt them from GitHub.",
+    no_args_is_help=True,
 )
 
 _URL = typer.Option("http://localhost:8080", "--url", help="The Felix server.")
@@ -83,6 +87,62 @@ def _call(url: str, api_key: str | None, call: Callable[[Any], Awaitable[dict[st
     except httpx.HTTPError as exc:
         typer.echo(f"could not reach {url}: {type(exc).__name__}", err=True)
         raise typer.Exit(1) from exc
+
+
+def _local_bundle(root: Any) -> tuple[dict[str, str], list[str]]:
+    """A skill directory as the library's save path reads one: every file by its POSIX path,
+    text as text and a binary asset as base64 -- and the text paths that are not UTF-8, which
+    the library could not save either. Hidden files and directories are skipped, as the
+    catalog's walk skips them."""
+    from felix.skills.binary import encode_base64, is_binary_asset_path
+
+    files: dict[str, str] = {}
+    undecodable: list[str] = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = path.relative_to(root).as_posix()
+        if any(part.startswith(".") for part in rel.split("/")):
+            continue
+        data = path.read_bytes()
+        if is_binary_asset_path(rel):
+            files[rel] = encode_base64(data)
+            continue
+        try:
+            files[rel] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            undecodable.append(rel)
+    return files, undecodable
+
+
+@skills_app.command("validate")
+def validate(
+    path: str = typer.Argument(..., help="A skill directory, or the SKILL.md in one."),
+) -> None:
+    """Check a local skill before publishing it: the agentskills.io frontmatter rules (name, a
+    description of at most 1024 characters, compatibility of at most 500, metadata as strings),
+    the name matching its directory, and what a Felix skill library saves -- files only under
+    scripts/, references/, assets/ or evals/ (plus plugin.json and a LICENSE), within the size
+    caps. Exit 1 on any error. Nothing is sent anywhere."""
+    from pathlib import Path
+
+    from felix.skills.format import validate_skill_bundle
+
+    root = Path(path).expanduser()
+    if root.is_file() and root.name == "SKILL.md":
+        root = root.parent
+    if not root.is_dir():
+        typer.echo(f"Not a directory: {clean(root)}", err=True)
+        raise typer.Exit(1)
+    files, undecodable = _local_bundle(root)
+    result = validate_skill_bundle(files, expected_slug=root.name)
+    problems = [(issue.path, issue.message) for issue in result.errors]
+    problems += [(path, "not UTF-8 text") for path in undecodable]
+    if result.valid and not problems:
+        typer.echo(f"Valid skill: {clean(root)}")
+        return
+    typer.echo(f"Validation failed for {clean(root)}:", err=True)
+    for path, message in problems:
+        typer.echo(f"  - {clean(path)}: {clean(message)}", err=True)
+    raise typer.Exit(1)
 
 
 def _date(ms: int) -> str:

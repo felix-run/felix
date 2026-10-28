@@ -16,7 +16,7 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
 
 | Stage | Modules | What they own |
 |---|---|---|
-| Load | `loader.py`, `types.py`, `store.py`, `tools.py`, `suggest.py` | Host dirs + library + operator uploads → `SkillCatalog`; the four skill tools; per-manifest activation rows; the decider hint |
+| Load | `loader.py`, `discovery.py`, `types.py`, `store.py`, `tools.py`, `suggest.py` | Host dirs + library + operator uploads → `SkillCatalog`; the four skill tools; per-manifest activation rows; the decider hint |
 | Format | `format.py`, `binary.py`, `plugin.py`, `semver.py` | SKILL.md parse/validate and bundle path allowlist; base64 assets; `plugin.json`; version bumps |
 | Library | `library.py`, `library_store.py`, `library_keys.py`, `sources.py`, `copy_rule.py`, `authoring.py` | Draft/publish/rollback/reject/archive/adopt/promote; rows; owner and object-key spelling; per-source rules; imported-text lineage; agent tools |
 | Import | `github.py`, `importer.py`, `sighting_store.py`, `upstream.py`, `upstream_store.py`, `bundle_diff.py`, `update_notify.py` | Pinned GitHub fetch and allowlist; import as draft; cooldown clock; origin checks, diffs, updates; `skill.update_available` webhooks |
@@ -26,8 +26,14 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
 ## From skill to activation
 
 1. **Bundled or operator skills.** `skills/<name>/SKILL.md` in the repo and `FELIX_SKILLS_DIR` are
-   the host catalog (`skills/loader.py:host_catalog`); operator uploads live at the object-store
-   keys `skills/loader.py:operator_skill_keys` and `pinned_operator_skill_keys` spell.
+   the host catalog (`skills/loader.py:host_catalog`). Discovery (`discovery.py:_skill_dirs`) takes
+   only `<dir>/SKILL.md`, treats a skill directory as a leaf, skips hidden dirs and `node_modules`,
+   and is bounded (`MAX_SCAN_DEPTH`, `MAX_SCAN_DIRS`). Loading is lenient as agentskills.io's
+   client guide asks: a missing description or unreadable YAML skips; a bad name, a name unlike
+   its directory, or an over-long description warns and loads; shadowing is logged. Operator
+   uploads live at the object-store keys `skills/loader.py:operator_skill_keys` and
+   `pinned_operator_skill_keys` spell. `felix skills validate <dir>` runs the strict
+   `format.py:validate_skill_bundle` locally.
 2. **Library save.** Every write lands in `skills/library.py:save_draft`: validate
    (`format.py:validate_skill_bundle`), refuse a host skill's name (`host_owns`), review + scan
    (`publish_gate.py:assess`), reserve the version row, then write bytes. Callers: the operator
@@ -44,7 +50,12 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    narrows which names load, never where a body comes from.
 5. **Prompt and tools.** `skills/loader.py:skill_catalog_xml` is appended to the system prompt;
    `skills/tools.py:make_skill_tools` binds `list_skills`, `activate_skill`, `deactivate_skill`,
-   `read_skill_file` (`SKILL_TOOL_NAMES`). Activation is stored per (tenant, manifest) by
+   `read_skill_file` (`SKILL_TOOL_NAMES`). The catalog block is sorted by name. A skill the model
+   is not offered (`disable-model-invocation`, or an `unresolved` ref nothing answered) is hidden
+   from the tools too (`types.py:SkillCatalog.get_invocable`), and the tools' `name` schema
+   enumerates only invocable names. `activate_skill` caps the body (`MAX_ACTIVATION_CHARS`) and
+   relays `license`, `compatibility` and `allowed-tools` as information — `allowed-tools` is
+   never enforced or used to skip approvals. Activation is stored per (tenant, manifest) by
    `skills/store.py:get_skill_activation_store`.
 
 Manifest fields (`manifests/schema.py`): `skills` (`SkillRef`: name, description, version),
@@ -66,6 +77,7 @@ without an approvals rule covering both `create_skill` and `update_skill`.
 | Host names cannot be saved; an import may not share an operator upload's name | `library.py:host_owns`, `save_draft` | closed |
 | Imported skills' tool output marked untrusted; marker scan installed even with screening off | `tools.py` `_relayed`, `manifests/builder.py:apply_content_screening` (`imported_skills`) | closed: quarantine |
 | Imported description with injection markers withheld from the catalog | `types.py:Skill` (`listed_description`) | closed |
+| A skill hidden from the catalog cannot be activated or read by a model guessing its name | `types.py:SkillCatalog.get_invocable`, `tools.py` | closed: `unknown_skill` |
 | Agent copying imported text inherits its lineage | `library.py:_lineage_import`, `copy_rule.py` | closed |
 | Unknown version source treated as needing review | `sources.py:needs_review_when_agent_edits` | closed |
 | Import allowlist; malformed entry, or a token with no list or with unbound/owner-globbed entries, refuses boot (outside a `make dev` box) | `github.py:check_allowed`, `felix/config.py:_validate_skill_import` | closed |

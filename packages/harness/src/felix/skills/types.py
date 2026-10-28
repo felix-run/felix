@@ -36,6 +36,10 @@ class Skill:
     # files and versions are read from. None for every other source. A personal skill may share
     # its name and version with the tenant's, so the name alone does not say whose files are whose.
     library_owner: str | None = None
+    # A ref `spec.skills` names that no source answered. It stays in the catalog so the
+    # management API can report it (`has_body: false`), but the model is never offered it:
+    # agentskills.io's client guide hides what cannot be activated rather than listing it.
+    unresolved: bool = False
 
     def listed_description(self) -> str:
         """The description as the model is shown it -- in the system-prompt catalog and by
@@ -46,6 +50,10 @@ class Skill:
         return self.description
 
 
+def _invocable(skill: Skill) -> bool:
+    return not skill.disable_model_invocation and not skill.unresolved
+
+
 @dataclass(slots=True)
 class SkillCatalog:
     """In-memory catalog for one agent build."""
@@ -53,10 +61,22 @@ class SkillCatalog:
     skills: dict[str, Skill] = field(default_factory=dict)
 
     def list_public(self) -> list[Skill]:
-        return [s for s in self.skills.values() if not s.disable_model_invocation]
+        """What the model is offered, by name: sorted, so the catalog block in the system prompt
+        is the same bytes whichever source answered first, and a provider's cached prefix holds."""
+        return sorted(
+            (s for s in self.skills.values() if _invocable(s)),
+            key=lambda s: s.name,
+        )
 
     def get(self, name: str) -> Skill | None:
         return self.skills.get(name)
+
+    def get_invocable(self, name: str) -> Skill | None:
+        """``name`` when the model may use it. A skill hidden from the catalog
+        (`disable-model-invocation`, or an unresolved ref) is hidden from the skill tools too:
+        a model that guesses the name is told it does not exist, as for any other name."""
+        skill = self.skills.get(name)
+        return skill if skill is not None and _invocable(skill) else None
 
     def names(self) -> list[str]:
         return sorted(self.skills)

@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from felix.bounded_cache import BoundedCache
-from felix.skills.format import MAX_FRONTMATTER_CHARS, is_valid_skill_name
+from felix.logging_setup import loggable
+from felix.skills.discovery import advise, load_skills_from_dir
+from felix.skills.format import MAX_DESCRIPTION_CHARS, MAX_FRONTMATTER_CHARS, is_valid_skill_name
 from felix.skills.format import parse_skill_md as parse_skill_md_format
 from felix.skills.types import Skill, SkillCatalog
 
@@ -153,17 +155,31 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
     if read is None:
         return None
     meta, body = read
-    name = (meta.get("name") or fallback_name).strip().lower()
+    written = (meta.get("name") or fallback_name).strip()
+    name = written.lower()
+    shown = loggable(name, limit=80)
+    subject = path or name
     description = (meta.get("description") or "").strip()
     if not description:
-        logger.warning("skill %s missing description; skipping", name)
+        advise(subject, "skill %s missing description; skipping", shown)
         return None
+    # agentskills.io's client guide: a cosmetic problem warns and the skill still loads.
+    if name != written:
+        advise(subject, "skill name %r is not lowercase; loaded as %r", loggable(written, limit=80), shown)
     if not is_valid_skill_name(name):
-        logger.warning("skill name %r invalid; loading with warnings", name)
+        advise(subject, "skill name %r invalid; loading with warnings", shown)
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        advise(
+            subject,
+            "skill %s: description is %d characters; the catalog lists the first %d",
+            shown,
+            len(description),
+            MAX_DESCRIPTION_CHARS,
+        )
     disable = meta.get("disable-model-invocation", "").lower() in {"true", "1", "yes"}
     return Skill(
         name=name,
-        description=description[:1024],
+        description=description[:MAX_DESCRIPTION_CHARS],
         body=body,
         path=path,
         version=meta.get("version"),
@@ -177,9 +193,13 @@ def _xml_escape(value: str) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+# The tool-activation wording of agentskills.io's client guide, plus where a skill's relative
+# paths resolve: this harness has no file-read activation, so a bundle file is reached by name.
 _CATALOG_PREAMBLE = (
     "You have access to the following skills. Use activate_skill to load full instructions "
-    "when a task matches a skill description. Only names and descriptions are listed here."
+    "when a task matches a skill description. Only names and descriptions are listed here. "
+    "A path a skill's instructions name (references/…, scripts/…, assets/…) is relative to "
+    "that skill: read it with read_skill_file and the skill's name."
 )
 
 
@@ -417,7 +437,7 @@ async def _library_catalog(
     return {s.name: s for s in skills if s is not None}
 
 
-def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
+def read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
     """One file's skill, or None. A file that cannot be read or parsed is logged and
     skipped; it must not take the rest of the directory's catalog down with it."""
     try:
@@ -425,24 +445,6 @@ def _read_skill_file(path: Path, *, fallback_name: str) -> Skill | None:
     except Exception:
         logger.warning("skill file %s could not be read; skipped", path, exc_info=True)
         return None
-
-
-def load_skills_from_dir(root: Path) -> SkillCatalog:
-    """Discover SKILL.md directories and root .md skill files under ``root``."""
-    catalog = SkillCatalog()
-    if not root.is_dir():
-        return catalog
-    for skill_md in root.rglob("SKILL.md"):
-        skill = _read_skill_file(skill_md, fallback_name=skill_md.parent.name)
-        if skill and skill.name not in catalog.skills:
-            catalog.skills[skill.name] = skill
-    for md in root.glob("*.md"):
-        if md.name.upper() == "SKILL.MD":
-            continue
-        skill = _read_skill_file(md, fallback_name=md.stem)
-        if skill and skill.name not in catalog.skills:
-            catalog.skills[skill.name] = skill
-    return catalog
 
 
 # How long a bundled catalog is reused without re-checking the directory.
@@ -545,6 +547,16 @@ async def host_catalog(bundled_dir: Path | None = None) -> SkillCatalog:
     host = SkillCatalog()
     for root in roots:
         bundled = await _bundled_catalog(root)
+        for name, skill in bundled.skills.items():
+            if name in host.skills:
+                # The later root wins, as it always has; the spec asks that it be said.
+                advise(
+                    f"{skill.path}\0{host.skills[name].path}",
+                    "skill %s from %s shadows the one at %s",
+                    loggable(name, limit=80),
+                    skill.path,
+                    host.skills[name].path,
+                )
         # A copy: the cached catalog is shared between requests, and callers mutate theirs.
         host.skills.update(bundled.skills)
     return host
@@ -695,12 +707,19 @@ async def load_manifest_skills(
             object_store=object_store,
         )
         if skill is None:
-            # Placeholder description so list_skills still surfaces the ref.
+            # Kept, marked, so the management API still reports the ref (`has_body: false`);
+            # `unresolved` keeps it out of the prompt catalog and the skill tools.
+            advise(
+                f"{tenant_id}\0{name}",
+                "skill %s is declared but no source has it",
+                loggable(str(name), limit=80),
+            )
             skill = Skill(
                 name=str(name),
-                description=f"Skill '{name}' (body not found; activate may be empty).",
+                description=f"Skill '{name}' (body not found).",
                 body="",
                 version=str(version) if version else None,
+                unresolved=True,
             )
         catalog.skills[skill.name] = skill
     return catalog
