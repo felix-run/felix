@@ -17,7 +17,7 @@ from felix.config import Settings
 from felix.logging_setup import loggable
 from felix.workflows.kinds import AgentTurnConfig, ApprovalConfig, BranchConfig, ToolCallConfig, render_prompt
 from felix.workflows.runs import StepState, fences_prompts
-from felix.workflows.schema import Step, WorkflowSpec
+from felix.workflows.schema import TRIGGER, Step, WorkflowSpec
 
 logger = logging.getLogger("felix.workflows.executors")
 
@@ -180,6 +180,13 @@ async def _stop_child(run: RunContext, step: Step, state: StepState) -> None:
         await signal_decision(approval_id, "denied", note=approvals.INTERRUPTED_NOTE)
 
 
+def _from_steps(spec: WorkflowSpec, step_id: str) -> frozenset[str]:
+    """The input ports of `step_id` wired from another step's output rather than the run's inputs."""
+    return frozenset(
+        e.target.port for e in spec.edges if e.target.step == step_id and e.source.step != TRIGGER
+    )
+
+
 class _AgentTurn:
     async def start(self, run: RunContext, step: Step, inputs: dict[str, Any], state: StepState) -> None:
         from felix.durability.fibers import RunInProgress, get_fiber
@@ -196,7 +203,9 @@ class _AgentTurn:
             state["status"] = "running"  # a replay: an earlier attempt started it
             return
         try:
-            await self._enqueue(run, config, inputs, thread, child_id)
+            await self._enqueue(
+                run, config, inputs, thread, child_id, from_steps=_from_steps(run.spec, step.id)
+            )
         except RunInProgress as busy:
             if busy.resume_token == child_id:
                 state["status"] = "running"  # another claim of this run started it a moment ago
@@ -206,7 +215,14 @@ class _AgentTurn:
         state["status"] = "running"
 
     async def _enqueue(
-        self, run: RunContext, config: AgentTurnConfig, inputs: dict[str, Any], thread: str, child_id: str
+        self,
+        run: RunContext,
+        config: AgentTurnConfig,
+        inputs: dict[str, Any],
+        thread: str,
+        child_id: str,
+        *,
+        from_steps: frozenset[str],
     ) -> None:
         from felix.context import RequestContext, async_run_with_context
         from felix.durability.fibers import auth_from_state
@@ -223,7 +239,9 @@ class _AgentTurn:
             messages=[
                 ChatMessage(
                     role="user",
-                    content=render_prompt(config, inputs, fenced=fences_prompts(run.run)),
+                    content=render_prompt(
+                        config, inputs, fenced=fences_prompts(run.run), from_steps=from_steps
+                    ),
                 )
             ],
             thread_id=thread,

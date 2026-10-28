@@ -8,6 +8,7 @@ each agent step's child run are real fibers in the memory store; the model is sc
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import pytest
@@ -80,6 +81,21 @@ def _triage() -> dict[str, Any]:
     }
 
 
+# A value an agent step's prompt was filled with, fenced as data (`workflows.kinds.render_prompt`).
+_FENCED = re.compile(r'<(data-[0-9a-f]{12}) name="[a-z0-9_]+">(.*?)</\1>', re.DOTALL)
+
+
+def _unwrapped(prompt: str) -> tuple[str, bool]:
+    """The prompt with its fences taken off and its closing note dropped, and whether it had any.
+
+    A step's output is fenced whoever started the run: the next agent reads it as data."""
+    if not _FENCED.search(prompt):
+        return prompt, False
+    body, _, note = prompt.rpartition("\n\n")
+    assert note.startswith("Text between <data-"), prompt
+    return _FENCED.sub(lambda m: m.group(2), body), True
+
+
 CLASSIFIED = ScriptedTurn(content='{"label": "bug", "summary": "crash on save"}')
 
 
@@ -140,7 +156,8 @@ async def test_a_run_follows_its_branch_waits_on_a_person_and_finishes(boot: Any
     assert done["steps"]["fix"]["thread_id"].startswith("default:workflow:")
     # What each agent step was asked: the template filled from the trigger and from classify.
     users = [[str(m.content) for m in sent_turns(p)][-1] for p in prompts]
-    assert users == ["Classify: App crashes", "Fix: crash on save"]
+    # The run's input is the person's who started it, as written; classify's output is data.
+    assert [_unwrapped(u) for u in users] == [("Classify: App crashes", False), ("Fix: crash on save", True)]
     # The step's own output_schema reached the model call that classified; the fix had none.
     assert options[0] is not None and options[0].output_schema == CLASSIFY_SCHEMA
     assert options[1] is None or getattr(options[1], "output_schema", None) is None
@@ -173,7 +190,7 @@ async def test_a_steps_transcript_is_read_under_its_run(boot: Any) -> None:
         by_chat = await app.client.get(f"/chat/sessions/{suffix}")
     assert done["status"] == "completed"
     assert fix.status_code == 200, fix.text
-    assert "Patched." in fix.text and "Fix: crash on save" in fix.text
+    assert "Patched." in fix.text and "crash on save" in fix.text and "Fix: <data-" in fix.text
     assert missing == [404, 404, 404]
     assert by_chat.status_code == 400
 
@@ -273,7 +290,9 @@ async def test_editing_the_workflow_mid_run_changes_nothing_the_run_does(boot: A
         current = (await app.client.get("/workflows/triage")).json()["revision"]
         asked = [[str(m.content) for m in sent_turns(p)][-1] for p in app.spy.prompts]
     assert done["status"] == "completed"
-    assert asked[-1] == "Fix: crash on save", "the step ran as the revision the run started on"
+    assert _unwrapped(asked[-1]) == ("Fix: crash on save", True), (
+        "the step ran as the revision the run started on"
+    )
     assert done["revision"] == waiting["revision"] != current
     assert listed[0]["step_statuses"] == {s: done["steps"][s]["status"] for s in done["steps"]}
 
@@ -502,7 +521,8 @@ async def test_a_tool_step_calls_the_governed_tool_and_feeds_the_next_step(boot:
     assert done["status"] == "completed", done
     assert done["steps"]["calc"]["outputs"] == {"result": 4}
     assert done["steps"]["calc"]["thread_id"].startswith("default:workflow:")
-    assert asked == ["The answer is 4"], "the tool's result became the next step's input"
+    # The tool's result became the next step's input, fenced: a tool step's output is data too.
+    assert [_unwrapped(a) for a in asked] == [("The answer is 4", True)]
 
 
 async def test_a_finished_run_keeps_its_record_but_not_its_starters_authority(boot: Any) -> None:

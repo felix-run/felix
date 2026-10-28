@@ -295,7 +295,11 @@ write with the same verdicts: every assistant message is redacted before it is a
 and every one without tool calls is judged, so a denied reply is stored as its denial —
 replays, exports, `/chat/history` and a durable run's live tail carry what the client got.
 The store is handed to sub-agents too, since a router's child writes the caller's thread,
-and reflect's critique quotes its draft redacted. The log is never less screened than the
+and reflect's critique quotes its draft redacted. What a composite pattern hands from one model
+call to the next is fenced as data, under a line saying so: plan_execute's notes to the next
+subtask, a replan and the synthesis; parallel's specialist answers to the synthesis; reflect's
+draft to its verifier and back to the drafter. Each carries whatever the child's tools read. The
+log is never less screened than the
 wire, and sometimes more: a preamble written before tool calls is redacted but not judged,
 so on a denial the reply withholds it and the log keeps it; and reflect's intermediate
 drafts are each judged in the log, one judge call per draft. `spec.memory.capture`
@@ -1283,7 +1287,10 @@ A signed event from elsewhere starts a durable run (`felix/triggers.py`,
   repeat it, and a run whose mapped inputs are all numbers included, since a tool step can fetch
   the sender's text: each value is wrapped in a tag made new for that prompt
   (`<data-<12 hex> name="…">…</data-<12 hex>>`), so a value cannot forge its close, and the prompt
-  ends by naming the tag and saying what is inside is data, not instructions. A fence is a
+  ends by naming the tag and saying what is inside is data, not instructions. On every other run
+  too, a value an agent step is given from another step's output is fenced the same way: a step's
+  output is only as trustworthy as what that step read. Only the inputs a person started the run
+  with reach an agent's prompt as written. A fence is a
   convention a model is told to honour, not a boundary it cannot cross: keep `spec.inbound`
   screening on manifests a triggered workflow reaches, and give the trigger only the `scopes` its
   steps need. A tool step receives mapped values as arguments, screened as every tool step's are.
