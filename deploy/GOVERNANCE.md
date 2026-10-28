@@ -2185,13 +2185,21 @@ rule a user turn is before it is stored: the injection markers, then `model` and
 they are set. That covers a turn's own compaction, a forced pass when a provider rejects an
 oversized request, `POST /chat/compact`, and `summarizing:N`.
 
-A flagged summary, or one that could not be screened, is not stored. The summariser is treated as
-having failed: the thread keeps its recent window, `POST /chat/compact` answers
-`502 compaction_failed`, and a later turn summarises again. Each one counts
-`felix_summary_withheld{reason}` and writes a `summary_screening` audit row; the withheld call is
-still metered. `on_flag` does not apply: refusing would refuse every later turn of the thread.
-Not screened: a `before_compact` hook's own summary (the operator's code), and the branch summary a
-rewind writes, which is never replayed into context.
+A **flagged** summary is stored as `[summary withheld: content screening flagged it]` in its place,
+so the range it covers is settled and is not summarised and screened again on every later turn:
+storing nothing would let text planted in the history, or a harmless false positive, make every
+turn over budget pay the summariser and the screener again. The history it covered is lost to the
+model, which a withheld summary costs either way. A summary that **could not be screened** is not
+stored: the summariser is treated as having failed, the thread keeps its recent window,
+`POST /chat/compact` answers `502 compaction_failed`, and a later turn tries again once the screener
+is back. A screening-model outage therefore turns compaction into dropped context until it
+recovers -- the price of not storing what no screen has read. Each one counts
+`felix_summary_withheld{reason}` and writes a `summary_screening` audit row, and the summariser's
+call is billed either way. `on_flag` does not apply: refusing would refuse every later turn of the
+thread. A sub-agent's screen adds to its router's rather than replacing it.
+
+Not screened: a `before_compact` hook's own summary, which is the operator's plugin code and
+trusted as such; and the branch summary a rewind writes, which is never rendered into context.
 
 ### Screening is opt-in, and says so when it is off
 
