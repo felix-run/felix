@@ -12,93 +12,12 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from felix.config import Settings
-from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.hooks import get_agent_hooks
-from felix.patterns.model import ModelChatResult, StreamDelta, TokenUsage
-from felix.patterns.types import ChatMessage, Event, InvokeInput, InvokeOutput
+from felix.patterns.types import ChatMessage
 
-THREAD = "default:composite-hooks"
-
-
-def _ctx() -> RequestContext:
-    settings = Settings(
-        database_url="memory://composite-hooks",
-        object_store="memory",
-        allow_insecure=True,
-        environment="development",
-    )
-    return RequestContext(settings=settings, auth=AuthContext(tenant_id="default"))
-
-
-class _Model:
-    """Answers each call with the next of `replies`; records what every call was sent."""
-
-    model_id = "composite-fake"
-
-    def __init__(self, *replies: str) -> None:
-        self.replies = list(replies)
-        self.seen: list[list[ChatMessage]] = []
-
-    def _next(self, messages: list[ChatMessage]) -> ModelChatResult:
-        self.seen.append(list(messages))
-        text = self.replies[min(len(self.seen), len(self.replies)) - 1]
-        return ModelChatResult(message=ChatMessage(role="assistant", content=text), usage=TokenUsage())
-
-    async def chat(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> ModelChatResult:
-        return self._next(messages)
-
-
-class _StreamingModel(_Model):
-    async def stream_turn(self, messages: list[ChatMessage], tools: list, opts: Any = None) -> Any:
-        result = self._next(messages)
-        yield StreamDelta(kind="text", text=result.message.content)
-        yield result
-
-
-class _Child:
-    """A sub-agent that records the last user message of every turn it is given."""
-
-    pattern = "react"
-    manifest_id = "child"
-    manifest_version = "1"
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-        self.asked: list[str] = []
-
-    def _out(self, input: InvokeInput) -> InvokeOutput:
-        self.asked.append(str(input.messages[-1].content))
-        msg = ChatMessage(role="assistant", content=self.text)
-        return InvokeOutput(messages=[*input.messages, msg], final=msg)
-
-    async def invoke(self, input: InvokeInput) -> InvokeOutput:
-        return self._out(input)
-
-    async def stream_events(self, input: InvokeInput) -> Any:
-        out = self._out(input)
-        yield Event(event="on_chain_end", data={"output": out})
-        yield Event(event="done", data={"final": out.final.model_dump()})
-
-
-def _agent(pattern: str, **kw: Any) -> Any:
-    from felix.patterns import delegating
-
-    return delegating._DelegatingAgent(
-        tools=[], pattern=pattern, manifest_id="composite", manifest_version="1", **kw
-    )
-
-
-async def _run(agent: Any, *, streaming: bool = False) -> InvokeOutput | None:
-    input = InvokeInput(messages=[ChatMessage(role="user", content="the request")], thread_id=THREAD)
-    async with async_run_with_context(_ctx()):
-        if not streaming:
-            return await agent.invoke(input)
-        out = None
-        async for ev in agent.stream_events(input):
-            if ev.event == "on_chain_end":
-                out = ev.data.get("output")
-        return out
+from tests.support.composite import THREAD, RecordingChild, ScriptedModel, StreamingScriptedModel
+from tests.support.composite import delegating_agent as _agent
+from tests.support.composite import run_composite as _run
 
 
 def _on(purpose: str, reply: str):
@@ -115,9 +34,9 @@ def _on(purpose: str, reply: str):
 async def test_the_router_follows_a_replaced_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.patterns import delegating
 
-    model = _Model("billing")
+    model = ScriptedModel("billing")
     monkeypatch.setattr(delegating, "_model_for", lambda *a, **k: model)
-    billing, support = _Child("from billing"), _Child("from support")
+    billing, support = RecordingChild("from billing"), RecordingChild("from support")
     get_agent_hooks().register_after_model(_on("router", "support"))
 
     out = await _run(_agent("router", sub_agents={"billing": billing, "support": support}))
@@ -131,9 +50,9 @@ async def test_plan_execute_runs_the_replaced_plan_and_the_planner_is_sent_the_h
 ) -> None:
     from felix.patterns import delegating
 
-    model = _Model("1. the model's step", "the answer")
+    model = ScriptedModel("1. the model's step", "the answer")
     monkeypatch.setattr(delegating, "_model_for", lambda *a, **k: model)
-    executor = _Child("step done")
+    executor = RecordingChild("step done")
 
     def mark_the_plan(request: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any] | None:
         if ctx["purpose"] != "plan":
@@ -158,9 +77,9 @@ async def test_reflect_reads_the_replaced_score(monkeypatch: pytest.MonkeyPatch)
     from felix.manifests.schema import ReflectSpec
     from felix.patterns import delegating
 
-    verifier = _Model("0.1")
+    verifier = ScriptedModel("0.1")
     monkeypatch.setattr(delegating, "build_model", lambda *a, **k: verifier)
-    base = _Child("draft")
+    base = RecordingChild("draft")
     get_agent_hooks().register_after_model(_on("reflect", "0.95"))
 
     await _run(_agent("reflect", inner=base, reflect_cfg=ReflectSpec(max_iterations=3)))
@@ -171,11 +90,11 @@ async def test_reflect_reads_the_replaced_score(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.parametrize(
     ("model_cls", "streaming"),
-    [(_Model, False), (_StreamingModel, True), (_Model, True)],
+    [(ScriptedModel, False), (StreamingScriptedModel, True), (ScriptedModel, True)],
     ids=["invoke", "stream_turn", "chat-only-stream"],
 )
 async def test_the_synthesis_answer_is_the_hooks(
-    monkeypatch: pytest.MonkeyPatch, model_cls: type[_Model], streaming: bool
+    monkeypatch: pytest.MonkeyPatch, model_cls: type[ScriptedModel], streaming: bool
 ) -> None:
     from felix.patterns import delegating
 
@@ -191,7 +110,7 @@ async def test_the_synthesis_answer_is_the_hooks(
     )
     hooks.register_after_model(_on("synthesis", "the hook's synthesis"))
 
-    out = await _run(_agent("parallel", sub_agents={"a": _Child("one")}), streaming=streaming)
+    out = await _run(_agent("parallel", sub_agents={"a": RecordingChild("one")}), streaming=streaming)
 
     assert [m.content for m in model.seen[0]] == ["synthesis marker"]
     assert out is not None and out.final.content == "the hook's synthesis"
@@ -200,13 +119,13 @@ async def test_the_synthesis_answer_is_the_hooks(
 async def test_each_call_names_its_purpose_and_the_callers_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     from felix.patterns import delegating
 
-    model = _Model("1. only step", "the answer")
+    model = ScriptedModel("1. only step", "the answer")
     monkeypatch.setattr(delegating, "_model_for", lambda *a, **k: model)
     seen: list[tuple[str, str | None, str | None]] = []
     get_agent_hooks().register_before_model(
         lambda request, ctx: seen.append((ctx["purpose"], ctx["thread_id"], ctx["model_id"]))
     )
 
-    await _run(_agent("plan_execute", inner=_Child("done")))
+    await _run(_agent("plan_execute", inner=RecordingChild("done")))
 
     assert seen == [("plan", THREAD, "composite-fake"), ("synthesis", THREAD, "composite-fake")]

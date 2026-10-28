@@ -19,10 +19,6 @@ logger = logging.getLogger("felix.session.strategies")
 
 SUMMARY_METADATA_TYPE = "session_summary"
 
-# The most of the older turns the summariser is shown: the cap compaction and the branch summary
-# put on their transcripts.
-SUMMARY_INPUT_CHARS = 120_000
-
 
 def is_pinned(event: SessionEvent) -> bool:
     return bool((event.metadata or {}).get("pinned"))
@@ -153,11 +149,17 @@ class SummarizingSessionStrategy:
         if model is not None:
             try:
                 from felix.patterns.model import ModelChatOptions
-                from felix.session.compaction import _UNTRUSTED_NOTICE, fence_untrusted
+                from felix.session.compaction import (
+                    _UNTRUSTED_NOTICE,
+                    SUMMARIZER_INPUT_CHARS,
+                    fence_untrusted,
+                )
 
                 # Capped as compaction's transcript is: an unbounded history overflows the
                 # summariser's own context, and the call fails on exactly the long threads it is for.
-                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)[:SUMMARY_INPUT_CHARS]
+                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)[
+                    :SUMMARIZER_INPUT_CHARS
+                ]
                 result = await model.chat(
                     [
                         ChatMessage(

@@ -121,12 +121,13 @@ def render_prompt(
     inputs: dict[str, Any],
     *,
     fenced: bool = False,
-    from_steps: Collection[str] = (),
+    from_steps: Collection[str],
 ) -> str:
     """The prompt with each `{{ name }}` replaced by its input: text as is, anything else as JSON.
 
     A value is wrapped as data when it came from another step (`from_steps`, the input names
-    wired from a step's output rather than from the run's inputs), and every value is when
+    wired from a step's output rather than from the run's inputs -- required, so a new caller
+    cannot leave it out and get a prompt with nothing fenced that looks right), and every value is when
     `fenced` -- a run a third party started or supplied inputs to. A step's output is only as
     trustworthy as what that step read: an agent step that fetched a page, or a tool step that
     returned one, hands the next agent the page's text, so it is data whoever started the run.
