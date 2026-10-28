@@ -2560,8 +2560,14 @@ history keeps it whole. The answer has had what any reply gets -- the firing man
 controls (PII guardrails, `final_response` judges) and secret masking on every write to the log --
 and then the marker scan a `notify` gets (`screen_content`): an answer that reads as an injection
 is recorded `report: screened` and not added, since the next turn there may run another manifest.
-Each firing adds an entry, so a recurring task at a short interval grows the conversation's
-context by its answer every time. `report_back: false` leaves the answer in the run history alone.
+Each firing adds an entry, and only the task's newest is in context: the entry carries
+`metadata.context_key` (`task_report:<name>`), and of the entries on a branch sharing a key only the
+newest reaches the model, in every session strategy (`session.types.context_events`). The person
+still sees them all, and a compaction's kept window drops a replaced entry on replay as a re-walk
+does. A client's own keyed entries (`/chat/sessions/custom`) are stored as `client:<key>`, and a
+queue write-back's (`/internal/sessions/{id}/events`) as `queue:<key>`, so neither can share a key
+the harness writes and drop a task's report from context.
+`report_back: false` leaves the answer in the run history alone.
 
 **Agent-authored workflows.** `spec.workflow_authoring` binds `workflow_catalog`, `check_workflow`,
 `save_workflow`, `list_my_workflows` and `run_workflow`. A workflow the agent saves is an ordinary

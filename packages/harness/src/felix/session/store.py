@@ -14,6 +14,7 @@ from typing import Any
 from felix.config import Settings
 from felix.session import heads
 from felix.session.types import (
+    CONTEXT_KEY,
     SKELETON_METADATA_KEYS,
     AppendableEvent,
     GetEventsOpts,
@@ -890,6 +891,13 @@ def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> Appendab
         "system",
     }
     kind: SessionEventKind | str = event_type if event_type in known_kinds else "message"
+    metadata = payload.get("metadata") or payload.get("meta")
+    if isinstance(metadata, dict) and metadata.get(CONTEXT_KEY) is not None:
+        # A writer from outside keys its own entries in its own namespace, as a client's are
+        # (`/chat/sessions/custom`): never one the harness writes, where it could drop the
+        # harness's entry -- a task's report -- from the model's context.
+        key = metadata[CONTEXT_KEY]
+        metadata = {**metadata, CONTEXT_KEY: f"queue:{key}" if isinstance(key, str) and key else None}
     return AppendableEvent(
         kind=kind,  # type: ignore[arg-type]
         role=payload.get("role"),
@@ -897,7 +905,7 @@ def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> Appendab
         tool_call_id=payload.get("tool_call_id"),
         name=payload.get("name"),
         tool_calls=payload.get("tool_calls"),
-        metadata=payload.get("metadata") or payload.get("meta"),
+        metadata=metadata,
         ts=payload.get("ts"),
     )
 
