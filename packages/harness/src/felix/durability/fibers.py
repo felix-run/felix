@@ -832,6 +832,9 @@ async def _run_fiber_step(
                                 thread_id=thread,
                                 model_id=str(model_id) if model_id else None,
                                 tenant_id=tenant_id,
+                                # The person's own turn, sent to /chat and run here durably --
+                                # never a background child's prompt, which a model wrote.
+                                person_turn=point != "resume" and step.get("person_turn") is True,
                             )
                         )
                         final = (

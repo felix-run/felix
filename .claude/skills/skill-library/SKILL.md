@@ -67,8 +67,21 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    only skills the catalog still offers, fenced, ahead of the history, within `MAX_RETAINED_CHARS`
    (`activation.retained_view` decides, and `already_active` asks the same function). A queue
    write-back under a skill tool's name is stored as `queue:<name>` (`session/store.py`).
+7. **`/name` and `preload`.** `skills/invocation.py:SkillPreamble` (built by the builder, run by
+   `patterns/react.py:_run_skill_preamble` before the first model step) turns a run whose last
+   message is `/name args` -- `name` a skill the person may run (`SkillCatalog.get_for_user`:
+   resolved and `user-invocable`, which a `disable-model-invocation` skill still is) -- and each
+   `SkillRef.preload` not already shown in the thread into `activate_skill` calls through the tool
+   runner, logged as an assistant turn. The person's turn stays as typed; a declared prompt of the
+   same name was already expanded by the route. Only `InvokeInput.person_turn` runs (`/chat`, `/v1`,
+   a durable `/chat` run -- never a `task` prompt). `invocation.PersonCalls` mints the batch's call
+   ids, and `activate_skill` honours a person's privileges -- a model-hidden skill, `arguments` --
+   only for such an id, once; the model's own `arguments` are ignored. `$ARGUMENTS`,
+   `$ARGUMENTS[N]` and `$N` are substituted (`arguments.with_arguments`, bounded); a body that never
+   names `$ARGUMENTS` gets `ARGUMENTS:` appended. `SkillCatalog.get_activatable` is the predicate for
+   an activation already in a thread; the round runs through `react._tool_round`, as the model's do.
 
-Manifest fields (`manifests/schema.py`): `skills` (`SkillRef`: name, description, version),
+Manifest fields (`manifests/schema.py`): `skills` (`SkillRef`: name, description, version, preload),
 `skills_declared_only`, `personal_skills` (`off` / `read` / `write`), `skill_authoring`
 (`SkillAuthoringSpec`: enabled, mode `draft`/`publish`, max_pending, auto_eval) and
 `skill_suggestion` (`SkillSuggestionSpec`, needs `spec.decider.id`). Spec validators refuse

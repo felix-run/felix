@@ -123,6 +123,9 @@ async def list_skills(manifest_name: str, request: Request) -> dict[str, object]
             "version": skill.version,
             "has_body": bool(skill.body),
             "model_invocable": catalog.get_invocable(skill.name) is not None,
+            # Whether a person can run it as `/name` in a chat turn, and what it takes after the name.
+            "user_invocable": catalog.get_for_user(skill.name) is not None,
+            "argument_hint": skill.argument_hint,
             # False means "reachable but never asked for": present because it is on the
             # host, not because this manifest named it. The model is offered it either way.
             "declared": skill.name in declared,

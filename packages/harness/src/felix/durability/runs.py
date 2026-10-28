@@ -127,8 +127,12 @@ async def start_durable_chat(
     origin: Mapping[str, str] | None = None,
     fiber_id: str | None = None,
     output_schema: dict[str, Any] | None = None,
+    person_turn: bool = False,
 ) -> dict[str, Any]:
     """Enqueue an invoke fiber; the worker's fiber scheduler runs it.
+
+    `person_turn` says the messages end on a person's own turn, sent to `/chat`
+    (`InvokeInput.person_turn`); a background child, a trigger or a workflow step does not.
 
     `trigger_event` is the event an inbound trigger started this run for (`felix.triggers`): kept in
     the run's state, and read by the run's `trigger_event` tool. `origin` is opaque to Felix: whoever
@@ -158,6 +162,7 @@ async def start_durable_chat(
                 "model_id": model_id,
                 "thread_id": thread_id,
                 **({"output_schema": output_schema} if output_schema is not None else {}),
+                **({"person_turn": True} if person_turn else {}),
             }
         ],
         "cursor": 0,

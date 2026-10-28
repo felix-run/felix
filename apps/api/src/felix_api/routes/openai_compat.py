@@ -436,7 +436,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         if body.temperature is not None or body.max_tokens is not None or output_schema is not None
         else None
     )
-    invoke_input = InvokeInput(messages=messages, thread_id=thread, model_options=options)
+    invoke_input = InvokeInput(messages=messages, thread_id=thread, model_options=options, person_turn=True)
 
     if body.stream:
         return sse_response(_stream_completion(settings, tools, resolved, req_ctx, invoke_input, completion))

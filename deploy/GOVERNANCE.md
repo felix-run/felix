@@ -528,6 +528,27 @@ it write a skill tool's result: one named `activate_skill` (or any of the four s
 as `queue:activate_skill`, because a real one is read back as the thread's activation and re-shown
 after every window and compaction (`skills/activation.py`) -- the pin, by another name.
 
+A person's `/skill-name args` and a manifest's `preload` are activated by the harness, not
+written into the person's turn: before the model's first step it calls `activate_skill` through the
+tool runner, so every wrapper (approvals, screening, masking) applies and the body reaches the model
+as a tool result, never with the authority of the person's own words. Only a turn a chat route marks
+as the person's (`InvokeInput.person_turn`: `/chat`, `/chat/stream`, `/v1`, a durable `/chat` run)
+is read for `/name`; a `task` prompt, a plan step, an A2A peer's message, a scheduled job's prompt
+or a workflow step is text a model or an author wrote, and `/name` in it runs nothing. What a
+person's call may do that the model's may not -- reach a `disable-model-invocation` skill, pass
+`arguments` into its instructions -- is granted by the call's id, minted by the harness and good
+once, during the preamble round only (`skills/invocation.py:PersonCalls`); `arguments` the model
+passes itself are ignored and the result says so. A `disable-model-invocation` skill is a person's
+to run only when the manifest names it in `spec.skills`: an undeclared one -- a host skill, a
+published library skill -- stays no one's to activate, so marking a skill that way still works as
+an "off" switch for every manifest that does not declare it. Anyone who can chat with a manifest
+that declares one can run it, anonymous callers of an `allow_anonymous` manifest included. `/v1` counts as a person's surface though its caller may be an agent: a deployment
+that relies on `disable-model-invocation` against agent callers should not expose such skills to
+manifests served there. The audit row of each activation says who asked (`by`: `person`,
+`preload` or `model`). A preload of an imported skill nobody has adopted is skipped, and a preloaded
+skill the conversation deactivated stays deactivated. `/name` and `preload` run in react agents,
+the only pattern that runs tools itself; a compile whose pattern cannot run a preload says so.
+
 An activated skill stays in view for the rest of its conversation, within limits. Retention re-shows
 the *logged* result -- masked and screened when it was first returned -- as an ordinary user message
 ahead of the history (never a transient one, which the wires send after the newest turn), with every

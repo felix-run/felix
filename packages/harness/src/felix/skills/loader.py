@@ -25,7 +25,10 @@ logger = logging.getLogger("felix.skills.loader")
 _LEGACY_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 # Keys a nested `metadata:` map may not supply: they decide which skill this is, what the
 # model is told about it, and whether the model is offered it at all.
-_RESERVED_KEYS = frozenset({"name", "description", "disable-model-invocation"})
+_RESERVED_KEYS = frozenset({"name", "description", "disable-model-invocation", "user-invocable"})
+# Keys whose value is the text as written even when YAML reads a list: Claude Code writes
+# `argument-hint: [issue-number]`, and the hint is the brackets and all.
+_RAW_TEXT_KEYS = frozenset({"argument-hint"})
 # What may be interpolated into an object key as a skill name. Not the skill-name rule
 # (`format.is_valid_skill_name`), which also refuses `a--b`; this one only has to keep a
 # key to one safe segment.
@@ -109,6 +112,10 @@ def _yaml_frontmatter(frontmatter: dict[Any, Any], yaml_text: str, *, source: st
             nested = {str(k).strip().lower(): _as_text(v) for k, v in value.items()}
             continue
         text = _as_text(value)
+        if key in _RAW_TEXT_KEYS and isinstance(value, list):
+            # `argument-hint: [issue-number]`, as Claude Code writes it, is a YAML list; the hint is
+            # the text as written, brackets and all.
+            text = lines.get(key, text)
         # ` #` starts a YAML comment, so `description: Ranks issues #1 first` is "Ranks
         # issues" to YAML and was the whole line to the legacy reader. The whole line wins:
         # a description that silently loses its end is worse than one read the old way.
@@ -177,6 +184,7 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
             MAX_DESCRIPTION_CHARS,
         )
     disable = meta.get("disable-model-invocation", "").lower() in {"true", "1", "yes"}
+    user_invocable = meta.get("user-invocable", "").lower() not in {"false", "0", "no"}
     return Skill(
         name=name,
         description=description[:MAX_DESCRIPTION_CHARS],
@@ -185,6 +193,8 @@ def parse_skill_md(raw: str, *, fallback_name: str, path: str | None = None) -> 
         version=meta.get("version"),
         metadata={k: v for k, v in meta.items() if k not in {"name", "description"}},
         disable_model_invocation=disable,
+        user_invocable=user_invocable,
+        argument_hint=meta.get("argument-hint") or None,
     )
 
 
