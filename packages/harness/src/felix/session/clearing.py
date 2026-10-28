@@ -32,6 +32,8 @@ from typing import TYPE_CHECKING, Any
 
 from felix_ai.types import IMAGE_PART_TYPES
 
+from felix.skills.activation import ACTIVATE_TOOL
+
 if TYPE_CHECKING:
     from felix_ai.types import ChatMessage
 
@@ -64,7 +66,9 @@ def _stub(message: ChatMessage) -> ChatMessage:
 
 def _stale(message: ChatMessage, min_chars: int) -> bool:
     content = message.content or ""
-    if message.role != "tool" or content.startswith(_NEVER_STUBBED):
+    # A skill's body is instructions the model follows for the rest of the conversation, not data
+    # it read once (agentskills.io: exempt skill content from pruning).
+    if message.role != "tool" or content.startswith(_NEVER_STUBBED) or message.name == ACTIVATE_TOOL:
         return False
     return len(content) > min_chars or _has_image(message)
 
@@ -124,7 +128,8 @@ def clear_session_strategy(strategy: Any, spec: ToolResultClearing | None) -> An
 def model_view_strategy(strategy: Any, manifest: Manifest, settings: Settings | None) -> Any:
     """`strategy` as one compile renders history for its model: stale tool results cleared, then
     replayed images screened. Every site that renders for a model calls this, so a next turn and a
-    side question about the thread read it the same way."""
+    side question about the thread read it the same way. A compile with skills also keeps them in
+    view once its catalog is loaded (`skills.activation.retain_skills`, composed by the builder)."""
     from felix.governance.image_screening import screen_session_strategy
     from felix.governance.inbound import replay_screener
 

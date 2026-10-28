@@ -390,11 +390,12 @@ async def test_a_promoted_version_blocks_the_downgrade_past_0038() -> None:
         assert await _scalar(migrator, "SELECT count(*) FROM skill_version") == 0, (
             "the migrator role sees rows without the bypass, so this test cannot catch a guard missing it"
         )
-        # Where the refused downgrade must leave it: head, whatever later revisions it passes first.
-        head = await _scalar(url, "SELECT version_num FROM alembic_version")
+        # Where the refused downgrade must leave it: never past `0038`. Not necessarily at head --
+        # `0046`'s downgrade drops its indexes `CONCURRENTLY`, in an autocommit block that commits
+        # every step run before it, so a later revision's downgrade can already be applied.
         with pytest.raises(RuntimeError, match="promoted from personal libraries"):
             await _downgrade_past_0038(migrator)
-        assert await _scalar(url, "SELECT version_num FROM alembic_version") == head
+        assert await _scalar(url, "SELECT version_num FROM alembic_version") >= "0038_skill_version_promoted"
 
         await _execute(url, "DELETE FROM skill_version WHERE source = 'promoted'")
         await _downgrade_past_0038(migrator)

@@ -6,7 +6,7 @@ title: Postgres data model
 %% shared key convention, enforced by RLS and application code, not by the catalog.
 erDiagram
     accTitle: The tenant-scoped tables that hold Felix state
-    accDescr: Every table carries tenant_id as the first column of its primary key, and isolation is enforced by row-level security policies rather than by foreign keys — the schema declares none. That means the relationships shown here are conventions the application upholds: session_events and thread_state share (tenant_id, thread_id), and manifest_active points at a row in manifests by name and version without a constraint saying so. The tables shown are the core set; eval, documents, jobs, plans and skill_activation follow the same tenant-first shape.
+    accDescr: Every table carries tenant_id as the first column of its primary key, and isolation is enforced by row-level security policies rather than by foreign keys — the schema declares none. That means the relationships shown here are conventions the application upholds: session_events and thread_state share (tenant_id, thread_id), and manifest_active points at a row in manifests by name and version without a constraint saying so. The tables shown are the core set; eval, documents, jobs, plans and the skill library follow the same tenant-first shape.
 
     MANIFESTS ||--o{ MANIFEST_ACTIVE : "pointed at by name and version"
     MANIFESTS ||--o{ SESSION_EVENTS : "manifest_id recorded per turn"

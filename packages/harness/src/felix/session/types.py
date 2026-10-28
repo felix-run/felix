@@ -108,6 +108,9 @@ class GetEventsOpts:
     to_seq: int | None = None
     limit: int | None = None
     kinds: list[SessionEventKind] | None = None
+    # Only events whose `name` is one of these -- a tool result by its tool. A store that ignores
+    # it returns more, never less, so a reader that needs exactness filters again.
+    names: list[str] | None = None
 
 
 @dataclass(slots=True)

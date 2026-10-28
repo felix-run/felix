@@ -1270,8 +1270,8 @@ def get_skill_library_store(settings: Settings | None = None, *, owner: str) -> 
     (`library_keys.personal_owner`), and has no default: a flow that forgot it would read and
     write the tenant's library for a person, so every caller says which it means.
 
-    Selected exactly as `skills/store.py:get_skill_activation_store` selects, so a deployment
-    that keeps activations in memory keeps the library there too.
+    Selected by the database URL as every store is (`db/session.py:_use_memory`), so a deployment
+    that keeps its other state in memory keeps the library there too.
     """
     require_owner(owner)
     if settings is None:

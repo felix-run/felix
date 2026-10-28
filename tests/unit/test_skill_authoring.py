@@ -22,7 +22,6 @@ from felix.skills.format import serialize_skill_md
 from felix.skills.library_keys import ORG_OWNER, library_object_key
 from felix.skills.library_store import get_skill_library_store
 from felix.skills.loader import load_manifest_skills
-from felix.skills.store import InMemorySkillActivationStore
 from felix.skills.tools import make_skill_tools
 from felix.storage import MemoryObjectStore
 from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
@@ -97,7 +96,7 @@ def _authoring(settings: Settings, store: MemoryObjectStore, **kw: Any) -> dict[
 def _skill_tools(catalog: Any, settings: Settings, store: MemoryObjectStore) -> dict[str, Tool]:
     tools = make_skill_tools(
         catalog,
-        activation_store=InMemorySkillActivationStore(),
+        session_store=None,
         tenant_id="acme",
         manifest_id="contributor",
         settings=settings,
@@ -240,6 +239,7 @@ async def test_publish_mode_publishes_when_the_gate_passes(
     )
 
     assert result["status"] == "published"
+    assert result["available"] == "next_turn"
     listed = await _call(_skill_tools(await _catalog(settings, store), settings, store)["list_skills"], {})
     entry = next(s for s in listed if s["name"] == "invoice-triage")
     assert entry["source"] == "library"
@@ -1285,3 +1285,17 @@ async def test_a_create_under_a_name_with_a_kept_version_is_still_refused(
     again = await _call(tools["create_skill"], args)
 
     assert again == {"error": "skill_exists", "name": "invoice-triage", "detail": "use update_skill"}
+
+
+async def test_a_skill_a_declared_only_manifest_does_not_name_is_never_available(
+    settings: Settings, store: MemoryObjectStore
+) -> None:
+    """Published, and still never in this agent's catalog: the result says so rather than
+    leaving the model to look for it next turn."""
+    tools = _authoring(settings, store, mode="publish", declared_only=True, declared=frozenset({"other"}))
+    result = await _call(
+        tools["create_skill"],
+        {"name": "invoice-triage", "description": "Route invoices.", "body": BODY, "reason": "r"},
+    )
+    assert result["status"] == "published"
+    assert result["available"] == "never" and "skills_declared_only" in result["available_note"]

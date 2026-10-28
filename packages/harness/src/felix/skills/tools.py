@@ -13,6 +13,23 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from felix.audit.emit import emit_agent_audit
 from felix.logging_setup import loggable
+from felix.skills.activation import (
+    ACTIVATE_TOOL,
+    ACTIVATED_KEY,
+    DEACTIVATE_TOOL,
+    DEACTIVATED_KEY,
+    DIGEST_KEY,
+    INSTRUCTIONS_KEY,
+    INSTRUCTIONS_SOURCE,
+    LIST_TOOL,
+    READ_FILE_TOOL,
+    SKILL_TOOL_NAMES,
+    VERSION_KEY,
+    activation_instructions,
+    activations_for,
+    instructions_digest,
+    retained_view,
+)
 from felix.skills.binary import is_binary_asset_path
 from felix.skills.format import (
     ALLOWED_ROOT_FILES,
@@ -21,7 +38,6 @@ from felix.skills.format import (
     MAX_SKILL_MD_CHARS,
     bundle_path_issue,
 )
-from felix.skills.store import SkillActivationStore
 from felix.skills.types import Skill, SkillCatalog
 from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool, untrusted_output
 
@@ -189,13 +205,16 @@ def _relayed(skill: Skill, text: str) -> ToolOutput:
 def make_skill_tools(
     catalog: SkillCatalog,
     *,
-    activation_store: SkillActivationStore,
+    session_store: Any | None,
     tenant_id: str,
     manifest_id: str,
     settings: Any | None = None,
     object_store: Any | None = None,
 ) -> list[Tool]:
     """Build list_skills / activate_skill / deactivate_skill / read_skill_file over a catalog.
+
+    Which skills are active is the calling thread's, read from its log through ``session_store``
+    (`skills/activation.py`); without one, or without a thread, none is.
 
     ``settings`` and ``object_store`` are what reach a library or object-store skill's bundle
     files; without them `read_skill_file` serves host skills only.
@@ -266,8 +285,11 @@ def make_skill_tools(
             return {}
         return newest
 
+    async def _active(ctx: ToolInvocationCtx | None) -> dict[str, Any]:
+        return await activations_for(session_store, getattr(ctx, "thread_id", None))
+
     async def _list(_args: dict[str, Any] | None = None, _ctx: ToolInvocationCtx | None = None) -> ToolOutput:
-        active = await activation_store.get_active(tenant_id, manifest_id)
+        active = await _active(_ctx)
         public = catalog.list_public()
         newest = await _newest([s for s in public if s.source == "library"])
         payload = [
@@ -294,15 +316,29 @@ def make_skill_tools(
         if skill is None:
             _audit("activate", args.name, status="unknown_skill", ctx=_ctx)
             return json.dumps({"error": "unknown_skill", "name": args.name})
-        active = await activation_store.activate(tenant_id, manifest_id, skill.name)
+        active = await _active(_ctx)
+        instructions = activation_instructions(skill)
+        digest = instructions_digest(instructions)
+        # Only what retention can still show whole (`activation.retained_view`): an activation past
+        # its budget, or of instructions that have changed since, is sent again.
+        if skill.name in retained_view(active, catalog).whole:
+            # The same instructions are already in this conversation, and kept in view
+            # (`activation.SkillRetentionStrategy`): sending them again only spends context.
+            _audit("activate", skill.name, status="already_active", ctx=_ctx, library=_label(skill))
+            return json.dumps(
+                {
+                    "already_active": skill.name,
+                    "note": "its instructions are earlier in this conversation; follow them",
+                }
+            )
         _audit("activate", skill.name, status="ok", ctx=_ctx, library=_label(skill))
         result: dict[str, Any] = {
-            "activated": skill.name,
-            # Activation is kept per manifest, for every caller of it, so the stored set can
-            # hold a name only someone else's catalog has -- one of their personal skills.
-            # This caller is told about their own catalog's names and no one else's.
-            "active_skills": [n for n in active if catalog.get_invocable(n) is not None],
-            "instructions": skill.body[:MAX_ACTIVATION_CHARS] or "(no body)",
+            ACTIVATED_KEY: skill.name,
+            "active_skills": sorted(
+                {skill.name, *(n for n in active if catalog.get_invocable(n) is not None)}
+            ),
+            INSTRUCTIONS_KEY: instructions,
+            DIGEST_KEY: digest,
         }
         if len(skill.body) > MAX_ACTIVATION_CHARS:
             result["truncated"] = True
@@ -320,7 +356,7 @@ def make_skill_tools(
             if cut:
                 result["files_truncated"] = True
         if skill.source == "library":
-            result["version"] = skill.version
+            result[VERSION_KEY] = skill.version
             newest = (await _newest([skill])).get(skill.name)
             if newest:
                 result["newest_version"] = newest
@@ -358,46 +394,49 @@ def make_skill_tools(
         )
 
     async def _deactivate(args: _SkillNameArgs, _ctx: ToolInvocationCtx | None = None) -> str:
-        # Resolved first, like `activate`. `activation_store.deactivate` is a list filter --
-        # it neither validates the name nor reports whether anything was removed -- so
-        # auditing the raw argument recorded a model-supplied string under `status="ok"`,
-        # indistinguishable from a deactivation that happened.
+        # Resolved first, like `activate`, so the trail never records a model-supplied string
+        # under `status="ok"`. The result is the record: the thread's log is what says the
+        # skill is no longer active (`activation.thread_activations`).
         skill = catalog.get_invocable(args.name)
-        active = await activation_store.deactivate(tenant_id, manifest_id, args.name)
+        active = await _active(_ctx)
+        active.pop(args.name, None)
         if skill is None:
             _audit("deactivate", args.name, status="unknown_skill", ctx=_ctx)
         else:
             _audit("deactivate", skill.name, status="ok", ctx=_ctx, library=_label(skill))
         # As `activate`: this caller's names.
         mine = [n for n in active if catalog.get_invocable(n) is not None]
-        return json.dumps({"deactivated": args.name, "active_skills": mine})
+        return json.dumps({DEACTIVATED_KEY: args.name, "active_skills": mine})
 
     names = [s.name for s in catalog.list_public()]
     return [
         define_tool(
-            name="list_skills",
-            description="List available skills for this agent (name, description, active).",
+            name=LIST_TOOL,
+            description="List available skills (name, description, and whether active in this conversation).",
             handler=_list,
             relays_untrusted=True,
         ),
         define_tool(
-            name="activate_skill",
+            name=ACTIVATE_TOOL,
             description=(
                 "Activate a named skill and return its full instructions. "
                 "Call when a task matches a skill description."
             ),
             args=_with_names(_SkillNameArgs, names, "Skill name to activate."),
             handler=_activate,
+            # Never spilled to an artifact: the body is the instructions, and a preview of them
+            # is not something the model can follow (`artifacts.UNSPILLED_SOURCES`).
+            source=INSTRUCTIONS_SOURCE,
             relays_untrusted=True,
         ),
         define_tool(
-            name="deactivate_skill",
-            description="Deactivate a named skill for this agent.",
+            name=DEACTIVATE_TOOL,
+            description="Stop following a skill activated earlier in this conversation.",
             args=_with_names(_SkillNameArgs, names, "Skill name to deactivate."),
             handler=_deactivate,
         ),
         define_tool(
-            name="read_skill_file",
+            name=READ_FILE_TOOL,
             description=(
                 "Read one file from a skill's bundle (references/, scripts/, assets/, evals/), "
                 "as activate_skill listed it. Text only."
@@ -409,9 +448,6 @@ def make_skill_tools(
             relays_untrusted=True,
         ),
     ]
-
-
-SKILL_TOOL_NAMES = frozenset({"list_skills", "activate_skill", "deactivate_skill", "read_skill_file"})
 
 
 __all__ = [

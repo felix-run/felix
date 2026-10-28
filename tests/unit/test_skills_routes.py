@@ -1,8 +1,8 @@
 """Making the skills subsystem reachable, and asserting what it reports is true.
 
 `grep -rn skill apps/api/src/felix_api/routes/` returned zero: a loader, a catalog, an
-activation store with its own table and Postgres arm, and three model-facing tools, none of
-it answerable to an operator. A subsystem nothing can reach is inert by this repo's own
+activation store with its own table and Postgres arm (since replaced by each thread's log), and
+three model-facing tools, none of it answerable to an operator. A subsystem nothing can reach is inert by this repo's own
 rule, so the tests that matter are the ones that would fail if the routes reported something
 other than what a turn would actually see.
 
@@ -230,37 +230,19 @@ async def test_a_declared_skill_with_no_body_still_lists(skills_dir: Path) -> No
     assert (entry["has_body"], entry["declared"], entry["model_invocable"]) == (False, True, False)
 
 
-async def test_active_state_is_reported_from_the_store_a_turn_writes(skills_dir: Path) -> None:
-    """Otherwise the route reports a default rather than the truth, and the one question it
-    exists to answer is the one it gets wrong."""
-    from felix.skills.store import get_skill_activation_store
-
+async def test_the_listing_claims_no_manifest_wide_activation(skills_dir: Path) -> None:
+    """Activation belongs to a conversation (`felix.skills.activation`). The listing used to say a
+    skill was active for the whole manifest after any caller activated it in any thread -- which
+    no conversation's model could see. It now makes no such claim at all."""
     client, settings = await _client(skills_dir)
     async with client:
         await _store_manifest(settings, "triage", ["invoice-triage"])
-        await get_skill_activation_store(settings).activate("acme", "triage", "invoice-triage")
-        resp = await client.get("/skills/triage", headers=_auth("sk-skills"))
+        listing = await client.get("/skills/triage", headers=_auth("sk-skills"))
+        one = await client.get("/skills/triage/invoice-triage", headers=_auth("sk-skills"))
 
-    by_name = {i["name"]: i for i in resp.json()["items"]}
-    assert by_name["invoice-triage"]["active"] is True
-    # Both sides. Asserting only the activated one passes just as well against a route that
-    # reports everything as active, which is the shape this file's mutation run caught.
-    assert by_name["internal-only"]["active"] is False
-    assert resp.json()["active"] == ["invoice-triage"]
-
-
-async def test_another_tenants_activation_is_not_reported_as_ours(skills_dir: Path) -> None:
-    """The store is keyed by `(tenant, manifest)` and the tenant comes from the credential,
-    never the path — so a manifest name shared between tenants must not leak either way."""
-    from felix.skills.store import get_skill_activation_store
-
-    client, settings = await _client(skills_dir)
-    async with client:
-        await _store_manifest(settings, "triage", ["invoice-triage"])
-        await get_skill_activation_store(settings).activate("globex", "triage", "invoice-triage")
-        resp = await client.get("/skills/triage", headers=_auth("sk-skills"))
-
-    assert resp.json()["active"] == []
+    assert "active" not in listing.json()
+    assert all("active" not in item for item in listing.json()["items"])
+    assert "active" not in one.json()
 
 
 async def test_reading_skills_needs_the_scope(skills_dir: Path) -> None:
@@ -297,7 +279,6 @@ async def test_recent_activations_name_the_skill_not_just_the_tool(skills_dir: P
     """
     from felix.context import AuthContext, RequestContext, run_with_context
     from felix.skills.loader import load_manifest_skills
-    from felix.skills.store import get_skill_activation_store
     from felix.skills.tools import make_skill_tools
     from felix.tools.types import ToolInvocationCtx
 
@@ -307,7 +288,7 @@ async def test_recent_activations_name_the_skill_not_just_the_tool(skills_dir: P
         catalog = await load_manifest_skills([{"name": "invoice-triage"}], tenant_id="acme", owner=None)
         tools = make_skill_tools(
             catalog,
-            activation_store=get_skill_activation_store(settings),
+            session_store=None,
             tenant_id="acme",
             manifest_id="triage",
         )
@@ -383,14 +364,13 @@ async def _drive_skill_tool(settings: Settings, tool_name: str, skill_name: str)
     from felix.audit import store as audit_store
     from felix.context import AuthContext, RequestContext, run_with_context
     from felix.skills.loader import load_manifest_skills
-    from felix.skills.store import get_skill_activation_store
     from felix.skills.tools import make_skill_tools
     from felix.tools.types import ToolInvocationCtx
 
     catalog = await load_manifest_skills([{"name": "invoice-triage"}], tenant_id="acme", owner=None)
     tools = make_skill_tools(
         catalog,
-        activation_store=get_skill_activation_store(settings),
+        session_store=None,
         tenant_id="acme",
         manifest_id="triage",
     )
@@ -438,8 +418,8 @@ async def test_a_deactivation_is_not_reported_as_an_activation(skills_dir: Path)
 async def test_deactivating_something_that_is_not_a_skill_is_not_reported_as_ok(
     skills_dir: Path,
 ) -> None:
-    """`activation_store.deactivate` is a list filter -- it neither validates the name nor
-    says whether anything was removed -- so auditing the raw argument recorded arbitrary
+    """Deactivation used to take the name as given, never resolving it or saying whether anything
+    was removed -- so auditing the raw argument recorded arbitrary
     model text under `status="ok"`, indistinguishable from a real deactivation. Both
     reviewers found this; the security review ranked it the highest finding in the change.
     """

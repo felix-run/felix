@@ -16,7 +16,7 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
 
 | Stage | Modules | What they own |
 |---|---|---|
-| Load | `loader.py`, `discovery.py`, `types.py`, `store.py`, `tools.py`, `suggest.py` | Host dirs + library + operator uploads → `SkillCatalog`; the four skill tools; per-manifest activation rows; the decider hint |
+| Load | `loader.py`, `discovery.py`, `types.py`, `activation.py`, `tools.py`, `suggest.py` | Host dirs + library + operator uploads → `SkillCatalog`; the four skill tools; per-thread activation read from the session log; the decider hint |
 | Format | `format.py`, `binary.py`, `plugin.py`, `semver.py` | SKILL.md parse/validate and bundle path allowlist; base64 assets; `plugin.json`; version bumps |
 | Library | `library.py`, `library_store.py`, `library_keys.py`, `sources.py`, `copy_rule.py`, `authoring.py` | Draft/publish/rollback/reject/archive/adopt/promote; rows; owner and object-key spelling; per-source rules; imported-text lineage; agent tools |
 | Import | `github.py`, `importer.py`, `sighting_store.py`, `upstream.py`, `upstream_store.py`, `bundle_diff.py`, `update_notify.py` | Pinned GitHub fetch and allowlist; import as draft; cooldown clock; origin checks, diffs, updates; `skill.update_available` webhooks |
@@ -55,8 +55,18 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    from the tools too (`types.py:SkillCatalog.get_invocable`), and the tools' `name` schema
    enumerates only invocable names. `activate_skill` caps the body (`MAX_ACTIVATION_CHARS`) and
    relays `license`, `compatibility` and `allowed-tools` as information — `allowed-tools` is
-   never enforced or used to skip approvals. Activation is stored per (tenant, manifest) by
-   `skills/store.py:get_skill_activation_store`.
+   never enforced or used to skip approvals.
+6. **Activation is the thread's.** `skills/activation.py:thread_activations` reads it from the
+   session log: the newest `activate_skill` result per name on the active branch, minus a later
+   `deactivate_skill` -- so a rewind or fork past it, or a result screening quarantined, is not
+   active. There is no activation table (dropped in migration `0047`). A second activation of the
+   same instructions in a thread answers `already_active`. `session/clearing.py` never stubs an
+   `activate_skill` result, the artifact spill skips it (`artifacts.UNSPILLED_SOURCES`), and
+   `activation.SkillRetentionStrategy` (composed by `manifests/builder.py` once the catalog is
+   loaded) re-shows an active skill's logged result when compaction or a window dropped its turn:
+   only skills the catalog still offers, fenced, ahead of the history, within `MAX_RETAINED_CHARS`
+   (`activation.retained_view` decides, and `already_active` asks the same function). A queue
+   write-back under a skill tool's name is stored as `queue:<name>` (`session/store.py`).
 
 Manifest fields (`manifests/schema.py`): `skills` (`SkillRef`: name, description, version),
 `skills_declared_only`, `personal_skills` (`off` / `read` / `write`), `skill_authoring`
@@ -95,7 +105,6 @@ Each getter picks the twin when the database URL is `memory://`, `:memory:` or s
 
 | Getter | Table(s) | Twin |
 |---|---|---|
-| `store.py:get_skill_activation_store` | `skill_activation` | `InMemorySkillActivationStore` |
 | `library_store.py:get_skill_library_store` (`owner=` required) | `skill`, `skill_version`, `skill_file` | `InMemorySkillLibraryStore` |
 | `feedback_store.py:get_skill_feedback_store` | `skill_feedback` | `InMemorySkillFeedbackStore` |
 | `eval_store.py:get_skill_eval_store` | `skill_eval` | `InMemorySkillEvalStore` |

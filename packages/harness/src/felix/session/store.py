@@ -116,6 +116,9 @@ class _MemorySession:
         if opts.kinds is not None:
             kinds = set(opts.kinds)
             items = [e for e in items if e.kind in kinds]
+        if opts.names is not None:
+            names = set(opts.names)
+            items = [e for e in items if e.name in names]
         if opts.limit is not None:
             items = items[: opts.limit]
         return items
@@ -566,6 +569,8 @@ class _PostgresSession:
                 stmt = stmt.where(SessionEventRow.seq < opts.to_seq)
             if opts.kinds is not None:
                 stmt = stmt.where(SessionEventRow.kind.in_(list(opts.kinds)))
+            if opts.names is not None:
+                stmt = stmt.where(SessionEventRow.name.in_(list(opts.names)))
             if opts.limit is not None:
                 stmt = stmt.limit(opts.limit)
             rows = (await db.scalars(stmt)).all()
@@ -889,12 +894,20 @@ def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> Appendab
         # harness's entry -- a task's report -- from the model's context.
         key = metadata[CONTEXT_KEY]
         metadata = {**metadata, CONTEXT_KEY: f"queue:{key}" if isinstance(key, str) and key else None}
+    name = payload.get("name")
+    from felix.skills.activation import SKILL_TOOL_NAMES
+
+    if name in SKILL_TOOL_NAMES:
+        # A skill tool's result is read back as the thread's activation and kept in front of the
+        # model for the rest of it (`skills.activation`). One from outside is the writer's text,
+        # under its own name: never a harness tool's.
+        name = f"queue:{name}"
     return AppendableEvent(
         kind=kind,  # type: ignore[arg-type]
         role=payload.get("role"),
         content=payload.get("content"),
         tool_call_id=payload.get("tool_call_id"),
-        name=payload.get("name"),
+        name=name,
         tool_calls=payload.get("tool_calls"),
         metadata=metadata,
         ts=payload.get("ts"),

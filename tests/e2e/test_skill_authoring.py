@@ -72,6 +72,7 @@ async def test_a_skill_the_agent_drafts_is_used_only_after_it_is_published(boot:
         await _chat(app, "Remember how to triage invoices.")
         saved = json.loads(_tool_result(app.spy.prompts[1]))
         assert (saved["status"], saved["name"], saved["version"]) == ("draft", NAME, "0.1.0")
+        assert saved["available"] == "after_publish" and "an operator" in saved["available_note"]
 
         # A second conversation: the draft is in the library and in no catalog.
         await _chat(app, "What skills do you have?")
@@ -138,3 +139,57 @@ async def test_publishing_over_http_needs_skills_write(boot: Any) -> None:
         published = await app.client.post(f"/skill-library/{NAME}/versions/0.1.0/publish", headers=writer)
         assert published.status_code == 200, published.text
         assert published.json()["decided_by"] == "writer"
+
+
+async def _chat_in(app: Any, thread_id: str, text: str) -> None:
+    response = await app.client.post(
+        "/chat",
+        json={
+            "manifest": "e2e-author",
+            "thread_id": thread_id,
+            "messages": [{"role": "user", "content": text}],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+async def test_a_published_skill_is_usable_on_the_next_turn_of_the_same_conversation(boot: Any) -> None:
+    """Saved in turn one, published between turns, listed and activated in turn two of the *same*
+    thread -- the catalog is compiled per request. Turn three activates it again and is told it is
+    already active: the activation was read back from the thread's own log, which the pattern wrote."""
+    create = {"name": NAME, "description": "Route incoming invoices.", "body": BODY, "reason": "by hand"}
+    script = [
+        ScriptedTurn(tool_calls=[ToolCall(id="c1", name="create_skill", args=create)]),
+        ScriptedTurn(content="saved"),
+        ScriptedTurn(tool_calls=[ToolCall(id="c2", name="list_skills", args={})]),
+        ScriptedTurn(tool_calls=[ToolCall(id="c3", name="activate_skill", args={"name": NAME})]),
+        ScriptedTurn(content="routed"),
+        ScriptedTurn(tool_calls=[ToolCall(id="c4", name="list_skills", args={})]),
+        ScriptedTurn(tool_calls=[ToolCall(id="c5", name="activate_skill", args={"name": NAME})]),
+        ScriptedTurn(content="again"),
+        ScriptedTurn(tool_calls=[ToolCall(id="c6", name="list_skills", args={})]),
+        ScriptedTurn(content="elsewhere"),
+    ]
+    thread = "e2e-author-next-turn"
+    async with boot(script, manifests={"e2e-author": _manifest()}) as app:
+        await _chat_in(app, thread, "Remember how to triage invoices.")
+        assert json.loads(_tool_result(app.spy.prompts[1]))["available"] == "after_publish"
+        published = await app.client.post(f"/skill-library/{NAME}/versions/0.1.0/publish")
+        assert published.status_code == 200, published.text
+
+        await _chat_in(app, thread, "Triage this invoice: ACME, 900.")
+        listed = json.loads(_tool_result(app.spy.prompts[3]))
+        assert next(s for s in listed if s["name"] == NAME)["active"] is False
+        activated = json.loads(_tool_result(app.spy.prompts[4]))
+        assert activated["activated"] == NAME and ROUTING_STEP in activated["instructions"]
+
+        await _chat_in(app, thread, "And this one: Globex, 120.")
+        listed = json.loads(_tool_result(app.spy.prompts[6]))
+        assert next(s for s in listed if s["name"] == NAME)["active"] is True
+        again = json.loads(_tool_result(app.spy.prompts[7]))
+        assert again["already_active"] == NAME and "instructions" not in again
+
+        # Another conversation of the same manifest: the activation is not its.
+        await _chat_in(app, "e2e-author-elsewhere", "What skills do you have on?")
+        listed = json.loads(_tool_result(app.spy.prompts[9]))
+        assert next(s for s in listed if s["name"] == NAME)["active"] is False

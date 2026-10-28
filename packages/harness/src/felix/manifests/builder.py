@@ -1807,6 +1807,7 @@ def _bind_skill_authoring(
                 personal=personal,
                 tenant=frozenset(catalog.skills) - personal,
                 declared=frozenset(ref.name for ref in m.spec.skills),
+                declared_only=m.spec.skills_declared_only,
                 write_personal=m.spec.personal_skills == "write",
                 owner=deps.skill_owner,
             ),
@@ -2309,21 +2310,17 @@ async def build_agent(
 
         # Wire Agent Skills (progressive disclosure + bound skill tools).
         from felix.skills import (
-            SKILL_TOOL_NAMES,
-            get_skill_activation_store,
             load_manifest_skills,
             make_skill_tools,
             skill_catalog_xml,
         )
+        from felix.skills.activation import READ_FILE_TOOL, retain_skills, wants_skills
 
         authoring = m.spec.skill_authoring.enabled and deps.settings is not None
         # A caller's own skills are reachable only through the skill tools, so asking for them
         # binds the tools as declaring a skill does; otherwise the field would load nothing.
         personal = m.spec.personal_skills != "off"
-        wants_skills = (
-            bool(m.spec.skills) or authoring or personal or any(t.name in SKILL_TOOL_NAMES for t in resolved)
-        )
-        if wants_skills:
+        if wants_skills(m.spec, (t.name for t in resolved), authoring_available=deps.settings is not None):
             catalog = await load_manifest_skills(
                 list(m.spec.skills),
                 tenant_id=tenant_id,
@@ -2336,7 +2333,8 @@ async def build_agent(
                 t.name: t
                 for t in make_skill_tools(
                     catalog,
-                    activation_store=get_skill_activation_store(deps.settings),
+                    # Which skills are active is read from the thread's own log.
+                    session_store=session_store,
                     tenant_id=tenant_id,
                     manifest_id=m.metadata.name,
                     settings=deps.settings,
@@ -2344,12 +2342,15 @@ async def build_agent(
                 )
             }
             resolved = [skill_tools.get(t.name, t) for t in resolved]
+            # Active skills put back where a strategy dropped the turn that activated them -- only
+            # those this catalog still offers, so taking a skill away takes it out of old threads.
+            session_strategy = retain_skills(session_strategy, catalog)
             # Ensure skill tools exist when skills are declared (or authored) but not listed;
             # `read_skill_file` rides along with any of them, since `activate_skill` names files
             # only it can read.
             have = {t.name for t in resolved}
             for name, tool in skill_tools.items():
-                if name not in have and (m.spec.skills or authoring or personal or name == "read_skill_file"):
+                if name not in have and (m.spec.skills or authoring or personal or name == READ_FILE_TOOL):
                     resolved.append(tool)
             _warn_imported_skills_are_unscreened(m, catalog)
             imported_skills = any(s.untrusted for s in catalog.skills.values())
