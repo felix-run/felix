@@ -15,7 +15,7 @@ from typing import Any
 
 from felix.patterns.model import ModelChatResult
 from felix.patterns.types import ChatMessage
-from felix.session.compaction import _UNTRUSTED_NOTICE, SUMMARY_LABEL, CompactingSessionStrategy
+from felix.session.compaction import SUMMARY_LABEL, UNTRUSTED_NOTICE, CompactingSessionStrategy
 from felix.session.handoff import handoff_system_message
 from felix.session.store import InMemorySessionStore
 from felix.session.strategies import SummarizingSessionStrategy
@@ -123,7 +123,7 @@ async def test_the_summarizing_strategy_fences_its_input_and_demotes_its_output(
     assert model.asked, "nothing was summarised; the test proves nothing"
     transcript = model.asked[0][-1].content or ""
     assert transcript.startswith("<untrusted_transcript>"), "the summariser read an unfenced transcript"
-    assert _UNTRUSTED_NOTICE in (model.asked[0][0].content or ""), "the summariser was not told it is data"
+    assert UNTRUSTED_NOTICE in (model.asked[0][0].content or ""), "the summariser was not told it is data"
     _assert_summary_is_reference_material(made, "the turn it was made")
     _assert_summary_is_reference_material(replayed, "the turn after")
 
@@ -193,5 +193,5 @@ async def test_the_branch_summariser_reads_a_fenced_transcript() -> None:
 
     assert model.asked, "the branch was not summarised; the test proves nothing"
     system, user = model.asked[0][0], model.asked[0][-1]
-    assert _UNTRUSTED_NOTICE in (system.content or "")
+    assert UNTRUSTED_NOTICE in (system.content or "")
     assert (user.content or "").startswith("<untrusted_transcript>")

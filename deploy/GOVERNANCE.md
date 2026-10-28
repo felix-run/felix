@@ -296,7 +296,9 @@ and every one without tool calls is judged, so a denied reply is stored as its d
 replays, exports, `/chat/history` and a durable run's live tail carry what the client got.
 The store is handed to sub-agents too, since a router's child writes the caller's thread,
 and reflect's critique quotes its draft redacted. What a composite pattern hands from one model
-call to the next is fenced as data, under a line saying so: plan_execute's notes to the next
+call to the next is fenced as data in a tag made new for each call (`<subtask_notes-<12 hex>>`, so
+no spelling of a close, a fullwidth lookalike included, can be forged), under a line saying
+so: plan_execute's notes to the next
 subtask, a replan and the synthesis; parallel's specialist answers to the synthesis; reflect's
 draft to its verifier and back to the drafter. Each carries whatever the child's tools read. The
 log is never less screened than the

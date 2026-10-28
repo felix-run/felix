@@ -149,29 +149,21 @@ class SummarizingSessionStrategy:
         if model is not None:
             try:
                 from felix.patterns.model import ModelChatOptions
-                from felix.session.compaction import (
-                    _UNTRUSTED_NOTICE,
-                    SUMMARIZER_INPUT_CHARS,
-                    fence_untrusted,
-                )
+                from felix.session.compaction import UNTRUSTED_NOTICE, summariser_transcript
 
-                # Capped as compaction's transcript is: an unbounded history overflows the
-                # summariser's own context, and the call fails on exactly the long threads it is for.
-                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)[
-                    :SUMMARIZER_INPUT_CHARS
-                ]
+                text = "\n".join(f"{e.role}: {e.content}" for e in older if e.content)
                 result = await model.chat(
                     [
                         ChatMessage(
                             role="system",
                             content=(
                                 "Summarize this conversation briefly (3-5 sentences). "
-                                "Preserve goals, decisions, constraints, and pending work."
-                                + _UNTRUSTED_NOTICE
+                                "Preserve goals, decisions, constraints, and pending work." + UNTRUSTED_NOTICE
                             ),
                         ),
-                        # Fenced as compaction's is: the transcript carries tool output.
-                        ChatMessage(role="user", content=fence_untrusted(text)),
+                        # Capped and fenced as compaction's is: an unbounded history overflows
+                        # the summariser's own context, and the transcript carries tool output.
+                        ChatMessage(role="user", content=summariser_transcript(text)),
                     ],
                     [],
                     # A side request with a prefix of its own, as compaction's is: it must not
