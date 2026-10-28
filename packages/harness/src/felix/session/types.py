@@ -288,6 +288,30 @@ def event_to_chat_message(e: SessionEvent) -> ChatMessage:
 # learns and this tuple does not is dropped from every replayed turn, the bug that tuple fixed.
 _REPLAYED_METADATA_KEYS = ("thinking", "attachments")
 
+# Metadata the harness reads off an event to build the tree or render it, and so writes itself: never
+# taken from a caller's entry (`/chat/sessions/custom`). A caller's `event_id` that matched another
+# event's replaced it in every render, and a `parent_id` grafted the entry anywhere, so the model read
+# a history the transcript did not show; `attachments` sent the model images -- a remote URL among
+# them -- that `/chat` strips from every non-user turn at the door (`caller_images_on_user_turns`);
+# `thinking` became the model's own reasoning; `origin_request` claimed another request's events;
+# `pinned`, which nothing in the harness sets, kept an entry through every window and compaction, so
+# repeated ones grew each turn's context past what the manifest's strategy bounds.
+# The converter's own keys (`_REPLAYED_METADATA_KEYS`) are in it by construction, so one it learns is
+# reserved with it; `origin_request` is `tree.ORIGIN_METADATA_KEY`, which imports this module.
+RESERVED_METADATA_KEYS = frozenset(
+    {"event_id", "parent_id", "origin_request", "pinned", *_REPLAYED_METADATA_KEYS}
+)
+
+
+# Of those, the ones that place an event in the tree or keep it there: no writer from outside chooses
+# either, a queue's write-back included (`store._payload_to_appendable`).
+TREE_METADATA_KEYS = frozenset({"event_id", "parent_id", "origin_request", "pinned"})
+
+
+def caller_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """A caller's metadata for an entry it adds, less what only the harness may set."""
+    return {k: v for k, v in (metadata or {}).items() if k not in RESERVED_METADATA_KEYS}
+
 
 def retained_turn(e: SessionEvent) -> dict[str, Any]:
     """A kept turn as a compaction checkpoint stores it: exactly what the converter reads.
@@ -411,6 +435,8 @@ def analyze_wake(events: list[SessionEvent]) -> WakeState:
 __all__ = [
     "CLIENT_ENTRY_LABEL",
     "CONTEXT_KEY",
+    "RESERVED_METADATA_KEYS",
+    "TREE_METADATA_KEYS",
     "AppendableEvent",
     "EventKind",
     "GetEventsOpts",
@@ -422,6 +448,7 @@ __all__ = [
     "SessionStrategy",
     "WakeState",
     "analyze_wake",
+    "caller_metadata",
     "chat_message_from_parts",
     "chat_message_to_event",
     "context_events",

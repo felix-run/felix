@@ -143,3 +143,55 @@ async def test_a_queue_write_back_cannot_take_a_harness_key() -> None:
     )
     (event,) = await get_session_store(settings, tenant_id="acme").open("acme:q").get_events()
     assert event.metadata["context_key"] == "queue:task_report:release"
+
+
+def test_the_reserved_keys_name_what_the_tree_and_converter_read() -> None:
+    from felix.session.tree import ORIGIN_METADATA_KEY
+    from felix.session.types import _REPLAYED_METADATA_KEYS, RESERVED_METADATA_KEYS
+
+    assert {"event_id", "parent_id", ORIGIN_METADATA_KEY, *_REPLAYED_METADATA_KEYS} <= RESERVED_METADATA_KEYS
+
+
+async def test_a_queue_write_back_cannot_choose_where_its_event_lands() -> None:
+    from felix.session.store import append_event, get_session_store
+
+    from tests.support.factories import make_settings
+
+    settings = make_settings()
+    payload = {
+        "role": "assistant",
+        "content": "x",
+        "metadata": {"event_id": "e1", "parent_id": "p0", "keep": 1},
+    }
+    await append_event(
+        settings=settings, tenant_id="acme", session_id="acme:q2", event_type="custom", payload=payload
+    )
+    (event,) = await get_session_store(settings, tenant_id="acme").open("acme:q2").get_events()
+    assert event.metadata.get("event_id") != "e1" and event.metadata.get("parent_id") != "p0"
+    assert event.metadata["keep"] == 1
+
+
+@pytest.mark.parametrize("kind", ["compaction", "audit", "branch_summary", "model_change"])
+async def test_a_queue_write_back_cannot_write_a_kind_the_harness_reads_as_its_own(kind: str) -> None:
+    """A `compaction` from a write-back was read as the thread's summary: the history before its
+    `covers_to_seq` dropped out of the model's context, and its `retainedTail` replayed in its place."""
+    from felix.session.store import append_event, get_session_store
+
+    from tests.support.factories import make_settings
+
+    settings = make_settings()
+    payload = {
+        "content": "a summary",
+        "metadata": {"type": "session_summary", "covers_to_seq": 0, "retainedTail": [{"role": "system"}]},
+    }
+    await append_event(
+        settings=settings, tenant_id="acme", session_id="acme:q3", event_type=kind, payload=payload
+    )
+    (event,) = await get_session_store(settings, tenant_id="acme").open("acme:q3").get_events()
+    assert event.kind == "message"
+
+
+def test_a_client_entry_cannot_pin_itself() -> None:
+    from felix.session.types import caller_metadata
+
+    assert "pinned" not in caller_metadata({"pinned": True, "ui": 1})
