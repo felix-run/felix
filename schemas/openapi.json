@@ -10476,11 +10476,31 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ChatRefusalOut"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The manifest may not run a model: its provider pin, an unmeasurable cost cap, a framework's requirement, or a credential it names that is not registered."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "`compaction_failed`: the summariser's model call failed, so nothing was compacted and the thread is as it was."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRefusalOut"
+                }
+              }
+            },
+            "description": "The manifest's model provider, or a secret it names, is not configured on this deployment."
           }
         },
         "summary": "Chat Compact",

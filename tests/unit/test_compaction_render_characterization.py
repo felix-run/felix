@@ -257,7 +257,7 @@ async def test_compact_now_forces_a_manual_pass_and_reports_the_message_count() 
 
     result = await _roomy(1).compact_now(session, model=model, system_prompt="sys", instructions="FOCUS")
 
-    assert result == {"ok": True, "messages": 4, "reason": "manual"}
+    assert result == {"ok": True, "outcome": "compacted", "messages": 4, "reason": "manual"}
     (prep,) = seen
     assert prep["reason"] == "manual"
     assert prep["custom_instructions"] == "FOCUS"
@@ -773,3 +773,34 @@ async def test_a_hook_with_an_empty_summary_falls_through_to_the_model() -> None
     assert len(model.calls) == 1
     (checkpoint,) = await _checkpoints(session)
     assert checkpoint.metadata["usage"] == {"metered": "compaction"}
+
+
+# -- what a forced pass reports (`compact_now`'s `outcome`) ----------------------------------------
+
+
+async def test_compact_now_reports_a_cancelling_hook() -> None:
+    get_agent_hooks().register_before_compact(lambda prep, ctx: {"cancel": True})
+    session, _ = await _session("acme:char-outcome-cancel", [_u("q0"), _a("a0"), _u("q1"), _a("a1")])
+    result = await _roomy(1).compact_now(session, model=_Model())
+    assert (result["ok"], result["outcome"]) == (True, "cancelled")
+    assert await _checkpoints(session) == []
+
+
+async def test_compact_now_reports_an_empty_summary_and_stores_nothing() -> None:
+    session, _ = await _session("acme:char-outcome-empty", [_u("q0"), _a("a0"), _u("q1"), _a("a1")])
+    result = await _roomy(1).compact_now(session, model=_Model(history=""))
+    assert (result["ok"], result["outcome"]) == (True, "empty_summary")
+    assert await _checkpoints(session) == []
+
+
+async def test_compact_now_without_a_model_is_not_ok() -> None:
+    session, _ = await _session("acme:char-outcome-no-model", [_u("q0"), _a("a0"), _u("q1"), _a("a1")])
+    result = await _roomy(1).compact_now(session, model=None)
+    assert (result["ok"], result["outcome"]) == (False, "no_model")
+
+
+async def test_compact_now_reports_a_summariser_that_raised_as_not_ok() -> None:
+    session, _ = await _session("acme:char-outcome-failed", [_u("q0"), _a("a0"), _u("q1"), _a("a1")])
+    result = await _roomy(1).compact_now(session, model=_Model(fail=True))
+    assert (result["ok"], result["outcome"]) == (False, "failed")
+    assert await _checkpoints(session) == []
