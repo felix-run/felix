@@ -1034,6 +1034,10 @@ Storage and execution:
   `connectors__places_search`, `connectors__route` (driving, walking, cycling) and
   `connectors__timezone_at`, keyless by default (OpenStreetMap Nominatim and FOSSGIS OSRM, paced to
   one request a second; `FELIX_MAPS_GEOCODER`, `FELIX_MAPS_ROUTER`).
+- Market tools from the same plugin: `connectors__quote`, `connectors__quote_history` and
+  `connectors__symbol_search` (Finnhub or Alpha Vantage, `FELIX_MARKET_BACKEND`, keyed by
+  `FELIX_MARKET_API_KEY`), and keyless `connectors__fx_rate` (ECB reference rates via Frankfurter,
+  `FELIX_FX_BACKEND`). Every price carries its source and the time it is from.
 - Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

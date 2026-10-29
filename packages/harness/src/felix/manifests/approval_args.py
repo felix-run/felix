@@ -25,9 +25,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from felix.logging_setup import loggable
 from felix.manifests.tool_match import matches_any
 
 logger = logging.getLogger("felix.manifests.approval_args")
+_UNBUILDABLE_REPORTED: set[str] = set()
 
 # One warning per (manifest, rule tools, names) per process: the check runs on every compile,
 # which is every request.
@@ -86,7 +88,19 @@ def offline_tools(settings: Any) -> list[Any]:
     from felix.tools.builtins import default_tool_provider
 
     provider = default_tool_provider()
-    tools = list(provider.resolve(provider.list_names()))
+    tools = []
+    for name in provider.list():
+        try:
+            tools.append(provider.get(name))
+        except ValueError as exc:
+            # A plugin tool its configuration cannot build -- a key the operator has not set, a
+            # backend nothing registered -- is not offline: a rule naming it is left to the
+            # compile, which refuses the tool itself. Raising would refuse every manifest write.
+            # Anything else is a defect in a factory, and still fails the write. Once per name: a
+            # default install without a key would otherwise say it on every write.
+            if name not in _UNBUILDABLE_REPORTED:
+                _UNBUILDABLE_REPORTED.add(name)
+                logger.info("offline_tool_unavailable tool=%s reason=%s", name, loggable(str(exc), limit=200))
     # Bound to nothing: only their schemas are read, and constructing them does no I/O.
     tools += make_memory_tools(settings=settings, tenant_id="", pool=MemoryPool.agent(""))
     tools.append(make_remember_procedure_tool(settings=settings, tenant_id="", manifest_id=""))

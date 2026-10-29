@@ -42,6 +42,16 @@ class UpstreamError(Exception):
         self.status = status
 
 
+class QuotaSpent(Exception):
+    """The upstream refused because the operator's plan quota is spent -- said with a 200 and a
+    note by some (Alpha Vantage), so a status code would misreport it."""
+
+
+class KeyRefused(Exception):
+    """The upstream refused the operator's key -- said with a 200 and a note by some, so a
+    status code would misreport it. The operator's to fix; never the model's to retry around."""
+
+
 class Busy(Exception):
     """A `Pacer` would hold the call past its longest wait: the upstream's rate is spent."""
 
@@ -154,6 +164,8 @@ class Upstream:
     user_agent: str
     allow_http: bool = False
     accept: str = "application/json"
+    #: Sent on every request beside the User-Agent: a key's header. Never in the repr.
+    headers: Mapping[str, str] = field(default_factory=dict, repr=False, compare=False)
     hosts: frozenset[str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -165,7 +177,7 @@ class Upstream:
         return await get_json(
             self.base_url + path,
             params=params,
-            headers={"user-agent": self.user_agent, "accept": self.accept},
+            headers={**self.headers, "user-agent": self.user_agent, "accept": self.accept},
             hosts=self.hosts,
             allow_http=self.allow_http,
         )
@@ -210,7 +222,9 @@ __all__ = [
     "MAX_RESPONSE_BYTES",
     "USER_AGENT",
     "Busy",
+    "KeyRefused",
     "Pacer",
+    "QuotaSpent",
     "ResponseTooLarge",
     "Upstream",
     "UpstreamError",
