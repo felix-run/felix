@@ -159,29 +159,53 @@ _INTERPRETER_FORBIDDEN = frozenset(" \t\r\n\v\f,=\0")
 
 
 def interpreter_issue(token: str) -> str | None:
-    """Why ``token`` cannot be an interpreter, or None. One argv word that is not an option."""
+    """Why ``token`` cannot be an interpreter, or None: one argv word that is not an option, and
+    a bare name or an absolute path -- a relative one would resolve against the workspace root,
+    which the model writes."""
     if not token:
         return "an interpreter must name a command"
     if any(c in _INTERPRETER_FORBIDDEN for c in token):
         return f"{token!r} must be one word, without whitespace, ',', '=' or NUL"
     if token.startswith("-"):
         return f"{token!r} reads as an option, not a command"
+    if "/" in token and not token.startswith("/"):
+        return f"{token!r} must be a bare name or an absolute path"
     return None
+
+
+def _entries(settings: Any, field: str) -> list[str]:
+    raw = getattr(settings, field, "") or ""
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 
 def allowed_interpreters(settings: Any) -> frozenset[str]:
     """Parse `FELIX_SKILL_SCRIPT_INTERPRETERS`. Empty (the default) disables skill scripts; an entry
     `interpreter_issue` refuses is dropped here and refused at boot."""
-    raw = getattr(settings, "skill_script_interpreters", "") or ""
-    tokens = (part.strip() for part in raw.split(","))
-    return frozenset(t for t in tokens if t and interpreter_issue(t) is None)
+    entries = _entries(settings, "skill_script_interpreters")
+    return frozenset(t for t in entries if interpreter_issue(t) is None)
 
 
 def malformed_interpreters(settings: Any) -> list[str]:
     """The `FELIX_SKILL_SCRIPT_INTERPRETERS` entries `interpreter_issue` refuses, for the boot check."""
-    raw = getattr(settings, "skill_script_interpreters", "") or ""
-    issues = (interpreter_issue(part.strip()) for part in raw.split(",") if part.strip())
+    issues = (interpreter_issue(t) for t in _entries(settings, "skill_script_interpreters"))
     return [issue for issue in issues if issue is not None]
+
+
+# Whose skills may run scripts (`FELIX_SKILL_SCRIPT_SOURCES`). Authoring a skill grants writing
+# instructions; a script is code on the runner, which every tenant's workspace shares. So by
+# default only the operator's own: `host` -- the bundled skills and FELIX_SKILLS_DIR. `library` adds
+# the tenant libraries (`skills:write`, and an adopted import), `personal` each person's own
+# (`skills:personal`).
+SKILL_SCRIPT_SOURCES = ("host", "library", "personal")
+
+
+def script_sources(settings: Any) -> frozenset[str]:
+    """Parse `FELIX_SKILL_SCRIPT_SOURCES`; an unknown word is dropped here and refused at boot."""
+    return frozenset(s for s in _entries(settings, "skill_script_sources") if s in SKILL_SCRIPT_SOURCES)
+
+
+def unknown_script_sources(settings: Any) -> list[str]:
+    return [s for s in _entries(settings, "skill_script_sources") if s not in SKILL_SCRIPT_SOURCES]
 
 
 def assert_skill_scripts_allowed(
@@ -208,6 +232,9 @@ def assert_skill_scripts_allowed(
     if refusal is not None:
         # The same places a shell command may run: a script is code, as a listed command is.
         errors.append(f"skill_scripts: {refusal}")
+    elif getattr(settings, "workspace_backend", "local") == "hosted" and scope != "deployment":
+        # Isolated, but nowhere the bundle can be written yet: refused here, not on every call.
+        errors.append("skill_scripts: skill scripts do not run in the hosted workspace's sandbox yet")
     if errors:
         raise ShellNotAllowedError("; ".join(errors))
 
@@ -216,8 +243,15 @@ def assert_skill_scripts_allowed(
 # `.felix-skills/<skill>/<call token>/<bundle path>`. The file tools refuse the directory
 # (`workspace_backend.PANE_HIDDEN_DIRS`), so a model cannot write a script there itself.
 SKILL_SCRIPTS_DIR = ".felix-skills"
+# The per-call directory's random name: `secrets.token_hex` of this many bytes.
+SKILL_SCRIPT_TOKEN_BYTES = 16
+# The skill name and segment grammars are `skills/format.py`'s (SKILL_NAME_RE, _SEGMENT_RE), restated
+# because the runner must not import the skills package; `test_skill_scripts` holds them equal.
+SKILL_NAME_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+SEGMENT_PATTERN = r"[A-Za-z0-9._-]{1,128}"
 _SCRIPT_PATH_RE = re.compile(
-    r"\.felix-skills/[a-z0-9]+(?:-[a-z0-9]+)*/[0-9a-f]{32}/scripts(?:/[A-Za-z0-9._-]{1,128})+"
+    rf"{re.escape(SKILL_SCRIPTS_DIR)}/{SKILL_NAME_PATTERN}/[0-9a-f]{{{SKILL_SCRIPT_TOKEN_BYTES * 2}}}"
+    rf"/scripts(?:/{SEGMENT_PATTERN})+"
 )
 
 
@@ -259,7 +293,11 @@ def describe_allowlist(settings: Any) -> str:
 
 
 __all__ = [
+    "SEGMENT_PATTERN",
+    "SKILL_NAME_PATTERN",
     "SKILL_SCRIPTS_DIR",
+    "SKILL_SCRIPT_SOURCES",
+    "SKILL_SCRIPT_TOKEN_BYTES",
     "ShellNotAllowedError",
     "allowed_interpreters",
     "allowed_prefixes",
@@ -275,6 +313,8 @@ __all__ = [
     "local_exec_refusal",
     "malformed_interpreters",
     "prefix_covers",
+    "script_sources",
     "skill_script_argv_issue",
     "split_prefix",
+    "unknown_script_sources",
 ]

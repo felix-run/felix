@@ -7,6 +7,9 @@ it runs, in order:
 
 1. the skill is one this caller may use -- offered to the model, or hidden and active here;
 2. it is not an imported skill nobody has adopted (`Skill.untrusted`): a third party's code;
+   and it comes from a source the operator lets run code (`FELIX_SKILL_SCRIPT_SOURCES`, the host's
+   own skills by default): writing a library or a personal skill is a grant to write
+   instructions, and a script runs on a runner every tenant's workspace shares;
 3. it is active in *this* conversation (`activation.thread_activations`), so a script runs only
    beside the instructions that say when to run it;
 4. the path is a bundle path under `scripts/`, not a binary asset, that the bundle lists;
@@ -19,7 +22,9 @@ replaced them with one -- and removed when the script ends. The file tools refus
 (`workspace_backend.PANE_HIDDEN_DIRS`), so the model cannot write a script there; a shell tool can,
 and a race with one is the boundary shell tools already have. The interpreter gets the script as
 `argv[1]` and the model's arguments after it, so none of them can be an interpreter option; the
-script runs from the workspace root, where the files it is asked about are.
+script runs from the workspace root, where the files it is asked about are. An interpreter that
+looks for modules in the script's parent directories reaches that root too: node's `node_modules`
+walk does, which is why `.js` is not in the default map.
 
 The tool's transport is `shell`: command screening reads every argument, and content screening
 reads the output as untrusted.
@@ -42,11 +47,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from felix.audit.emit import emit_agent_audit
 from felix.logging_setup import loggable
-from felix.security.shell_policy import SKILL_SCRIPTS_DIR, allowed_interpreters
+from felix.security.shell_policy import (
+    SKILL_SCRIPT_TOKEN_BYTES,
+    SKILL_SCRIPTS_DIR,
+    allowed_interpreters,
+    script_sources,
+)
 from felix.skills.activation import activations_for
 from felix.skills.binary import is_binary_asset_path
 from felix.skills.format import MAX_BUNDLE_BYTES, SKILL_NAME_RE, bundle_path_issue
-from felix.skills.tools import _with_names, bundle_files, read_bundle_file
+from felix.skills.tools import bundle_files, read_bundle_file, with_skill_names
 from felix.timeouts import timeout_seconds
 from felix.tools.shell import (
     DEFAULT_SHELL_TIMEOUT_S,
@@ -80,7 +90,7 @@ _GITIGNORE = b"*\n"
 class _RunScriptArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(description="The skill, active in this conversation.")
+    name: str = Field(min_length=1)
     script: str = Field(
         description="The script's path in the skill, under scripts/, as activate_skill listed it."
     )
@@ -112,50 +122,45 @@ def _open_dir(parent: int, name: str) -> int:
 def _write_bundle(top: int, files: dict[str, bytes]) -> None:
     for path, data in files.items():
         *dirs, leaf = path.split("/")
-        fds: list[int] = []
-        try:
+        with contextlib.ExitStack() as stack:
             here = top
             for part in dirs:
                 here = _open_dir(here, part)
-                fds.append(here)
+                stack.callback(os.close, here)
             fd = os.open(leaf, _FILE_FLAGS, 0o600, dir_fd=here)
             with os.fdopen(fd, "wb") as out:
                 out.write(data)
-        finally:
-            for fd in fds:
-                os.close(fd)
+
+
+def _opened(stack: contextlib.ExitStack, parent: int, name: str, *, make: bool) -> int:
+    fd = _open_dir(parent, name) if make else os.open(name, _DIR_FLAGS, dir_fd=parent)
+    stack.callback(os.close, fd)
+    return fd
 
 
 def materialize(root: Path, skill: str, files: dict[str, bytes]) -> str:
     """Write ``files`` to a fresh `.felix-skills/<skill>/<token>/` under ``root``; its path from ``root``.
 
     By descriptor from ``root``: `.felix-skills` or the skill's directory replaced by a symlink is
-    refused (`O_NOFOLLOW`), not followed out of the workspace.
+    refused (`O_NOFOLLOW`), not followed out of the workspace. A write that fails part way removes
+    what it wrote.
     """
-    token = secrets.token_hex(16)
-    top = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-    opened: list[int] = []
-    try:
-        base = _open_dir(top, SKILL_SCRIPTS_DIR)
-        opened.append(base)
+    token = secrets.token_hex(SKILL_SCRIPT_TOKEN_BYTES)
+    with contextlib.ExitStack() as stack:
+        top = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        stack.callback(os.close, top)
+        base = _opened(stack, top, SKILL_SCRIPTS_DIR, make=True)
         with contextlib.suppress(FileExistsError):
             fd = os.open(".gitignore", _FILE_FLAGS, 0o600, dir_fd=base)
             with os.fdopen(fd, "wb") as out:
                 out.write(_GITIGNORE)
-        named = _open_dir(base, skill)
-        opened.append(named)
-        os.mkdir(token, 0o700, dir_fd=named)
-        here = os.open(token, _DIR_FLAGS, dir_fd=named)
-        opened.append(here)
-        _write_bundle(here, files)
-    except BaseException:
-        if len(opened) >= 2:
-            shutil.rmtree(token, dir_fd=opened[1], ignore_errors=True)
-        raise
-    finally:
-        for fd in reversed(opened):
-            os.close(fd)
-        os.close(top)
+        skill_dir = _opened(stack, base, skill, make=True)
+        os.mkdir(token, 0o700, dir_fd=skill_dir)
+        try:
+            _write_bundle(_opened(stack, skill_dir, token, make=False), files)
+        except BaseException:
+            shutil.rmtree(token, dir_fd=skill_dir, ignore_errors=True)
+            raise
     return f"{SKILL_SCRIPTS_DIR}/{skill}/{token}"
 
 
@@ -163,21 +168,24 @@ def remove_materialized(root: Path, rel: str) -> None:
     """Remove what `materialize` wrote, by descriptor, following nothing."""
     base, skill, token = rel.split("/")
     try:
-        top = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            outer = os.open(base, _DIR_FLAGS, dir_fd=top)
-            try:
-                named = os.open(skill, _DIR_FLAGS, dir_fd=outer)
-                try:
-                    shutil.rmtree(token, dir_fd=named, ignore_errors=True)
-                finally:
-                    os.close(named)
-            finally:
-                os.close(outer)
-        finally:
-            os.close(top)
+        with contextlib.ExitStack() as stack:
+            top = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, top)
+            skill_dir = _opened(stack, _opened(stack, top, base, make=False), skill, make=False)
+            shutil.rmtree(token, dir_fd=skill_dir, ignore_errors=True)
     except OSError:
         logger.warning("could not remove skill script directory %s", rel, exc_info=True)
+
+
+def script_source(skill: Skill) -> str | None:
+    """Which `FELIX_SKILL_SCRIPT_SOURCES` word ``skill`` comes under; None for a source that has none."""
+    from felix.skills.library_keys import ORG_OWNER
+
+    if skill.source == "bundled":
+        return "host"
+    if skill.source == "library":
+        return "library" if skill.library_owner in (None, ORG_OWNER) else "personal"
+    return None
 
 
 class _ScriptRunner:
@@ -204,7 +212,11 @@ class _ScriptRunner:
         self.timeout_s = timeout_seconds(spec.timeout_ms, default_s=DEFAULT_SHELL_TIMEOUT_S)
         self.refuse = functools.partial(shell_refusal, RUN_SCRIPT_TOOL)
 
-    def _audit(self, skill: str, status: str, ctx: ToolInvocationCtx | None, script: str = "") -> None:
+    def _audit(
+        self, skill: str, status: str, ctx: ToolInvocationCtx | None, script: str = "", *, ran: Any = None
+    ) -> None:
+        """Every decision about the skill -- who it is, whether it may run here -- and every run;
+        not the malformed arguments the tool's schema and path checks answer."""
         emit_agent_audit(
             "skill_script",
             status=status,
@@ -213,6 +225,9 @@ class _ScriptRunner:
                 # Resolved against the catalog before `ok` is ever written; see `skills/tools._audit`.
                 "skill": loggable(skill, limit=64),
                 **({"script": loggable(script, limit=200)} if script else {}),
+                # What ran, not only its name: a version published since the approval or the
+                # activation runs other code under the same name.
+                **(ran or {}),
                 "thread_id": getattr(ctx, "thread_id", None) or "",
                 "tool_call_id": getattr(ctx, "tool_call_id", None) or "",
             },
@@ -235,6 +250,16 @@ class _ScriptRunner:
                 "an imported skill nobody has adopted does not run its scripts",
                 name=skill.name,
             )
+        source = script_source(skill)
+        if source not in script_sources(request_settings(self.settings)):
+            # Whoever wrote this skill was granted writing instructions, not running code here.
+            self._audit(skill.name, "script_refused", ctx, args.script)
+            return _refused(
+                "script_refused",
+                f"this host does not run scripts from {source or 'this kind of'} skills "
+                "(FELIX_SKILL_SCRIPT_SOURCES)",
+                name=skill.name,
+            )
         if skill.name not in active:
             self._audit(skill.name, "not_active", ctx, args.script)
             return _refused(
@@ -252,16 +277,15 @@ class _ScriptRunner:
             )
         return skill
 
-    def _interpreter(self, script: str, settings: Any) -> str | ToolOutput:
-        """Check 5: the manifest's interpreter for the extension, if the operator allows it."""
+    def _interpreter(self, script: str, settings: Any) -> tuple[str | None, str]:
+        """Check 5: the manifest's interpreter for the extension if the operator allows it, else
+        None and why."""
         interpreter = self.spec.interpreters.get(PurePosixPath(script).suffix.lower())
         if interpreter is None:
-            return self.refuse(
-                "interpreter", f"no interpreter runs {script!r} here (skill_scripts.interpreters)"
-            )
+            return None, f"no interpreter runs {script!r} here (skill_scripts.interpreters)"
         if interpreter not in allowed_interpreters(settings):
-            return self.refuse("interpreter", f"{interpreter!r} is not in FELIX_SKILL_SCRIPT_INTERPRETERS")
-        return interpreter
+            return None, f"{interpreter!r} is not in FELIX_SKILL_SCRIPT_INTERPRETERS"
+        return interpreter, ""
 
     async def _bundle(self, skill: Skill) -> dict[str, bytes] | None:
         """Every file of the skill's bundle that can be written, or None past `MAX_BUNDLE_BYTES`."""
@@ -290,9 +314,9 @@ class _ScriptRunner:
         if isinstance(skill, str):
             return skill
         settings = request_settings(self.settings)
-        interpreter = self._interpreter(args.script, settings)
-        if not isinstance(interpreter, str):
-            return interpreter
+        interpreter, why = self._interpreter(args.script, settings)
+        if interpreter is None:
+            return self.refuse("interpreter", why)
         place = shell_place(settings, self.refuse)
         if isinstance(place, HostedPlace):
             return self.refuse("hosted", "skill scripts do not run in the hosted workspace's sandbox yet")
@@ -302,15 +326,21 @@ class _ScriptRunner:
             files = await self._bundle(skill)
         except Exception:
             logger.warning("bundle read failed for skill %s", skill.name, exc_info=True)
-            files = {}
+            return _refused(
+                "bundle_unavailable", "the skill's files could not be read; try again", name=skill.name
+            )
         if files is None:
             return _refused(
                 "bundle_too_large", f"the skill's files exceed {MAX_BUNDLE_BYTES} bytes", name=skill.name
             )
         if args.script not in files:
-            return _refused(
-                "file_not_found", "the skill has no such script", name=skill.name, path=args.script
+            # The object store has no listing, so a store skill has no bundle to write beside a script.
+            detail = (
+                "this skill's files cannot be listed, so its scripts cannot run"
+                if skill.source == "store"
+                else "the skill has no such script"
             )
+            return _refused("file_not_found", detail, name=skill.name, path=args.script)
         try:
             rel = await asyncio.to_thread(materialize, place.root, skill.name, files)
         except OSError:
@@ -320,7 +350,13 @@ class _ScriptRunner:
                 "the skill's files could not be written to the workspace",
                 name=skill.name,
             )
-        self._audit(skill.name, "ok", ctx, args.script)
+        import hashlib
+
+        ran = {
+            "version": skill.version or "",
+            "sha256": hashlib.sha256(files[args.script]).hexdigest(),
+        }
+        self._audit(skill.name, "ok", ctx, args.script, ran=ran)
         try:
             return await exec_in_place(
                 place,
@@ -363,11 +399,11 @@ def make_skill_script_tool(
             "Run a script from an active skill's scripts/ directory, from the workspace root, with the "
             "arguments given. Activate the skill first; its instructions say which script and when."
         ),
-        args=_with_names(_RunScriptArgs, names, "Skill name, active in this conversation."),
+        args=with_skill_names(_RunScriptArgs, names, "Skill name, active in this conversation."),
         handler=runner,
         # A script is code: command screening reads every argument, its output is screened as untrusted.
         transport="shell",
     )
 
 
-__all__ = ["RUN_SCRIPT_TOOL", "make_skill_script_tool", "materialize", "remove_materialized"]
+__all__ = ["RUN_SCRIPT_TOOL", "make_skill_script_tool", "materialize", "remove_materialized", "script_source"]

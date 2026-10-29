@@ -74,7 +74,7 @@ _ACTIVATION_FIELDS = (
 )
 
 
-# The handlers' argument shapes. Each tool's own model is built from one of these by `_with_names`,
+# The handlers' argument shapes. Each tool's own model is built from one of these by `with_skill_names`,
 # which also writes the `name` field's description.
 class _SkillNameArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -111,7 +111,7 @@ class _ReadFileArgs(BaseModel):
 MAX_ENUM_NAMES = 64
 
 
-def _with_names(base: type[BaseModel], names: list[str], description: str) -> type[BaseModel]:
+def with_skill_names(base: type[BaseModel], names: list[str], description: str) -> type[BaseModel]:
     """``base`` with the names the model may use as an `enum` on `name`, as agentskills.io's
     client guide suggests. Schema only: validation stays a plain string, so a name outside the
     catalog still reaches the handler and is answered (and audited) as `unknown_skill`."""
@@ -542,7 +542,7 @@ def make_skill_tools(
                 "Activate a named skill and return its full instructions. "
                 "Call when a task matches a skill description."
             ),
-            args=_with_names(_ActivateArgs, names, "Skill name to activate."),
+            args=with_skill_names(_ActivateArgs, names, "Skill name to activate."),
             handler=_activate,
             # Never spilled to an artifact: the body is the instructions, and a preview of them
             # is not something the model can follow (`artifacts.UNSPILLED_SOURCES`).
@@ -555,7 +555,7 @@ def make_skill_tools(
         define_tool(
             name=DEACTIVATE_TOOL,
             description="Stop following a skill activated earlier in this conversation.",
-            args=_with_names(_SkillNameArgs, names, "Skill name to deactivate."),
+            args=with_skill_names(_SkillNameArgs, names, "Skill name to deactivate."),
             handler=_deactivate,
             read_only=True,
         ),
@@ -565,7 +565,7 @@ def make_skill_tools(
                 "Read one file from a skill's bundle (references/, scripts/, assets/, evals/), "
                 "as activate_skill listed it. Text only."
             ),
-            args=_with_names(_ReadFileArgs, names, "Skill name, as list_skills shows it."),
+            args=with_skill_names(_ReadFileArgs, names, "Skill name, as list_skills shows it."),
             handler=_read_file,
             replay_safe=True,
             read_only=True,
@@ -579,4 +579,5 @@ __all__ = [
     "bundle_files",
     "make_skill_tools",
     "read_bundle_file",
+    "with_skill_names",
 ]

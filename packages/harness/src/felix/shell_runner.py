@@ -41,13 +41,14 @@ import hmac
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from felix.config import MIN_SHELL_RUNNER_TOKEN_CHARS
+from felix.logging_setup import loggable
 from felix.manifests.schema import MAX_INTEGRATION_TIMEOUT_MS
 from felix.security.shell_policy import (
     ShellNotAllowedError,
@@ -57,7 +58,7 @@ from felix.security.shell_policy import (
     skill_script_argv_issue,
 )
 from felix.tools import shell_background
-from felix.tools.shell import DEFAULT_SHELL_TIMEOUT_S, ShellArgs, _child_env, exec_argv, resolve_cwd
+from felix.tools.shell import DEFAULT_SHELL_TIMEOUT_S, RunKind, ShellArgs, _child_env, exec_argv, resolve_cwd
 from felix.tools.shell_background_tools import ShellKillArgs, ShellOutputArgs
 from felix.tools.workspace_scope import ensure_scope_dir, is_scope_relpath
 
@@ -81,7 +82,7 @@ class RunRequest(ShellArgs):
     scope: str = Field(default="", max_length=256)
     # `skill_script`: a script `run_skill_script` wrote, admitted by this host's
     # FELIX_SKILL_SCRIPT_INTERPRETERS instead of its shell allowlist (`skill_script_argv_issue`).
-    kind: Literal["shell", "skill_script"] = "shell"
+    kind: RunKind = "shell"
 
 
 class OutputRequest(ShellOutputArgs):
@@ -287,10 +288,12 @@ def _checked_start(settings: Settings, req: RunRequest) -> tuple[Path, Path] | J
     if req.kind == "skill_script":
         issue = skill_script_argv_issue(req.argv, settings)
         if issue is not None:
-            return _denied("script", issue)
+            return _denied("script", loggable(issue, limit=300))
         if req.cwd != ".":
             # A script runs from the scope's root, where the files it is asked about are.
-            return _denied("cwd", f"a skill script runs from the workspace root, not {req.cwd!r}")
+            return _denied(
+                "cwd", f"a skill script runs from the workspace root, not {loggable(req.cwd, limit=200)}"
+            )
     else:
         try:
             assert_argv_allowed(req.argv, allowed_prefixes(settings), settings)

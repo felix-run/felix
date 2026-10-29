@@ -7,6 +7,7 @@ a model's arguments and the host, as in `test_shell_tool.py`.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -370,6 +371,7 @@ async def test_through_the_runner_the_script_runs_there(
     result = _ok(await thread.run("scripts/run.sh", ["x"]))
     assert "args:x" in result["stdout"] and "sibling:loaded" in result["stdout"]
     assert seen[0]["kind"] == "skill_script" and seen[0]["cwd"] == "."
+    assert seen[0]["timeout_ms"] == int(shell_mod.DEFAULT_SHELL_TIMEOUT_S * 1000)
 
 
 async def _post(ws: Path, body: dict[str, Any], *, path: str = "/run", **kw: Any) -> httpx.Response:
@@ -393,21 +395,23 @@ async def test_the_runner_admits_a_written_script_under_its_own_interpreter(ws: 
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "reason"),
     [
-        {"argv": ["python3", "{rel}"]},  # an interpreter the runner does not list
-        {"argv": ["bash", "-c", "echo pwned"]},  # an option, not a written script
-        {"argv": ["bash", "scripts/ok.sh"]},  # not where run_skill_script writes
-        {"argv": ["bash", ".felix-skills/dig/" + "0" * 32 + "/scripts/../../x.sh"]},
-        {"argv": ["bash", "{rel}"], "cwd": ".felix-skills"},  # a script runs from the root
+        ({"argv": ["python3", "{rel}"]}, "script"),  # an interpreter the runner does not list
+        ({"argv": ["bash", "-c", "echo pwned"]}, "script"),  # an option, not a written script
+        ({"argv": ["bash", "scripts/ok.sh"]}, "script"),  # not where run_skill_script writes
+        ({"argv": ["bash", ".felix-skills/dig/" + "0" * 32 + "/scripts/../../x.sh"]}, "script"),
+        ({"argv": ["bash", "{rel}"], "cwd": ".felix-skills"}, "cwd"),  # a script runs from the root
     ],
     ids=["interpreter", "option", "elsewhere", "dotdot", "cwd"],
 )
-async def test_the_runner_refuses_anything_else_as_a_skill_script(ws: Path, body: dict[str, Any]) -> None:
+async def test_the_runner_refuses_anything_else_as_a_skill_script(
+    ws: Path, body: dict[str, Any], reason: str
+) -> None:
     rel = _written(ws)
     argv = [a.replace("{rel}", rel) for a in body["argv"]]
     response = await _post(ws, {"kind": "skill_script", "cwd": ".", **body, "argv": argv})
-    assert response.status_code == 403, response.text
+    assert response.status_code == 403 and response.json()["reason"] == reason, response.text
 
 
 async def test_the_interpreter_list_does_not_widen_the_shell_allowlist(ws: Path) -> None:
@@ -431,3 +435,303 @@ def test_the_argv_shape_is_held_to_what_the_tool_writes() -> None:
         skill_script_argv_issue(["bash", f".felix-skills/dig/{'a' * 32}/scripts/./run.sh"], settings)
         is not None
     )
+
+
+# -- whose skills ---------------------------------------------------------------------------------
+
+
+async def _library_skill(settings: Settings, store: Any, owner: str) -> Skill:
+    """A library skill saved and published through the library, as a person or the tenant would."""
+    from felix.skills import library
+    from felix.skills.format import serialize_skill_md
+
+    files = {
+        "SKILL.md": serialize_skill_md({"name": "dig", "description": "Dig."}, "Run scripts/run.sh."),
+        "scripts/run.sh": SH,
+        "scripts/lib.sh": 'echo "sibling:loaded"\n',
+        "assets/logo.png": "aGVsbG8=",
+    }
+    provenance = library.DraftProvenance(
+        source="operator", author="ops", reason="a script", origin_manifest_id="m"
+    )
+    row = await library.save_draft(
+        settings, "t", files=files, provenance=provenance, object_store=store, owner=owner
+    )
+    await library.publish(settings, "t", "dig", row["version"], by="ops", object_store=store, owner=owner)
+    return Skill(
+        name="dig",
+        description="Dig.",
+        body="Run scripts/run.sh.",
+        source="library",
+        version=row["version"],
+        library_owner=owner,
+    )
+
+
+def _library_thread(ws: Path, skill: Skill, store: Any, sources: str) -> _Thread:
+    from tests.support.factories import make_settings
+
+    settings = make_settings(
+        workspace_root=str(ws), skill_script_interpreters="bash", skill_script_sources=sources
+    )
+    thread = _Thread(SkillCatalog(skills={"dig": skill}), settings)
+    thread.tool = make_skill_script_tool(
+        SkillCatalog(skills={"dig": skill}),
+        _spec(),
+        session_store=thread.sessions,
+        tenant_id="t",
+        manifest_id="m",
+        settings=settings,
+        object_store=store,
+    )
+    return thread
+
+
+@pytest.mark.parametrize(
+    ("owner", "source"), [("", "library"), ("api_key|p1", "personal")], ids=["tenant", "personal"]
+)
+async def test_a_library_author_s_script_runs_only_where_the_operator_lets_that_source(
+    ws: Path, owner: str, source: str
+) -> None:
+    """Writing a skill is a grant to write instructions; the host decides whether it is also code."""
+    from felix.storage import MemoryObjectStore
+
+    from tests.support.factories import make_settings
+
+    store = MemoryObjectStore()
+    skill = await _library_skill(make_settings(), store, owner)
+
+    refused = _library_thread(ws, skill, store, sources="host")
+    await refused.activate()
+    out = await refused.run("scripts/run.sh")
+    assert _error(out) == "script_refused" and "FELIX_SKILL_SCRIPT_SOURCES" in tool_output_content(out)
+
+    allowed = _library_thread(ws, skill, store, sources=f"host,{source}")
+    await allowed.activate()
+    result = _ok(await allowed.run("scripts/run.sh"))
+    assert "sibling:loaded" in result["stdout"], "the library version's files are written beside it"
+
+
+async def test_a_library_skill_s_binary_asset_is_not_written_as_its_text(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The library keeps an asset as base64 text; writing that as the file would be a different file."""
+    from felix.skills import scripts as scripts_mod
+    from felix.storage import MemoryObjectStore
+
+    from tests.support.factories import make_settings
+
+    store = MemoryObjectStore()
+    skill = await _library_skill(make_settings(), store, "")
+    written: list[set[str]] = []
+    real = scripts_mod.materialize
+
+    def _spy(root: Path, name: str, files: dict[str, bytes]) -> str:
+        written.append(set(files))
+        return real(root, name, files)
+
+    monkeypatch.setattr(scripts_mod, "materialize", _spy)
+    thread = _library_thread(ws, skill, store, sources="host,library")
+    await thread.activate()
+    _ok(await thread.run("scripts/run.sh"))
+    assert written == [{"scripts/run.sh", "scripts/lib.sh"}]
+
+
+def test_which_source_a_skill_comes_under() -> None:
+    from felix.skills.scripts import script_source
+
+    assert script_source(Skill(name="a", description="d", source="bundled")) == "host"
+    assert script_source(Skill(name="a", description="d", source="library")) == "library"
+    assert script_source(Skill(name="a", description="d", source="library", library_owner="")) == "library"
+    assert (
+        script_source(Skill(name="a", description="d", source="library", library_owner="~person:p"))
+        == "personal"
+    )
+    assert script_source(Skill(name="a", description="d", source="store")) is None
+
+
+# -- hidden skills and names ----------------------------------------------------------------------
+
+
+async def test_a_skill_hidden_from_the_model_runs_only_once_a_person_ran_it_here(
+    ws: Path, skill_dir: Path
+) -> None:
+    from felix.skills.invocation import PersonCalls
+
+    catalog = _catalog(skill_dir, disable_model_invocation=True)
+    thread = _Thread(catalog, _settings(ws))
+    assert _error(await thread.run("scripts/run.sh")) == "unknown_skill", "not even its name is confirmed"
+    calls = PersonCalls()
+    thread.skills = {
+        t.name: t
+        for t in make_skill_tools(
+            catalog, session_store=thread.sessions, tenant_id="t", manifest_id="m", person_calls=calls
+        )
+    }
+    from felix.skills.invocation import INVOKE_PREFIX
+
+    calls.open()
+    call_id = calls.mint(INVOKE_PREFIX)
+    await call_in_thread(
+        thread.skills["activate_skill"],
+        {"name": "dig"},
+        session_store=thread.sessions,
+        thread_id="t:a",
+        call_id=call_id,
+    )
+    calls.close()
+    assert _ok(await thread.run("scripts/run.sh"))["exit_code"] == 0
+
+
+@pytest.mark.parametrize("name", ["Dig", "a-"], ids=["upper", "trailing-hyphen"])
+async def test_a_name_that_is_not_a_skill_name_never_becomes_a_directory(
+    ws: Path, skill_dir: Path, name: str
+) -> None:
+    """The loader keeps a bad name as written, with a warning; it must not reach `mkdir`."""
+    skill = Skill(name=name, description="Dig.", body="b", source="bundled", path=str(skill_dir / "SKILL.md"))
+    catalog = SkillCatalog(skills={name: skill})
+    thread = _Thread(catalog, _settings(ws))
+    await call_in_thread(
+        thread.skills["activate_skill"], {"name": name}, session_store=thread.sessions, thread_id="t:a"
+    )
+    ctx = RequestContext(
+        settings=thread.settings, auth=AuthContext(tenant_id="t"), manifest_id="m", thread_id="t:a"
+    )
+    async with async_run_with_context(ctx):
+        out = await thread.tool.executor.execute(
+            {"name": name, "script": "scripts/run.sh"}, ToolInvocationCtx(thread_id="t:a", tool_call_id="r1")
+        )
+    assert _error(out) == "script_refused"
+    assert not (ws / SKILL_SCRIPTS_DIR).exists()
+
+
+def test_the_runner_s_grammars_are_the_bundle_s() -> None:
+    """Restated so the runner need not import the skills package; one loosened alone would make a
+    script that runs locally fail on the runner."""
+    from felix.security.shell_policy import SEGMENT_PATTERN, SKILL_NAME_PATTERN
+    from felix.skills import format as fmt
+
+    assert fmt.SKILL_NAME_RE.pattern == rf"^{SKILL_NAME_PATTERN}\Z"
+    assert fmt._SEGMENT_RE.pattern == rf"^{SEGMENT_PATTERN}\Z"
+
+
+# -- the run, more --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "level", [SKILL_SCRIPTS_DIR, f"{SKILL_SCRIPTS_DIR}/dig"], ids=["scripts-dir", "skill-dir"]
+)
+async def test_a_symlink_at_either_level_is_not_followed(
+    ws: Path, skill_dir: Path, tmp_path: Path, level: str
+) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (ws / level).parent.mkdir(parents=True, exist_ok=True)
+    (ws / level).symlink_to(elsewhere)
+    thread = _Thread(_catalog(skill_dir), _settings(ws))
+    await thread.activate()
+    out = await thread.run("scripts/run.sh")
+    assert json.loads(tool_output_content(out)).get("error") == "workspace_unavailable"
+    assert list(elsewhere.iterdir()) == []
+
+
+async def test_a_timed_out_script_s_bundle_is_removed_too(ws: Path, skill_dir: Path) -> None:
+    thread = _Thread(_catalog(skill_dir), _settings(ws), _spec(timeout_ms=300))
+    await thread.activate()
+    assert _ok(await thread.run("scripts/nap.sh"))["timed_out"] is True
+    assert list((ws / SKILL_SCRIPTS_DIR / "dig").iterdir()) == []
+
+
+async def test_a_write_that_fails_part_way_leaves_nothing(
+    ws: Path, skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from felix.skills import scripts as scripts_mod
+
+    calls = {"n": 0}
+    real = os.open
+
+    def _flaky(path: Any, flags: int, *a: Any, **k: Any) -> int:
+        if flags & os.O_EXCL and path != ".gitignore":
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("disk full")
+        return real(path, flags, *a, **k)
+
+    monkeypatch.setattr(scripts_mod.os, "open", _flaky)
+    thread = _Thread(_catalog(skill_dir), _settings(ws))
+    await thread.activate()
+    assert _error(await thread.run("scripts/run.sh")) == "workspace_unavailable"
+    assert list((ws / SKILL_SCRIPTS_DIR / "dig").iterdir()) == []
+
+
+async def test_where_it_runs_is_decided_by_the_request_s_settings(ws: Path, skill_dir: Path) -> None:
+    """Bound on a development box, called under a deployment's settings: refused, not run locally."""
+    thread = _Thread(_catalog(skill_dir), _settings(ws))
+    await thread.activate()
+    thread.settings = _settings(ws, environment="production", auth_mode="api_key")
+    assert "shell runner" in _denied(await thread.run("scripts/run.sh"))
+
+
+async def test_a_run_is_audited_with_the_code_that_ran(
+    ws: Path, skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from felix.skills import scripts as scripts_mod
+
+    rows: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        scripts_mod, "emit_agent_audit", lambda kind, *, status, payload, **_: rows.append((status, payload))
+    )
+    thread = _Thread(_catalog(skill_dir), _settings(ws))
+    await thread.run("scripts/run.sh")
+    await thread.activate()
+    _ok(await thread.run("scripts/run.sh"))
+    [(first, _), (status, payload)] = rows
+    assert first == "not_active" and status == "ok"
+    assert payload["skill"] == "dig" and payload["script"] == "scripts/run.sh"
+    assert payload["sha256"] == hashlib.sha256(SH.encode()).hexdigest()
+
+
+# -- refusals at write, compile and boot, more ------------------------------------------------------
+
+
+def test_a_manifest_whose_only_skills_are_personal_may_ask_for_scripts(ws: Path) -> None:
+    validate_for_write(
+        _manifest(skills=[], personal_skills="read"), _settings(ws, interpreters="python3,bash")
+    )
+
+
+def test_anonymous_callers_are_allowed_on_a_development_box(ws: Path) -> None:
+    validate_for_write(
+        _manifest(auth={"inbound": {"allow_anonymous": True}}), _settings(ws, interpreters="python3,bash")
+    )
+
+
+def test_the_hosted_sandbox_is_refused_at_write_not_on_every_call(ws: Path) -> None:
+    settings = _settings(
+        ws,
+        interpreters="python3,bash",
+        workspace_backend="hosted",
+        workspace_gateway_url="https://gw.example",
+    )
+    with pytest.raises(GovernanceError, match="hosted workspace"):
+        validate_for_write(_manifest(), settings)
+
+
+@pytest.mark.parametrize("token", ["bin/python", "./py"], ids=["relative", "dot-relative"])
+def test_an_interpreter_is_a_bare_name_or_an_absolute_path(token: str) -> None:
+    from felix.security.shell_policy import interpreter_issue
+
+    assert interpreter_issue(token) is not None
+    assert interpreter_issue("/usr/bin/python3") is None and interpreter_issue("python3") is None
+
+
+def test_an_unknown_script_source_refuses_to_boot() -> None:
+    with pytest.raises(RuntimeError, match="unknown source 'everyone'"):
+        Settings(skill_script_interpreters="bash", skill_script_sources="host,everyone").validate_runtime()
+
+
+def test_node_is_not_a_default_interpreter() -> None:
+    """Its `node_modules` walk reaches the workspace root the model writes."""
+    assert ".js" not in SkillScriptsSpec().interpreters

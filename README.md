@@ -920,7 +920,8 @@ Outbound integrations, all declared on the manifest:
 > child's `PATH`; allowlisting an interpreter or package runner such as `uvx`/`npx` lets a manifest
 > run anything through its arguments), and **shell tools are disabled** unless
 > `FELIX_SHELL_ALLOWED_COMMANDS` names the argv prefixes allowed, and **skill scripts are disabled**
-> unless `FELIX_SKILL_SCRIPT_INTERPRETERS` names the interpreters allowed. Manifest-supplied argv is
+> unless `FELIX_SKILL_SCRIPT_INTERPRETERS` names the interpreters allowed (and run only host skills'
+> scripts unless `FELIX_SKILL_SCRIPT_SOURCES` widens it). Manifest-supplied argv is
 > arbitrary code execution. A shell tool's command runs as the API's user and can read the API's
 > environment unless `FELIX_SHELL_RUNNER_URL` points it at a `felix-shell-runner` (with
 > `FELIX_SHELL_RUNNER_TOKEN`), which the builder stack runs in a container holding no secrets — see

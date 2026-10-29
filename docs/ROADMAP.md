@@ -963,8 +963,14 @@ side was already conformant. Four PRs, landed in order:
       written per call to `.felix-skills/<skill>/<token>/` (refused to the file tools, removed
       after), and the script runs from the workspace root. The runner admits `kind: skill_script`
       by its own interpreter list, not the shell allowlist. Open:
-      - The hosted workspace backend's sandbox refuses scripts (no gateway write path for the
-        bundle yet).
+      - Scripts run from host skills only unless `FELIX_SKILL_SCRIPT_SOURCES` adds `library` or
+        `personal`, since an author's grant becomes code on the shared runner. A per-skill or
+        per-scope grant would be finer.
+      - The hosted workspace backend's sandbox is refused at write (no gateway write path for the
+        bundle yet). An object-store skill cannot run scripts, because the store has no listing.
+      - The whole bundle is written every call, up to 8 MiB. A cancellation during the write can
+        leave a token directory, hidden and gitignored.
+      - A script's egress is the runner's network, with no SSRF guard.
       - A library skill's binary assets are not written, since the library returns text.
       - A forked skill is never active, so its scripts cannot run.
       - A concurrent shell tool can rewrite the bundle between the write and the exec, the

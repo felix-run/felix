@@ -33,7 +33,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -77,6 +77,11 @@ MAX_RUNNER_RESPONSE_BYTES = 2 * 1024 * 1024
 # The largest `duration_ms` a runner can truthfully report: the longest timeout a manifest may
 # set, the drain after the kill, and the grace this side waits.
 MAX_RUNNER_DURATION_MS = MAX_INTEGRATION_TIMEOUT_MS + int((_DRAIN_AFTER_KILL_S + RUNNER_GRACE_S) * 1000)
+
+
+# What a runner is asked to admit: a shell tool's argv (its allowlist), or a script `run_skill_script`
+# wrote (its interpreter list, `shell_policy.skill_script_argv_issue`).
+RunKind = Literal["shell", "skill_script"]
 
 
 class ShellArgs(BaseModel):
@@ -316,7 +321,7 @@ async def exec_in_place(
     stdin: str | None,
     timeout_s: float,
     refuse: Refuse,
-    kind: str = "shell",
+    kind: RunKind = "shell",
 ) -> ToolOutput:
     """Exec an already-checked `argv` where `shell_place` chose, and answer what the model sees.
 
@@ -325,6 +330,9 @@ async def exec_in_place(
     sandbox, which resolves its own); ``kind`` is what the runner is told it is admitting.
     """
     match place:
+        case HostedPlace() if kind != "shell":
+            # The sandbox's helper admits shell argv only; nothing there knows a skill script.
+            return refuse("hosted", "skill scripts do not run in the hosted workspace's sandbox yet")
         case HostedPlace():
             return await _run_hosted(place.settings, place.scope, argv, cwd_rel, stdin, timeout_s, refuse)
         case RunnerPlace():
@@ -369,9 +377,10 @@ async def _run_remote(
     stdin: str | None,
     timeout_s: float,
     refuse: Refuse,
-    kind: str,
+    kind: RunKind,
 ) -> ToolOutput:
     body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": max(1, int(timeout_s * 1000))}
+    # Only when it is not the default: a shell call's body stays what every runner already accepts.
     if kind != "shell":
         body["kind"] = kind
     if place.scope:
@@ -637,6 +646,7 @@ __all__ = [
     "HostedPlace",
     "LocalPlace",
     "Refuse",
+    "RunKind",
     "RunnerPlace",
     "RunnerResult",
     "ShellArgs",

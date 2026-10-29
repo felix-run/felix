@@ -2505,7 +2505,7 @@
     },
     "SkillScriptsSpec": {
       "additionalProperties": false,
-      "description": "Let the agent run the scripts in its active skills' `scripts/` (agentskills.io): binds\n`run_skill_script(name, script, args)`.\n\nThe interpreter is chosen by the script's extension from `interpreters`, each of which the\noperator must also allow (`FELIX_SKILL_SCRIPT_INTERPRETERS`, empty by default: refused at\nmanifest write). A script runs where a shell tool would -- the shell runner, or a development\nbox -- because it is code, from the workspace root, with only arguments the model chose. Only\na skill active in the calling conversation, and never an imported one nobody has adopted.",
+      "description": "Let the agent run the scripts in its active skills' `scripts/` (agentskills.io): binds\n`run_skill_script(name, script, args)`.\n\nThe interpreter is chosen by the script's extension from `interpreters`, each of which the\noperator must also allow (`FELIX_SKILL_SCRIPT_INTERPRETERS`, empty by default: refused at\nmanifest write). A script runs where a shell tool would -- the shell runner, or a development\nbox -- because it is code, from the workspace root, with only arguments the model chose. Only\na skill active in the calling conversation, from a source the operator lets run scripts\n(`FELIX_SKILL_SCRIPT_SOURCES`: the host's own skills by default), and never an imported one\nnobody has adopted.",
       "properties": {
         "enabled": {
           "default": false,

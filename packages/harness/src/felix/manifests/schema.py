@@ -920,12 +920,17 @@ class SkillScriptsSpec(_Strict):
     operator must also allow (`FELIX_SKILL_SCRIPT_INTERPRETERS`, empty by default: refused at
     manifest write). A script runs where a shell tool would -- the shell runner, or a development
     box -- because it is code, from the workspace root, with only arguments the model chose. Only
-    a skill active in the calling conversation, and never an imported one nobody has adopted.
+    a skill active in the calling conversation, from a source the operator lets run scripts
+    (`FELIX_SKILL_SCRIPT_SOURCES`: the host's own skills by default), and never an imported one
+    nobody has adopted.
     """
 
     enabled: bool = False
     interpreters: dict[str, str] = Field(
-        default_factory=lambda: {".py": "python3", ".sh": "bash", ".js": "node"}, max_length=16
+        # Not `.js: node` by default: node resolves `require()` up through `node_modules` in every
+        # parent directory, the workspace root included, where the model's file tools write.
+        default_factory=lambda: {".py": "python3", ".sh": "bash"},
+        max_length=16,
     )
     timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
 

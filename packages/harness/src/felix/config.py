@@ -244,6 +244,11 @@ class Settings(BaseSettings):
     # too: it admits a script only under an interpreter of its own list. Needs the same isolation
     # a shell tool does, and refuses to boot without it (`isolation_refusal`).
     skill_script_interpreters: str = ""
+    # Whose skills may run their scripts (comma-separated): `host` (bundled and FELIX_SKILLS_DIR, the
+    # default), `library` (the tenant libraries: whoever holds skills:write, or adopts an import),
+    # `personal` (each person's own, skills:personal). Each word added makes that grant a grant to
+    # run code on the shell runner.
+    skill_script_sources: str = "host"
     # Bearer the API presents to the runner, and the runner requires. Required when the URL
     # is set. It authenticates callers *to* the runner; code running inside the runner's
     # container can read it, which grants nothing it does not already have.
@@ -1173,9 +1178,15 @@ class Settings(BaseSettings):
         shell tool would."""
         if not self.skill_script_interpreters.strip():
             return
-        from felix.security.shell_policy import isolation_refusal, malformed_interpreters
+        from felix.security.shell_policy import (
+            isolation_refusal,
+            malformed_interpreters,
+            unknown_script_sources,
+        )
 
-        bad = malformed_interpreters(self)
+        bad = malformed_interpreters(self) + [
+            f"FELIX_SKILL_SCRIPT_SOURCES: unknown source {s!r}" for s in unknown_script_sources(self)
+        ]
         if bad:
             raise RuntimeError(f"FELIX_SKILL_SCRIPT_INTERPRETERS: {'; '.join(bad)}")
         refusal = isolation_refusal(self)

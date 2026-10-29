@@ -2519,6 +2519,14 @@ async def build_agent(
                 {"manifest_id": m.metadata.name, "rule": "skill_suggestion", "kind": "skills"},
             )
 
+        if m.spec.skill_scripts.enabled and not any(t.name == "run_skill_script" for t in resolved):
+            # A bundled manifest never went through the write check that refuses this.
+            logger.warning("skill_scripts is on but %s binds no skills to run scripts from", m.metadata.name)
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "rule": "skill_scripts", "kind": "skills"},
+            )
+
         # Recalled facts, rendered as a per-run prelude rather than folded into the
         # system prompt. Empty when memory is disabled or has nothing stored.
         context_prelude = ""

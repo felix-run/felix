@@ -1626,29 +1626,50 @@ mounts no workspace, so it has no runner to add.
 
 `spec.skill_scripts` binds `run_skill_script(name, script, args)`, which runs a script from a skill's
 `scripts/` (agentskills.io). A script is code, so it runs where a shell command would: the shell
-runner, or a development box (the hosted backend's sandbox refuses it for now). The same boot,
-write, compile and per-call isolation refusals as `spec.shell_tools` apply, and so does the refusal
-of anonymous callers off a development box. What is different, and why:
+runner, or a development box. The hosted backend's sandbox is refused at write and at compile for
+now. The boot, write, compile and per-call isolation refusals of `spec.shell_tools` all apply, as
+does the refusal of anonymous callers off a development box. What is different, and why:
 
-- **Interpreters, not prefixes.** The manifest maps an extension to an interpreter
-  (`{.py: python3, .sh: bash, .js: node}` by default). Each one must be in
-  `FELIX_SKILL_SCRIPT_INTERPRETERS`, which is empty by default. This is checked at write, at
-  compile and per call. An interpreter is one word: no whitespace, `,`, `=` or NUL, and no leading
-  `-`. The boot refuses a malformed list. Putting `python3` in `FELIX_SHELL_ALLOWED_COMMANDS`
-  instead would hand every shell tool `python3 -c`. The script is `argv[1]` and the model's
-  arguments follow it, so none of them can be an interpreter option.
+- **Whose skills, decided by the operator.** Writing a skill is a grant to write *instructions*. A
+  script is code on a runner whose volume holds every tenant's workspace, and whose network is the
+  script's egress, with no SSRF guard of Felix's in between. So `FELIX_SKILL_SCRIPT_SOURCES` names
+  which authors that grant reaches:
+  - `host`, the default: the bundled skills and `FELIX_SKILLS_DIR`, which the operator ships.
+  - `library`: the tenant libraries. Whoever holds `skills:write`, or adopts an import, can then
+    have code run.
+  - `personal`: each person's own library. Every caller with `skills:personal` becomes a code
+    author on the runner.
+
+  An imported skill nobody has adopted never runs scripts, whatever the setting. An object-store
+  skill cannot: the store has no listing to write a bundle from.
+- **Interpreters, not prefixes.**
+  - The manifest maps an extension to an interpreter, `{.py: python3, .sh: bash}` by default.
+  - Each interpreter must be in `FELIX_SKILL_SCRIPT_INTERPRETERS`, which is empty by default. This
+    is checked at write, at compile and per call.
+  - An interpreter is one word: no whitespace, `,`, `=` or NUL, no leading `-`, and either a bare
+    name or an absolute path. A relative path would resolve against the model-written workspace
+    root. The boot refuses a malformed list.
+  - Putting `python3` in `FELIX_SHELL_ALLOWED_COMMANDS` instead would hand every shell tool
+    `python3 -c`.
+  - The script is `argv[1]` and the model's arguments follow it, so none of them is an option *to
+    an interpreter that stops parsing options at the script*: python, bash, sh, node, perl and ruby
+    do. A tool that reorders options after positionals, such as `make`, `find`, `npx` or `ts-node`,
+    does not belong in the list.
+  - `.js: node` is not a default, for the same reason. Node resolves `require()` by walking
+    `node_modules` up every parent directory, the workspace root included, and the model's file
+    tools write there. Listing node lets a package the model wrote load into a skill's script.
 - **Only the skill's own script, beside its own instructions.** All of these are checked:
   - The skill is offered to the model, or is hidden and active here.
-  - It is not an imported skill nobody has adopted.
+  - It is not an unadopted import, and it comes from an allowed source.
   - It is active in *this* conversation, per the thread's log.
   - The path is a bundle path under `scripts/` that the bundle lists, and is not a binary asset.
 - **The bundle is written for one call.**
-  - The skill's files are written to `.felix-skills/<skill>/<random token>/` under the scope's
-    workspace root.
+  - The skill's files (all of them, up to 8 MiB) are written to
+    `.felix-skills/<skill>/<random token>/` under the scope's workspace root.
   - The write goes by descriptor from the root with `O_NOFOLLOW`, so a `.felix-skills` or skill
     directory replaced by a symlink is refused, not followed.
-  - The files are removed when the script ends. `.felix-skills/.gitignore` keeps a repository
-    checkout's `git status` clean.
+  - The files are removed when the script ends, or when the write fails part way.
+    `.felix-skills/.gitignore` keeps a repository checkout's `git status` clean.
   - The file tools refuse the directory (`PANE_HIDDEN_DIRS`), so a model cannot put its own module
     beside a skill's script. A shell tool can, and a race with one is the boundary shell tools
     already have.
@@ -1664,8 +1685,9 @@ of anonymous callers off a development box. What is different, and why:
   both sides; `compose.self.yml` shares it, empty by default.
 - **Governed as a shell tool.** The tool's transport is `shell`: command screening reads every
   argument, and content screening reads the output as untrusted. The `skill_script` audit row
-  names the skill and the script, as `ok` or as the refusal (`unknown_skill`, `script_refused`,
-  `not_active`).
+  names the skill and the script, as `ok` or as a refusal (`unknown_skill`, `script_refused`,
+  `not_active`). An `ok` row also carries the skill's version and the script's sha256, since a
+  version published after an approval or an activation runs other code under the same name.
 
 ## Publishing commits
 

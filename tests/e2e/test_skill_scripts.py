@@ -105,3 +105,33 @@ async def test_a_host_without_the_interpreter_refuses_the_compile(
         with pytest.raises(GovernanceError, match="FELIX_SKILL_SCRIPT_INTERPRETERS"):
             await _chat(app)
     assert app.spy.prompts == [], "no model call was made"
+
+
+async def test_the_compiled_tool_is_governed(boot: Any, skills_dir: Path, tmp_path: Path) -> None:
+    """Bound before the wrapper stack: a command-screening deny on an argument stops the script."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    marker = tmp_path / "ran"
+    (skills_dir / "tally" / "scripts" / "count.sh").write_text(f'touch "{marker}"\n')
+    script = [
+        ScriptedTurn(tool_calls=[ToolCall(id="a1", name="activate_skill", args={"name": "tally"})]),
+        ScriptedTurn(
+            tool_calls=[
+                ToolCall(
+                    id="r1",
+                    name="run_skill_script",
+                    args={"name": "tally", "script": "scripts/count.sh", "args": ["DROP TABLE x"]},
+                )
+            ]
+        ),
+        ScriptedTurn(content="no."),
+    ]
+    screening = {"enabled": True, "rules": [{"pattern": "drop table", "decision": "deny"}]}
+    async with boot(
+        script, env=_env(skills_dir, workspace), manifests=_manifests(command_screening=screening)
+    ) as app:
+        response = await _chat(app)
+        assert response.status_code == 200, response.text
+        result = _tool_result(app.spy.prompts[-1], "run_skill_script")
+    assert "[command denied]" in result
+    assert not marker.exists()
