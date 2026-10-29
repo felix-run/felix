@@ -51,6 +51,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from felix.auth.github_connections import SealError, decode_key, seal, unseal
 from felix.db.models import ConnectionRow
 from felix.db.session import _use_memory, tenant_session
+from felix.logging_setup import loggable
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -551,7 +552,11 @@ async def _current_or_refreshed(settings: Settings, key: Key, row: dict[str, Any
         _record(settings, tenant_id, row, "refresh_refused")
         raise ConnectionRevoked(provider_name) from None
     except Exception as exc:
-        logger.warning("connection_refresh_failed provider=%s error=%s", provider_name, type(exc).__name__)
+        logger.warning(
+            "connection_refresh_failed provider=%s error=%s",
+            loggable(provider_name, limit=64),
+            type(exc).__name__,
+        )
         raise ProviderFailed(f"{provider_name} could not refresh this connection just now") from None
     fresh: dict[str, Any] = {
         "access_sealed": _seal(settings, key, "access", grant.access_token),
@@ -618,14 +623,16 @@ async def _withdraw(settings: Settings, key: Key, row: dict[str, Any], provider:
     except SealError:
         # Sealed under a key this process no longer has: the grant can only be revoked at the
         # provider by the person now.
-        logger.warning("connection_revoke_unsealable provider=%s", key[2])
+        logger.warning("connection_revoke_unsealable provider=%s", loggable(key[2], limit=64))
         return
     try:
         async with asyncio.timeout(REFRESH_TIMEOUT_S):
             await provider.revoke(settings, token)
     except Exception as exc:
         # The row is gone either way; the person can still revoke at the provider.
-        logger.warning("connection_revoke_failed provider=%s error=%s", key[2], type(exc).__name__)
+        logger.warning(
+            "connection_revoke_failed provider=%s error=%s", loggable(key[2], limit=64), type(exc).__name__
+        )
 
 
 def _record(settings: Settings, tenant_id: str, row: dict[str, Any], status: str, *, actor: str = "") -> None:
