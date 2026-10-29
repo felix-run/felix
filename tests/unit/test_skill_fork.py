@@ -249,3 +249,48 @@ async def test_the_inner_call_s_id_is_derived_from_the_activation_s() -> None:
     ):
         await runner("helper", "job", None, outer_call_id="toolu_9")
     assert ids == [fork_call_id("toolu_9")]
+
+
+async def test_a_provider_tool_named_task_is_left_alone_and_forks_run_nowhere(
+    tmp_path: Any, caplog: Any, monkeypatch: Any
+) -> None:
+    """The manifest itself is a forked skill's subagent through a `task` tool withheld from the model;
+    with a provider tool of that name already bound, that would bind the provider's tool as the way
+    in and take it from the model. Instead the forks have nowhere to run, and the compile says so."""
+    import logging
+
+    from felix.manifests import builder
+    from felix.tools.builtins import default_tool_provider
+    from felix.tools.types import define_tool
+
+    (tmp_path / "digest").mkdir()
+    (tmp_path / "digest" / "SKILL.md").write_text(
+        "---\nname: digest\ndescription: Digest.\ncontext: fork\n---\nSummarise it.\n"
+    )
+
+    from felix.config import get_settings
+
+    # The host catalog reads the process-wide settings, as production supplies them.
+    monkeypatch.setenv("FELIX_SKILLS_DIR", str(tmp_path))
+    get_settings.cache_clear()
+
+    async def _h(_a: Any) -> str:
+        return "the provider's task"
+
+    provided = define_tool(
+        name="task", description="A provider's own task tool.", args_schema={"type": "object"}, handler=_h
+    )
+    deps = builder.BuildDeps(
+        tools=default_tool_provider(),
+        settings=make_settings(),
+        extra_tools=[provided],
+    )
+    try:
+        with caplog.at_level(logging.WARNING, logger="felix.manifests.builder"):
+            agent = await builder.build_agent(_manifest(skills=[{"name": "digest"}]), deps=deps)
+    finally:
+        monkeypatch.delenv("FELIX_SKILLS_DIR")
+        get_settings.cache_clear()
+    [task] = [t for t in agent.tools if t.name == "task"]
+    assert task.description == "A provider's own task tool."
+    assert [r for r in caplog.records if "nowhere to run them" in r.getMessage()]

@@ -37,13 +37,13 @@ import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from felix.context import RequestContext, try_get_context
 from felix.governance.inbound import INBOUND_SCREENED_EXTRA
 from felix.logging_setup import loggable
 from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
-from felix.patterns.types import Agent, ChatMessage, InvokeInput
+from felix.patterns.types import ChatMessage, InvokeInput, InvokeOutput
 from felix.security.host_allowlist import EgressBound
 from felix.side_events import emit as emit_side_event
 from felix.tools import task_workspace
@@ -88,8 +88,15 @@ def _description(agents: Mapping[str, str], *, background: bool) -> str:
     return "\n".join(lines)
 
 
+class ChildAgent(Protocol):
+    """What `task` runs: a compiled `Agent`, or the builder's `_SelfFork` -- the manifest itself, as a
+    forked skill's subagent, compiled on first use. A child is only ever invoked."""
+
+    async def invoke(self, input: InvokeInput) -> InvokeOutput: ...
+
+
 def make_task_tool(
-    children: Mapping[str, tuple[Agent, str, Manifest]],
+    children: Mapping[str, tuple[ChildAgent, str, Manifest]],
     *,
     ceiling: EffectiveLimits,
     background: bool = False,
@@ -207,7 +214,7 @@ def _admit(name: str, manifest: Manifest, *, tag: str) -> tuple[RequestContext |
 async def _run_foreground(
     req: RequestContext,
     name: str,
-    child: Agent,
+    child: ChildAgent,
     prompt: str,
     *,
     ceiling: EffectiveLimits,
@@ -266,7 +273,7 @@ class ForkRunner:
     id this mints (`model_overrides`), and only when the deployment defines the route and
     request-model governance would let a caller ask for it on this manifest and its children."""
 
-    children: Mapping[str, tuple[Agent, str, Manifest]]
+    children: Mapping[str, tuple[ChildAgent, str, Manifest]]
     lead: Manifest
     model_overrides: dict[str, str]
     _task: Tool | None = None

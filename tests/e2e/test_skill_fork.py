@@ -123,17 +123,25 @@ async def test_a_fork_counts_as_a_peer_hop(boot: Any, skills_dir: Path) -> None:
     assert "max_peer_hops (1) exceeded" in str(refused.content), "refused by the limits on `task`"
 
 
-async def test_a_fork_with_nowhere_to_run_says_so(boot: Any, skills_dir: Path) -> None:
+async def test_a_fork_with_nowhere_to_run_says_so(
+    boot: Any, skills_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Its `agent:` names one the lead does not delegate to, and is not the lead itself."""
+    import logging
+
     manifests = _manifests()
     manifests["e2e-lead"] = _agent("e2e-lead", skills=[{"name": "research"}])
     run = ToolCall(id="f1", name="activate_skill", args={"name": "research", "task": "x"})
-    async with boot(
-        [ScriptedTurn(tool_calls=[run]), ScriptedTurn(content="ok")],
-        env={"FELIX_SKILLS_DIR": str(skills_dir)},
-        manifests=manifests,
-    ) as app:
-        await _chat(app, "go")
-        assert _result(app.spy.prompts[1])["error"] == "fork_unavailable"
+    with caplog.at_level(logging.WARNING, logger="felix.manifests.builder"):
+        async with boot(
+            [ScriptedTurn(tool_calls=[run]), ScriptedTurn(content="ok")],
+            env={"FELIX_SKILLS_DIR": str(skills_dir)},
+            manifests=manifests,
+        ) as app:
+            await _chat(app, "go")
+            assert _result(app.spy.prompts[1])["error"] == "fork_unavailable"
+    said = [r for r in caplog.records if "nowhere to run them" in r.getMessage()]
+    assert len(said) == 1, "said at the compile, once"
 
 
 async def test_an_approval_on_task_holds_a_fork_too(boot: Any, skills_dir: Path) -> None:
@@ -167,3 +175,148 @@ async def test_a_forked_skill_is_not_preloaded(boot: Any, skills_dir: Path) -> N
         await _chat(app, "again")
         first, second = app.spy.prompts  # two lead calls, and no researcher
     assert "You research." not in _text(first) + _text(second)
+
+
+@pytest.fixture
+def general_skills_dir(tmp_path: Path) -> Path:
+    """A forked skill that names no agent: Claude Code's general-purpose subagent."""
+    (tmp_path / "digest").mkdir()
+    (tmp_path / "digest" / "SKILL.md").write_text(
+        "---\nname: digest\ndescription: Digest a document.\ncontext: fork\n---\n"
+        "Read it closely and reply with a summary. Subject: $ARGUMENTS.\n"
+    )
+    return tmp_path
+
+
+def _solo(**spec: Any) -> dict[str, Any]:
+    """A lead that delegates to nothing."""
+    return {
+        "e2e-lead": _agent(
+            "e2e-lead", system_prompt={"inline": "You lead."}, skills=[{"name": "digest"}], **spec
+        )
+    }
+
+
+async def test_a_fork_with_no_delegation_runs_in_the_manifest_itself(
+    boot: Any, general_skills_dir: Path
+) -> None:
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "digest", "task": "Summarise the memo."})
+    script = [
+        ScriptedTurn(tool_calls=[run]),
+        ScriptedTurn(content="A short memo."),  # the lead, again, as the fork's subagent
+        ScriptedTurn(content="It is short."),
+    ]
+    async with boot(script, env={"FELIX_SKILLS_DIR": str(general_skills_dir)}, manifests=_solo()) as app:
+        await _chat(app, "summarise the memo")
+        lead_first, child, after_fork = app.spy.prompts
+        offered = app.spy.tools[0]
+
+    assert "You lead." in _text(child) and "Read it closely" in _text(child)
+    assert "Summarise the memo." in _text(child)
+    assert "Read it closely" not in _text(lead_first), "the instructions stay in the subagent"
+    assert _result(after_fork) == {"ran": "digest", "agent": "e2e-lead", "result": "A short memo."}
+    assert "task" not in offered, "the model was given no delegation to call"
+
+
+async def test_the_manifest_s_own_subagent_does_not_fork_again(boot: Any, general_skills_dir: Path) -> None:
+    """One level: the subagent is the manifest itself, and its own forks run nowhere."""
+    outer = ToolCall(id="f1", name="activate_skill", args={"name": "digest", "task": "go"})
+    inner = ToolCall(id="f2", name="activate_skill", args={"name": "digest", "task": "deeper"})
+    script = [
+        ScriptedTurn(tool_calls=[outer]),
+        ScriptedTurn(tool_calls=[inner]),  # the subagent tries to fork
+        ScriptedTurn(content="stopped"),
+        ScriptedTurn(content="done"),
+    ]
+    async with boot(script, env={"FELIX_SKILLS_DIR": str(general_skills_dir)}, manifests=_solo()) as app:
+        await _chat(app, "go")
+        _lead, _child, child_after, _lead_after = app.spy.prompts
+    assert _result(child_after)["error"] == "fork_unavailable"
+
+
+async def test_an_approval_on_task_holds_a_fork_into_the_manifest_itself(
+    boot: Any, general_skills_dir: Path
+) -> None:
+    """The hidden `task` is governed as delegation's is: a gate an author put on `task` holds."""
+    gated = _solo(
+        approvals=[{"id": "delegate", "tools": ["task"], "ttl_seconds": 1, "allow_unattended": True}]
+    )
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "digest", "task": "x"})
+    async with boot(
+        [ScriptedTurn(tool_calls=[run]), ScriptedTurn(content="no answer")],
+        env={"FELIX_SKILLS_DIR": str(general_skills_dir)},
+        manifests=gated,
+    ) as app:
+        await _chat(app, "go")
+        _lead_first, lead_second = app.spy.prompts  # the subagent never ran
+    [held] = [m for m in lead_second if getattr(m, "role", "") == "tool"][-1:]
+    assert "approval" in str(held.content).lower()
+
+
+async def test_a_person_runs_a_general_forked_skill_with_arguments(
+    boot: Any, general_skills_dir: Path
+) -> None:
+    script = [ScriptedTurn(content="Summary of Q3."), ScriptedTurn(content="Q3, summarised.")]
+    async with boot(script, env={"FELIX_SKILLS_DIR": str(general_skills_dir)}, manifests=_solo()) as app:
+        await _chat(app, "/digest the Q3 report")
+        child, lead = app.spy.prompts
+    assert "Subject: the Q3 report." in _text(child)
+    assert _result(lead)["result"] == "Summary of Q3."
+
+
+async def test_two_forks_compile_the_manifest_s_subagent_once_and_quietly(
+    boot: Any, general_skills_dir: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compiled on the first fork and reused; and the compile does not report the manifest's rules on
+    `task` -- what gates its forks -- as gating nothing, since the subagent binds no `task`."""
+    import logging
+
+    import felix.manifests.builder as builder
+
+    subagent_compiles: list[str] = []
+    real = builder.build_agent
+
+    async def counted(manifest: Any, tools: Any = None, deps: Any = None, **kw: Any) -> Any:
+        if deps is not None and deps.self_fork_of:
+            subagent_compiles.append(deps.self_fork_of)
+        return await real(manifest, tools, deps, **kw)
+
+    # A pass-through count: model clients are built per run, not per compile, so the spy cannot say.
+    monkeypatch.setattr(builder, "build_agent", counted)
+
+    first = ToolCall(id="f1", name="activate_skill", args={"name": "digest", "task": "one"})
+    second = ToolCall(id="f2", name="activate_skill", args={"name": "digest", "task": "two"})
+    script = [
+        ScriptedTurn(tool_calls=[first]),
+        ScriptedTurn(content="first answer"),
+        ScriptedTurn(tool_calls=[second]),
+        ScriptedTurn(content="second answer"),
+        ScriptedTurn(content="done"),
+    ]
+    guided = _solo(tool_guidance={"task": "Hand over the whole job."})
+    with caplog.at_level(logging.WARNING, logger="felix.manifests.builder"):
+        async with boot(script, env={"FELIX_SKILLS_DIR": str(general_skills_dir)}, manifests=guided) as app:
+            await _chat(app, "go")
+            assert len(app.spy.prompts) == 5, "the lead, a fork, the lead, a fork, the lead"
+            assert "first answer" not in _text(app.spy.prompts[3]), "each fork starts a fresh conversation"
+    assert subagent_compiles == ["e2e-lead"], "compiled on the first fork, reused by the second"
+    assert not [r for r in caplog.records if "gates nothing" in r.getMessage()]
+    assert not [r for r in caplog.records if "nowhere to run them" in r.getMessage()]
+
+
+async def test_a_skill_that_names_its_own_manifest_forks_into_it(boot: Any, tmp_path: Path) -> None:
+    (tmp_path / "digest").mkdir()
+    (tmp_path / "digest" / "SKILL.md").write_text(
+        "---\nname: digest\ndescription: Digest.\ncontext: fork\nagent: e2e-lead\n---\nSummarise it.\n"
+    )
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "digest", "task": "the memo"})
+    script = [
+        ScriptedTurn(tool_calls=[run]),
+        ScriptedTurn(content="summary"),
+        ScriptedTurn(content="done"),
+    ]
+    async with boot(script, env={"FELIX_SKILLS_DIR": str(tmp_path)}, manifests=_solo()) as app:
+        await _chat(app, "go")
+        assert len(app.spy.prompts) == 3, "the lead, its subagent, the lead"
+        after_fork = app.spy.prompts[2]
+    assert _result(after_fork) == {"ran": "digest", "agent": "e2e-lead", "result": "summary"}

@@ -970,8 +970,14 @@ side was already conformant. Four PRs, landed in order:
       the tool runner's per-call layer (manifest and plugin tool hooks, the `tool_call` audit row)
       runs for `activate_skill`, not for the fork's inner `task` call -- decide whether a fork
       should go through the runner; a fork costs two `max_tool_calls`; the approval prompt for a
-      fork shows the skill body before the model's task (no `approval_preview` yet); a manifest
-      without `spec.delegation` cannot fork (no general-purpose child).
+      fork shows the skill body before the model's task (no `approval_preview` yet).
+  - [x] General-purpose fork (`feat/skill-fork-self`): a manifest with no `spec.delegation` runs a
+        forked skill that names no `agent:` in itself -- compiled lazily on the first fork, through
+        a governed `task` withheld from the model; the subagent's own forks run nowhere, and its
+        compile reports no warnings or counters the manifest's own compile already did. Open: it
+        compiles the manifest a second time per request that forks (MCP discovery included), and
+        loads skills, prompt files and MCP tool lists at that point rather than at admission; the
+        subagent's catalog still lists the forked skill it cannot run (one wasted turn).
 - [x] **`run_skill_script`** (`feat/skill-scripts`): `spec.skill_scripts` runs a script from an
       active, trusted skill's `scripts/`. It runs where a shell tool would, under an interpreter the
       manifest maps by extension and `FELIX_SKILL_SCRIPT_INTERPRETERS` allows. The bundle is
