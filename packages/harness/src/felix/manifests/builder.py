@@ -129,6 +129,33 @@ class BuildDeps:
     compiled_egress: dict[str, EgressBound] = field(default_factory=dict)
 
 
+def _refuse_anonymous_door_to_closed_child(m: Manifest, deps: BuildDeps) -> None:
+    """Refuse a composite that admits anonymous callers but names a child that does not.
+
+    A router forwards the caller's turn to its child without checking the child's inbound auth
+    (`inbound_auth._enforce_manifest_pin`: sub-agents are the operator's choice), so an anonymous
+    `router` naming `deep` handed anonymous callers `deep`'s unconfined fetch. `delegation`
+    children are checked per call by `task`; these are fixed at compile, so they are checked here.
+
+    A child is read by the name its compiled agent carries, and one this build cannot read the
+    door of counts as closed: a bundled file whose `metadata.name` differs from its file name, or
+    a custom `sub_agent_builder` that bypasses `build_agent`, would otherwise skip the check.
+    """
+    if not m.spec.auth.inbound.allow_anonymous:
+        return
+    closed = []
+    for name in m.spec.sub_agents:
+        child_id = getattr(deps.compiled[name], "manifest_id", name)
+        child = deps.compiled_manifests.get(name) if child_id == name else None
+        if child is None or not child.spec.auth.inbound.allow_anonymous:
+            closed.append(name)
+    if closed:
+        raise ValueError(
+            f"manifest '{m.metadata.name}' allows anonymous callers but its sub_agents "
+            f"{', '.join(closed)} do not; set auth.inbound.allow_anonymous to false or drop them"
+        )
+
+
 # Routers of routers of routers, and no further. A bound on nesting, beside the memo above, is
 # what keeps the compile a request triggers proportional to what the tenant meant to write.
 MAX_SUB_AGENT_DEPTH = 4
@@ -2046,6 +2073,7 @@ async def build_agent(
                         deps.compiled[name] = await builder(name)
                         deps.compiled_egress[name] = egress
                 if m.spec.sub_agents:
+                    _refuse_anonymous_door_to_closed_child(m, deps)
                     sub_agents = {name: deps.compiled[name] for name in m.spec.sub_agents}
                 if m.spec.delegation is not None:
                     delegates = {ref.name: deps.compiled[ref.name] for ref in m.spec.delegation.agents}

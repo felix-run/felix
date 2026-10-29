@@ -73,8 +73,8 @@ spec:
         already know which page answers the question.
       max_results: 4
 
-  # One decision per user turn picks the few tools the model is offered. With seven tools
-  # this is a demonstration; it earns its keep on an MCP catalogue of dozens.
+  # One decision per user turn picks the few tools the model is offered. With fewer than ten
+  # tools this is a demonstration; it earns its keep on an MCP catalogue of dozens.
   tools_retrieval:
     enabled: true
     top_k: 4
@@ -98,6 +98,15 @@ spec:
 
   artifacts:
     enabled: true
+
+  # Anyone may call this agent, and a turn can spend a decider call per consumer plus an
+  # escalation to the larger model, so a run is capped well below the install-wide defaults.
+  limits:
+    max_tool_calls: 40
+    max_wall_clock_seconds: 600
+    # Tokens, not dollars: a declared `max_cost_usd` refuses to compile on any route Felix
+    # cannot price, and an operator may point this manifest's model at one.
+    max_input_tokens: 800000
 
   auth:
     inbound:

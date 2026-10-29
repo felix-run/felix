@@ -6,8 +6,9 @@ metadata:
   version: 1.0.0
   description: >-
     Hybrid routing — a Claude Haiku classifier picks the intent, then dispatches
-    to an open-weight sub-agent. The strong model only pays for the short
-    classification turn; tool work runs on GLM-5.3 Flash via Workers AI.
+    to an open-weight sub-agent for tool work (GLM-5.3 Flash via Workers AI) or to
+    `quick` for simple replies. `quick` runs on the default Claude model, so only
+    the tool route is open-weight end to end.
   tags: [router, hybrid, oss]
 
 spec:
@@ -22,8 +23,7 @@ spec:
     inline: |
       You are a query classifier. Given the user's message, choose exactly one
       of the following routes:
-      - oss-only: anything needing tools — calculations, skill management, or
-        tasks that benefit from memory/recall.
+      - oss-only: anything needing tools — calculations or skill management.
       - quick: simple direct questions, quick factual replies, casual chat.
       When in doubt, choose quick.
 
@@ -34,6 +34,15 @@ spec:
   memory:
     checkpointer: postgres
     store: pgvector
+
+  # Anyone may call this agent, so a run is capped well below the install-wide defaults (500
+  # tool calls, an hour, a million input tokens), which are ceilings for an authenticated operator.
+  limits:
+    max_tool_calls: 30
+    max_wall_clock_seconds: 300
+    # Tokens, not dollars: a declared `max_cost_usd` refuses to compile on any route Felix
+    # cannot price, and an operator may point this manifest's model at one.
+    max_input_tokens: 400000
 
   auth:
     inbound:

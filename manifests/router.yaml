@@ -18,7 +18,7 @@ spec:
     inline: |
       You are a query classifier. Given the user's message, choose exactly one
       of the following routes:
-      - quick: direct questions, calculations, factual lookups, simple tasks.
+      - quick: direct questions, calculations, simple tasks.
       - deep: complex research, multi-step analysis with a plan.
       - support: troubleshooting, step-by-step guidance, how-to instructions.
       For skill management (list/activate/deactivate), choose quick.
@@ -32,6 +32,9 @@ spec:
     checkpointer: postgres
     store: pgvector
 
+  # `deep` refuses anonymous callers (its fetch reaches any host), and a router forwards the
+  # caller's turn to its child without the child's own inbound check — so the router is held to
+  # the strictest child it names. The compile refuses an anonymous router over a closed child.
   auth:
     inbound:
-      allow_anonymous: true
+      allow_anonymous: false

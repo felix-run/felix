@@ -58,8 +58,8 @@ Ranked. A higher rank always displaces a lower one when the per-run cap binds.
 
 | Rank | Source | What Felix reads | The draft must cite |
 |---|---|---|---|
-| 1 | Smoke failures | `github__list_workflow_runs` on `smoke.yml` with `status=failure`, then `github__get_job_logs` | the Actions run URL and the failing step |
-| 1 | Live-eval failures | `github__list_workflow_runs` on `eval-live.yml` with `status=failure`, then `github__get_job_logs` on the failing job, which prints the item table. An item counts only when it also failed in that job's previous run: a model's answer varies, and one failure is noise. A job that exits 2 never reached a model (no credentials) and is not a ticket | both Actions run URLs and the item id |
+| 1 | Smoke failures | `github__actions_list` on `smoke.yml` with `status=failure`, then `github__get_job_logs` | the Actions run URL and the failing step |
+| 1 | Live-eval failures | `github__actions_list` on `eval-live.yml` with `status=failure`, then `github__get_job_logs` on the failing job, which prints the item table. An item counts only when it also failed in that job's previous run: a model's answer varies, and one failure is noise. A job that exits 2 never reached a model (no credentials) and is not a ticket | both Actions run URLs and the item id |
 | 1 | Tool errors in real runs | `GET /audit?event_type=tool_call&status=error` on the builder API, grouped by manifest × tool | an audit event id |
 | 1 | Runs that ended badly | `final_response` audit rows whose status is not `ok`; `felix_run_stop_reason` when metrics are reachable | an audit event id and the reason |
 | 1 | Control health | `felix_control_degraded`, `felix_control_unavailable`, `felix_rule_targets_nothing`, `felix_untrusted_tools_unscreened`, `felix_policy_unsatisfiable` | the metric name, labels and scrape time |
@@ -161,7 +161,7 @@ shell tool is still the API's child and the old caveat applies. The approval gat
 publishes — see `deploy/GOVERNANCE.md`, "Shell tools" and "Publishing commits". Several local commits land as one. A branch that already exists is fast-forwarded, so when
 the remote has moved the tool says so and Felix fetches, rebases and publishes the new sha — the
 old approval does not cover it, because the sha is the call. Pull requests open as drafts and are flipped to ready only after
-`github__get_pull_request_status` reports CI green. Felix never merges, never approves, and never
+`github__pull_request_read` (method `get_status`) reports CI green. Felix never merges, never approves, and never
 requests changes on a pull request; the reviewer role is rung 4.
 
 ## The self-modification boundary

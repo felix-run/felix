@@ -113,3 +113,17 @@ async def test_a_shared_child_compiles_once_and_nesting_is_bounded(
     async with boot(manifests=deep) as app:
         with pytest.raises(ValueError, match="nest deeper than 4"):
             await _chat(app, "e2e-l0")
+
+
+async def test_an_anonymous_router_may_not_name_a_child_that_refuses_anonymous(boot: Any) -> None:
+    """A router forwards the caller's turn without the child's inbound check, so an anonymous
+    router over an authenticated child was an anonymous door to it — the bundled `router` over
+    `deep`'s unconfined fetch. Refused at compile, before any model is called."""
+    manifests = {
+        "e2e-closed": _agent("e2e-closed", auth={"inbound": {"allow_anonymous": False}}),
+        "e2e-router": _router("e2e-router", ["e2e-closed"]),
+    }
+    async with boot(manifests=manifests) as app:
+        with pytest.raises(ValueError, match="allows anonymous callers but its sub_agents e2e-closed"):
+            await _chat(app, "e2e-router")
+        assert app.spy.prompts == []

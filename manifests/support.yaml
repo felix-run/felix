@@ -40,6 +40,8 @@ spec:
   tools:
     - calculator
     - list_skills
+    - activate_skill
+    - deactivate_skill
 
   # A support agent's whole job is answering from the documentation, and until this existed
   # it could only do arithmetic. Confined to the docs site: the model chooses the URL, so
@@ -82,6 +84,15 @@ spec:
   # on every later turn.
   artifacts:
     enabled: true
+
+  # Anyone may call this agent, so a run is capped well below the install-wide defaults (500
+  # tool calls, an hour, a million input tokens), which are ceilings for an authenticated operator.
+  limits:
+    max_tool_calls: 40
+    max_wall_clock_seconds: 600
+    # Tokens, not dollars: a declared `max_cost_usd` refuses to compile on any route Felix
+    # cannot price, and an operator may point this manifest's model at one.
+    max_input_tokens: 800000
 
   auth:
     inbound:
