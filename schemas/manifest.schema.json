@@ -2503,6 +2503,41 @@
       "title": "SkillRef",
       "type": "object"
     },
+    "SkillScriptsSpec": {
+      "additionalProperties": false,
+      "description": "Let the agent run the scripts in its active skills' `scripts/` (agentskills.io): binds\n`run_skill_script(name, script, args)`.\n\nThe interpreter is chosen by the script's extension from `interpreters`, each of which the\noperator must also allow (`FELIX_SKILL_SCRIPT_INTERPRETERS`, empty by default: refused at\nmanifest write). A script runs where a shell tool would -- the shell runner, or a development\nbox -- because it is code, from the workspace root, with only arguments the model chose. Only\na skill active in the calling conversation, and never an imported one nobody has adopted.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "interpreters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 16,
+          "title": "Interpreters",
+          "type": "object"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 3600000,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeout Ms"
+        }
+      },
+      "title": "SkillScriptsSpec",
+      "type": "object"
+    },
     "SkillSuggestionSpec": {
       "additionalProperties": false,
       "description": "Suggest the skill a request needs, using `spec.decider`, as a one-line hint.\n\nRanks the catalog, reranks a shortlist, and hints only when the request asks for a task\n(`min_gate`) and the best skill fits it (`min_fit`). The model still decides whether to\n`activate_skill`. Worth it with a large catalog; a handful of skills the model picks\nbetween well on its own.",
@@ -2823,6 +2858,9 @@
         },
         "skill_authoring": {
           "$ref": "#/$defs/SkillAuthoringSpec"
+        },
+        "skill_scripts": {
+          "$ref": "#/$defs/SkillScriptsSpec"
         },
         "artifacts": {
           "$ref": "#/$defs/ArtifactsSpec"

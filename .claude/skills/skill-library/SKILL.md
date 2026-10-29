@@ -93,11 +93,20 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    never an activation, so nothing is retained and it is never preloaded. An imported skill nobody
    adopted never forks (`fork_refused`); no delegation, or an `agent:` outside it, is
    `fork_unavailable` (and warns at compile).
+9. **Skill scripts.** `spec.skill_scripts` (`SkillScriptsSpec`: enabled, `interpreters` by extension,
+   timeout_ms) binds `run_skill_script` (`skills/scripts.py:make_skill_script_tool`), transport `shell`. It runs only a bundle
+   file under `scripts/` of a skill active in the calling thread and not `untrusted`, under an
+   interpreter the operator lists in `FELIX_SKILL_SCRIPT_INTERPRETERS`
+   (`security/shell_policy.py:assert_skill_scripts_allowed` at write and compile). The bundle is
+   written by descriptor to `.felix-skills/<skill>/<token>/` (a `PANE_HIDDEN_DIRS` entry) and removed
+   after. The call execs through `tools/shell.py:exec_in_place` at `shell_place`, and the runner
+   admits `kind: skill_script` by `skill_script_argv_issue`. The hosted backend refuses it.
 
 Manifest fields (`manifests/schema.py`): `skills` (`SkillRef`: name, description, version, preload),
 `skills_declared_only`, `personal_skills` (`off` / `read` / `write`), `skill_authoring`
 (`SkillAuthoringSpec`: enabled, mode `draft`/`publish`, max_pending, auto_eval) and
-`skill_suggestion` (`SkillSuggestionSpec`, needs `spec.decider.id`). Spec validators refuse
+`skill_scripts` (`SkillScriptsSpec`, above) and `skill_suggestion` (`SkillSuggestionSpec`, needs
+`spec.decider.id`). Spec validators refuse
 `personal_skills` with `skills_declared_only`, `write` without authoring, and `mode: publish`
 without an approvals rule covering both `create_skill` and `update_skill`.
 

@@ -360,11 +360,26 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
         assert_sandbox_images_allowed(manifest.spec.sandboxes, settings)
     except SandboxImageNotAllowed as exc:
         raise GovernanceError(str(exc)) from exc
-    from felix.security.shell_policy import ShellNotAllowedError, assert_shell_commands_allowed
+    from felix.security.shell_policy import (
+        ShellNotAllowedError,
+        assert_shell_commands_allowed,
+        assert_skill_scripts_allowed,
+    )
 
     try:
         assert_shell_commands_allowed(
             manifest.spec.shell_tools, settings, scope=manifest.spec.workspace.scope
+        )
+    except ShellNotAllowedError as exc:
+        raise GovernanceError(str(exc)) from exc
+    try:
+        assert_skill_scripts_allowed(
+            manifest.spec.skill_scripts,
+            settings,
+            scope=manifest.spec.workspace.scope,
+            has_skills=bool(manifest.spec.skills)
+            or manifest.spec.personal_skills != "off"
+            or manifest.spec.skill_authoring.enabled,
         )
     except ShellNotAllowedError as exc:
         raise GovernanceError(str(exc)) from exc
@@ -375,6 +390,14 @@ def validate_for_write(manifest: Manifest, settings: Any | None = None) -> None:
     if manifest.spec.shell_tools and manifest.spec.auth.inbound.allow_anonymous and env != "development":
         raise GovernanceError(
             "shell_tools require an authenticated caller: set auth.inbound.allow_anonymous to false"
+        )
+    if (
+        manifest.spec.skill_scripts.enabled
+        and manifest.spec.auth.inbound.allow_anonymous
+        and env != "development"
+    ):
+        raise GovernanceError(
+            "skill_scripts require an authenticated caller: set auth.inbound.allow_anonymous to false"
         )
 
 

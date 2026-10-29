@@ -21,6 +21,7 @@ SELF = Path(__file__).resolve().parents[2] / "deploy" / "docker" / "compose.self
 SHELL_ENV_ALLOWED = {
     "FELIX_SHELL_ALLOWED_COMMANDS",
     "FELIX_SHELL_RUNNER_TOKEN",
+    "FELIX_SKILL_SCRIPT_INTERPRETERS",
     "FELIX_WORKSPACE_ROOT",
     "FELIX_SELF_REPO",
     "FELIX_SELF_BRANCH",
@@ -59,10 +60,8 @@ def test_api_and_worker_send_shell_tools_to_it_and_wait_for_it() -> None:
         assert env["FELIX_SHELL_RUNNER_URL"] == "http://shell:8080", name
         assert env["FELIX_SHELL_RUNNER_TOKEN"] == services["shell"]["environment"]["FELIX_SHELL_RUNNER_TOKEN"]
         # The same allowlist on both sides, so the runner's re-check refuses nothing the API allowed.
-        assert (
-            env["FELIX_SHELL_ALLOWED_COMMANDS"]
-            == services["shell"]["environment"]["FELIX_SHELL_ALLOWED_COMMANDS"]
-        )
+        for allowlist in ("FELIX_SHELL_ALLOWED_COMMANDS", "FELIX_SKILL_SCRIPT_INTERPRETERS"):
+            assert env[allowlist] == services["shell"]["environment"][allowlist], (name, allowlist)
         # api/worker run no git against the agent-writable checkout at startup.
         assert env["FELIX_SELF_PREPARE_WORKSPACE"] == "0", name
         assert svc["depends_on"]["shell"]["condition"] == "service_healthy", name
