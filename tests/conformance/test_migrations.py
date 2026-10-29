@@ -234,7 +234,8 @@ async def _as_migrator(url: str) -> str:
     (`0035_usage_thread`), `session_events` (`0036_session_events_one_index`), `thread_state`
     (`0037_thread_state_listing_index`), `file_checkpoints` (`0039_file_checkpoints`),
     `workflows` (`0040_workflows`), `workflow_runs` (`0041_workflow_runs`), `jobs`
-    (`0042_job_creator`) and `memory_vectors` (`0046_memory_principal`)."""
+    (`0042_job_creator`), `memory_vectors` (`0046_memory_principal`) and `connections`
+    (`0048_connections`)."""
     from sqlalchemy.engine import make_url
 
     await _drop_migrator(url)
@@ -258,6 +259,7 @@ async def _as_migrator(url: str) -> str:
                 "workflow_runs",  # 0041, the same
                 "jobs",  # 0042
                 "memory_vectors",  # 0046
+                "connections",  # 0048, created after 0038 and dropped before reaching it
                 "alembic_version",
             )
         ),

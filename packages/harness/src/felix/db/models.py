@@ -917,6 +917,39 @@ class GitHubConnectionRow(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class ConnectionRow(Base):
+    """One person's connection to another service, in a tenant: a credential Felix holds so it can
+    act as them later (`felix.auth.connections`).
+
+    Keyed by the person (`person`, the `issuer|subject` key of `felix.auth.persons`), the provider
+    (`google`, `icloud`, ...) and the account at that provider, so one person can connect two. `kind` is
+    `oauth` (a refresh token, and the access token minted from it) or `secret` (an app password).
+    Every credential is AES-GCM sealed with FELIX_CONNECTION_TOKEN_KEY, the whole key and the
+    column bound in, so a value copied to another row or column does not open. `status` is
+    `active` or `revoked`; a removed connection is a deleted row.
+    """
+
+    __tablename__ = "connections"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    person: Mapped[str] = mapped_column(Text, primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    account: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    # What the person sees the connection as: an email address, a login.
+    label: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    # Space-separated, as the provider granted them; empty for a secret.
+    scopes: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    secret_sealed: Mapped[str] = mapped_column(Text, nullable=False)
+    # Epoch ms; 0 when the provider did not say.
+    secret_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    access_sealed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_expires_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 __all__ = [
     "A2ATask",
     "Approval",
@@ -924,6 +957,7 @@ __all__ = [
     "AttachmentRow",
     "AuditEvent",
     "Base",
+    "ConnectionRow",
     "DocumentChunk",
     "EvalDataset",
     "EvalDatasetItem",

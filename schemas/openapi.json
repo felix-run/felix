@@ -649,6 +649,87 @@
         "title": "CompactRequest",
         "type": "object"
       },
+      "ConnectionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ConnectionList",
+        "type": "object"
+      },
+      "ConnectionOut": {
+        "description": "Who, what and whether it still works. Never a credential.",
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "oauth",
+              "secret"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "account",
+          "label",
+          "kind",
+          "status",
+          "scopes",
+          "created_at",
+          "updated_at",
+          "expires_at"
+        ],
+        "title": "ConnectionOut",
+        "type": "object"
+      },
       "ContinueRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3531,6 +3612,33 @@
           "detail"
         ],
         "title": "RevisionChangedResponse",
+        "type": "object"
+      },
+      "RevokeConnection": {
+        "properties": {
+          "account": {
+            "minLength": 1,
+            "title": "Account",
+            "type": "string"
+          },
+          "person": {
+            "description": "`issuer|subject`, as the tenant listing shows it.",
+            "minLength": 1,
+            "title": "Person",
+            "type": "string"
+          },
+          "provider": {
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "person",
+          "provider",
+          "account"
+        ],
+        "title": "RevokeConnection",
         "type": "object"
       },
       "RewindRequest": {
@@ -6964,6 +7072,91 @@
           "auth"
         ],
         "title": "SubscriptionKeys",
+        "type": "object"
+      },
+      "TenantConnectionList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TenantConnectionOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TenantConnectionList",
+        "type": "object"
+      },
+      "TenantConnectionOut": {
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "oauth",
+              "secret"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "person": {
+            "title": "Person",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "account",
+          "label",
+          "kind",
+          "status",
+          "scopes",
+          "created_at",
+          "updated_at",
+          "expires_at",
+          "person"
+        ],
+        "title": "TenantConnectionOut",
         "type": "object"
       },
       "ThinkingRequest": {
@@ -13388,6 +13581,130 @@
         "summary": "Chat Workspace Write",
         "tags": [
           "Threads"
+        ]
+      }
+    },
+    "/connections": {
+      "get": {
+        "description": "The services you have connected in this tenant.",
+        "operationId": "my_connections_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "My Connections",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/tenant": {
+      "get": {
+        "description": "Every stored connection in your tenant, newest first (`connections:admin`).",
+        "operationId": "tenant_connections_connections_tenant_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantConnectionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Tenant Connections",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/tenant/revoke": {
+      "post": {
+        "description": "Remove anyone's connection in your tenant and withdraw its grant (`connections:admin`).\nA body rather than a path: a subject or an account may hold any character.",
+        "operationId": "revoke_connection_connections_tenant_revoke_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeConnection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Connection",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/{provider}/{account}": {
+      "delete": {
+        "description": "Disconnect one of your accounts here, and withdraw Felix's grant at the provider.",
+        "operationId": "remove_my_connection_connections__provider___account__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove My Connection",
+        "tags": [
+          "Connections"
         ]
       }
     },
