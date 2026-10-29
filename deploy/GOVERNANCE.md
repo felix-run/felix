@@ -1068,6 +1068,14 @@ five seconds answers `rate_limited`, so one tenant's burst can make another's ma
 a few seconds. A multi-tenant install should point the backends at its own instances, which are
 not paced.
 
+The market tools need `FELIX_MARKET_API_KEY`, one operator key shared by every tenant on the
+install: one tenant's agent can spend a plan's quota (Alpha Vantage's free plan is 25 requests a
+day) and every tenant's calls then answer `rate_limited` until it resets. The key is a credential
+like any other -- hydrated from a secrets backend (`MARKET_API_KEY`) and masked in every redaction
+sink -- and Alpha Vantage takes it only in the query string, so the HTTP client libraries' request
+logging (`httpx`, `httpcore`, `httpx2`), which prints full URLs at INFO, is held at WARNING for
+the whole process by `configure_logging`, whatever `FELIX_LOG_LEVEL` says.
+
 Outbound MCP (`spec.mcp_servers`) is the official SDK's client, whose HTTP stack is httpx2 rather
 than httpx. It is handed `safe_httpx2_client` (`security/egress_httpx2.py`): the same pin
 (`connect_pinned`) and the same per-hop checks (`guard_request`) installed on httpx2's own pool, so an

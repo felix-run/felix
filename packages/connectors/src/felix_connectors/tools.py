@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Iterable
+from datetime import date
 from typing import Any
 
 from felix.tools.errors import ToolErrorCode, code_for_status, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from felix_connectors.http import Busy, UpstreamError
+from felix_connectors.http import Busy, KeyRefused, QuotaSpent, UpstreamError
 
 logger = logging.getLogger("felix_connectors.tools")
 
@@ -45,6 +46,10 @@ def _failed(service: str, exc: Exception) -> ToolOutput:
     if isinstance(exc, UpstreamError):
         code = code_for_status(exc.status)
         return tool_error_output(code, f"{service} answered {exc.status}")
+    if isinstance(exc, KeyRefused):
+        return tool_error_output(ToolErrorCode.PERMISSION_DENIED, f"{service} refused this deployment's key")
+    if isinstance(exc, QuotaSpent):
+        return tool_error_output(ToolErrorCode.RATE_LIMITED, f"{service}'s request quota is spent for now")
     if isinstance(exc, Busy):
         return tool_error_output(ToolErrorCode.RATE_LIMITED, f"{service} is busy; try again shortly")
     if isinstance(exc, TimeoutError):
@@ -129,6 +134,14 @@ def number(value: object) -> float | None:
     return None
 
 
+def iso_day(value: object) -> date | None:
+    """A `YYYY-MM-DD` the upstream sent, or None for anything else."""
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
 def one_line(value: object, cap: int) -> str:
     """`value` as one line of at most `cap` characters.
 
@@ -141,4 +154,4 @@ def one_line(value: object, cap: int) -> str:
     return text[:cap] + "…" if len(text) > cap else text
 
 
-__all__ = ["TRANSPORT", "Point", "connector_tool", "number", "one_line"]
+__all__ = ["TRANSPORT", "Point", "connector_tool", "iso_day", "number", "one_line"]
