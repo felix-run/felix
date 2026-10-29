@@ -2195,6 +2195,32 @@ Two things to re-measure if you set `model` and previously narrowed `tools`:
   docs server, a code-search tool or an issue tracker quoting a jailbreak can now be
   quarantined where it was exempt. Watch `{action=quarantine}`.
 
+### Summaries are screened before they are stored
+
+A conversation summary is a model's rewrite of a transcript that carried tool output, and once
+stored it is replayed into every later turn of the thread. Its input reaches the summariser fenced
+as data, but a summariser that followed an injection anyway writes the injection into the summary.
+So when `content_screening.enabled` is on, every summary a session strategy writes is held to the
+rule a user turn is before it is stored: the injection markers, then `model` and the decider when
+they are set. That covers a turn's own compaction, a forced pass when a provider rejects an
+oversized request, `POST /chat/compact`, and `summarizing:N`.
+
+A **flagged** summary is stored as `[summary withheld: content screening flagged it]` in its place,
+so the range it covers is settled and is not summarised and screened again on every later turn:
+storing nothing would let text planted in the history, or a harmless false positive, make every
+turn over budget pay the summariser and the screener again. The history it covered is lost to the
+model, which a withheld summary costs either way. A summary that **could not be screened** is not
+stored: the summariser is treated as having failed, the thread keeps its recent window,
+`POST /chat/compact` answers `502 compaction_failed`, and a later turn tries again once the screener
+is back. A screening-model outage therefore turns compaction into dropped context until it
+recovers -- the price of not storing what no screen has read. Each one counts
+`felix_summary_withheld{reason}` and writes a `summary_screening` audit row, and the summariser's
+call is billed either way. `on_flag` does not apply: refusing would refuse every later turn of the
+thread. A sub-agent's screen adds to its router's rather than replacing it.
+
+Not screened: a `before_compact` hook's own summary, which is the operator's plugin code and
+trusted as such; and the branch summary a rewind writes, which is never rendered into context.
+
 ### Screening is opt-in, and says so when it is off
 
 `content_screening.enabled` defaults to `false`, and of the governance frameworks only

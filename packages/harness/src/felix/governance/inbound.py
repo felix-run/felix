@@ -172,7 +172,7 @@ def _image_screener(
     screening = manifest.spec.content_screening
 
     async def screen_text(transcript: str) -> ScreenResult:
-        return await _screen_transcript(manifest, transcript, settings, decider)
+        return await screen_text_verdict(manifest, transcript, settings, decider)
 
     # What `screen_text`'s answer depends on besides the transcript: the scorer, and whether
     # this manifest's decider is asked. The marker scan and the threshold are constants.
@@ -283,12 +283,13 @@ async def _screen_turn_text(
     return text
 
 
-async def _screen_transcript(
+async def screen_text_verdict(
     manifest: Manifest, text: str, settings: Settings, decider: MeteredDecider | None
 ) -> ScreenResult:
-    """The verdict on an image's transcript, held to the rule the turn's own text is.
+    """The verdict on text the model will read, held to the rule a user turn's own text is.
 
-    A verdict rather than a rewrite, because the image, not the text, is what gets removed.
+    For text whose source is removed or withheld rather than rewritten: an image's transcript
+    (the image goes), a conversation summary (`governance.summary_screening`; the summary goes).
     The marker scan reads the whole transcript whatever its length; the length ceiling applies
     only when a paid scorer would read it window by window, as it does for text.
     """
@@ -381,6 +382,7 @@ __all__ = [
     "replay_screener",
     "screen_for_injection",
     "screen_output_schema",
+    "screen_text_verdict",
     "screen_tool_arguments",
     "screen_tool_output",
     "screening_decider",

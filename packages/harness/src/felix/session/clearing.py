@@ -127,13 +127,18 @@ def clear_session_strategy(strategy: Any, spec: ToolResultClearing | None) -> An
 
 def model_view_strategy(strategy: Any, manifest: Manifest, settings: Settings | None) -> Any:
     """`strategy` as one compile renders history for its model: stale tool results cleared, then
-    replayed images screened. Every site that renders for a model calls this, so a next turn and a
+    replayed images screened, and the summaries it writes screened before they are stored. Every
+    site that renders for a model calls this, so a next turn and a
     side question about the thread read it the same way. A compile with skills also keeps them in
     view once its catalog is loaded (`skills.activation.retain_skills`, composed by the builder)."""
     from felix.governance.image_screening import screen_session_strategy
     from felix.governance.inbound import replay_screener
+    from felix.governance.summary_screening import screen_summaries
 
-    cleared = clear_session_strategy(strategy, manifest.spec.session.clear_tool_results)
+    # Innermost, so the summariser model every outer wrapper passes down reaches the strategy
+    # screened (`governance.summary_screening`).
+    screened = screen_summaries(strategy, manifest, settings)
+    cleared = clear_session_strategy(screened, manifest.spec.session.clear_tool_results)
     return screen_session_strategy(cleared, replay_screener(manifest, settings))
 
 
