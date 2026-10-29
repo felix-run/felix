@@ -156,6 +156,22 @@ async def _pipe_stream(
         yield ev
 
 
+def person_command(input: InvokeInput) -> str | None:
+    """The person's `/name` turn, for a child step a composite runs (`InvokeInput.person_command`).
+
+    Only from a turn a route marked as the person's own, or one already carried: a step's own
+    messages are the harness's (a subtask line, a critique, a transcript), and a `/name` a model
+    wrote there must not run a skill hidden from the model. Text that names no command is not
+    carried, so a step is handed nothing but what the preamble would act on."""
+    if input.person_command is not None:
+        return input.person_command
+    if not input.person_turn:
+        return None
+    from felix.skills.invocation import command_text
+
+    return command_text(list(input.messages))
+
+
 def _empty_output(input: InvokeInput) -> InvokeOutput:
     """The result of a turn that produced nothing."""
     return InvokeOutput(
@@ -525,6 +541,7 @@ class _DelegatingAgent:
             model_id=input.model_id,
             tenant_id=input.tenant_id,
             model_options=options,
+            person_command=person_command(input),
         )
 
     # --- router ---------------------------------------------------------------------
@@ -769,6 +786,10 @@ class _DelegatingAgent:
                 model_id=input.model_id,
                 tenant_id=input.tenant_id,
                 model_options=self._answer_options(input),
+                # With a thread, this draft reads the first one's activation back from the log.
+                # Without one -- a composite's step, `/v1` with no `user` -- the person's `/name` is
+                # run again, or the draft is written without the instructions.
+                person_command=person_command(input) if input.thread_id is None else None,
             )
 
         async for item in self._finish(draft, emit_events=emit_events):

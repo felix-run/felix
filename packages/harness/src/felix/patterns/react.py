@@ -1181,7 +1181,10 @@ class _ReactAgent:
         if self.skill_preamble is None:
             return
         calls = await self.skill_preamble.calls(
-            input.thread_id, list(input.messages), person_turn=getattr(input, "person_turn", False)
+            input.thread_id,
+            list(input.messages),
+            person_turn=getattr(input, "person_turn", False),
+            person_command=getattr(input, "person_command", None),
         )
         if not calls:
             return

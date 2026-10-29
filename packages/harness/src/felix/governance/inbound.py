@@ -304,6 +304,9 @@ async def screen_text_verdict(
     return await screen_chunks(settings, text, model_id, decider)
 
 
+#: The name of the manifest whose screening a route already ran on this turn. A name, not a flag: a
+#: composite with no inbound controls is not wrapped, so a bare flag was consumed by its first
+#: child -- a router's pick, one `parallel` specialist -- which then skipped its own screening.
 INBOUND_SCREENED_EXTRA = "inbound_screened"
 
 
@@ -330,13 +333,28 @@ class InboundScreeningAgent:
         from felix.context import try_get_context
 
         ctx = try_get_context()
-        # Consumed, not read: the mark means "this turn, screened at the route". A sub-agent
-        # compiled in the same context is a different agent with its own manifest, and
+        # Read, and consumed only by the manifest it names: "this turn, screened at the route, for
+        # this manifest".
+        # A sub-agent compiled in the same context is a different agent with its own manifest, and
         # screens what its parent hands it.
-        if ctx is not None and ctx.extras.pop(INBOUND_SCREENED_EXTRA, False):
+        name = self._manifest.metadata.name
+        if ctx is not None and ctx.extras.get(INBOUND_SCREENED_EXTRA) == name:
+            ctx.extras.pop(INBOUND_SCREENED_EXTRA)
             return input
         messages = await apply_inbound_screening(self._manifest, list(input.messages), self._settings)
-        return replace(input, messages=messages)
+        screened = replace(input, messages=messages)
+        if command := getattr(input, "person_command", None):
+            # The person's `/name` turn a composite carried into this step: its arguments reach the
+            # model inside the skill's instructions, so a child stricter than its parent screens
+            # them as it does its own turn. Quarantined, it no longer parses as a command.
+            from felix_ai.types import ChatMessage
+
+            # One message in, one out (or a raise when the manifest blocks).
+            [held] = await apply_inbound_screening(
+                self._manifest, [ChatMessage(role="user", content=command)], self._settings
+            )
+            screened = replace(screened, person_command=held.content)
+        return screened
 
     async def invoke(self, input: Any) -> Any:
         return await self._inner.invoke(await self._screened(input))

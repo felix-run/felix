@@ -553,8 +553,22 @@ that declares one can run it, anonymous callers of an `allow_anonymous` manifest
 that relies on `disable-model-invocation` against agent callers should not expose such skills to
 manifests served there. The audit row of each activation says who asked (`by`: `person`,
 `preload` or `model`). A preload of an imported skill nobody has adopted is skipped, and a preloaded
-skill the conversation deactivated stays deactivated. `/name` and `preload` run in react agents,
-the only pattern that runs tools itself; a compile whose pattern cannot run a preload says so.
+skill the conversation deactivated stays deactivated. `/name` and `preload` run where tools run: a
+react agent, and what wraps one (`deep`, `reflect`, `plan_execute`). A composite that hands work to
+child steps carries the person's own `/name` turn into each (`InvokeInput.person_command`): every
+`plan_execute` subtask, `parallel` specialist and `groupchat` speaker starts with the skill
+activated, under its own manifest's catalog, and a child stricter than its parent screens the
+carried turn as it does its own (quarantined, it is no command). That is one `activate_skill` call,
+and one audit row, per step: every subtask, every speaker every round. A router hands its child the
+person's turn itself, and `reflect` reads a threaded run's activation back from the log (a
+threadless one -- a composite's step, `/v1` with no `user` -- runs it again per draft). Only a turn
+a route marked as the person's is carried, so a `task` prompt written `/name` runs no skill in a
+composite child either. A child is its own manifest with its own door, and the route checked only
+the root's: a person's `/name` runs in a manifest only when the caller passes that manifest's
+`auth.inbound` (scopes, schemes, pin), as `task` requires per call -- so a parent open to more
+callers than its child does not hand them the child's manual-only skills. A composite with no tool
+loop of its own (router, `parallel`, `groupchat`) cannot run its own `preload`, and its compile says
+so.
 
 A skill whose frontmatter says `context: fork` runs in a subagent instead: `activate_skill` hands
 its instructions and the model's `task` to one of the manifest's `spec.delegation.agents` (the one

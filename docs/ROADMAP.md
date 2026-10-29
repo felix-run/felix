@@ -947,9 +947,24 @@ side was already conformant. Four PRs, landed in order:
   - Open: `/v1/models` `commands` lists prompts only; skills with their `argument_hint` are on
     `GET /skills/{manifest}`. `/v1` counts as a person's surface though its caller may be an
     agent, and A2A/MCP callers do not: decide whether `disable-model-invocation` needs a scope
-    of its own. `/name` and `preload` run in react agents only (a router or `plan_execute` gets
-    neither; a preload there logs a warning). The harness's synthetic assistant turn carries
-    no provenance marker in the log.
+    of its own. The harness's synthetic assistant turn carries no provenance marker in the log.
+  - [x] `/name` in every pattern (`fix/skill-runtime-gaps`): a composite carries the person's
+    `/name` turn into each child step (`InvokeInput.person_command`), so every `plan_execute`
+    subtask, `parallel` specialist and `groupchat` speaker starts with the skill activated. A
+    router already forwarded the turn, and `reflect` reads it back from the thread. Open: a
+    router, `parallel` or `groupchat` still cannot run its own `preload` (no tool loop; its
+    compile warns), and a `plan_execute` planner sees `/name args` as written, without the
+    instructions. A child compiled once and reached twice under `parallel` (two specialists
+    naming it) shares one `PersonCalls`: one run's round closing voids the other's id, so that
+    `/name` runs as the model's (fails closed; preload had the same race). Fixed with it: the
+    route's "already screened" mark names the manifest it screened for. As a bare flag, a
+    composite with no inbound controls left it to its first child (a router's pick, one
+    `parallel` specialist), which then skipped its own screening. And a person's `/name` now
+    runs in a manifest only for a caller its own door admits: a router's pick or a composite's
+    child no longer hands a narrower-scoped parent's callers its declared manual-only skills
+    (routers had that gap since `/name` shipped). Open: the rest of a child's turn is still
+    not held to its door -- a composite whose child needs scopes the parent does not is only
+    refused at compile when the parent is anonymous (#714).
 - [x] **Forked skills** (`feat/skill-fork`; `context: fork`, `agent:`, `model:`): the skill runs in a
       delegation child as a call of the governed `task` tool, and only its answer returns. Open:
       the tool runner's per-call layer (manifest and plugin tool hooks, the `tool_call` audit row)

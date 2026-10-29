@@ -1004,7 +1004,7 @@ async def _chat_turn(body: ChatRequest, request: Request) -> tuple[int, dict[str
         manifest_id=body.manifest,
         thread_id=thread,
         # Screened above, before the stream opened or the durable run was enqueued.
-        extras={INBOUND_SCREENED_EXTRA: True, THREAD_META_MEMO_EXTRA: meta_memo},
+        extras={INBOUND_SCREENED_EXTRA: resolved.manifest.metadata.name, THREAD_META_MEMO_EXTRA: meta_memo},
     )
     async with async_run_with_context(req_ctx):
         try:
@@ -1494,7 +1494,7 @@ async def chat_stream(
         # `APPEND_ORIGIN_EXTRA`: under an `Idempotency-Key`, what this turn appends is stamped,
         # so the key's settle and a resend's replay find exactly this request's events.
         extras={
-            INBOUND_SCREENED_EXTRA: True,
+            INBOUND_SCREENED_EXTRA: resolved.manifest.metadata.name,
             LIVE_STREAM_EXTRA: True,
             THREAD_META_MEMO_EXTRA: meta_memo,
             **({APPEND_ORIGIN_EXTRA: held.origin} if held is not None else {}),

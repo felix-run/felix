@@ -262,3 +262,102 @@ def test_a_hidden_skill_is_a_person_s_only_where_the_manifest_declares_it() -> N
     turn = [ChatMessage(role="user", content="/ops now")]
     assert invoked_skill(catalog, turn) is None
     assert invoked_skill(catalog, turn, declared=frozenset({"ops"})) == ("ops", "now")
+
+
+def _ops_manifest() -> Any:
+    from felix.manifests.loader import parse_manifest
+
+    return parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "ops"},
+            "spec": {"auth": {"inbound": {"allow_anonymous": False, "required_scopes": ["ops"]}}},
+        }
+    )
+
+
+async def _invocations(scopes: frozenset[str], **turn: Any) -> list[tuple[str, dict]]:
+    from felix.config import Settings
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.skills.invocation import SkillPreamble
+
+    preamble = SkillPreamble(
+        catalog=_catalog(),
+        preload=(),
+        session_store=None,
+        person_calls=PersonCalls(),
+        manifest=_ops_manifest(),
+    )
+    auth = AuthContext(principal_sub="p", anonymous=False, scopes=scopes, scheme="access")
+    ctx = RequestContext(settings=Settings(database_url="memory://t"), auth=auth, manifest_id="lead")
+    async with async_run_with_context(ctx):
+        calls = await preamble.calls(None, turn.pop("messages", []), **turn)
+    return [(c.name, c.args) for c in calls]
+
+
+async def test_a_carried_command_runs_only_for_a_caller_the_child_admits() -> None:
+    """A composite's child, or a router's pick, has its own door; the route checked only the root's.
+    A caller without the child's scope does not run its skills through a parent."""
+    carried = {"person_turn": False, "person_command": "/fix 7"}
+    assert await _invocations(frozenset(), **carried) == []
+    assert await _invocations(frozenset({"ops"}), **carried) == [
+        ("activate_skill", {"name": "fix", "arguments": "7"})
+    ]
+
+
+async def test_a_forwarded_person_turn_is_held_to_the_child_s_door_too() -> None:
+    """A router hands its pick the person's own turn (`person_turn`), not a carried command."""
+    turn = {"person_turn": True, "messages": [ChatMessage(role="user", content="/fix 7")]}
+    assert await _invocations(frozenset(), **turn) == []
+    assert await _invocations(frozenset({"ops"}), **turn) == [
+        ("activate_skill", {"name": "fix", "arguments": "7"})
+    ]
+
+
+async def test_with_no_request_context_no_caller_is_admitted() -> None:
+    from felix.skills.invocation import SkillPreamble
+
+    preamble = SkillPreamble(
+        catalog=_catalog(),
+        preload=(),
+        session_store=None,
+        person_calls=PersonCalls(),
+        manifest=_ops_manifest(),
+    )
+    assert await preamble.calls(None, [], person_turn=False, person_command="/fix 7") == []
+
+
+async def test_the_compile_hands_the_preamble_its_manifest(monkeypatch: Any, tmp_path: Any) -> None:
+    """The door check reads the preamble's manifest; one compiled without it skips the check."""
+    import felix.skills.invocation as invocation
+    from felix.config import Settings
+    from felix.context import AuthContext, RequestContext, async_run_with_context
+    from felix.manifests.schema import SkillRef
+    from felix.runtime import build_tenant_agent
+    from felix.tools.builtins import default_tool_provider
+
+    (tmp_path / "fix").mkdir()
+    (tmp_path / "fix" / "SKILL.md").write_text("---\nname: fix\ndescription: Fix.\n---\nb\n")
+    seen: list[Any] = []
+    real = invocation.skill_preamble
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("manifest"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(invocation, "skill_preamble", spy)
+    manifest = _ops_manifest().model_copy(deep=True)
+    manifest.spec.skills = [SkillRef(name="fix")]
+    settings = Settings(database_url="memory://t", skills_dir=str(tmp_path))
+    ctx = RequestContext(settings=settings, auth=AuthContext(tenant_id="acme"), manifest_id="ops")
+    async with async_run_with_context(ctx):
+        await build_tenant_agent(
+            settings,
+            manifest=manifest,
+            tools=default_tool_provider(),
+            tenant_id="acme",
+            skill_owner=None,
+            person="",
+        )
+    assert [getattr(m, "metadata", None) and m.metadata.name for m in seen] == ["ops"]
