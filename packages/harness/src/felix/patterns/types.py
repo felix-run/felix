@@ -40,6 +40,11 @@ class InvokeInput:
     # is a `/skill-name` in it run for them (`skills/invocation.py`): a turn a model wrote -- a
     # `task` prompt, a plan step, an A2A peer's message -- may name a skill hidden from the model.
     person_turn: bool = False
+    # The person's own turn, carried by a composite (`plan_execute`, `parallel`, `groupchat`)
+    # into a child step whose messages the harness wrote: a `/skill-name` in it is run in
+    # that step as if the person had typed it there. Set only from a `person_turn` input
+    # (`patterns.delegating.person_command`), never from anything a model wrote.
+    person_command: str | None = None
 
 
 @dataclass(slots=True)

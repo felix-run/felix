@@ -16,11 +16,14 @@ a preloaded skill the thread has ever activated -- even one since deactivated --
 again.
 
 Only a turn a route marked as the person's own (`InvokeInput.person_turn`: `/chat`, `/v1`, a durable
-`/chat` run) is read for `/name`. A turn a model wrote -- a `task` prompt, a plan step, an A2A
-peer's message -- must not run a skill hidden from the model. What a person's call may do that the
-model's may not -- reach such a skill, pass `arguments` -- is granted by call id: the preamble mints
-the ids and registers them (`PersonCalls`), and `activate_skill` honours each once. Nothing ambient
-carries it, so nothing the model does later inherits it.
+`/chat` run) is read for `/name`, or that turn as a composite carries it into the steps it runs
+(`InvokeInput.person_command`: a `plan_execute` subtask, a `parallel` specialist, a `groupchat`
+speaker), each of which starts with the skill activated. A router hands its child the person's turn
+itself, and a threaded `reflect` re-runs the same thread. A turn a model wrote -- a `task` prompt, a
+plan step, an A2A peer's message -- must not run a skill hidden from the model. What a person's call
+may do that the model's may not -- reach such a skill, pass `arguments` -- is granted by call id: the
+preamble mints the ids and registers them (`PersonCalls`), and `activate_skill` honours each once.
+Nothing ambient carries it, so nothing the model does later inherits it.
 """
 
 from __future__ import annotations
@@ -84,12 +87,29 @@ def invoked_skill(
     manifest names it in `spec.skills`: otherwise every host skill and every published library skill
     marked so -- an operator's "off" switch or a manual-only runbook -- would be any chat caller's,
     anonymous ones included. A skill the model may use is a person's too, as the model could reach it."""
+    text = command_text(messages)
+    return invoked_command(catalog, text, declared=declared) if text is not None else None
+
+
+def command_text(messages: list[ChatMessage]) -> str | None:
+    """The last message's text when it is a plain user turn written as a command (`/name ...`): what
+    `invoked_skill` reads, and what a composite carries into its steps
+    (`patterns.delegating.person_command`)."""
     from felix.prompts.commands import parse_command
 
     turn = messages[-1] if messages else None
     if turn is None or turn.role != "user" or turn.content_blocks is not None or not turn.content:
         return None
-    command = parse_command(turn.content)
+    return turn.content if parse_command(turn.content) is not None else None
+
+
+def invoked_command(
+    catalog: SkillCatalog, text: str, *, declared: frozenset[str] = frozenset()
+) -> tuple[str, str] | None:
+    """`(name, arguments)` when `text` runs a skill a person may run here (`invoked_skill`)."""
+    from felix.prompts.commands import parse_command
+
+    command = parse_command(text)
     if command is None or catalog.get_for_user(command[0]) is None:
         return None
     if catalog.get_invocable(command[0]) is None and command[0] not in declared:
@@ -107,16 +127,37 @@ class SkillPreamble:
     person_calls: PersonCalls
     # The names `spec.skills` declares: the only skills hidden from the model a person may run.
     declared: frozenset[str] = frozenset()
+    # The compile's manifest, whose inbound door a person's `/name` must pass (`_door_open`). None
+    # only where no manifest is compiled (unit tests), which skips the check.
+    manifest: Any | None = None
     # Set by the pattern that runs it (`patterns/react.py`). A compile whose pattern never does --
     # a router, `parallel` -- is told so, rather than leaving `preload` a field that does nothing.
     consumed: bool = field(default=False)
 
     async def calls(
-        self, thread_id: str | None, incoming: list[ChatMessage], *, person_turn: bool
+        self,
+        thread_id: str | None,
+        incoming: list[ChatMessage],
+        *,
+        person_turn: bool,
+        person_command: str | None = None,
     ) -> list[ToolCall]:
         from felix_ai.types import ToolCall
 
-        invoked = invoked_skill(self.catalog, incoming, declared=self.declared) if person_turn else None
+        if person_turn:
+            invoked = invoked_skill(self.catalog, incoming, declared=self.declared)
+        elif person_command:
+            # A composite's step (`InvokeInput.person_command`): its own turn is the harness's, the
+            # person's `/name` rides beside it, and is run in every step it reaches.
+            invoked = invoked_command(self.catalog, person_command, declared=self.declared)
+        else:
+            invoked = None
+        if invoked is not None and not self._door_open():
+            # A composite's child, or a router's pick, is its own manifest with its own door: the
+            # route checked only the root's. A caller who could not call this manifest by name does
+            # not run its skills -- a manual-only runbook among them -- through a parent.
+            logger.info("skill invocation refused: the caller may not run manifest %s", self.manifest_name)
+            invoked = None
         calls: list[ToolCall] = []
         if self.preload:
             # One read of the thread, and only for a manifest that preloads.
@@ -148,6 +189,27 @@ class SkillPreamble:
             calls.append(ToolCall(id=self.person_calls.mint(INVOKE_PREFIX), name=ACTIVATE_TOOL, args=args))
         return calls
 
+    @property
+    def manifest_name(self) -> str:
+        return str(getattr(getattr(self.manifest, "metadata", None), "name", "") or "")
+
+    def _door_open(self) -> bool:
+        """Whether this request's caller passes the manifest's own inbound auth. Fails closed with no
+        request context: there is no caller to admit."""
+        if self.manifest is None:
+            return True
+        from felix.context import try_get_context
+        from felix.manifests.inbound_auth import InboundAuthError, enforce_inbound_auth
+
+        req = try_get_context()
+        if req is None:
+            return False
+        try:
+            enforce_inbound_auth(self.manifest, req.auth)
+        except InboundAuthError:
+            return False
+        return True
+
     async def _seen(self, thread_id: str | None) -> set[str]:
         if self.session_store is None or not thread_id:
             return set()
@@ -156,7 +218,12 @@ class SkillPreamble:
 
 
 def skill_preamble(
-    catalog: SkillCatalog, refs: list[SkillRef], session_store: Any | None, person_calls: PersonCalls
+    catalog: SkillCatalog,
+    refs: list[SkillRef],
+    session_store: Any | None,
+    person_calls: PersonCalls,
+    *,
+    manifest: Any | None = None,
 ) -> SkillPreamble | None:
     """The preamble for a compile, or None when it could never add a call: no skill a person can
     run and nothing to preload."""
@@ -169,6 +236,7 @@ def skill_preamble(
         session_store=session_store,
         person_calls=person_calls,
         declared=frozenset(r.name for r in refs),
+        manifest=manifest,
     )
 
 

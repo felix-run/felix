@@ -230,7 +230,8 @@ async def handle_rpc(
                 # left, not the text alone.
                 screened = await apply_inbound_screening(resolved.manifest, [incoming], settings)
                 incoming = screened[0] if screened else incoming
-                req_ctx.extras[INBOUND_SCREENED_EXTRA] = True  # screened just above
+                # Screened just above, for this manifest only.
+                req_ctx.extras[INBOUND_SCREENED_EXTRA] = resolved.manifest.metadata.name
                 agent = await build_tenant_agent(
                     settings,
                     manifest=resolved.manifest,

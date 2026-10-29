@@ -308,3 +308,209 @@ async def test_an_undeclared_hidden_skill_is_no_one_s_to_run(boot: Any, skills_d
     ) as app:
         await _chat(app, "/secret-ops")
         assert _activations(app.spy.prompts[0]) == []
+
+
+async def test_a_plan_execute_agent_runs_the_person_s_skill_in_every_step(
+    boot: Any, skills_dir: Path
+) -> None:
+    """Each subtask is a fresh conversation the harness wrote; the person's `/name` is run in each."""
+    script = [
+        ScriptedTurn(content="1. look up the vendor\n2. file it"),
+        ScriptedTurn(content="looked up"),
+        ScriptedTurn(content="filed"),
+        ScriptedTurn(content="done"),
+    ]
+    async with boot(
+        script,
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={"e2e-invoke": _manifest(pattern="plan_execute")},
+    ) as app:
+        await _chat(app, "/triage ACME 900")
+        steps = app.spy.prompts[1:3]
+    assert len(steps) == 2
+    for i, step in enumerate(steps, start=1):
+        assert any(f"Subtask {i}/2" in str(m.content) for m in step), "the prompt is the step"
+        [activated] = _activations(step)
+        assert activated["activated"] == "triage" and activated["arguments"] == "ACME 900"
+        assert activated["instructions"] == "Triage the invoice from ACME for 900 (ACME 900)."
+
+
+async def test_a_model_s_task_to_a_plan_execute_agent_runs_no_skill(boot: Any, skills_dir: Path) -> None:
+    """A `task` prompt is the parent model's text: a `plan_execute` child must not carry its
+    `/secret-ops` into the steps as if a person had typed it."""
+    lead = parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "e2e-lead"},
+            "spec": {
+                "pattern": "react",
+                "delegation": {"agents": [{"name": "e2e-invoke", "description": "Does ops."}]},
+                "auth": {"inbound": {"allow_anonymous": True}},
+            },
+        }
+    )
+    task = ToolCall(id="t1", name="task", args={"agent": "e2e-invoke", "prompt": "/secret-ops now"})
+    script = [
+        ScriptedTurn(tool_calls=[task]),
+        ScriptedTurn(content="1. do it"),
+        ScriptedTurn(content="step done"),
+        ScriptedTurn(content="child done"),
+        ScriptedTurn(content="lead done"),
+    ]
+    declared = _manifest(pattern="plan_execute", skills=[{"name": "triage"}, {"name": "secret-ops"}])
+    async with boot(
+        script,
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={"e2e-lead": lead, "e2e-invoke": declared},
+    ) as app:
+        response = await app.client.post(
+            "/chat",
+            json={
+                "manifest": "e2e-lead",
+                "thread_id": "e2e-lead-1",
+                "messages": [{"role": "user", "content": "go"}],
+            },
+        )
+        assert response.status_code == 200, response.text
+        step = app.spy.prompts[2]
+    assert any("Subtask 1/1" in str(m.content) for m in step), "the prompt is the child's step"
+    assert _activations(step) == []
+
+
+def _specialist(name: str, skills: list[str]) -> Any:
+    return parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": name},
+            "spec": {
+                "pattern": "react",
+                "skills": [{"name": s} for s in skills],
+                "auth": {"inbound": {"allow_anonymous": True}},
+            },
+        }
+    )
+
+
+async def test_a_parallel_agent_runs_the_person_s_skill_in_each_specialist(
+    boot: Any, skills_dir: Path
+) -> None:
+    """A specialist is another manifest, handed the person's messages as a step: the `/name` rides
+    with them and runs in every specialist, not only the first, under each one's own catalog."""
+    lead = _manifest(pattern="parallel", sub_agents=["e2e-spec-a", "e2e-spec-b"])
+    async with boot(
+        [ScriptedTurn(content="a says"), ScriptedTurn(content="b says"), ScriptedTurn(content="combined")],
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={
+            "e2e-invoke": lead,
+            "e2e-spec-a": _specialist("e2e-spec-a", ["triage"]),
+            "e2e-spec-b": _specialist("e2e-spec-b", ["triage"]),
+        },
+    ) as app:
+        await _chat(app, "/triage ACME 900")
+        # The specialists run concurrently, so in no fixed order: count, not index.
+        activations = [a for p in app.spy.prompts for a in _activations(p)]
+    assert [(a["activated"], a["arguments"]) for a in activations] == [("triage", "ACME 900")] * 2
+
+
+async def test_a_skill_the_parent_declares_is_not_the_child_s_to_run(boot: Any, skills_dir: Path) -> None:
+    """A hidden skill is a person's only where the manifest running it declares it: the lead's
+    `spec.skills` does not reach a specialist that names only `triage`."""
+    lead = _manifest(
+        pattern="parallel",
+        sub_agents=["e2e-spec-a"],
+        skills=[{"name": "triage"}, {"name": "secret-ops"}],
+    )
+    async with boot(
+        [ScriptedTurn(content="a says"), ScriptedTurn(content="combined")],
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={"e2e-invoke": lead, "e2e-spec-a": _specialist("e2e-spec-a", ["triage"])},
+    ) as app:
+        await _chat(app, "/secret-ops")
+        specialist = app.spy.prompts[0]
+    assert any(str(m.content) == "/secret-ops" for m in specialist), "the prompt is the specialist's"
+    assert _activations(specialist) == []
+
+
+async def test_a_reflect_agent_s_second_draft_keeps_the_person_s_skill(boot: Any, skills_dir: Path) -> None:
+    """Reflect re-runs the same thread, so a later draft reads the first draft's activation back from
+    the log: the instructions are there once, with no second `already_active` round."""
+    script = [
+        ScriptedTurn(content="draft one"),
+        ScriptedTurn(content="0.1"),
+        ScriptedTurn(content="draft two"),
+    ]
+    async with boot(
+        script,
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={"e2e-invoke": _manifest(pattern="reflect", reflect={"max_iterations": 2})},
+    ) as app:
+        await _chat(app, "/triage ACME 900")
+        second = app.spy.prompts[2]
+    assert any("Previous answer scored" in str(m.content) for m in second), "the prompt is the second draft"
+    [activated] = _activations(second)
+    assert activated["activated"] == "triage" and activated["arguments"] == "ACME 900"
+
+
+async def test_a_threadless_reflect_specialist_keeps_the_person_s_skill_in_every_draft(
+    boot: Any, skills_dir: Path
+) -> None:
+    """A reflect agent run as a `parallel` specialist has no thread to read its first activation
+    back from: its later draft runs the person's carried `/name` again."""
+    child = parse_manifest(
+        {
+            "apiVersion": "felix/v1",
+            "kind": "Agent",
+            "metadata": {"name": "e2e-reflector"},
+            "spec": {
+                "pattern": "reflect",
+                "reflect": {"max_iterations": 2},
+                "skills": [{"name": "triage"}],
+                "auth": {"inbound": {"allow_anonymous": True}},
+            },
+        }
+    )
+    lead = _manifest(pattern="parallel", sub_agents=["e2e-reflector"])
+    script = [
+        ScriptedTurn(content="draft one"),
+        ScriptedTurn(content="0.1"),
+        ScriptedTurn(content="draft two"),
+        ScriptedTurn(content="combined"),
+    ]
+    async with boot(
+        script,
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={"e2e-invoke": lead, "e2e-reflector": child},
+    ) as app:
+        await _chat(app, "/triage ACME 900")
+        second = app.spy.prompts[2]
+    assert any("Previous answer scored" in str(m.content) for m in second), "the prompt is the second draft"
+    [activated] = _activations(second)
+    assert activated["activated"] == "triage" and activated["arguments"] == "ACME 900"
+
+
+async def test_a_threadless_reflect_on_v1_keeps_the_person_s_skill_in_every_draft(
+    boot: Any, skills_dir: Path
+) -> None:
+    """`/v1` with no `user` runs with no thread: a later draft has no log to read the activation
+    back from, so the person's `/name` is run again with it."""
+    script = [
+        ScriptedTurn(content="draft one"),
+        ScriptedTurn(content="0.1"),
+        ScriptedTurn(content="draft two"),
+    ]
+    async with boot(
+        script,
+        env={"FELIX_SKILLS_DIR": str(skills_dir)},
+        manifests={"e2e-invoke": _manifest(pattern="reflect", reflect={"max_iterations": 2})},
+    ) as app:
+        response = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "e2e-invoke", "messages": [{"role": "user", "content": "/triage ACME 900"}]},
+        )
+        assert response.status_code == 200, response.text
+        second = app.spy.prompts[2]
+    assert any("Previous answer scored" in str(m.content) for m in second), "the prompt is the second draft"
+    [activated] = _activations(second)
+    assert activated["activated"] == "triage" and activated["arguments"] == "ACME 900"

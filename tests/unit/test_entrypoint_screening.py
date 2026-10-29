@@ -120,7 +120,9 @@ async def test_a_route_that_screened_first_is_not_screened_twice() -> None:
     settings = _settings()
     echo = _Echo()
     agent = InboundScreeningAgent(echo, _manifest("quarantine"), settings)
-    async with async_run_with_context(_ctx(settings, **{INBOUND_SCREENED_EXTRA: True})):
+    async with async_run_with_context(
+        _ctx(settings, **{INBOUND_SCREENED_EXTRA: _manifest("quarantine").metadata.name})
+    ):
         await agent.invoke(_user(INJECTION))
     assert echo.seen == [INJECTION]
 
@@ -485,11 +487,45 @@ async def test_the_pre_screened_mark_is_consumed_by_the_first_agent_only() -> No
     outer, inner = _Echo(), _Echo()
     parent = InboundScreeningAgent(outer, _manifest("quarantine"), settings)
     child = InboundScreeningAgent(inner, _manifest("quarantine"), settings)
-    async with async_run_with_context(_ctx(settings, **{INBOUND_SCREENED_EXTRA: True})):
+    async with async_run_with_context(
+        _ctx(settings, **{INBOUND_SCREENED_EXTRA: _manifest("quarantine").metadata.name})
+    ):
         await parent.invoke(_user(INJECTION))
         await child.invoke(_user(INJECTION))
     assert outer.seen == [INJECTION], "the route screened this turn"
     assert inner.seen and inner.seen[0].startswith("[quarantined]"), "the mark was consumed"
+
+
+async def test_a_mark_for_an_unscreened_parent_does_not_excuse_its_child() -> None:
+    """A composite with no inbound controls is not wrapped, so nothing consumes the route's mark
+    for it: a child -- a router's pick, a `parallel` specialist -- still screens its own turn."""
+    settings = _settings()
+    inner = _Echo()
+    child = InboundScreeningAgent(inner, _manifest("quarantine"), settings)
+    async with async_run_with_context(_ctx(settings, **{INBOUND_SCREENED_EXTRA: "plain-router"})):
+        await child.invoke(_user(INJECTION))
+    assert inner.seen and inner.seen[0].startswith("[quarantined]")
+
+
+async def test_a_carried_person_command_is_screened_by_the_child() -> None:
+    """A composite's step carries the person's `/name` turn beside its own messages
+    (`InvokeInput.person_command`); a stricter child screens it as it does its turn."""
+    from dataclasses import replace
+
+    settings = _settings()
+    seen: list[InvokeInput] = []
+
+    class _Keep(_Echo):
+        async def invoke(self, input: InvokeInput) -> InvokeOutput:
+            seen.append(input)
+            return await super().invoke(input)
+
+    child = InboundScreeningAgent(_Keep(), _manifest("quarantine"), settings)
+    step = replace(_user("Subtask 1/1: go"), person_command=f"/triage {INJECTION}")
+    async with async_run_with_context(_ctx(settings)):
+        await child.invoke(step)
+    carried = seen[0].person_command or ""
+    assert carried.startswith("[quarantined]") and INJECTION not in carried, carried
 
 
 async def test_an_oversize_argument_set_is_refused_with_its_own_action() -> None:
