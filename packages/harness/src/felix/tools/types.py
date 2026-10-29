@@ -146,6 +146,12 @@ class Tool:
     # (`untrusted_output`): content screening wraps it so those results are screened, and only
     # those (`builder.apply_content_screening`). `activate_skill` relaying an imported skill.
     relays_untrusted: bool = False
+    # Every host this tool connects to, for a tool whose destinations are fixed in code rather
+    # than chosen per call -- a plugin's weather backend, say. The compile refuses the tool under
+    # an agent whose `network.allow_hosts` bound does not allow each one
+    # (`builder._check_tool_egress`), since nothing hands a plugin tool the bound at call time.
+    # Empty claims nothing, and is checked by nothing.
+    egress_hosts: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if self.peer and not self.is_peer:
@@ -424,6 +430,7 @@ def define_tool_with_executor(
     read_only: bool = False,
     prompt_guidance: str = "",
     approval_preview: Callable[[ToolInput], Awaitable[str]] | None = None,
+    egress_hosts: frozenset[str] = frozenset(),
 ) -> Tool:
     schema = args_schema if args_schema is not None else args
     return Tool(
@@ -439,6 +446,7 @@ def define_tool_with_executor(
         read_only=read_only,
         prompt_guidance=prompt_guidance,
         approval_preview=approval_preview,
+        egress_hosts=egress_hosts,
         executor=executor,
     )
 

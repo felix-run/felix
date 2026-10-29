@@ -10,6 +10,7 @@ members = [
     "felix-channels",
     "felix-cli",
     "felix-client",
+    "felix-connectors",
     "felix-harness",
     "felix-worker",
 ]
@@ -1021,6 +1022,9 @@ browser = [
 channels = [
     { name = "felix-channels" },
 ]
+connectors = [
+    { name = "felix-connectors" },
+]
 embeddings = [
     { name = "felix-harness", extra = ["embeddings"] },
 ]
@@ -1080,6 +1084,7 @@ requires-dist = [
     { name = "felix-channels", marker = "extra == 'channels'", editable = "packages/channels" },
     { name = "felix-cli", editable = "apps/cli" },
     { name = "felix-client", editable = "packages/client" },
+    { name = "felix-connectors", marker = "extra == 'connectors'", editable = "packages/connectors" },
     { name = "felix-harness", editable = "packages/harness" },
     { name = "felix-harness", extras = ["a2a"], marker = "extra == 'a2a'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["aws"], marker = "extra == 'aws'", editable = "packages/harness" },
@@ -1098,7 +1103,7 @@ requires-dist = [
     { name = "felix-harness", extras = ["warehouse-doris"], marker = "extra == 'warehouse-doris'", editable = "packages/harness" },
     { name = "felix-worker", editable = "apps/worker" },
 ]
-provides-extras = ["aws", "gcp", "otel", "a2a", "oidc", "granian", "browser", "image", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "sandbox", "pii", "channels", "full"]
+provides-extras = ["aws", "gcp", "otel", "a2a", "oidc", "granian", "browser", "image", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "sandbox", "pii", "channels", "connectors", "full"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1179,6 +1184,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "httpx", specifier = ">=0.28.1" }]
+
+[[package]]
+name = "felix-connectors"
+version = "0.18.0"
+source = { editable = "packages/connectors" }
+dependencies = [
+    { name = "felix-harness" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "felix-harness", editable = "packages/harness" }]
 
 [[package]]
 name = "felix-harness"

@@ -211,6 +211,23 @@ def _check_declared_egress(m: Manifest, egress: EgressBound) -> None:
         )
 
 
+def _check_tool_egress(m: Manifest, tools: list[Tool], egress: EgressBound) -> None:
+    """Refuse a tool that declares a host (`Tool.egress_hosts`) its agent's bound does not allow.
+
+    `http_tools` are handed the bound and enforce it per request; a plugin tool is not, so the
+    hosts it says it reaches are checked here, once, against the whole bound."""
+    if not egress.restricted:
+        return
+    outside = sorted(
+        {f"{t.name} ({host})" for t in tools for host in t.egress_hosts if not egress.allows(host)}
+    )
+    if outside:
+        raise ValueError(
+            f"manifest '{m.metadata.name}' binds tools that reach hosts its network.allow_hosts, "
+            f"or an agent's above it, does not allow: {', '.join(outside)}"
+        )
+
+
 def _bundled_sub_agent(deps: BuildDeps) -> Callable[[str], Awaitable[Agent]]:
     """Compile a sub-agent from bundled YAML — the resolver for callers with no tenant.
 
@@ -2119,6 +2136,7 @@ async def build_agent(
             m, deps.settings, tenant_id=tenant_id
         )
         _check_declared_egress(m, egress)
+        _check_tool_egress(m, resolved, egress)
 
         # Outbound MCP servers → remote tools.
         if mcp_refs:

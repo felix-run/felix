@@ -34,6 +34,7 @@ LOCATIONS: tuple[tuple[str, str, str], ...] = (
     ("apps/api/pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("apps/worker/pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("packages/channels/pyproject.toml", "version", r'^version = "([^"]+)"$'),
+    ("packages/connectors/pyproject.toml", "version", r'^version = "([^"]+)"$'),
     ("packages/harness/src/felix/__init__.py", "__version__", r'^__version__ = "([^"]+)"$'),
     ("apps/cli/src/felix_cli/__init__.py", "__version__", r'^__version__ = "([^"]+)"$'),
     ("apps/api/src/felix_api/__init__.py", "__version__", r'^__version__ = "([^"]+)"$'),

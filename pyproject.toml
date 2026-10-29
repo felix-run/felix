@@ -40,6 +40,9 @@ pii = ["felix-harness[pii]"]
 # The chat-platform plugin (`packages/channels`): Slack today. A plugin, not a harness extra --
 # core never imports it -- so it is its own distribution, installed by naming it.
 channels = ["felix-channels"]
+# Tools that reach everyday services (`packages/connectors`): weather today. A plugin, like
+# `channels`: installing it registers the tools, and a manifest still names each one.
+connectors = ["felix-connectors"]
 full = [
     "felix-harness[aws,gcp,otel]",
 ]
@@ -73,6 +76,7 @@ felix-cli = { workspace = true }
 felix-api = { workspace = true }
 felix-worker = { workspace = true }
 felix-channels = { workspace = true }
+felix-connectors = { workspace = true }
 
 [tool.ruff]
 line-length = 110
@@ -110,6 +114,7 @@ source = [
     "apps/api/src/felix_api",
     "apps/worker/src/felix_worker",
     "packages/channels/src/felix_channels",
+    "packages/connectors/src/felix_connectors",
 ]
 branch = false
 
