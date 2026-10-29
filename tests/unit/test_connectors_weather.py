@@ -460,9 +460,8 @@ def test_every_family_builds_exactly_the_tools_it_lists() -> None:
     from felix_connectors import FAMILIES
 
     for family in FAMILIES:
-        assert [t.name for t in family.build_tools(make_settings())] == list(family.TOOL_NAMES), (
-            family.__name__
-        )
+        settings = make_settings(market_api_key="test-key")
+        assert [t.name for t in family.build_tools(settings)] == list(family.TOOL_NAMES), family.__name__
 
 
 def test_a_listed_name_the_family_does_not_build_fails_by_name(monkeypatch: pytest.MonkeyPatch) -> None:

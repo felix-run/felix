@@ -16,6 +16,9 @@ from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import ApprovalRule
 from felix.tools.types import Tool
 
+#: Tools the test environment itself cannot build: the stock tools, with `FELIX_MARKET_API_KEY` blank.
+_UNBUILDABLE_HERE = {"connectors__quote", "connectors__quote_history", "connectors__symbol_search"}
+
 
 def _manifest(*rules: dict[str, Any]) -> Any:
     return parse_manifest(
@@ -45,6 +48,61 @@ def test_a_glob_is_left_to_compile_time() -> None:
     knows about. (Not `*`: that also reaches a tool with an unlisted schema, which excuses the
     rule on its own and would let this pass for the wrong reason.)"""
     validate_for_write(_manifest({"id": "r1", "tools": ["re*"], "when_args": ["force"]}))
+
+
+def test_a_tool_that_cannot_be_built_offline_does_not_refuse_every_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A plugin tool missing its key raises when built. The write of a manifest that does not name
+    # it must still pass, and one naming it is left to the compile, which refuses the tool itself.
+    from felix.tools import builtins
+
+    real = builtins.default_tool_provider
+
+    def provider() -> Any:
+        p = real()
+
+        def unbuildable() -> Tool:
+            raise ValueError("FELIX_EXAMPLE_KEY is not set")
+
+        p.register("plugin__keyed", unbuildable)
+        return p
+
+    monkeypatch.setattr(builtins, "default_tool_provider", provider)
+    validate_for_write(_manifest({"id": "r1", "tools": ["remember"], "when_args": ["topic_key"]}))
+    validate_for_write(_manifest({"id": "r2", "tools": ["plugin__keyed"], "when_args": ["anything"]}))
+    # Skipping one tool is not checking none: a provider built-in and a memory tool still refuse.
+    for tool, typo in (("read_file", "paht"), ("remember", "topickey")):
+        with pytest.raises(GovernanceError):
+            validate_for_write(_manifest({"id": "r3", "tools": [tool], "when_args": [typo]}))
+    from felix.config import get_settings
+    from felix.manifests.approval_args import offline_tools
+
+    names = {t.name for t in offline_tools(get_settings())}
+    assert "plugin__keyed" not in names
+    assert set(real().list()) <= names | {"plugin__keyed"} | _UNBUILDABLE_HERE
+
+
+def test_a_factory_that_fails_for_another_reason_still_fails_the_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only a configuration refusal (ValueError) is skipped; a broken factory is a defect to hear about.
+    from felix.tools import builtins
+
+    real = builtins.default_tool_provider
+
+    def provider() -> Any:
+        p = real()
+
+        def broken() -> Tool:
+            raise TypeError("a bug in a factory")
+
+        p.register("plugin__broken", broken)
+        return p
+
+    monkeypatch.setattr(builtins, "default_tool_provider", provider)
+    with pytest.raises(TypeError):
+        validate_for_write(_manifest({"id": "r1", "tools": ["remember"], "when_args": ["topic_key"]}))
 
 
 def test_the_cli_fails_on_it(tmp_path: Path) -> None:

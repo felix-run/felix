@@ -1013,7 +1013,7 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     tokens rather than `max_cost_usd`, because a declared cost cap refuses to compile on an
     unpriced route.
   - Stale fields, prompts and tool names were corrected.
-- [ ] **`packages/connectors`**: weather (Open-Meteo, keyless), maps (Nominatim/OSRM), market
+- [x] **`packages/connectors`**: weather (Open-Meteo, keyless), maps (Nominatim/OSRM), market
       data (keyed).
   - [x] Weather, and the core seam it needs: `Tool.egress_hosts`, checked against the agent's
     `network.allow_hosts` bound at compile. `connectors__weather_current`, `_forecast` and
@@ -1027,7 +1027,14 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     and it is shared by every tenant, so one tenant's burst answers another's `rate_limited` for
     a few seconds. A shared limiter (Valkey) with a per-tenant share, or a URL setting for a
     self-hosted instance (unpaced by host already), would close both.
-  - [ ] Market data and FX.
+  - [x] Market data and FX: `connectors__quote`, `_quote_history`, `_symbol_search`
+    (`FELIX_MARKET_BACKEND`: Finnhub, the default, or Alpha Vantage; `FELIX_MARKET_API_KEY`
+    required, refused at compile by name without one) and keyless `connectors__fx_rate` (ECB
+    reference rates via Frankfurter, its own family so it works unkeyed). Every price carries its
+    timestamp and age and never claims to be real-time. Open: Finnhub's free plan has no daily
+    history, so history on the default backend answers that it has none; a Polygon backend, or
+    a history-only backend setting, would close that. The key and its quota are shared by every
+    tenant on the install; a per-tenant daily cap on keyed connector calls is undecided.
   - Found, not fixed: a plugin tool that declares no `egress_hosts` is still unbounded under
     `allow_hosts`. Refusing every undeclared non-`local` tool under a bound is the allowlist
     answer, and would break any plugin tool bound today under one.

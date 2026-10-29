@@ -378,6 +378,12 @@ class Settings(BaseSettings):
     # (`felix_connectors.maps.register_geocoder` / `register_router`); the defaults need no key.
     maps_geocoder: str = "nominatim"
     maps_router: str = "osrm"
+    # Stock quotes, history and symbol search (`felix_connectors.markets.register_market_backend`):
+    # `finnhub` or `alphavantage`, each needing `market_api_key`; a manifest listing a stock tool
+    # without one fails its compile, by name. Exchange rates are keyless (`frankfurter`).
+    market_backend: str = "finnhub"
+    market_api_key: str = Field(default="", repr=False)
+    fx_backend: str = "frankfurter"
     # Appended to the User-Agent every connector sends -- an email or URL. Nominatim's and the
     # National Weather Service's usage policies ask for a way to reach whoever runs the client.
     connectors_contact: str = ""
@@ -791,6 +797,16 @@ class Settings(BaseSettings):
                 "Temporal's. Unset FELIX_DURABILITY and stop felix-temporal-worker; the fiber "
                 "scheduler in felix-worker runs durable chats, including ones Temporal had started."
             )
+        return v
+
+    @field_validator("market_api_key")
+    @classmethod
+    def _key_fits_a_header(cls, v: str) -> str:
+        # A key from a CRLF `.env` or a secret file ends in whitespace, and h11 refuses such a
+        # header with the value in its message -- which a failure log would then print.
+        v = v.strip()
+        if not all(0x21 <= ord(ch) <= 0x7E for ch in v):
+            raise ValueError("FELIX_MARKET_API_KEY must be printable ASCII with no spaces")
         return v
 
     @field_validator("connectors_contact")

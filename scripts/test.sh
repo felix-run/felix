@@ -46,6 +46,7 @@ export FELIX_REDIS_URL=redis://127.0.0.1:9/0
 # `tests/support/e2e.py:scripted_model_routes`.
 export FELIX_ANTHROPIC_API_KEY=""
 export FELIX_OPENAI_API_KEY=""
+export FELIX_MARKET_API_KEY=""
 export FELIX_SEARCH_API_KEY=""
 export FELIX_MODEL_PROVIDER_OPTIONS=""
 # `auto` would load the local embedding model wherever the extra is installed — a download on
