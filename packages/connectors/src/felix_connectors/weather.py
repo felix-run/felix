@@ -12,27 +12,25 @@ them, so an agent cannot present a stale reading as the current one.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from felix.config import Settings
-from felix.security.host_allowlist import url_host
 from felix.tools.types import Tool
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
-from felix_connectors.http import allow_http, get_json, user_agent
+from felix_connectors.http import Upstream, allow_http, user_agent
 from felix_connectors.registry import BackendRegistry
-from felix_connectors.tools import connector_tool, one_line
-
-logger = logging.getLogger("felix_connectors.weather")
+from felix_connectors.tools import Point, connector_tool, number, one_line
 
 Units = Literal["metric", "imperial"]
 MAX_FORECAST_DAYS = 16
 MAX_ALERTS = 5
 #: An alert's prose, per alert: enough for what to do, not the whole bulletin.
 MAX_ALERT_TEXT = 600
+#: Open-Meteo's free API: the forecast here, and the time zone tool in `maps`.
+OPEN_METEO_URL = "https://api.open-meteo.com"
 
 # WMO weather interpretation codes, as Open-Meteo reports them.
 _WMO = {
@@ -129,10 +127,6 @@ class WeatherBackend(Protocol):
     async def forecast(self, latitude: float, longitude: float, *, days: int, units: Units) -> Forecast: ...
 
 
-def _num(value: object) -> float | None:
-    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
-
-
 def _at(values: object, i: int) -> object:
     return values[i] if isinstance(values, list) and i < len(values) else None
 
@@ -151,13 +145,9 @@ class OpenMeteoBackend:
         "precipitation_probability_max,wind_speed_10m_max"
     )
 
-    def __init__(
-        self, *, base_url: str = "https://api.open-meteo.com", user_agent: str, allow_http: bool = False
-    ):
-        self._url = base_url.rstrip("/") + "/v1/forecast"
-        self._headers = {"user-agent": user_agent, "accept": "application/json"}
-        self._allow_http = allow_http
-        self.hosts = frozenset({url_host(self._url)})
+    def __init__(self, *, base_url: str = OPEN_METEO_URL, user_agent: str, allow_http: bool = False):
+        self._up = Upstream(base_url, user_agent, allow_http)
+        self.hosts = self._up.hosts
 
     async def forecast(self, latitude: float, longitude: float, *, days: int, units: Units) -> Forecast:
         params = {
@@ -174,15 +164,13 @@ class OpenMeteoBackend:
                 "wind_speed_unit": "mph",
                 "precipitation_unit": "inch",
             }
-        payload = await get_json(
-            self._url, params=params, headers=self._headers, hosts=self.hosts, allow_http=self._allow_http
-        )
+        payload = await self._up.get("/v1/forecast", params)
         if not isinstance(payload, dict):
             raise ValueError("forecast is not an object")
         return Forecast(
             source=self.source,
-            latitude=_num(payload.get("latitude")) or latitude,
-            longitude=_num(payload.get("longitude")) or longitude,
+            latitude=number(payload.get("latitude")) or latitude,
+            longitude=number(payload.get("longitude")) or longitude,
             timezone=str(payload.get("timezone") or "UTC"),
             units=units,
             current=self._current(payload.get("current")),
@@ -195,12 +183,12 @@ class OpenMeteoBackend:
             return None
         return Current(
             time=str(raw.get("time") or ""),
-            temperature=_num(raw.get("temperature_2m")),
-            feels_like=_num(raw.get("apparent_temperature")),
-            humidity=_num(raw.get("relative_humidity_2m")),
-            precipitation=_num(raw.get("precipitation")),
-            wind_speed=_num(raw.get("wind_speed_10m")),
-            wind_direction=_num(raw.get("wind_direction_10m")),
+            temperature=number(raw.get("temperature_2m")),
+            feels_like=number(raw.get("apparent_temperature")),
+            humidity=number(raw.get("relative_humidity_2m")),
+            precipitation=number(raw.get("precipitation")),
+            wind_speed=number(raw.get("wind_speed_10m")),
+            wind_direction=number(raw.get("wind_direction_10m")),
             condition=condition(raw.get("weather_code")),
         )
 
@@ -212,11 +200,11 @@ class OpenMeteoBackend:
             Day(
                 date=str(date),
                 condition=condition(_at(raw.get("weather_code"), i)),
-                high=_num(_at(raw.get("temperature_2m_max"), i)),
-                low=_num(_at(raw.get("temperature_2m_min"), i)),
-                precipitation=_num(_at(raw.get("precipitation_sum"), i)),
-                precipitation_chance=_num(_at(raw.get("precipitation_probability_max"), i)),
-                wind_max=_num(_at(raw.get("wind_speed_10m_max"), i)),
+                high=number(_at(raw.get("temperature_2m_max"), i)),
+                low=number(_at(raw.get("temperature_2m_min"), i)),
+                precipitation=number(_at(raw.get("precipitation_sum"), i)),
+                precipitation_chance=number(_at(raw.get("precipitation_probability_max"), i)),
+                wind_max=number(_at(raw.get("wind_speed_10m_max"), i)),
             )
             for i, date in enumerate(raw["time"][:MAX_FORECAST_DAYS])
         )
@@ -249,17 +237,13 @@ class NwsAlerts:
     def __init__(
         self, *, base_url: str = "https://api.weather.gov", user_agent: str, allow_http: bool = False
     ):
-        self._url = base_url.rstrip("/") + "/alerts/active"
-        # The NWS refuses a request without a User-Agent.
-        self._headers = {"user-agent": user_agent, "accept": "application/geo+json"}
-        self._allow_http = allow_http
-        self.hosts = frozenset({url_host(self._url)})
+        # The NWS refuses a request without a User-Agent; `Upstream` always sends one.
+        self._up = Upstream(base_url, user_agent, allow_http, accept="application/geo+json")
+        self.hosts = self._up.hosts
 
     async def active(self, latitude: float, longitude: float) -> list[Alert]:
         params = {"point": f"{latitude:.4f},{longitude:.4f}"}
-        payload = await get_json(
-            self._url, params=params, headers=self._headers, hosts=self.hosts, allow_http=self._allow_http
-        )
+        payload = await self._up.get("/alerts/active", params)
         features = payload.get("features") if isinstance(payload, dict) else None
         out: list[Alert] = []
         for feature in features if isinstance(features, list) else []:
@@ -367,14 +351,7 @@ def render_alerts(alerts: list[Alert], *, source: str = NwsAlerts.source) -> str
 # --- the tools ------------------------------------------------------------------------------
 
 
-class _Point(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    latitude: float = Field(ge=-90, le=90, description="Latitude in decimal degrees.")
-    longitude: float = Field(ge=-180, le=180, description="Longitude in decimal degrees.")
-
-
-class CurrentArgs(_Point):
+class CurrentArgs(Point):
     units: Units | None = Field(
         default=None, description="metric or imperial; the operator's default if omitted."
     )
@@ -408,7 +385,7 @@ def weather_tools(settings: Settings, *, backend: WeatherBackend, alerts: Alerts
             await backend.forecast(args.latitude, args.longitude, days=args.days, units=units)
         )
 
-    async def active(args: _Point) -> str:
+    async def active(args: Point) -> str:
         return render_alerts(await alerts.active(args.latitude, args.longitude), source=alerts.source)
 
     return [
@@ -435,7 +412,7 @@ def weather_tools(settings: Settings, *, backend: WeatherBackend, alerts: Alerts
             family="weather",
             service=alerts.source,
             description="Active US National Weather Service alerts at a latitude/longitude (US only).",
-            args=_Point,
+            args=Point,
             run=active,
             hosts=alerts.hosts,
         ),
@@ -444,6 +421,7 @@ def weather_tools(settings: Settings, *, backend: WeatherBackend, alerts: Alerts
 
 __all__ = [
     "BACKENDS",
+    "OPEN_METEO_URL",
     "TOOL_NAMES",
     "Alert",
     "AlertsSource",

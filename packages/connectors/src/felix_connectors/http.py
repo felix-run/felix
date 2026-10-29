@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from felix.config import Settings
+from felix.security.host_allowlist import url_host
 from felix.timeouts import DEFAULT_CONNECT_TIMEOUT_S
 
 DEFAULT_TIMEOUT_S = 15.0
@@ -37,6 +40,53 @@ class UpstreamError(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"upstream answered {status}")
         self.status = status
+
+
+class Busy(Exception):
+    """A `Pacer` would hold the call past its longest wait: the upstream's rate is spent."""
+
+
+class Pacer:
+    """Spaces calls to one upstream at least `interval_s` apart, in this process.
+
+    For the public instances whose usage policy sets a rate (Nominatim's is one request a
+    second): each call reserves the next free slot before it awaits, so concurrent calls queue
+    rather than burst. A slot further off than `max_wait_s` raises `Busy` instead of sleeping, so
+    a queue the model built cannot hold a turn, and reserves nothing. Per process, not per
+    deployment, and shared by every tenant on it: an install with several API workers sends that
+    many times the rate, and a busy one should run its own instance, which is not paced.
+    """
+
+    def __init__(self, interval_s: float, *, max_wait_s: float = 5.0) -> None:
+        self._interval = interval_s
+        self._max_wait = max_wait_s
+        self._next = 0.0
+
+    async def wait(self) -> None:
+        now = time.monotonic()
+        at = max(now, self._next)
+        if at - now > self._max_wait:
+            raise Busy(f"next slot in {at - now:.1f}s")
+        self._next = at + self._interval
+        if at <= now:
+            return
+        try:
+            await asyncio.sleep(at - now)
+        except asyncio.CancelledError:
+            # A turn cancelled in the queue gives its slot back when nothing has queued behind it.
+            if self._next == at + self._interval:
+                self._next = at
+            raise
+
+
+#: The public instances whose usage policy sets a rate, by host: one `Pacer` each per process,
+#: whatever builds the backend, and nothing for a host not listed -- an operator's own instance.
+_PACERS: dict[str, Pacer] = {}
+
+
+def pace_host(host: str, interval_s: float, *, max_wait_s: float = 5.0) -> None:
+    """Hold every request to `host` from this process at least `interval_s` apart."""
+    _PACERS[host.lower()] = Pacer(interval_s, max_wait_s=max_wait_s)
 
 
 def user_agent(settings: Settings) -> str:
@@ -66,13 +116,17 @@ async def get_json(
     `allow_hosts`, and this makes the declaration true. `ValueError` for a body over
     `MAX_RESPONSE_BYTES` (`ResponseTooLarge`) or not JSON (`ValueError`); `EgressBlocked` when the
     guard refuses the destination; `TimeoutError` once `timeout_s` has passed, however the upstream
-    paces its bytes."""
+    paces its bytes; `Busy` when the host is paced (`pace_host`) and has no slot soon enough.
+    The wait for a slot is not counted against `timeout_s`."""
     from felix.security.host_allowlist import EgressBound, HostAllowlist, normalise_host_pattern
     from felix.security.ssrf import BLOCKED_MESSAGE, EgressBlocked
 
     declared = EgressBound((HostAllowlist(tuple(normalise_host_pattern(h) for h in hosts)),))
     # Identity: the cap counts decoded bytes, and one compressed chunk can expand past it at once.
     sent = {**headers, "accept-encoding": "identity"}
+    pacer = _PACERS.get(url_host(url))
+    if pacer is not None:
+        await pacer.wait()
     try:
         async with asyncio.timeout(timeout_s):
             body = await _fetch(
@@ -86,6 +140,35 @@ async def get_json(
         # tool gives, so a caller cannot tell "loopback" from "private" from "not allowed".
         raise EgressBlocked(BLOCKED_MESSAGE) from None
     return json.loads(body)
+
+
+@dataclass(frozen=True, slots=True)
+class Upstream:
+    """One HTTP API a backend reads: where, as whom, and so the one host it may reach.
+
+    `hosts` is derived from `base_url` rather than written beside it, so what a backend declares
+    (`Tool.egress_hosts`) and where its requests go cannot be two separate claims.
+    """
+
+    base_url: str
+    user_agent: str
+    allow_http: bool = False
+    accept: str = "application/json"
+    hosts: frozenset[str] = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
+        object.__setattr__(self, "hosts", frozenset({url_host(self.base_url)}))
+
+    async def get(self, path: str, params: Mapping[str, str]) -> Any:
+        """`path` (with its leading slash) under `base_url`, through `get_json`."""
+        return await get_json(
+            self.base_url + path,
+            params=params,
+            headers={"user-agent": self.user_agent, "accept": self.accept},
+            hosts=self.hosts,
+            allow_http=self.allow_http,
+        )
 
 
 async def _fetch(
@@ -126,9 +209,13 @@ __all__ = [
     "DEFAULT_TIMEOUT_S",
     "MAX_RESPONSE_BYTES",
     "USER_AGENT",
+    "Busy",
+    "Pacer",
     "ResponseTooLarge",
+    "Upstream",
     "UpstreamError",
     "allow_http",
     "get_json",
+    "pace_host",
     "user_agent",
 ]
