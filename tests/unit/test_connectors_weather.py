@@ -346,22 +346,24 @@ async def test_the_egress_guard_refuses_before_any_request() -> None:
     assert seen == []
 
 
-async def test_a_backend_cannot_reach_a_host_it_did_not_declare() -> None:
-    # What the compile checked is what the request is held to: a backend whose declaration
-    # leaves out the host it calls is refused in the transport.
-    from felix.tools.types import tool_output_content
-    from felix_connectors.weather import NwsAlerts, OpenMeteoBackend, weather_tools
+async def test_a_request_cannot_reach_a_host_it_did_not_declare() -> None:
+    # What the compile checked is what the request is held to: a declaration that leaves out the
+    # host the URL names is refused in the transport, before anything is sent.
+    from felix.security.ssrf import EgressBlocked
+    from felix_connectors.http import get_json
 
     seen: list[Request] = []
     async with serve(_json_responder(FORECAST, seen)) as base:
-        backend = OpenMeteoBackend(base_url=base, user_agent="ua", allow_http=True)
-        backend.hosts = frozenset({"api.open-meteo.com"})
-        tools = weather_tools(
-            make_settings(), backend=backend, alerts=NwsAlerts(base_url=base, user_agent="ua")
-        )
-        out = await tools[0].executor.execute({"latitude": 1, "longitude": 2})
-    assert tool_output_content(out) == "[tool error/permission_denied] Open-Meteo is not reachable from here"
+        with pytest.raises(EgressBlocked):
+            await get_json(base, params={}, headers={}, hosts={"api.open-meteo.com"}, allow_http=True)
     assert seen == []
+
+
+def test_a_backend_declares_the_host_its_url_names() -> None:
+    from felix_connectors.weather import NwsAlerts, OpenMeteoBackend
+
+    assert OpenMeteoBackend(base_url="https://om.example:8443/", user_agent="ua").hosts == {"om.example"}
+    assert NwsAlerts(base_url="https://nws.example", user_agent="ua").hosts == {"nws.example"}
 
 
 async def test_responses_are_asked_for_uncompressed() -> None:

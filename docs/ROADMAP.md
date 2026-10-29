@@ -1018,7 +1018,15 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
   - [x] Weather, and the core seam it needs: `Tool.egress_hosts`, checked against the agent's
     `network.allow_hosts` bound at compile. `connectors__weather_current`, `_forecast` and
     `_alerts` (NWS); `FELIX_WEATHER_BACKEND` is an open registry.
-  - [ ] Maps, with weather by place name once geocoding exists.
+  - [x] Maps: `connectors__geocode`, `_reverse_geocode`, `_places_search` (Nominatim), `_route`
+    (FOSSGIS OSRM: driving, walking, cycling) and `_timezone_at` (Open-Meteo), each public
+    instance paced to one request a second per process (`http.Pacer`). Weather does not take a
+    place name: geocoding inside it would make it reach Nominatim too, and refuse to compile under
+    an `allow_hosts` naming only the forecast's host; the model chains `connectors__geocode`.
+    Open: the pace is per process, so a multi-worker install sends a multiple of the public rate,
+    and it is shared by every tenant, so one tenant's burst answers another's `rate_limited` for
+    a few seconds. A shared limiter (Valkey) with a per-tenant share, or a URL setting for a
+    self-hosted instance (unpaced by host already), would close both.
   - [ ] Market data and FX.
   - Found, not fixed: a plugin tool that declares no `egress_hosts` is still unbounded under
     `allow_hosts`. Refusing every undeclared non-`local` tool under a bound is the allowlist
