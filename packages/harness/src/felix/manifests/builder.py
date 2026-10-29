@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from felix.auth.context import AuthContext
 from felix.clock import Now, date_block, wall_clock
@@ -54,7 +54,7 @@ from felix.patterns.registry import (
     honours_output_styles,
     list_patterns,
 )
-from felix.patterns.types import Agent
+from felix.patterns.types import Agent, InvokeInput, InvokeOutput
 from felix.secret_policy import tenant_secrets_provider
 from felix.secrets import SecretNotPermittedError
 from felix.security.host_allowlist import EgressBound, hosts_outside
@@ -80,6 +80,9 @@ from felix.tools.types import (
 from felix.tools.workspace_scope import WorkspaceScopeName
 
 logger = logging.getLogger("felix.manifests.builder")
+
+if TYPE_CHECKING:
+    from felix.tools.delegation import ChildAgent, ForkRunner
 
 # Side-effect: register built-in patterns.
 import felix.patterns  # noqa: E402, F401
@@ -127,6 +130,119 @@ class BuildDeps:
     # The bound each child in `compiled` was built under: a child two parents share is rebuilt
     # under a parent whose bound differs, never reused from one with a looser list.
     compiled_egress: dict[str, EgressBound] = field(default_factory=dict)
+    # Set when this compile is a manifest's own subagent for its forked skills (`_SelfFork`): the
+    # manifest's name. Its forks then run nowhere, and the compile-time warnings and counters the
+    # manifest's own compile already reported stay quiet.
+    self_fork_of: str = ""
+
+
+class _SelfFork:
+    """The manifest itself, as the subagent a `context: fork` skill runs in when the manifest names no
+    `spec.delegation` agent to run it. Compiled on the first fork, once -- a request that forks
+    nothing pays nothing -- against its own copy of the build state, so nothing the parent's
+    compile shares is changed mid-run. Marked `self_fork_of`, so its own forks run nowhere: a fork
+    is one level deep. A compile that failed is not retried by every later fork."""
+
+    def __init__(self, m: Manifest, deps: BuildDeps, **inherited: Any) -> None:
+        self.manifest_id = m.metadata.name
+        self._manifest = m
+        self._deps = replace(
+            deps,
+            compiling=list(deps.compiling),
+            compiled={},
+            compiled_manifests={},
+            compiled_egress={},
+            self_fork_of=m.metadata.name,
+            **inherited,
+        )
+        self._agent: Agent | None = None
+        self._failed: Exception | None = None
+        self._lock = asyncio.Lock()
+
+    async def _compiled(self) -> Agent:
+        if self._agent is not None:
+            return self._agent
+        async with self._lock:
+            if self._failed is not None:
+                raise RuntimeError(f"agent '{self.manifest_id}' could not be compiled") from self._failed
+            if self._agent is None:
+                try:
+                    self._agent = await build_agent(self._manifest, self._deps.tools, self._deps)
+                except Exception as exc:
+                    self._failed = exc
+                    raise
+        return self._agent
+
+    async def invoke(self, input: InvokeInput) -> InvokeOutput:
+        return await (await self._compiled()).invoke(input)
+
+
+def _fork_runner(
+    m: Manifest,
+    deps: BuildDeps,
+    catalog: Any,
+    resolved: list[Tool],
+    delegation_children: Mapping[str, tuple[ChildAgent, str, Manifest]],
+    *,
+    inherited: dict[str, Any],
+    model_overrides: dict[str, str],
+) -> tuple[ForkRunner | None, dict[str, tuple[ChildAgent, str, Manifest]] | None]:
+    """Where this compile's `context: fork` skills run: `(ForkRunner | None, self_fork | None)`.
+
+    In the delegation agents when the manifest has any. Otherwise in the manifest itself
+    (`_SelfFork`) when a forked skill names no `agent:` or names this manifest -- not in a composite
+    (no tool loop to run in), not where this compile is already that subagent, and not over a
+    provider tool called `task`. `self_fork` is the child map for the `task` tool bound later and
+    withheld from the model. What cannot work is said at compile, hidden skills included: a
+    person's `/name` reaches a skill the model is never offered."""
+    from fnmatch import fnmatch
+
+    from felix.tools.delegation import TASK_TOOL_NAME, ForkRunner
+
+    forks = [s for s in catalog.skills.values() if s.fork]
+    if not forks:
+        return None, None
+    name = m.metadata.name
+    runner: ForkRunner | None = None
+    self_fork: dict[str, tuple[ChildAgent, str, Manifest]] | None = None
+    if delegation_children:
+        runner = ForkRunner(delegation_children, lead=m, model_overrides=model_overrides)
+    elif (
+        not m.spec.sub_agents
+        and not deps.self_fork_of
+        and not any(t.name == TASK_TOOL_NAME for t in resolved)
+        and any(not s.fork_agent or s.fork_agent == name for s in forks)
+    ):
+        self_fork = {name: (_SelfFork(m, deps, **inherited), "this agent, in a fresh conversation", m)}
+        runner = ForkRunner(self_fork, lead=m, model_overrides=model_overrides)
+    if deps.self_fork_of:
+        return runner, self_fork
+    if runner is None:
+        logger.warning(
+            "manifest %s has skills that run in a subagent (context: fork) but nowhere to run them", name
+        )
+        return None, None
+    if any(
+        h.event in ("pre_tool_use", "post_tool_use")
+        and (not h.tools or any(fnmatch(TASK_TOOL_NAME, p) for p in h.tools))
+        for h in m.spec.hooks
+    ):
+        # The tool runner fires these around the call the model made -- `activate_skill` for a
+        # fork -- never around the `task` call the fork makes inside it.
+        logger.warning(
+            "manifest %s has pre/post_tool_use hooks on task and skills that run in a subagent; "
+            "a fork fires them for activate_skill, not for task",
+            name,
+        )
+    for skill in forks:
+        if skill.fork_agent and skill.fork_agent not in runner.agents:
+            logger.warning(
+                "skill %s runs in agent %s, which manifest %s does not delegate to",
+                skill.name,
+                skill.fork_agent,
+                name,
+            )
+    return runner, self_fork
 
 
 def _refuse_misnamed_children(m: Manifest, deps: BuildDeps) -> None:
@@ -2093,6 +2209,14 @@ async def build_agent(
         # a parent's bound, or at the root what the run inherited). Its children compile under
         # it, so none of them can reach what it may not.
         egress = deps.egress.under(m.spec.network.allow_hosts)
+        # What a child compile inherits from this one: a `sub_agents` or delegation child, and the
+        # manifest itself as a forked skill's subagent (`_SelfFork`).
+        child_inherits: dict[str, Any] = {
+            "session_store": session_store,
+            "reply_screen": screen_chain,
+            "session_strategy": session_strategy,
+            "egress": egress,
+        }
         if child_agent_names(m.spec):
             # A sub-agent inherits this compile's session store, so its own
             # `spec.memory.checkpointer` is not consulted. Most composites invoke a child
@@ -2102,14 +2226,7 @@ async def build_agent(
             # against the *screened* store: a router's reply controls would otherwise redact
             # the wire while an unguarded child logged the raw reply.
             builder = deps.sub_agent_builder or _bundled_sub_agent(deps)
-            with _compiling_children(
-                deps,
-                m.metadata.name,
-                session_store=session_store,
-                reply_screen=screen_chain,
-                session_strategy=session_strategy,
-                egress=egress,
-            ):
+            with _compiling_children(deps, m.metadata.name, **child_inherits):
                 for name in child_agent_names(m.spec):
                     if name not in deps.compiled or deps.compiled_egress.get(name) != egress:
                         deps.compiled[name] = await builder(name)
@@ -2459,6 +2576,8 @@ async def build_agent(
         # A forked skill's `model:`, handed to the `task` handler by call id (`delegation.ForkRunner`).
         task_model_overrides: dict[str, str] = {}
         fork_runner = None
+        # The manifest itself as a forked skill's subagent, when it delegates to nothing (`_SelfFork`).
+        self_fork: dict[str, tuple[ChildAgent, str, Manifest]] | None = None
         # `spec.hooks`, built once: the loop, the tool runner, `task` and a forked skill fire the same set.
         manifest_hooks: ManifestHooks | None = (
             ManifestHooks(list(m.spec.hooks), m.metadata.name) if m.spec.hooks else None
@@ -2495,41 +2614,17 @@ async def build_agent(
                 owner=deps.skill_owner if personal else None,
             )
             # `context: fork` skills run as calls of the governed `task` tool, bound below.
-            if delegation_children:
-                from fnmatch import fnmatch
-
-                from felix.tools.delegation import TASK_TOOL_NAME as TASK
-                from felix.tools.delegation import ForkRunner
-
-                fork_runner = ForkRunner(delegation_children, lead=m, model_overrides=task_model_overrides)
-                if any(s.fork for s in catalog.skills.values()) and any(
-                    h.event in ("pre_tool_use", "post_tool_use")
-                    and (not h.tools or any(fnmatch(TASK, p) for p in h.tools))
-                    for h in m.spec.hooks
-                ):
-                    # The tool runner fires these around the call the model made -- `activate_skill`
-                    # for a fork -- never around the `task` call the fork makes inside it.
-                    logger.warning(
-                        "manifest %s has pre/post_tool_use hooks on task and skills that run in a subagent; "
-                        "a fork fires them for activate_skill, not for task",
-                        m.metadata.name,
-                    )
-                for skill in catalog.skills.values():
-                    if skill.fork and skill.fork_agent and skill.fork_agent not in delegation_children:
-                        logger.warning(
-                            "skill %s runs in agent %s, which manifest %s does not delegate to",
-                            skill.name,
-                            skill.fork_agent,
-                            m.metadata.name,
-                        )
-            elif any(s.fork for s in catalog.skills.values()):
-                # Said at compile rather than discovered when one is activated -- hidden skills too:
-                # a person's `/name` reaches a skill the model is never offered.
-                logger.warning(
-                    "manifest %s has skills that run in a subagent (context: fork) but no "
-                    "spec.delegation to run them in",
-                    m.metadata.name,
-                )
+            fork_runner, self_fork = _fork_runner(
+                m,
+                deps,
+                catalog,
+                resolved,
+                delegation_children,
+                # What the children above inherit, but this compile's own inherited screen: the
+                # subagent is this manifest, whose rules its own screen applies once.
+                inherited={**child_inherits, "reply_screen": deps.reply_screen},
+                model_overrides=task_model_overrides,
+            )
             skill_tools = {
                 t.name: t
                 for t in make_skill_tools(
@@ -2561,7 +2656,8 @@ async def build_agent(
                     resolved.append(tool)
             if m.spec.skill_scripts.enabled and deps.settings is not None:
                 _bind_skill_scripts(resolved, m, deps, tenant_id, catalog, session_store)
-            _warn_imported_skills_are_unscreened(m, catalog)
+            if not deps.self_fork_of:
+                _warn_imported_skills_are_unscreened(m, catalog)
             imported_skills = any(s.untrusted for s in catalog.skills.values())
             if authoring:
                 _bind_skill_authoring(resolved, m, deps, tenant_id, catalog)
@@ -2575,7 +2671,10 @@ async def build_agent(
                     f"{system_prompt}\n\n---\n\n{catalog_block}" if system_prompt else catalog_block
                 )
 
-        if m.spec.skill_suggestion.enabled and skill_suggester is None:
+        # The manifest's own compile said all of this; its forked skills' subagent does not say it
+        # again, to the log or the counters, once per request that forks (`BuildDeps.self_fork_of`).
+        quiet = bool(deps.self_fork_of)
+        if m.spec.skill_suggestion.enabled and skill_suggester is None and not quiet:
             # Skills can come from the host rather than `spec.skills`, so this cannot be refused
             # at validation — but an agent with none has nothing to suggest, and says so.
             logger.warning("skill_suggestion is on but %s has no skills to suggest", m.metadata.name)
@@ -2584,7 +2683,11 @@ async def build_agent(
                 {"manifest_id": m.metadata.name, "rule": "skill_suggestion", "kind": "skills"},
             )
 
-        if m.spec.skill_scripts.enabled and not any(t.name == "run_skill_script" for t in resolved):
+        if (
+            m.spec.skill_scripts.enabled
+            and not any(t.name == "run_skill_script" for t in resolved)
+            and not quiet
+        ):
             # A bundled manifest never went through the write check that refuses this.
             logger.warning("skill_scripts is on but %s binds no skills to run scripts from", m.metadata.name)
             record_counter(
@@ -2658,6 +2761,21 @@ async def build_agent(
             )
             if m.spec.delegation.background:
                 resolved.append(make_task_result_tool())
+        elif self_fork is not None:
+            from felix.tools.delegation import make_task_tool
+
+            # A forked skill's way to the manifest itself, governed like the delegation `task` above
+            # -- an approval, a policy, the limits name it -- and taken out of the model's tools once
+            # wrapped (below): the model was given no delegation to call.
+            resolved.append(
+                make_task_tool(
+                    self_fork,
+                    ceiling=delegation_ceiling,
+                    manifest_hooks=manifest_hooks,
+                    egress=egress,
+                    model_overrides=task_model_overrides,
+                )
+            )
 
         # Plan mode's way out: bound wherever plan mode is allowed, gated by the approval rule
         # added below. A tool already of that name would silently stand in for it.
@@ -2675,14 +2793,17 @@ async def build_agent(
         # refusing would let a remote outage take the agent down with it. Silent was not an
         # option either — an inert control that validates is the defect this repo keeps
         # shipping, and globs make one easier to write by hand.
-        _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
-        _warn_policies_cannot_be_satisfied(m, deps.settings)
-        _warn_max_turns_does_not_bound_this_loop(m)
-        _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
-        _warn_screenshots_are_quarantined(m)
-        # A delete or rename bound with no rule over it, beside a gated write: the agent could
-        # remove what it must ask to change. Warned, never refused; see `delete_gate`.
-        _warn_ungated_deletes(m)
+        if not quiet:
+            # The forked skills' subagent binds no `task`, so a rule on `task` -- what gates its
+            # forks -- would read as inert here.
+            _warn_unmatched_tool_patterns(m, [t.name for t in resolved])
+            _warn_policies_cannot_be_satisfied(m, deps.settings)
+            _warn_max_turns_does_not_bound_this_loop(m)
+            _warn_untrusted_tools_are_unscreened(m, [t.name for t in resolved if _is_untrusted_tool(t)])
+            _warn_screenshots_are_quarantined(m)
+            # A delete or rename bound with no rule over it, beside a gated write: the agent could
+            # remove what it must ask to change. Warned, never refused; see `delete_gate`.
+            _warn_ungated_deletes(m)
 
         # Governance pipeline (order matters — matches TS builder). The workspace scope binds
         # last of the controls: not a control, but the directory every control and preview runs
@@ -2768,6 +2889,8 @@ async def build_agent(
             from felix.tools.delegation import TASK_TOOL_NAME as _TASK
 
             fork_runner.bind(next((t for t in resolved if t.name == _TASK), None))
+            if self_fork is not None:
+                resolved = [t for t in resolved if t.name != _TASK]
 
         final_prompt = (
             system_prompt or f"You are {m.metadata.name}. Use your tools when needed to answer accurately."

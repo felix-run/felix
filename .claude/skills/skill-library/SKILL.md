@@ -91,8 +91,12 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    turn is `<skill_instructions>` plus the model's `task` (or the person's substituted arguments); a
    wrapper deny is passed on, an error is `fork_failed`, an answer is untrusted output; a fork is
    never an activation, so nothing is retained and it is never preloaded. An imported skill nobody
-   adopted never forks (`fork_refused`); no delegation, or an `agent:` outside it, is
-   `fork_unavailable` (and warns at compile).
+   adopted never forks (`fork_refused`). Where forks run is `manifests/builder.py:_fork_runner`: the
+   delegation agents, or, with none, the react manifest itself for a fork that names no `agent:`
+   or names it (`_SelfFork`: compiled on first use against a copy of the build state marked
+   `BuildDeps.self_fork_of`, one level deep, quiet, through a governed `task` withheld from the
+   model). An `agent:` outside those, or a fork inside that subagent, is `fork_unavailable`
+   (warned at the manifest's own compile).
 9. **Skill scripts.** `spec.skill_scripts` (`SkillScriptsSpec`: enabled, `interpreters` by extension,
    timeout_ms) binds `run_skill_script` (`skills/scripts.py:make_skill_script_tool`), transport `shell`. It runs only a bundle
    file under `scripts/` of a skill active in the calling thread and not `untrusted`, under an

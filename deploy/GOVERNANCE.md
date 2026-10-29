@@ -283,7 +283,9 @@ durable fiber on resume; a tool call made directly over MCP has no turn, so its 
 are screened instead and a flagged argument refuses the call whatever `on_flag` says. The
 screen is a wrapper the compile puts around the agent, so there is no entrypoint to forget;
 the HTTP routes screen once more before the agent exists, to answer 422 before a stream
-opens or a durable run is enqueued, and tell the agent so. `guardrails.targets`
+opens or a durable run is enqueued, and tell the agent so -- naming the manifest they screened
+for, so only that manifest's screen skips the turn: under a composite with no inbound controls of
+its own, a router's pick or a `parallel` specialist still screens what it is handed. `guardrails.targets`
 name where PII is caught: `input` is the user turn, `output` is everything leaving the
 model boundary — tool output *and* the agent's reply — and `final_response` is the reply
 alone. The reply-path controls (`output`/`final_response` PII, and `judges` with
@@ -572,7 +574,15 @@ so.
 
 A skill whose frontmatter says `context: fork` runs in a subagent instead: `activate_skill` hands
 its instructions and the model's `task` to one of the manifest's `spec.delegation.agents` (the one
-`agent:` names) as a call of the manifest's *governed* `task` tool -- so every control that names
+`agent:` names) as a call of the manifest's *governed* `task` tool. A react manifest with no
+`spec.delegation` runs a forked skill that names no `agent:` (or names the manifest itself) in
+itself instead: the same manifest, compiled on the first fork as its own subagent, in a fresh
+conversation, through a `task` tool that gets every wrapper and is then withheld from the model
+(it was given no delegation to call). That subagent's own forks run nowhere (`fork_unavailable`),
+so a fork is one level deep. It has the manifest's whole toolset, and the model's `task` text is
+its user turn, screened by the manifest's inbound controls as a delegation child's is. Its skills,
+prompt files and MCP tool lists are loaded when it is compiled, at the first fork, not when the
+request was admitted. Either way, every control that names
 `task` holds for it: an approval, a policy, the limits and their peer hops, the permission mode, the
 child's own inbound auth, `subagent_stop` -- and returns only that agent's answer, as untrusted
 output content screening reads (a deny is passed on as one). The instructions never enter the
