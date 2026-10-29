@@ -714,6 +714,7 @@ PACKAGE_ROOTS = {
     "felix_cli": "apps/cli/src/felix_cli",
     "felix_worker": "apps/worker/src/felix_worker",
     "felix_channels": "packages/channels/src/felix_channels",
+    "felix_connectors": "packages/connectors/src/felix_connectors",
 }
 OWNED_MIN_LINES = 300
 # Roots a skill may not claim whole. The others are claimed whole today (api-surface owns

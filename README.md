@@ -1025,6 +1025,11 @@ Storage and execution:
   thread, and the worker posts the answer back when the run ends (the `register_run_finished`
   plugin hook). Requests are verified with the app's signing secret; retries are claimed once.
   See `deploy/GOVERNANCE.md`.
+- Weather tools from the optional `felix-connectors` plugin (`uv sync --extra connectors`):
+  `connectors__weather_current`, `connectors__weather_forecast` (up to 16 days) and
+  `connectors__weather_alerts` (US, National Weather Service), keyless by default (Open-Meteo,
+  `FELIX_WEATHER_BACKEND`). A manifest lists each one in `spec.tools`; their answers are screened as
+  untrusted, and an agent's `network.allow_hosts` must cover the hosts they declare.
 - Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

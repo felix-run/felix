@@ -363,6 +363,15 @@ class Settings(BaseSettings):
     # a JSON map of id -> {platform, tenant, manifest, ...}; the plugin validates it at startup.
     # Inert without the plugin installed.
     channels: str = Field(default="", repr=False)
+    # Read by the optional `felix-connectors` plugin (`packages/connectors`); inert without it.
+    # The forecast backend its weather tools use, from its own registry
+    # (`felix_connectors.weather.register_weather_backend`); `open-meteo` needs no key.
+    weather_backend: str = "open-meteo"
+    # The units a weather tool answers in when the model asks for none.
+    weather_units: Literal["metric", "imperial"] = "metric"
+    # Appended to the User-Agent every connector sends -- an email or URL. Nominatim's and the
+    # National Weather Service's usage policies ask for a way to reach whoever runs the client.
+    connectors_contact: str = ""
     # Delivery tries per endpoint before it is marked `dead`; backoff 1m, 2m, 4m … up to 1h.
     webhook_max_attempts: int = Field(default=8, ge=1)
     # Each attempt, end to end. Bounded: a sweep stops starting deliveries after half its 120 s claim,
@@ -773,6 +782,16 @@ class Settings(BaseSettings):
                 "Temporal's. Unset FELIX_DURABILITY and stop felix-temporal-worker; the fiber "
                 "scheduler in felix-worker runs durable chats, including ones Temporal had started."
             )
+        return v
+
+    @field_validator("connectors_contact")
+    @classmethod
+    def _contact_fits_a_header(cls, v: str) -> str:
+        # It ends up in a User-Agent header. At load, since a CR, LF or non-ASCII character there
+        # fails every connector call at request build -- an outage with its cause only in a log.
+        v = v.strip()
+        if not all(0x20 <= ord(ch) <= 0x7E for ch in v):
+            raise ValueError("FELIX_CONNECTORS_CONTACT must be printable ASCII (an email or URL)")
         return v
 
     @field_validator("timezone")
