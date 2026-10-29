@@ -48,10 +48,17 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from felix.config import MIN_SHELL_RUNNER_TOKEN_CHARS
+from felix.logging_setup import loggable
 from felix.manifests.schema import MAX_INTEGRATION_TIMEOUT_MS
-from felix.security.shell_policy import ShellNotAllowedError, allowed_prefixes, assert_argv_allowed
+from felix.security.shell_policy import (
+    ShellNotAllowedError,
+    allowed_interpreters,
+    allowed_prefixes,
+    assert_argv_allowed,
+    skill_script_argv_issue,
+)
 from felix.tools import shell_background
-from felix.tools.shell import DEFAULT_SHELL_TIMEOUT_S, ShellArgs, _child_env, exec_argv, resolve_cwd
+from felix.tools.shell import DEFAULT_SHELL_TIMEOUT_S, RunKind, ShellArgs, _child_env, exec_argv, resolve_cwd
 from felix.tools.shell_background_tools import ShellKillArgs, ShellOutputArgs
 from felix.tools.workspace_scope import ensure_scope_dir, is_scope_relpath
 
@@ -73,6 +80,9 @@ class RunRequest(ShellArgs):
     # The workspace scope's directory relative to FELIX_WORKSPACE_ROOT (`""`: the root). Set by the
     # API from the call's scope, never by the model, and held to the shape the API produces.
     scope: str = Field(default="", max_length=256)
+    # `skill_script`: a script `run_skill_script` wrote, admitted by this host's
+    # FELIX_SKILL_SCRIPT_INTERPRETERS instead of its shell allowlist (`skill_script_argv_issue`).
+    kind: RunKind = "shell"
 
 
 class OutputRequest(ShellOutputArgs):
@@ -87,6 +97,7 @@ class KillRequest(ShellKillArgs):
 # operator reads it, and the reply carries only the stable reason the API maps to a tool error.
 _DENIED_MESSAGES = {
     "argv": "the command is not on this runner's allowlist",
+    "script": "the skill script is not one this runner runs",
     "cwd": "the working directory is not inside this runner's workspace",
     "scope": "the workspace scope is not one this runner recognises",
     "busy": "too many background commands are running; end one with shell_kill or wait for one to finish",
@@ -158,8 +169,11 @@ def create_runner_app(settings: Settings | None = None) -> FastAPI:
             f"felix-shell-runner needs FELIX_SHELL_RUNNER_TOKEN (at least {MIN_SHELL_RUNNER_TOKEN_CHARS} "
             "characters); it will not serve an unauthenticated exec endpoint."
         )
-    if not allowed_prefixes(settings):
-        logger.warning("FELIX_SHELL_ALLOWED_COMMANDS is empty; every /run will be refused")
+    if not allowed_prefixes(settings) and not allowed_interpreters(settings):
+        logger.warning(
+            "FELIX_SHELL_ALLOWED_COMMANDS and FELIX_SKILL_SCRIPT_INTERPRETERS are empty; "
+            "every /run will be refused"
+        )
 
     app = FastAPI(title="felix-shell-runner", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -200,6 +214,9 @@ def create_runner_app(settings: Settings | None = None) -> FastAPI:
         if isinstance(checked, JSONResponse):
             return checked
         root, cwd = checked
+        if req.kind != "shell":
+            # A skill script runs in the foreground and nowhere else.
+            return _denied("script", "a skill script cannot start in the background")
         call = functools.partial(
             shell_background.start_background,
             req.argv,
@@ -268,10 +285,20 @@ def _checked_start(settings: Settings, req: RunRequest) -> tuple[Path, Path] | J
     """`/run`'s and `/start`'s checks: this host's allowlist, then the scope and the cwd."""
     # Defence in depth: this process's own allowlist, as both sides of the tool and the
     # operator. The API already checked its manifest's prefixes; this checks the host's.
-    try:
-        assert_argv_allowed(req.argv, allowed_prefixes(settings), settings)
-    except ShellNotAllowedError as exc:
-        return _denied("argv", str(exc))
+    if req.kind == "skill_script":
+        issue = skill_script_argv_issue(req.argv, settings)
+        if issue is not None:
+            return _denied("script", loggable(issue, limit=300))
+        if req.cwd != ".":
+            # A script runs from the scope's root, where the files it is asked about are.
+            return _denied(
+                "cwd", f"a skill script runs from the workspace root, not {loggable(req.cwd, limit=200)}"
+            )
+    else:
+        try:
+            assert_argv_allowed(req.argv, allowed_prefixes(settings), settings)
+        except ShellNotAllowedError as exc:
+            return _denied("argv", str(exc))
     root = _scope_root(settings, req.scope)
     if isinstance(root, JSONResponse):
         return root

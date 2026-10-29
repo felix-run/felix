@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from felix.security.shell_policy import SKILL_SCRIPTS_DIR
+
 if TYPE_CHECKING:
     from felix.config import Settings
     from felix.tools.workspace_scope import WorkspaceScopeName
@@ -28,8 +30,10 @@ if TYPE_CHECKING:
 # What the operator's file pane never lists, opens or writes: a repository's internals (a hook
 # written there runs the next time git does) and the directory the scopes live in, which only a
 # `deployment`-scope root contains and which holds every other scope's files. Plus the temporary
-# sibling an edit renames over its target, which exists only for the length of one write.
-PANE_HIDDEN_DIRS = frozenset({".git", ".felix-scopes"})
+# sibling an edit renames over its target, which exists only for the length of one write. And where
+# `run_skill_script` writes a skill's scripts for one call: a model's own file there would run as
+# the skill's.
+PANE_HIDDEN_DIRS = frozenset({".git", ".felix-scopes", SKILL_SCRIPTS_DIR})
 PANE_HIDDEN_PREFIX = ".felix-edit-"
 
 

@@ -33,7 +33,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -77,6 +77,11 @@ MAX_RUNNER_RESPONSE_BYTES = 2 * 1024 * 1024
 # The largest `duration_ms` a runner can truthfully report: the longest timeout a manifest may
 # set, the drain after the kill, and the grace this side waits.
 MAX_RUNNER_DURATION_MS = MAX_INTEGRATION_TIMEOUT_MS + int((_DRAIN_AFTER_KILL_S + RUNNER_GRACE_S) * 1000)
+
+
+# What a runner is asked to admit: a shell tool's argv (its allowlist), or a script `run_skill_script`
+# wrote (its interpreter list, `shell_policy.skill_script_argv_issue`).
+RunKind = Literal["shell", "skill_script"]
 
 
 class ShellArgs(BaseModel):
@@ -296,77 +301,116 @@ class _ShellExecutor:
                 stdin=stdin_text,
                 timeout_s=self._timeout_s,
             )
-        match place:
-            case HostedPlace():
-                return await self._run_hosted(place.settings, place.scope, argv, cwd_arg, stdin_text)
-            case RunnerPlace():
-                return await self._run_remote(place.url, place.token, argv, cwd_arg, stdin_text, place.scope)
-        assert cwd is not None
-        try:
-            result = await exec_argv(
-                argv, cwd=cwd, root=place.root, stdin=stdin_text, timeout_s=self._timeout_s
-            )
-        except OSError as exc:
-            return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
-        return json.dumps(result)
+        return await exec_in_place(
+            place,
+            argv,
+            cwd=cwd,
+            cwd_rel=cwd_arg,
+            stdin=stdin_text,
+            timeout_s=self._timeout_s,
+            refuse=self._refuse,
+        )
 
-    async def _run_hosted(
-        self, settings: Any, scope: Any, argv: list[str], cwd: str, stdin: str | None
-    ) -> ToolOutput:
-        from felix.tools.workspace_hosted import HostedBackend
 
-        try:
-            out = await HostedBackend(settings).exec(
-                scope, argv, cwd, stdin, max(1, int(self._timeout_s * 1000))
+async def exec_in_place(
+    place: ShellPlace,
+    argv: list[str],
+    *,
+    cwd: Path | None,
+    cwd_rel: str,
+    stdin: str | None,
+    timeout_s: float,
+    refuse: Refuse,
+    kind: RunKind = "shell",
+) -> ToolOutput:
+    """Exec an already-checked `argv` where `shell_place` chose, and answer what the model sees.
+
+    The one place a shell call and a skill script (`skills/scripts.py`) both exec through, so the
+    three places answer alike. ``cwd`` is ``cwd_rel`` resolved under the place's root (None for the
+    sandbox, which resolves its own); ``kind`` is what the runner is told it is admitting.
+    """
+    match place:
+        case HostedPlace() if kind != "shell":
+            # The sandbox's helper admits shell argv only; nothing there knows a skill script.
+            return refuse("hosted", "skill scripts do not run in the hosted workspace's sandbox yet")
+        case HostedPlace():
+            return await _run_hosted(place.settings, place.scope, argv, cwd_rel, stdin, timeout_s, refuse)
+        case RunnerPlace():
+            return await _run_remote(place, argv, cwd_rel, stdin, timeout_s, refuse, kind)
+    assert cwd is not None
+    try:
+        result = await exec_argv(argv, cwd=cwd, root=place.root, stdin=stdin, timeout_s=timeout_s)
+    except OSError as exc:
+        return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
+    return json.dumps(result)
+
+
+async def _run_hosted(
+    settings: Any, scope: Any, argv: list[str], cwd: str, stdin: str | None, timeout_s: float, refuse: Refuse
+) -> ToolOutput:
+    from felix.tools.workspace_hosted import HostedBackend
+
+    try:
+        out = await HostedBackend(settings).exec(scope, argv, cwd, stdin, max(1, int(timeout_s * 1000)))
+    except ValueError as exc:
+        if "workspace_root" in str(exc):
+            return tool_error_output(
+                ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}; the command did not run"
             )
-        except ValueError as exc:
-            if "workspace_root" in str(exc):
-                return tool_error_output(
-                    ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}; the command did not run"
-                )
-            # The sandbox resolved `cwd` as `resolve_cwd` does here: escaping, absolute, a symlink.
-            return self._refuse("cwd", str(exc))
-        except OSError as exc:
-            # The command could not be spawned in the sandbox, as `exec_argv` reports it here.
-            return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
+        # The sandbox resolved `cwd` as `resolve_cwd` does here: escaping, absolute, a symlink.
+        return refuse("cwd", str(exc))
+    except OSError as exc:
+        # The command could not be spawned in the sandbox, as `exec_argv` reports it here.
+        return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {exc}")
+    try:
+        result = RunnerResult.model_validate(out)
+    except ValidationError:
+        return runner_unavailable("returned a malformed result")
+    # argv is what this process asked for, not what the sandbox says it ran.
+    return json.dumps({**result.model_dump(), "argv": argv})
+
+
+async def _run_remote(
+    place: RunnerPlace,
+    argv: list[str],
+    cwd: str,
+    stdin: str | None,
+    timeout_s: float,
+    refuse: Refuse,
+    kind: RunKind,
+) -> ToolOutput:
+    body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": max(1, int(timeout_s * 1000))}
+    # Only when it is not the default: a shell call's body stays what every runner already accepts.
+    if kind != "shell":
+        body["kind"] = kind
+    if place.scope:
+        # The runner shares the volume, not this process's request: it is told which scope's
+        # directory `cwd` is relative to, and checks the shape before using it.
+        body["scope"] = place.scope
+    if stdin is not None:
+        body["stdin"] = stdin
+    answer = await runner_post(place.url, place.token, "/run", body, timeout_s + RUNNER_GRACE_S)
+    if not isinstance(answer, tuple):
+        return answer
+    return _map_runner_response(*answer, argv, cwd, refuse)
+
+
+def _map_runner_response(status: int, raw: bytes, argv: list[str], cwd: str, refuse: Refuse) -> ToolOutput:
+    if status == 200:
         try:
-            result = RunnerResult.model_validate(out)
+            result = RunnerResult.model_validate_json(raw)
         except ValidationError:
             return runner_unavailable("returned a malformed result")
-        # argv is what this process asked for, not what the sandbox says it ran.
-        return json.dumps({**result.model_dump(), "argv": argv})
-
-    async def _run_remote(
-        self, url: str, token: str, argv: list[str], cwd: str, stdin: str | None, scope: str
-    ) -> ToolOutput:
-        body: dict[str, Any] = {"argv": argv, "cwd": cwd, "timeout_ms": max(1, int(self._timeout_s * 1000))}
-        if scope:
-            # The runner shares the volume, not this process's request: it is told which scope's
-            # directory `cwd` is relative to, and checks the shape before using it.
-            body["scope"] = scope
-        if stdin is not None:
-            body["stdin"] = stdin
-        answer = await runner_post(url, token, "/run", body, self._timeout_s + RUNNER_GRACE_S)
-        if not isinstance(answer, tuple):
-            return answer
-        return self._map_runner_response(*answer, argv, cwd)
-
-    def _map_runner_response(self, status: int, raw: bytes, argv: list[str], cwd: str) -> ToolOutput:
-        if status == 200:
-            try:
-                result = RunnerResult.model_validate_json(raw)
-            except ValidationError:
-                return runner_unavailable("returned a malformed result")
-            # argv and cwd are what this process asked for, not what the runner says it ran.
-            return json.dumps({**result.model_dump(), "argv": argv, "cwd": cwd})
-        detail = runner_detail(raw)
-        if status == 403:
-            return self._refuse("runner", f"the shell runner refused it: {detail}")
-        if status == 401:
-            return runner_unavailable("rejected the token (FELIX_SHELL_RUNNER_TOKEN must match)")
-        if status == 422 and detail:
-            return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {detail}")
-        return runner_unavailable(f"answered HTTP {status}")
+        # argv and cwd are what this process asked for, not what the runner says it ran.
+        return json.dumps({**result.model_dump(), "argv": argv, "cwd": cwd})
+    detail = runner_detail(raw)
+    if status == 403:
+        return refuse("runner", f"the shell runner refused it: {detail}")
+    if status == 401:
+        return runner_unavailable("rejected the token (FELIX_SHELL_RUNNER_TOKEN must match)")
+    if status == 422 and detail:
+        return tool_error_output(ToolErrorCode.TRANSPORT_UNAVAILABLE, f"[shell] {detail}")
+    return runner_unavailable(f"answered HTTP {status}")
 
 
 async def runner_post(
@@ -602,11 +646,13 @@ __all__ = [
     "HostedPlace",
     "LocalPlace",
     "Refuse",
+    "RunKind",
     "RunnerPlace",
     "RunnerResult",
     "ShellArgs",
     "ShellPlace",
     "exec_argv",
+    "exec_in_place",
     "request_settings",
     "resolve_cwd",
     "runner_detail",

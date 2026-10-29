@@ -239,6 +239,16 @@ class Settings(BaseSettings):
     # manifest or model value can name this destination.
     # Out of repr like every URL here: one can carry userinfo.
     shell_runner_url: str = Field(default="", repr=False)
+    # Interpreters `spec.skill_scripts` may run a skill's `scripts/` with (comma-separated single
+    # words, e.g. `python3,bash`). Empty (default) disables skill scripts. Set on the shell runner
+    # too: it admits a script only under an interpreter of its own list. Needs the same isolation
+    # a shell tool does, and refuses to boot without it (`isolation_refusal`).
+    skill_script_interpreters: str = ""
+    # Whose skills may run their scripts (comma-separated): `host` (bundled and FELIX_SKILLS_DIR, the
+    # default), `library` (the tenant libraries: whoever holds skills:write, or adopts an import),
+    # `personal` (each person's own, skills:personal). Each word added makes that grant a grant to
+    # run code on the shell runner.
+    skill_script_sources: str = "host"
     # Bearer the API presents to the runner, and the runner requires. Required when the URL
     # is set. It authenticates callers *to* the runner; code running inside the runner's
     # container can read it, which grants nothing it does not already have.
@@ -1163,6 +1173,26 @@ class Settings(BaseSettings):
         if refusal is not None:
             raise RuntimeError(f"FELIX_SHELL_ALLOWED_COMMANDS is set, but {refusal}")
 
+    def _validate_skill_scripts(self) -> None:
+        """Skill scripts are code: the interpreters must be words, and they must exec where a
+        shell tool would."""
+        if not self.skill_script_interpreters.strip():
+            return
+        from felix.security.shell_policy import (
+            isolation_refusal,
+            malformed_interpreters,
+            unknown_script_sources,
+        )
+
+        bad = malformed_interpreters(self) + [
+            f"FELIX_SKILL_SCRIPT_SOURCES: unknown source {s!r}" for s in unknown_script_sources(self)
+        ]
+        if bad:
+            raise RuntimeError(f"FELIX_SKILL_SCRIPT_INTERPRETERS: {'; '.join(bad)}")
+        refusal = isolation_refusal(self)
+        if refusal is not None:
+            raise RuntimeError(f"FELIX_SKILL_SCRIPT_INTERPRETERS is set, but {refusal}")
+
     def _validate_skills_dir(self) -> None:
         """A configured skills directory that is not there leaves every skill it should serve as an
         empty stub, and in the self-build stack it also un-reserves those names against the skill
@@ -1295,6 +1325,7 @@ class Settings(BaseSettings):
         self._validate_manifests_dir()
         self._validate_skills_dir()
         self._validate_shell_isolation()
+        self._validate_skill_scripts()
         self._validate_workspace_gateway()
         self._validate_configured_tenant_ids()
         self._validate_principal_aliases()

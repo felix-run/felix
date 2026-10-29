@@ -1828,6 +1828,35 @@ def _warn_policies_cannot_be_satisfied(m: Manifest, settings: Any) -> None:
     record_counter("felix_policy_unsatisfiable", {"manifest_id": m.metadata.name})
 
 
+def _bind_skill_scripts(
+    resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str, catalog: Any, session_store: Any
+) -> None:
+    """`run_skill_script`, refused at compile as at write when the host would refuse every call."""
+    from felix.manifests.governance import GovernanceError
+    from felix.security.shell_policy import ShellNotAllowedError, assert_skill_scripts_allowed
+    from felix.skills.scripts import make_skill_script_tool
+
+    try:
+        # Not whether the catalog has skills today: a person's own may come later. The write asks.
+        assert_skill_scripts_allowed(m.spec.skill_scripts, deps.settings, scope=m.spec.workspace.scope)
+    except ShellNotAllowedError as exc:
+        raise GovernanceError(str(exc)) from exc
+    _append_unique_tools(
+        resolved,
+        [
+            make_skill_script_tool(
+                catalog,
+                m.spec.skill_scripts,
+                session_store=session_store,
+                tenant_id=tenant_id,
+                manifest_id=m.metadata.name,
+                settings=deps.settings,
+                object_store=deps.object_store,
+            )
+        ],
+    )
+
+
 def _bind_skill_authoring(
     resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str, catalog: SkillCatalog
 ) -> None:
@@ -2465,6 +2494,8 @@ async def build_agent(
             for name, tool in skill_tools.items():
                 if name not in have and (m.spec.skills or authoring or personal or name == READ_FILE_TOOL):
                     resolved.append(tool)
+            if m.spec.skill_scripts.enabled and deps.settings is not None:
+                _bind_skill_scripts(resolved, m, deps, tenant_id, catalog, session_store)
             _warn_imported_skills_are_unscreened(m, catalog)
             imported_skills = any(s.untrusted for s in catalog.skills.values())
             if authoring:
@@ -2486,6 +2517,14 @@ async def build_agent(
             record_counter(
                 "felix_rule_targets_nothing",
                 {"manifest_id": m.metadata.name, "rule": "skill_suggestion", "kind": "skills"},
+            )
+
+        if m.spec.skill_scripts.enabled and not any(t.name == "run_skill_script" for t in resolved):
+            # A bundled manifest never went through the write check that refuses this.
+            logger.warning("skill_scripts is on but %s binds no skills to run scripts from", m.metadata.name)
+            record_counter(
+                "felix_rule_targets_nothing",
+                {"manifest_id": m.metadata.name, "rule": "skill_scripts", "kind": "skills"},
             )
 
         # Recalled facts, rendered as a per-run prelude rather than folded into the

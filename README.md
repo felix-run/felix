@@ -911,6 +911,7 @@ Outbound integrations, all declared on the manifest:
 | `spec.image_tools` | Pillow resize, crop, rotate, convert, thumbnail, info and list (via the `image` extra) |
 | `spec.sandboxes` / `spec.containers` | Isolated execution |
 | `spec.shell_tools` | Allowlisted argv on the API host, in the workspace checkout — no shell interpreter; `background: true` adds `run_in_background`, `shell_output` and `shell_kill` |
+| `spec.skill_scripts` | `run_skill_script`: a script from an active skill's `scripts/`, under an interpreter both the manifest and `FELIX_SKILL_SCRIPT_INTERPRETERS` allow, where a shell tool would run |
 | `spec.queues` | Redis list enqueue and dequeue |
 
 > [!WARNING]
@@ -918,7 +919,9 @@ Outbound integrations, all declared on the manifest:
 > allowed (a bare name runs the binary the API's own `PATH` finds, and a manifest may not set the
 > child's `PATH`; allowlisting an interpreter or package runner such as `uvx`/`npx` lets a manifest
 > run anything through its arguments), and **shell tools are disabled** unless
-> `FELIX_SHELL_ALLOWED_COMMANDS` names the argv prefixes allowed. Manifest-supplied argv is
+> `FELIX_SHELL_ALLOWED_COMMANDS` names the argv prefixes allowed, and **skill scripts are disabled**
+> unless `FELIX_SKILL_SCRIPT_INTERPRETERS` names the interpreters allowed (and run only host skills'
+> scripts unless `FELIX_SKILL_SCRIPT_SOURCES` widens it). Manifest-supplied argv is
 > arbitrary code execution. A shell tool's command runs as the API's user and can read the API's
 > environment unless `FELIX_SHELL_RUNNER_URL` points it at a `felix-shell-runner` (with
 > `FELIX_SHELL_RUNNER_TOKEN`), which the builder stack runs in a container holding no secrets — see

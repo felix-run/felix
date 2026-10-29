@@ -1130,6 +1130,10 @@ def doctor_cmd() -> None:
         f"  [green]ok[/green]  shell tools — {shell_policy.describe_allowlist(settings)}"
         + ("" if shell_policy.allowed_prefixes(settings) else " (safe default)")
     )
+    rprint(
+        f"  [green]ok[/green]  skill scripts — {shell_policy.describe_interpreters(settings)}"
+        + ("" if shell_policy.allowed_interpreters(settings) else " (safe default)")
+    )
     from felix.patterns.model_vision import vision_plan
 
     # A note, not a failure: a text-only default is a legal, cheap choice. What doctor owes the

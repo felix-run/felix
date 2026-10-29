@@ -601,7 +601,7 @@ def _rename_checked(
 
 # The names the file pane never touches (`workspace_backend.PANE_HIDDEN_DIRS`), which a folder
 # operation refuses to act on or across, and the most entries one walks.
-PANE_HIDDEN_DIRS = frozenset({".git", ".felix-scopes"})
+PANE_HIDDEN_DIRS = frozenset({".git", ".felix-scopes", ".felix-skills"})
 PANE_HIDDEN_PREFIX = ".felix-edit-"
 _MAX_FOLDER_ENTRIES = 2_000
 

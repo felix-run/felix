@@ -909,6 +909,45 @@ class SkillAuthoringSpec(_Strict):
     auto_eval: bool = False
 
 
+_SCRIPT_EXTENSION_RE = re.compile(r"^\.[a-z0-9]{1,8}$")
+
+
+class SkillScriptsSpec(_Strict):
+    """Let the agent run the scripts in its active skills' `scripts/` (agentskills.io): binds
+    `run_skill_script(name, script, args)`.
+
+    The interpreter is chosen by the script's extension from `interpreters`, each of which the
+    operator must also allow (`FELIX_SKILL_SCRIPT_INTERPRETERS`, empty by default: refused at
+    manifest write). A script runs where a shell tool would -- the shell runner, or a development
+    box -- because it is code, from the workspace root, with only arguments the model chose. Only
+    a skill active in the calling conversation, from a source the operator lets run scripts
+    (`FELIX_SKILL_SCRIPT_SOURCES`: the host's own skills by default), and never an imported one
+    nobody has adopted.
+    """
+
+    enabled: bool = False
+    interpreters: dict[str, str] = Field(
+        # Not `.js: node` by default: node resolves `require()` up through `node_modules` in every
+        # parent directory, the workspace root included, where the model's file tools write.
+        default_factory=lambda: {".py": "python3", ".sh": "bash"},
+        max_length=16,
+    )
+    timeout_ms: int | None = Field(default=None, gt=0, le=MAX_INTEGRATION_TIMEOUT_MS)
+
+    @field_validator("interpreters")
+    @classmethod
+    def _interpreters(cls, v: dict[str, str]) -> dict[str, str]:
+        from felix.security.shell_policy import interpreter_issue
+
+        for ext, interpreter in v.items():
+            if not _SCRIPT_EXTENSION_RE.match(ext):
+                raise ValueError(f"skill_scripts.interpreters key {ext!r} must be an extension such as '.py'")
+            issue = interpreter_issue(interpreter)
+            if issue is not None:
+                raise ValueError(f"skill_scripts.interpreters[{ext}]: {issue}")
+        return v
+
+
 class SchedulingSpec(_Strict):
     """Let the agent schedule its own follow-up work: binds `schedule_task`, `list_scheduled` and
     `cancel_scheduled` (`felix/jobs/agent_tools.py`).
@@ -1621,6 +1660,7 @@ class Spec(_Strict):
     decider: DeciderSpec = Field(default_factory=DeciderSpec)
     skill_suggestion: SkillSuggestionSpec = Field(default_factory=SkillSuggestionSpec)
     skill_authoring: SkillAuthoringSpec = Field(default_factory=SkillAuthoringSpec)
+    skill_scripts: SkillScriptsSpec = Field(default_factory=SkillScriptsSpec)
     artifacts: ArtifactsSpec = Field(default_factory=ArtifactsSpec)
     workspace: WorkspaceSpec = Field(default_factory=WorkspaceSpec)
     reflect: ReflectSpec = Field(default_factory=ReflectSpec)
