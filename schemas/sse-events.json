@@ -17,6 +17,7 @@
     "steer",
     "subagent_end",
     "subagent_start",
+    "subagent_tool",
     "text_delta",
     "thinking_delta",
     "todo_updated",

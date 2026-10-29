@@ -20,7 +20,9 @@ run may end first, so the child cannot share live counters, and handing it whole
 child spend the budget again. A background child cannot start background children of its own.
 
 Either way the parent's stream carries `subagent_start` and, for a foreground child,
-`subagent_end`, so a client can tell a child's work from the parent's.
+`subagent_end`, so a client can tell a child's work from the parent's -- and, between them, a
+`subagent_tool` frame at the start and end of each call a foreground child makes
+(`tools/subagent_trace.py`), since `invoke()` streams nothing of its own.
 
 In a thread with a repository checkout, a background child works in a git worktree of it on a
 branch of its own (`repos/worktrees.py`), and so does a foreground child under
@@ -46,6 +48,7 @@ from felix.security.host_allowlist import EgressBound
 from felix.side_events import emit as emit_side_event
 from felix.tools import task_workspace
 from felix.tools.errors import tool_error_output
+from felix.tools.subagent_trace import subagent_running
 from felix.tools.types import Tool, ToolInvocationCtx, ToolOutput, define_tool
 from felix.tools.workspace_scope import bound_workspace_thread
 
@@ -222,7 +225,7 @@ async def _run_foreground(
     result = None
     req.limit_state.ceilings.append(ceiling)
     try:
-        with bound_workspace_thread(workspace.thread):
+        with bound_workspace_thread(workspace.thread), subagent_running(name):
             result = await child.invoke(
                 InvokeInput(messages=[ChatMessage(role="user", content=prompt)], model_id=model_id)
             )

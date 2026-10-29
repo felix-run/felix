@@ -1322,6 +1322,10 @@ rather than from re-reading a file. The wave itself is written up in [HISTORY.md
       (`check-protocol-parity` fails until they are modelled), and the tag is an optional field so
       a client that ignores it still renders one flat turn. The session log is the larger half:
       without a child record, a reload shows the flat turn again.
+      *Part done (2026-10-28):* a foreground `task` child's calls stream as `subagent_tool`
+      frames (`{agent, tool_call_id, tool_name, phase, args | result}`) from an outermost tool
+      wrapper while `tools/subagent_trace.py` names the child -- live only, not in the log, and
+      not from a durable run. The composite patterns' children are still unmarked.
 
 - [ ] **`POST /chat/ui` sub-protocol unspecified** — the route exists and the harness can block on
       a waiter for `DEFAULT_TIMEOUT_SECONDS = 300`. Document the frames and move the timeout to a

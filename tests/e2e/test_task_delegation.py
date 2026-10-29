@@ -208,6 +208,52 @@ async def test_the_parents_caps_bound_the_child(boot: Any) -> None:
         assert "max_tool_calls (2) exceeded" in _text(app.spy.prompts[3])
 
 
+async def test_the_stream_shows_each_call_a_foreground_child_makes(boot: Any) -> None:
+    """`invoke()` streams nothing, so a child's calls reached the parent's client as nothing at all:
+    a card that read "working" until the child answered. Each call is now a `subagent_tool` frame at
+    its start and end, between the frames that bracket the child, and the parent's own calls -- the
+    `task` call among them -- are not."""
+    calc = ToolCall(id="k1", name="calculator", args={"expression": "1+1"})
+    script = [
+        ScriptedTurn(tool_calls=[_task("c1", "add things")]),
+        ScriptedTurn(tool_calls=[calc]),
+        ScriptedTurn(content="two"),
+        ScriptedTurn(content="done"),
+    ]
+    child = _agent("e2e-researcher", system_prompt={"inline": "You research."}, tools=["calculator"])
+    async with boot(script, manifests={"e2e-lead": _lead(), "e2e-researcher": child}) as app:
+        resp = await app.client.post(
+            "/chat/stream",
+            json={
+                "manifest": "e2e-lead",
+                "thread_id": "e2e-task-calls",
+                "messages": [{"role": "user", "content": "go"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        frames = [(f.get("event"), f.get("data") or {}) for f in sse_payloads(resp.text)]
+        names = [name for name, _ in frames]
+        calls = [data for name, data in frames if name == "subagent_tool"]
+        assert calls == [
+            {
+                "agent": "e2e-researcher",
+                "tool_call_id": "k1",
+                "tool_name": "calculator",
+                "phase": "start",
+                "args": {"expression": "1+1"},
+            },
+            {
+                "agent": "e2e-researcher",
+                "tool_call_id": "k1",
+                "tool_name": "calculator",
+                "phase": "end",
+                "result": "2",
+            },
+        ]
+        first, last = (i for i, name in enumerate(names) if name == "subagent_tool")
+        assert names.index("subagent_start") < first < last < names.index("subagent_end"), names
+
+
 async def test_a_child_that_fails_hands_the_model_a_clean_error(boot: Any) -> None:
     script = [
         ScriptedTurn(tool_calls=[_task("c1", "job")]),

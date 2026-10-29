@@ -274,6 +274,55 @@ def apply_workspace_scope(tools: list[Tool], scope: WorkspaceScopeName) -> list[
     return _wrap_tools(tools, wrap_one)
 
 
+def apply_subagent_trace(tools: list[Tool]) -> list[Tool]:
+    """Outermost: while a foreground `task` child runs, show each of its calls on the parent's stream.
+
+    A `subagent_tool` side event at the start of a call (its arguments) and at the end (the first
+    line of its result, after every control has had its say), on the request's thread -- the
+    parent's, since the child shares the parent's request. Outside a child's run this costs a
+    context-variable read. See `tools/subagent_trace.py`.
+    """
+    from felix.side_events import emit as emit_side_event
+    from felix.tools.subagent_trace import result_head, running_subagent
+
+    def wrap_one(tool: Tool) -> Tool:
+        inner = tool.executor
+
+        async def execute(args: ToolInput, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+            agent = running_subagent()
+            req = try_get_context() if agent else None
+            if agent is None or req is None or not req.thread_id:
+                return await inner.execute(args, ctx)
+            call = {
+                "agent": agent,
+                "tool_call_id": (ctx.tool_call_id if ctx else "") or "",
+                "tool_name": tool.name,
+            }
+            await emit_side_event(
+                req.thread_id, "subagent_tool", {**call, "phase": "start", "args": dict(args)}
+            )
+            try:
+                out = await inner.execute(args, ctx)
+            except BaseException as exc:
+                # Said in the runner's own spelling for a raised call, so a client reads it as the
+                # failure it is; the exception itself carries on to the runner unchanged.
+                head = f"[error/{type(exc).__name__}]"
+                await asyncio.shield(
+                    emit_side_event(req.thread_id, "subagent_tool", {**call, "phase": "end", "result": head})
+                )
+                raise
+            await emit_side_event(
+                req.thread_id,
+                "subagent_tool",
+                {**call, "phase": "end", "result": result_head(tool_output_content(out))},
+            )
+            return out
+
+        return _clone_tool(tool, wrap_executor(inner, execute))
+
+    return _wrap_tools(tools, wrap_one)
+
+
 def apply_secret_masking(tools: list[Tool], secrets: list[str], manifest_id: str) -> list[Tool]:
     """Innermost: redact known secrets from tool output before anything else sees them.
 
@@ -2532,7 +2581,8 @@ async def build_agent(
         _warn_ungated_deletes(m)
 
         # Governance pipeline (order matters — matches TS builder). The workspace scope binds
-        # last, outermost: not a control, but the directory every control and preview runs over.
+        # last of the controls: not a control, but the directory every control and preview runs
+        # over. Only the subagent trace is outside it, and it reports rather than governs.
         # Permission mode sits just outside approvals: see `governance/permission_mode.py`.
         resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
         if m.spec.policies:
@@ -2605,6 +2655,9 @@ async def build_agent(
                 settings=deps.settings if deps.settings is not None else get_settings(),
             )
         resolved = apply_workspace_scope(resolved, m.spec.workspace.scope)
+        # Outside even the scope: what the parent's stream is told about a child's call should be
+        # what the call came to after every control, preview and scope has run.
+        resolved = apply_subagent_trace(resolved)
         if fork_runner is not None:
             # The `task` tool every governance wrapper has wrapped: what a forked skill calls, so a
             # control on `task` holds for a fork too.

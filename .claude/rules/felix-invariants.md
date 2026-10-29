@@ -37,7 +37,7 @@ line, re-validate it against *that* grammar's separators. Details: the **securit
 <!-- toolkit:enum wrapper-order -->
 - **Wrapper order in `manifests/builder.py` is load-bearing.** secret masking → policies → command
   screening → content screening → limits → guardrails → judges → approvals → permission mode → artifact spill →
-  workspace scope. Each wrapper clones the tool with a new executor, so order defines precedence.
+  workspace scope → subagent trace. Each wrapper clones the tool with a new executor, so order defines precedence.
   Never reorder to make a test pass. Details: the **governance-pipeline** skill.
 - **Extensibility is the product.** Felix must not dictate a workflow: what other harnesses
   bake in should be buildable here as a plugin, a skill, or a third-party package, with core
