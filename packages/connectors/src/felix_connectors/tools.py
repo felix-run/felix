@@ -17,9 +17,9 @@ from typing import Any
 
 from felix.tools.errors import ToolErrorCode, code_for_status, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from felix_connectors.http import UpstreamError
+from felix_connectors.http import Busy, UpstreamError
 
 logger = logging.getLogger("felix_connectors.tools")
 
@@ -45,6 +45,8 @@ def _failed(service: str, exc: Exception) -> ToolOutput:
     if isinstance(exc, UpstreamError):
         code = code_for_status(exc.status)
         return tool_error_output(code, f"{service} answered {exc.status}")
+    if isinstance(exc, Busy):
+        return tool_error_output(ToolErrorCode.RATE_LIMITED, f"{service} is busy; try again shortly")
     if isinstance(exc, TimeoutError):
         return tool_error_output(ToolErrorCode.TIMEOUT, f"{service} did not answer in time")
     if isinstance(exc, EgressBlocked):
@@ -103,6 +105,30 @@ def connector_tool(
     )
 
 
+class Point(BaseModel):
+    """A latitude/longitude argument, bounded, so a coordinate formatted into a URL is digits."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float = Field(ge=-90, le=90, description="Latitude in decimal degrees.")
+    longitude: float = Field(ge=-180, le=180, description="Longitude in decimal degrees.")
+
+
+def number(value: object) -> float | None:
+    """A JSON number, or a numeric string (Nominatim sends coordinates as strings); None for
+    anything else, a bool included."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def one_line(value: object, cap: int) -> str:
     """`value` as one line of at most `cap` characters.
 
@@ -115,4 +141,4 @@ def one_line(value: object, cap: int) -> str:
     return text[:cap] + "…" if len(text) > cap else text
 
 
-__all__ = ["TRANSPORT", "connector_tool", "one_line"]
+__all__ = ["TRANSPORT", "Point", "connector_tool", "number", "one_line"]

@@ -1030,6 +1030,10 @@ Storage and execution:
   `connectors__weather_alerts` (US, National Weather Service), keyless by default (Open-Meteo,
   `FELIX_WEATHER_BACKEND`). A manifest lists each one in `spec.tools`; their answers are screened as
   untrusted, and an agent's `network.allow_hosts` must cover the hosts they declare.
+- Maps tools from the same plugin: `connectors__geocode`, `connectors__reverse_geocode`,
+  `connectors__places_search`, `connectors__route` (driving, walking, cycling) and
+  `connectors__timezone_at`, keyless by default (OpenStreetMap Nominatim and FOSSGIS OSRM, paced to
+  one request a second; `FELIX_MAPS_GEOCODER`, `FELIX_MAPS_ROUTER`).
 - Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

@@ -1044,6 +1044,20 @@ exactly as it covers a fetched page. A manifest binding any of the four without
 `content_screening.enabled` is warned at compile time and counted in
 `felix_untrusted_tools_unscreened`.
 
+The `felix-connectors` plugin's tools (`connectors__*`, transport `connectors`) are the same:
+outside the allowlist, screened when the manifest enables it, warned when it does not. Each
+declares the hosts it reaches (`Tool.egress_hosts`), the compile refuses one an agent's
+`network.allow_hosts` does not cover, and every request is held to the declared hosts. Weather
+comes from institutions; **the maps tools return OpenStreetMap data, which anyone can edit** -- a
+place name or a road name is user-generated text that reaches the model inside a result line.
+Every value is flattened to one capped line, so it cannot forge lines of its own, but only
+screening reads what it says: a manifest offering `connectors__geocode`, `_places_search` or
+`_route` should enable `content_screening`. The public Nominatim and OSRM instances are paced to
+one request a second per process, shared by every tenant on it; a call that would wait more than
+five seconds answers `rate_limited`, so one tenant's burst can make another's map calls fail for
+a few seconds. A multi-tenant install should point the backends at its own instances, which are
+not paced.
+
 Outbound MCP (`spec.mcp_servers`) is the official SDK's client, whose HTTP stack is httpx2 rather
 than httpx. It is handed `safe_httpx2_client` (`security/egress_httpx2.py`): the same pin
 (`connect_pinned`) and the same per-hop checks (`guard_request`) installed on httpx2's own pool, so an

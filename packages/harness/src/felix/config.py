@@ -369,6 +369,10 @@ class Settings(BaseSettings):
     weather_backend: str = "open-meteo"
     # The units a weather tool answers in when the model asks for none.
     weather_units: Literal["metric", "imperial"] = "metric"
+    # The place lookup and the router its maps tools use, each from its own registry
+    # (`felix_connectors.maps.register_geocoder` / `register_router`); the defaults need no key.
+    maps_geocoder: str = "nominatim"
+    maps_router: str = "osrm"
     # Appended to the User-Agent every connector sends -- an email or URL. Nominatim's and the
     # National Weather Service's usage policies ask for a way to reach whoever runs the client.
     connectors_contact: str = ""
