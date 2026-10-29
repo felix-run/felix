@@ -124,6 +124,6 @@ async def test_an_anonymous_router_may_not_name_a_child_that_refuses_anonymous(b
         "e2e-router": _router("e2e-router", ["e2e-closed"]),
     }
     async with boot(manifests=manifests) as app:
-        with pytest.raises(ValueError, match="allows anonymous callers but its sub_agents e2e-closed"):
+        with pytest.raises(ValueError, match="admits anonymous callers but its sub_agents e2e-closed"):
             await _chat(app, "e2e-router")
         assert app.spy.prompts == []

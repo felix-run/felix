@@ -1006,9 +1006,15 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     says (forever by default).
   - **`cowork`'s `local_open` opens any URL ungated.** Gating only the URL form needs the
     client contract to carry the URL as its own argument for `when_args`.
-  - **A child's `schemes` and `required_scopes` are not checked through a router.** Only the
-    anonymous case is refused at compile; an authenticated caller without a child's scope still
-    reaches it. Nor is the refusal checked at `PUT /manifests`, which could resolve the children.
+  - **A child's `schemes` and `required_scopes` are not checked through a router for an
+    authenticated caller.** The anonymous case is refused at compile, reading both doors with
+    `admits_anonymous`; a caller holding a key but not a child's scope still reaches it. Closing it
+    means the router's door is the union of its children's, decided at compile. Nor is the
+    refusal checked at `PUT /manifests`, so a misconfigured stored router answers 500 per request
+    instead of 422 at save.
+  - **A manifest's `metadata.name` is never compared with the name it was found under** — the
+    loader and the object-store resolver take either. The compile now refuses a child whose names
+    differ; a top-level manifest that names itself differently is still served.
   - **`felix bundle-manifests --strict` misses inert rules.** An approval rule naming tools the
     manifest never binds is only a compile-time `felix_rule_targets_nothing` warning.
 

@@ -454,10 +454,13 @@ Not yet covered, so nobody assumes more:
 a request names — the router — and not again on each sub-agent it compiles. A child's own
 `allow_anonymous`, `schemes` and `required_scopes` therefore apply when the child is called by
 name, and not when a router hands it a request. Put the admission you need on the router. One
-case is refused at compile rather than left to the author: a composite that sets
-`allow_anonymous: true` while a child it names does not (or a child whose door the build cannot
-read) fails with `allows anonymous callers but its sub_agents … do not`. That is why the bundled
-`router`, which names `deep`, refuses anonymous callers. A child's `schemes` and
+case is refused at compile rather than left to the author: a composite an anonymous caller may
+enter, naming a child that caller could not, fails with `admits anonymous callers but its
+sub_agents … do not`. Both doors are read with the check a request makes, so a child closed only
+by `required_scopes` or `schemes` counts as closed, as does one whose door the build cannot read.
+That is why the bundled `router`, which names `deep`, refuses anonymous callers. A child found
+under one name whose manifest calls itself another is refused outright (`the names must match`),
+for `sub_agents` as for `delegation`. For an *authenticated* caller, a child's `schemes` and
 `required_scopes` are still not checked through a router. What a child keeps
 is everything else it declares — its tools, policies, approvals, screening and limits are
 compiled into it and apply whichever way it was reached.
