@@ -36,7 +36,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from felix.context import RequestContext, try_get_context
@@ -269,21 +269,26 @@ class ForkRunner:
     manifest's *governed* `task` tool, bound once the governance stack has wrapped it (`bind`). So
     every control that names `task` -- an approval, a policy, the limits' peer hops, the permission
     mode -- holds for a fork as for the model's own `task` call, and the child runs on `task`'s path,
-    `subagent_stop` included. A `model:` the skill asks for reaches the `task` handler by the call
-    id this mints (`model_overrides`), and only when the deployment defines the route and
+    `subagent_stop` included. The call goes through a tool runner as the model's own would, so the
+    manifest's `pre_tool_use` / `post_tool_use` hooks, the plugin tool hooks and the `tool_call`
+    audit row see it too; the limits count it as part of the `activate_skill` call it runs inside,
+    not as a second one. A `model:` the skill asks for reaches the `task` handler by the call id
+    this mints (`model_overrides`), and only when the deployment defines the route and
     request-model governance would let a caller ask for it on this manifest and its children."""
 
     children: Mapping[str, tuple[ChildAgent, str, Manifest]]
     lead: Manifest
     model_overrides: dict[str, str]
     _task: Tool | None = None
+    _hooks: ManifestHooks | None = None
 
     @property
     def agents(self) -> tuple[str, ...]:
         return tuple(self.children)
 
-    def bind(self, governed_task: Tool | None) -> None:
+    def bind(self, governed_task: Tool | None, *, hooks: ManifestHooks | None = None) -> None:
         self._task = governed_task
+        self._hooks = hooks
 
     async def __call__(
         self, agent: str, prompt: str, model_id: str | None, *, outer_call_id: str | None = None
@@ -299,12 +304,57 @@ class ForkRunner:
         if model:
             self.model_overrides[call_id] = model
         try:
-            return await self._task.executor.execute(
-                {"agent": agent, "prompt": prompt},
-                ToolInvocationCtx(thread_id=getattr(req, "thread_id", None), tool_call_id=call_id),
-            )
+            return await self._dispatch(agent, prompt, call_id, getattr(req, "thread_id", None))
         finally:
             self.model_overrides.pop(call_id, None)
+
+    async def _dispatch(self, agent: str, prompt: str, call_id: str, thread_id: str | None) -> ToolOutput:
+        """The `task` call, through a tool runner: what it returned, with the text the runner's hooks
+        made of it. A raise is raised again, as it was before the runner caught it."""
+        from felix.patterns.tool_runner import ToolRunner
+        from felix.patterns.types import ToolCall
+        from felix.tools.executor import wrap_executor
+        from felix.tools.types import deny_output, replace_tool_output, tool_output_content
+
+        task = self._task
+        assert task is not None
+        returned: list[ToolOutput] = []
+        raised: list[Exception] = []
+
+        async def execute(args: dict[str, Any], ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+            inner = ToolInvocationCtx(
+                manifest_id=getattr(ctx, "manifest_id", None),
+                tool_call_id=call_id,
+                thread_id=thread_id,
+                within=call_id,
+            )
+            try:
+                out = await task.executor.execute(args, inner)
+            except Exception as exc:
+                raised.append(exc)
+                raise
+            returned.append(out)
+            return out
+
+        runner = ToolRunner(
+            tool_map={task.name: replace(task, executor=wrap_executor(task.executor, execute))},
+            manifest_id=self.lead.metadata.name,
+            manifest_hooks=self._hooks,
+        )
+        call = ToolCall(id=call_id, name=task.name, args={"agent": agent, "prompt": prompt})
+        _fatal, message, _terminate, denied = await runner.dispatch(call, thread_id)
+        if raised:
+            raise raised[0]
+        text = str(message.content or "")
+        if not returned:
+            # A hook refused it before it ran: a deny, as a governance wrapper's would be, naming the
+            # kind of hook by the text the runner wrote for it (`ToolRunner._refuse`).
+            if not denied:
+                return tool_error_output("internal", text)
+            return deny_output(text, "manifest_hook" if text.startswith("[hook denied]") else "hook")
+        out = returned[0]
+        # Empty when the runner's bookkeeping failed after the call: the answer stands as it came.
+        return out if not text or text == tool_output_content(out) else replace_tool_output(out, content=text)
 
 
 def fork_call_id(outer_call_id: str) -> str:

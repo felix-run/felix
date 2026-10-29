@@ -574,10 +574,10 @@ so.
 
 A skill whose frontmatter says `context: fork` runs in a subagent instead: `activate_skill` hands
 its instructions and the model's `task` to one of the manifest's `spec.delegation.agents` (the one
-`agent:` names) as a call of the manifest's *governed* `task` tool. A react manifest with no
-`spec.delegation` runs a forked skill that names no `agent:` (or names the manifest itself) in
-itself instead: the same manifest, compiled on the first fork as its own subagent, in a fresh
-conversation, through a `task` tool that gets every wrapper and is then withheld from the model
+`agent:` names) as a call of the manifest's *governed* `task` tool. A manifest with no
+`spec.delegation` and no `sub_agents` runs a forked skill that names no `agent:` (or names the
+manifest itself) in itself instead: the same manifest, compiled on the first fork as its own
+subagent, in a fresh conversation, through a `task` tool that gets every wrapper and is then withheld from the model
 (it was given no delegation to call). That subagent's own forks run nowhere (`fork_unavailable`),
 so a fork is one level deep. It has the manifest's whole toolset, and the model's `task` text is
 its user turn, screened by the manifest's inbound controls as a delegation child's is. Its skills,
@@ -586,13 +586,17 @@ request was admitted. Either way, every control that names
 `task` holds for it: an approval, a policy, the limits and their peer hops, the permission mode, the
 child's own inbound auth, `subagent_stop` -- and returns only that agent's answer, as untrusted
 output content screening reads (a deny is passed on as one). The instructions never enter the
-conversation and nothing is retained. The tool runner's own per-call layer is the exception: it
-runs around `activate_skill`, the call the model made, not around the `task` call a fork makes
-inside it -- so manifest `pre_tool_use`/`post_tool_use` hooks, plugin `before_tool`/`after_tool`
-hooks and the `tool_call` audit row keyed on `task` do not see a fork (the skill's own `fork`
-audit row does, and the compile warns about manifest hooks on `task`); name `activate_skill` too
-where such a hook must hold. A fork counts as two tool calls against `max_tool_calls` (the
-activation and its `task` call) and one peer hop. The inner call's id is derived from the
+conversation and nothing is retained. The `task` call goes through a tool runner as the model's
+own would, so manifest `pre_tool_use`/`post_tool_use` hooks and plugin `before_tool`/`after_tool`
+hooks on `task` fire for it, a hook's block stops it, and it has its own `tool_call` audit row
+beside the `activate_skill` one and the skill's `fork` row. It is a call in the ledger like any
+other: a refused fork writes a `policy_deny` row (and a denied `felix_tool_calls` count) for `task`
+and another for `activate_skill`, and a hook with no `tools:` filter fires for both. A hook on
+`task` is sent the call's arguments, so its endpoint receives the skill's instructions. A hook's
+`terminate` on the inner call is not carried out; the run goes on with the fork's answer. It counts as one tool call against
+`max_tool_calls` -- the `activate_skill` call it runs inside -- and as one peer hop. The child's
+turn puts the model's `task` first and the skill's instructions after it, so a person approving
+the `task` call reads the job before the body. The inner call's id is derived from the
 activation's (`<id>:fork`), so an approval it waits on is withdrawn when the run is interrupted,
 like any other call's (felix#531). A `model:` the skill asks for is used only if the deployment
 defines that route and request-model governance would let a caller ask for it on this manifest and

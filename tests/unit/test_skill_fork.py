@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.manifests.loader import parse_manifest
 from felix.skills.loader import parse_skill_md, skill_catalog_xml
 from felix.skills.tools import make_skill_tools
 from felix.skills.types import Skill, SkillCatalog
 from felix.tools.delegation import ForkRunner
-from felix.tools.types import ToolInvocationCtx, tool_output_content
+from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
 
 from tests.support.factories import make_settings
 
@@ -97,7 +98,7 @@ async def test_without_a_named_agent_the_first_delegation_agent_runs_it() -> Non
     runner = _Runner(agents=("first", "second"))
     out = json.loads(tool_output_content(await _run(_dig(), runner, task="the job")))
     assert [c[0] for c in runner.calls] == ["first"] and out["agent"] == "first"
-    assert "Dig in." in runner.calls[0][1] and runner.calls[0][1].endswith("the job")
+    assert "Dig in." in runner.calls[0][1] and runner.calls[0][1].startswith("the job\n\n<skill_instructions")
 
 
 async def test_an_agent_the_manifest_does_not_delegate_to_is_unavailable() -> None:
@@ -132,7 +133,10 @@ class _Task:
     def __init__(self, overrides: dict[str, str]) -> None:
         self.overrides = overrides
         self.seen: list[tuple[dict[str, Any], str | None]] = []
-        self.executor = self
+        self.transport = "local"
+
+    def tool(self) -> Tool:
+        return Tool(name="task", description="", args_schema=None, executor=self)
 
     async def execute(self, args: dict[str, Any], ctx: Any) -> str:
         self.seen.append((args, self.overrides.get(ctx.tool_call_id)))
@@ -156,7 +160,7 @@ async def _through(
         lead=lead or _manifest(),
         model_overrides=overrides,
     )  # type: ignore[dict-item]
-    runner.bind(task)  # type: ignore[arg-type]
+    runner.bind(task.tool())
     async with async_run_with_context(RequestContext(settings=settings, auth=AuthContext(tenant_id="t"))):
         assert tool_output_content(await runner("helper", "job", model)) == "answer"
     return task, overrides
@@ -243,7 +247,7 @@ async def test_the_inner_call_s_id_is_derived_from_the_activation_s() -> None:
     runner = ForkRunner(
         {"helper": (object(), "Helps.", _manifest())}, lead=_manifest(), model_overrides=overrides
     )  # type: ignore[dict-item]
-    runner.bind(task)  # type: ignore[arg-type]
+    runner.bind(task.tool())
     async with async_run_with_context(
         RequestContext(settings=make_settings(), auth=AuthContext(tenant_id="t"))
     ):
@@ -294,3 +298,17 @@ async def test_a_provider_tool_named_task_is_left_alone_and_forks_run_nowhere(
     [task] = [t for t in agent.tools if t.name == "task"]
     assert task.description == "A provider's own task tool."
     assert [r for r in caplog.records if "nowhere to run them" in r.getMessage()]
+
+
+async def test_a_raising_task_is_raised_again_not_relayed() -> None:
+    """The runner turns a raise into `[error/...] <its text>`; a fork raises it again, so `_fork`
+    answers `fork_failed` with no detail rather than the exception's text."""
+
+    class _Raising(_Task):
+        async def execute(self, args: dict[str, Any], ctx: Any) -> str:
+            raise RuntimeError("/srv/secret")
+
+    runner = ForkRunner({}, lead=_manifest(), model_overrides={})  # type: ignore[arg-type]
+    runner.bind(_Raising({}).tool())
+    with pytest.raises(RuntimeError, match="/srv/secret"):
+        await runner("helper", "job", None)
