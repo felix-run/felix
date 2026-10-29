@@ -1381,6 +1381,43 @@
         "title": "GitHubConnectionState",
         "type": "object"
       },
+      "GoogleConnectStart": {
+        "properties": {
+          "return_to": {
+            "description": "Where the browser comes back to; an allowed origin.",
+            "title": "Return To",
+            "type": "string"
+          },
+          "scopes": {
+            "description": "What to connect: calendar_read, calendar_events, gmail_read, gmail_compose, drive_read.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "return_to",
+          "scopes"
+        ],
+        "title": "GoogleConnectStart",
+        "type": "object"
+      },
+      "GoogleConnectUrl": {
+        "properties": {
+          "authorize_url": {
+            "title": "Authorize Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorize_url"
+        ],
+        "title": "GoogleConnectUrl",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -13601,6 +13638,134 @@
           }
         },
         "summary": "My Connections",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/google/callback": {
+      "get": {
+        "description": "Google's return. Checks `state` against this browser's flow cookie, exchanges the code and\nverifies who the Google account is -- and stores nothing. The grant waits, sealed, in a\none-load cookie for the app to keep with `/google/finish` as the person who started; a flow\ncookie planted in someone else's browser therefore never puts their grant in its owner's vault.",
+        "operationId": "return_from_google_connections_google_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Code",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Error",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Return From Google Connections Google Callback Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Return From Google",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/google/finish": {
+      "post": {
+        "description": "Keep the Google grant your browser just brought back, as yourself. Refused (403\n`not_your_connection`) unless you are the person who started it, and then dropped; the\nwaiting cookie is cleared either way, so a reload finds nothing.",
+        "operationId": "finish_google_connect_connections_google_finish_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Finish Google Connect",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/google/start": {
+      "post": {
+        "description": "Begin connecting your Google account. Send the browser to `authorize_url`; this browser\nalone can come back, by the sealed cookie this response sets, and you alone can keep what it\nbrings (`/google/finish`).",
+        "operationId": "start_google_connect_connections_google_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GoogleConnectStart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoogleConnectUrl"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Google Connect",
         "tags": [
           "Connections"
         ]

@@ -90,9 +90,11 @@ def anonymous_paths(settings: Settings | None) -> AnonymousPaths:
     client finds out how to get a credential (not a probe, so the rate limiter still counts it).
     A login's paths are how a caller *gets* a credential, so they cannot require one. A trigger is
     signed by the event's sender, not by a bearer; its route verifies the signature before it reads
-    the body and runs as the trigger's own principal (`felix.triggers`).
+    the body and runs as the trigger's own principal (`felix.triggers`). Google's return from
+    connecting an account (`google_connect`) is a browser navigation, so it carries no bearer
+    either: the sealed flow cookie the authenticated start set is what identifies the person.
     """
-    from felix.auth import github, google
+    from felix.auth import github, google, google_connect
     from felix.triggers import TRIGGER_PATH_PREFIX, triggers_configured
 
     every = settings is None
@@ -102,9 +104,11 @@ def anonymous_paths(settings: Settings | None) -> AnonymousPaths:
         exact |= DOCS_PATHS
     if every:
         exact |= github.GITHUB_LOGIN_PATHS | github.GITHUB_REDIRECT_PATHS | google.GOOGLE_REDIRECT_PATHS
+        exact.add(google_connect.CONNECT_CALLBACK_PATH)
         exact.add(github.GITHUB_ACTIONS_LOGIN_PATH)
     else:
         exact |= github.public_login_paths(settings) | google.public_login_paths(settings)
+        exact |= google_connect.public_connect_paths(settings)
     if every or triggers_configured(settings):
         prefixes.append(TRIGGER_PATH_PREFIX)
     return AnonymousPaths(exact=frozenset(exact), prefixes=tuple(prefixes))

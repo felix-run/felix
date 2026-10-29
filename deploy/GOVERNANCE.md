@@ -3422,6 +3422,41 @@ GitHub's connection predates it and keeps its own table (see [GitHub login](#git
 - A call that names no account, for a person with two at one provider, is refused
   (`AmbiguousConnection`) rather than picking one.
 
+### Connecting Google
+
+`POST /connections/google/start` (a person, signed in) answers with Google's consent URL for the
+scopes they chose -- `calendar_read`, `calendar_events`, `gmail_read`, `gmail_compose`,
+`drive_read`, plus `openid email` to learn which account it is -- asking for an offline grant
+(`access_type=offline`, `prompt=consent`, `include_granted_scopes`). Its response sets a sealed
+HttpOnly flow cookie carrying the state, nonce, PKCE verifier, the person and the tenant (named
+`__Host-…` over https, so no sibling subdomain or plain-http answer can plant one). Google returns
+the browser to `GET /connections/google/callback`, the one public connections path (a navigation
+carries no bearer): a state that does not match the cookie is refused before the code is
+exchanged, and a consent link finished in a browser with no cookie stores nothing. The callback
+verifies the ID token as sign-in does and **stores nothing**: it leaves the grant sealed in a
+Strict, two-minute, one-use cookie, and the app keeps it with `POST /connections/google/finish` as
+the person -- refused (403 `not_your_connection`) unless that is the person who started, and the
+grant then dropped. So even a planted flow cookie cannot put one person's Google grant in another's
+vault. It is dropped rather than revoked at Google: a revoke ends that account's whole grant with
+the client, so a planted flow could otherwise disconnect someone's real connections on purpose.
+Over https only the `__Host-` cookie names are read. The grant is kept as the Google account's `sub`, labelled with its verified
+email, with the scopes Google says it carries (granular consent may grant fewer than asked;
+`include_granted_scopes` adds earlier ones). A grant without a refresh token is not kept.
+
+- Same OAuth client as Google sign-in, with a second redirect URI registered on it
+  (`<origin>FELIX_GOOGLE_CONNECT_CALLBACK_PATH`). On while sign-in's client, cookie key and origins
+  and a vault key are all set; otherwise the routes answer 404 and the callback is not public.
+- `FELIX_GOOGLE_ACCOUNTS` governs who signs in, not what they connect: any person may connect a
+  Google account of theirs, which need not be the one they sign in with.
+- **The worker refreshes too.** A durable run or a job acting for someone refreshes their grant in
+  the worker, so it holds `FELIX_CONNECTION_TOKEN_KEY` and Google's client id and secret. None of
+  them mints a Felix token. Set the vault's own key: the fallback to `FELIX_GITHUB_TOKEN_KEY` works
+  only where that key is, which under Compose is the api alone.
+- Removal revokes the refresh token at Google, best effort (a refusal is logged as
+  `connection_revoke_failed`). At Google that ends the whole grant between that Google account and
+  the OAuth client -- so the same Google account connected by another person, or in another
+  tenant, stops working too and is marked `revoked` on its next use.
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes

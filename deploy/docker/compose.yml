@@ -201,6 +201,10 @@ services:
       FELIX_GOOGLE_COOKIE_KEY: ${FELIX_GOOGLE_COOKIE_KEY:-}
       FELIX_GOOGLE_REDIRECT_ORIGINS: ${FELIX_GOOGLE_REDIRECT_ORIGINS:-}
       FELIX_GOOGLE_CALLBACK_PATH: ${FELIX_GOOGLE_CALLBACK_PATH:-/api/auth/google/callback}
+      # Connecting a person's Google account (the same OAuth client, a second redirect URI).
+      FELIX_GOOGLE_CONNECT_CALLBACK_PATH: ${FELIX_GOOGLE_CONNECT_CALLBACK_PATH:-/api/connections/google/callback}
+      # Seals each person's stored connections; the worker opens and refreshes them too.
+      FELIX_CONNECTION_TOKEN_KEY: ${FELIX_CONNECTION_TOKEN_KEY:-}
       FELIX_GOOGLE_ACCOUNTS: ${FELIX_GOOGLE_ACCOUNTS:-}
       FELIX_GOOGLE_LOGIN_TTL_SECONDS: ${FELIX_GOOGLE_LOGIN_TTL_SECONDS:-28800}
     volumes:
@@ -227,6 +231,13 @@ services:
       FELIX_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-felix}
       FELIX_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-}
       FELIX_S3_BUCKET: felix-bundles
+      # A durable run or a job acting for someone refreshes their Google grant here: the vault key
+      # to open it, and the OAuth client to ask Google. Neither mints a Felix token (that is
+      # FELIX_JWKS_PRIVATE, the api's alone). Without its own FELIX_CONNECTION_TOKEN_KEY the
+      # vault falls back to FELIX_GITHUB_TOKEN_KEY, which only the api has -- so set it.
+      FELIX_CONNECTION_TOKEN_KEY: ${FELIX_CONNECTION_TOKEN_KEY:-}
+      FELIX_GOOGLE_CLIENT_ID: ${FELIX_GOOGLE_CLIENT_ID:-}
+      FELIX_GOOGLE_CLIENT_SECRET: ${FELIX_GOOGLE_CLIENT_SECRET:-}
     volumes:
       - felix-data:/data
       - ${FELIX_WORKSPACE_HOST:-felix-workspace}:/workspace
