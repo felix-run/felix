@@ -168,7 +168,7 @@ jobs:
       # playwright, boto3 and presidio for no coverage; these three are the ones whose
       # absence silently deletes tests (see tests/support/optional_deps.py).
       - name: Install dependencies
-        run: uv sync --locked --dev --extra warehouse --extra sandbox --extra otel --extra image --extra channels
+        run: uv sync --locked --dev --extra warehouse --extra sandbox --extra otel --extra image --extra channels --extra connectors
       - name: Bundle manifests
         run: uv run felix bundle-manifests --strict
       # `make test-cov` is the same target `make check` runs, and it wraps

@@ -881,6 +881,7 @@ _OWNED_ROOTS = [
     "apps/cli/src/felix_cli",
     "apps/worker/src/felix_worker",
     "packages/channels/src/felix_channels",
+    "packages/connectors/src/felix_connectors",
 ]
 _OWNERSHIP_WORDS = ("has no owner", "covers ", "UNOWNED")
 OWNED_FLOOR = 300  # OWNED_MIN_LINES in the validator

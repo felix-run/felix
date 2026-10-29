@@ -999,7 +999,7 @@ An audit of the bundled manifests, then tools for the things a daily-driver agen
 about first. Plan: weather, maps, market data, a per-person connection vault (W5), Google and
 Apple connectors, then example agents built on them. One PR at a time, in order:
 
-- [ ] **Manifest audit fixes**:
+- [x] **Manifest audit fixes** (#714, review follow-up #715):
   - An anonymous composite naming a child that refuses anonymous callers is refused at compile.
     The bundled `router` was the anonymous door to `deep`'s unconfined fetch.
   - `triage` refuses anonymous callers.
@@ -1008,8 +1008,15 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     unpriced route.
   - Stale fields, prompts and tool names were corrected.
 - [ ] **`packages/connectors`**: weather (Open-Meteo, keyless), maps (Nominatim/OSRM), market
-      data (keyed). This needs a core seam first: a plugin tool's hosts are checked against
-      `network.allow_hosts`.
+      data (keyed).
+  - [x] Weather, and the core seam it needs: `Tool.egress_hosts`, checked against the agent's
+    `network.allow_hosts` bound at compile. `connectors__weather_current`, `_forecast` and
+    `_alerts` (NWS); `FELIX_WEATHER_BACKEND` is an open registry.
+  - [ ] Maps, with weather by place name once geocoding exists.
+  - [ ] Market data and FX.
+  - Found, not fixed: a plugin tool that declares no `egress_hosts` is still unbounded under
+    `allow_hosts`. Refusing every undeclared non-`local` tool under a bound is the allowlist
+    answer, and would break any plugin tool bound today under one.
 - [ ] **Connection vault**: `github_connections` generalised per provider (W5), plus MCP
       `auth: person`.
 - [ ] **Google and Apple connectors**: Calendar, Gmail drafts, Drive; iCloud CalDAV/CardDAV.
