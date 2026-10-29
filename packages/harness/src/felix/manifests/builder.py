@@ -2531,7 +2531,9 @@ async def build_agent(
             # Active skills put back where a strategy dropped the turn that activated them -- only
             # those this catalog still offers, so taking a skill away takes it out of old threads.
             session_strategy = retain_skills(session_strategy, catalog)
-            skill_preamble = make_skill_preamble(catalog, list(m.spec.skills), session_store, person_calls)
+            skill_preamble = make_skill_preamble(
+                catalog, list(m.spec.skills), session_store, person_calls, manifest=m
+            )
             # Ensure skill tools exist when skills are declared (or authored) but not listed;
             # `read_skill_file` rides along with any of them, since `activate_skill` names files
             # only it can read.

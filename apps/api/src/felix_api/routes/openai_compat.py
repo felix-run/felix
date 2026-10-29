@@ -409,7 +409,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         manifest_id=body.model,
         thread_id=thread,
         # Screened above, so the 422 could be answered before a stream opened.
-        extras={INBOUND_SCREENED_EXTRA: True},
+        extras={INBOUND_SCREENED_EXTRA: resolved.manifest.metadata.name},
     )
     completion = _Completion.new(body.model)
     try:
