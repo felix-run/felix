@@ -490,13 +490,14 @@ First, because everything else governs it.
 
 ### B. Close the durable loop
 
-- [ ] **Record each tool call's result as it lands** (felix-run/felix#574). #531 logs a batch's calls before they
-      run, so a re-run sees them, but their results are still written once the whole batch
-      returns. A call that finished inside a batch that did not is therefore closed as
-      interrupted ("may have already taken effect"), and the model is asked to check work it
-      could have been told was done. Correct, but it costs a turn and an approval each time a
-      worker dies mid-batch. Append each result as its call returns, and have
-      `_interrupted_tool_results` close only the calls with none.
+- [x] **Record each tool call's result as it lands** (felix-run/felix#574). #531 logs a batch's calls before they
+      run, so a re-run sees them; their results were written once the whole batch returned, so a
+      call that finished inside a batch that did not was closed as interrupted ("may have already
+      taken effect"), costing a turn and an approval each time a worker died mid-batch. Now
+      `ToolRunner.run_batch(on_result=...)` hands each result over as its call returns, and the
+      react loop appends it then (one append at a time, so parallel results chain in the log in
+      completion order; the stream's `tool_end` frames keep call order). `_interrupted_tool_results`
+      already closed only calls with no result.
 
 Not a gap, checked this cycle: the lease is renewed in flight (`fibers.py:443`, renewal loop at
 `:473`), so `FIBER_LEASE_MS` bounds "how long after a worker dies is its fiber stranded", not
