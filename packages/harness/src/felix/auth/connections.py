@@ -151,6 +151,21 @@ def unregister_connection_provider(name: str) -> None:
     _PROVIDERS.pop(name, None)
 
 
+#: Providers that ship with the harness, imported on first use so nothing has to remember to:
+#: a worker resuming a run refreshes through the same provider the API stored the grant with.
+_BUILTIN_PROVIDERS = {"google": "felix.auth.google_connect"}
+
+
+def _provider(name: str) -> ConnectionProvider | None:
+    if name not in _PROVIDERS and name in _BUILTIN_PROVIDERS:
+        import importlib
+
+        # The module's `provider`, registered here rather than by the import's side effect, which
+        # runs once: a lookup after an unregister would otherwise find nothing.
+        register_connection_provider(importlib.import_module(_BUILTIN_PROVIDERS[name]).provider)
+    return _PROVIDERS.get(name)
+
+
 def connection_providers() -> list[str]:
     return sorted(_PROVIDERS)
 
@@ -541,7 +556,7 @@ async def _current_or_refreshed(settings: Settings, key: Key, row: dict[str, Any
     if row.get("secret_expires_at") and row["secret_expires_at"] <= ts:
         _record(settings, tenant_id, row, "refresh_expired")
         raise ConnectionRevoked(provider_name)
-    provider = _PROVIDERS.get(provider_name)
+    provider = _provider(provider_name)
     if provider is None:
         raise ProviderUnavailable(provider_name)
     refresh = _open(settings, key, "secret", row["secret_sealed"])
@@ -611,7 +626,7 @@ async def remove_connection(
     if row is None:
         return False
     _record(settings, tenant_id, row, "removed", actor=actor)
-    registered = _PROVIDERS.get(provider)
+    registered = _provider(provider)
     if row["kind"] == OAUTH and row["status"] == ACTIVE and registered is not None:
         await _withdraw(settings, key, row, registered)
     return True

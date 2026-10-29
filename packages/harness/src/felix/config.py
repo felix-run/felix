@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     google_redirect_origins: str = ""
     # The callback's path *as the browser sees it*: behind chat-ui's proxy that carries `/api`.
     google_callback_path: str = "/api/auth/google/callback"
+    # Connecting a person's Google account to their vault (`felix.auth.google_connect`): the same
+    # OAuth client, a second redirect URI to register on it, as the browser sees it.
+    google_connect_callback_path: str = "/api/connections/google/callback"
     # Who may sign in, keyed by Google-verified email: {"<email>": {"tenant": "<id>",
     # "scopes": [...], "manifests": [...], "sub": "<Google account id>"}}. `manifests` pins the
     # token to those agents only; `sub` pins the entry to one Google account, so the address

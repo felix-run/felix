@@ -188,12 +188,14 @@ API_ONLY = (
     "FELIX_GITHUB_SIGNUP",
     "FELIX_GITHUB_SIGNUP_LOGINS",
     "FELIX_GITHUB_SIGNUP_SCOPES",
-    "FELIX_GOOGLE_CLIENT_ID",
-    "FELIX_GOOGLE_CLIENT_SECRET",
     "FELIX_GOOGLE_COOKIE_KEY",
     "FELIX_GOOGLE_REDIRECT_ORIGINS",
     "FELIX_GOOGLE_ACCOUNTS",
 )
+# Read by the api and the worker, and by nothing else: a durable run or a job acting for someone
+# refreshes their Google grant in the worker, which needs the vault key and the OAuth client. Not
+# the scheduler, which only enqueues.
+API_AND_WORKER = ("FELIX_CONNECTION_TOKEN_KEY", "FELIX_GOOGLE_CLIENT_ID", "FELIX_GOOGLE_CLIENT_SECRET")
 # GitHub settings Compose deliberately leaves at the `Settings` default, each with its reason.
 # Anything else named `github_*` must reach the api: a setting that exists and is never
 # delivered is how signup shipped (felix-run/felix#493) with no way to turn it on under Compose.
@@ -240,6 +242,13 @@ def test_signing_and_login_settings_reach_the_api_alone(env_var: str) -> None:
     for name, values in env.items():
         if name != "api":
             assert env_var not in values, f"{env_var} reaches {name}, which never mints a token"
+
+
+@pytest.mark.parametrize("env_var", API_AND_WORKER)
+def test_connection_settings_reach_the_api_and_the_worker_alone(env_var: str) -> None:
+    env = _service_env()
+    for name, values in env.items():
+        assert (env_var in values) == (name in {"api", "worker"}), f"{env_var} in {name}"
 
 
 def test_every_sign_in_setting_reaches_the_api() -> None:

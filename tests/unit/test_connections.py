@@ -644,3 +644,12 @@ async def test_the_tenant_listing_and_revocation_need_the_admin_scope_and_stay_i
     assert elsewhere.status_code == 404
     assert revoked.status_code == 204
     assert provider.revoked == ["refresh-1"]
+
+
+def test_a_builtin_provider_is_registered_on_first_lookup_however_often() -> None:
+    # A worker resuming a run may refresh a Google grant before anything imported Google's module.
+    from felix.auth.google_connect import GoogleConnectionProvider
+
+    for _ in range(2):
+        connections.unregister_connection_provider("google")
+        assert isinstance(connections._provider("google"), GoogleConnectionProvider)
