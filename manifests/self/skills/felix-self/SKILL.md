@@ -13,7 +13,7 @@ a person, and only *written up* by you. No evidence, no ticket.
 
 ## Where work comes from, in order
 
-1. Real-run signals — a failed `smoke.yml` run (`github__list_workflow_runs`, then
+1. Real-run signals — a failed `smoke.yml` run (`github__actions_list`, then
    `github__get_job_logs`); a failed `eval-live.yml` run, but only an item that failed in that
    job's previous run too, since one model answer is noise; an issue a person filed; a regression
    someone reported.

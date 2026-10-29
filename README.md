@@ -851,7 +851,7 @@ Two things to know before flipping an existing deployment:
 
 - **Stored manifests stop being served.** Every tenant collapses onto the image's file, so
   any per-tenant `spec.auth.inbound` tightening — `required_scopes` in particular — is
-  dropped. Seven of the eleven bundled manifests are `allow_anonymous: true`.
+  dropped. Five of the eleven bundled manifests are `allow_anonymous: true`.
 - **`pin_compile` threads will 409 once.** The resolved version becomes `null` and the
   content hash becomes the bundled YAML's, which is drift by design.
 

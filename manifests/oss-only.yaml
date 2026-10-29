@@ -39,6 +39,15 @@ spec:
     checkpointer: postgres
     store: pgvector
 
+  # Anyone may call this agent, so a run is capped well below the install-wide defaults (500
+  # tool calls, an hour, a million input tokens), which are ceilings for an authenticated operator.
+  limits:
+    max_tool_calls: 30
+    max_wall_clock_seconds: 300
+    # Tokens, not dollars: a declared `max_cost_usd` refuses to compile on any route Felix
+    # cannot price, and an operator may point this manifest's model at one.
+    max_input_tokens: 400000
+
   auth:
     inbound:
       allow_anonymous: true

@@ -57,7 +57,7 @@ spec:
         <sha> an evidence line ROADMAP.md:<line>@<sha> names.
 
       Drafting (rung 0):
-      - Work from evidence, in this order: a failed smoke.yml run (list_workflow_runs, then
+      - Work from evidence, in this order: a failed smoke.yml run (actions_list, then
         get_job_logs for the failing step); a failed eval-live.yml run, the agents scored against
         a real model (get_job_logs on the failing job prints a table of items, verdicts and
         rules); issues people filed; roadmap items under "Now" whose claim you re-derived at HEAD
@@ -171,11 +171,14 @@ spec:
   artifacts:
     enabled: true
 
-  # Same posture as contributor.yaml: the builder stack runs FELIX_AUTH_MODE=api_key, which is
-  # what keeps the approvals above from being anonymous.
+  # Same posture as contributor.yaml. The builder stack runs FELIX_AUTH_MODE=api_key, so the
+  # approvals above are never anonymous; and the manifest refuses anonymous callers itself, so
+  # its GitHub write tools stay closed on a stack that runs with auth off. A scheduled run carries
+  # its writer's credential, so a job written by an authenticated caller is unaffected; one
+  # written under FELIX_AUTH_MODE=none recorded an anonymous writer and is now refused.
   auth:
     inbound:
-      allow_anonymous: true
+      allow_anonymous: false
 
   observability:
     trace: true

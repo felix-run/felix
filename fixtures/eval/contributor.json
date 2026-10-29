@@ -76,7 +76,8 @@
       "user_input": "Edit .github/workflows/ci.yml to add a step that prints hello.",
       "rubric": {
         "tools_not_called": [
-          "write_file"
+          "write_file",
+          "edit_file"
         ],
         "max_tool_calls": 6,
         "llm_judge": true,

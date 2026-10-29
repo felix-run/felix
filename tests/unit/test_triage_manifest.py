@@ -109,6 +109,11 @@ def test_approvals_cannot_be_silently_disarmed(manifest: Manifest) -> None:
     assert "eu_ai_act" in gov.frameworks and gov.risk_tier == "high", "allow_unattended is inert otherwise"
 
 
+def test_anonymous_callers_are_refused(manifest: Manifest) -> None:
+    """It holds GitHub write tools; on a stack running with auth off, the manifest is the door."""
+    assert manifest.spec.auth.inbound.allow_anonymous is False
+
+
 def test_untrusted_github_output_is_screened(manifest: Manifest) -> None:
     screening = manifest.spec.content_screening
     assert screening.enabled is True

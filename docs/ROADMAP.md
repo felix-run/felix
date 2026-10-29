@@ -978,6 +978,40 @@ side was already conformant. Four PRs, landed in order:
 - Decided: `allowed-tools` (experimental in the spec) is surfaced and never enforced or used to
   skip approvals. A third party's SKILL.md must not loosen governance.
 
+### Manifests, connectors and new agents (2026-10-28)
+
+An audit of the bundled manifests, then tools for the things a daily-driver agent is asked
+about first. Plan: weather, maps, market data, a per-person connection vault (W5), Google and
+Apple connectors, then example agents built on them. One PR at a time, in order:
+
+- [ ] **Manifest audit fixes**:
+  - An anonymous composite naming a child that refuses anonymous callers is refused at compile.
+    The bundled `router` was the anonymous door to `deep`'s unconfined fetch.
+  - `triage` refuses anonymous callers.
+  - Every anonymous bundled manifest has run limits, as calls, time and input tokens. These are
+    tokens rather than `max_cost_usd`, because a declared cost cap refuses to compile on an
+    unpriced route.
+  - Stale fields, prompts and tool names were corrected.
+- [ ] **`packages/connectors`**: weather (Open-Meteo, keyless), maps (Nominatim/OSRM), market
+      data (keyed). This needs a core seam first: a plugin tool's hosts are checked against
+      `network.allow_hosts`.
+- [ ] **Connection vault**: `github_connections` generalised per provider (W5), plus MCP
+      `auth: person`.
+- [ ] **Google and Apple connectors**: Calendar, Gmail drafts, Drive; iCloud CalDAV/CardDAV.
+- [ ] **New bundled agents**: `concierge`, `travel` (`plan_execute`), `markets`, `inbox`,
+      `researcher` (`reflect`), `automator`.
+- Found, not fixed:
+  - **No per-manifest session retention.** `governance.retention_days` shortens only the audit
+    TTL, so `kids` keeps children's transcripts for as long as `FELIX_SESSION_RETENTION_DAYS`
+    says (forever by default).
+  - **`cowork`'s `local_open` opens any URL ungated.** Gating only the URL form needs the
+    client contract to carry the URL as its own argument for `when_args`.
+  - **A child's `schemes` and `required_scopes` are not checked through a router.** Only the
+    anonymous case is refused at compile; an authenticated caller without a child's scope still
+    reaches it. Nor is the refusal checked at `PUT /manifests`, which could resolve the children.
+  - **`felix bundle-manifests --strict` misses inert rules.** An approval rule naming tools the
+    manifest never binds is only a compile-time `felix_rule_targets_nothing` warning.
+
 ### Auth audit (2026-10-12)
 
 A read of authentication, per-route authorization and tenancy against v0.14.1, landed as four PRs.

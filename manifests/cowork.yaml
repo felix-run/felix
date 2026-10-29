@@ -32,8 +32,10 @@ spec:
       The workspace is the user's own folder, open in their browser or terminal.
       Reach it only through the local_* tools: local_list, local_read and
       local_search to look, local_write and local_edit to change files,
-      local_rename to move or rename one, local_delete to remove one, and
-      local_shell for commands. Paths are relative to the folder's root.
+      local_rename to move or rename one, local_delete to remove one,
+      local_shell for commands, and local_open to show the user a file or a
+      link. Paths are relative to the folder's root. Open a URL only when the
+      user asked for that page.
       Writes, renames, deletes and commands pause for the user's approval.
       A delete cannot be undone: delete only a file the user asked you to.
       Prefer small, reversible changes. Summarize what you did when finished.
@@ -229,6 +231,10 @@ spec:
     # screens, so nothing is named here. `read_file`, `search_files` and `list_dir` were, while
     # this manifest bound them; memory tools are screened by default too.
 
+  # `local_open` is deliberately ungated: it is how the user asks to see a file, and an
+  # approval on every view is noise. Its URL form is still an outbound channel the model picks,
+  # and the prompt asking for restraint is a request, not a control. Gating only that form needs
+  # the client contract to carry the URL as its own argument, which `when_args` could then match.
   limits:
     max_tool_calls: 200
     max_wall_clock_seconds: 3600

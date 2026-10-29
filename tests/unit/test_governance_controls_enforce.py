@@ -756,6 +756,13 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
                 "containers",
                 "queues",
                 "client_tools",
+                # Fetched pages, search snippets, ingested chunks and command output: each is
+                # text somebody else wrote. Missing here, `deep` or `support` could drop
+                # screening and this test stayed green.
+                "http_tools",
+                "search_tools",
+                "document_tools",
+                "shell_tools",
             )
         )
         enabled = bool((spec.get("content_screening") or {}).get("enabled"))

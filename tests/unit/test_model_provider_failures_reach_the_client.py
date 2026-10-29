@@ -24,6 +24,11 @@ from httpx import ASGITransport, AsyncClient
 DEAD = "http://127.0.0.1:9/v1"
 
 
+# `triage` refuses anonymous callers, so the tests that reach it carry a key.
+_TRIAGE_KEYS = '{"sk-triage":{"tenant_id":"default","sub":"ops","scopes":["chat:write"]}}'
+_TRIAGE_AUTH = {"Authorization": "Bearer sk-triage"}
+
+
 def _settings(**overrides: object):
     from felix.config import Settings
 
@@ -228,11 +233,16 @@ async def test_a_missing_manifest_secret_names_it_on_every_surface(monkeypatch: 
     try:
         # Listed, so the ref gets past the tenant check and reaches the backend that lacks it.
         app = create_app(
-            settings=_settings(secrets_backend="env", manifest_secrets='{"GITHUB_MCP_TOKEN": "*"}'),
+            settings=_settings(
+                secrets_backend="env",
+                manifest_secrets='{"GITHUB_MCP_TOKEN": "*"}',
+                auth_mode="api_key",
+                auth_api_keys=_TRIAGE_KEYS,
+            ),
             plugins=[],
         )
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test", timeout=30
+            transport=ASGITransport(app=app), base_url="http://test", timeout=30, headers=_TRIAGE_AUTH
         ) as client:
             plain = await client.post(
                 "/chat", json={"manifest": "triage", "messages": [{"role": "user", "content": "hi"}]}
@@ -273,9 +283,12 @@ async def test_a_manifest_secret_the_tenant_may_not_use_names_it_on_every_surfac
     clear_bundled_cache()
     body = {"messages": [{"role": "user", "content": "hi"}]}
     try:
-        app = create_app(settings=_settings(secrets_backend="env"), plugins=[])
+        app = create_app(
+            settings=_settings(secrets_backend="env", auth_mode="api_key", auth_api_keys=_TRIAGE_KEYS),
+            plugins=[],
+        )
         async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test", timeout=30
+            transport=ASGITransport(app=app), base_url="http://test", timeout=30, headers=_TRIAGE_AUTH
         ) as client:
             plain = await client.post("/chat", json={"manifest": "triage", **body})
             streamed = await client.post("/chat/stream", json={"manifest": "triage", **body})

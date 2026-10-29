@@ -31,6 +31,19 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## Unreleased: an anonymous router may not name an agent that refuses anonymous callers
+
+**A stored composite can stop compiling.** A manifest with `sub_agents` that sets
+`auth.inbound.allow_anonymous: true` while a child it names does not now fails on every request
+with `allows anonymous callers but its sub_agents … do not`. A router forwards the caller's turn
+without the child's own inbound check, so such a router was an anonymous way into the child. The
+bundled `router` now refuses anonymous callers for this reason, since it names `deep`: an anonymous
+client of `router` gets 401, and can call `quick` or `support` by name. Before the roll, list your
+tenants' stored composites (`GET /manifests`) and, for each, either set `allow_anonymous: false`
+or drop the closed child. `triage` (served from `manifests/self`) also refuses anonymous callers
+now; a scheduled triage job written under `FELIX_AUTH_MODE=none` recorded an anonymous writer and
+will fail until it is rewritten with a key.
+
 ## 0.18.0: workflow triggers pin a revision, agent steps count toward a run's approval, and the Claude routes move to 5.5
 
 **Every workflow trigger must pin `revision`** (#681). A `FELIX_TRIGGERS` entry that names a
