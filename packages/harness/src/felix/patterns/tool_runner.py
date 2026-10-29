@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -454,6 +455,7 @@ class ToolRunner:
         *,
         thread_id: str | None,
         tenant_id: str,
+        on_result: Callable[[ChatMessage], Awaitable[None]] | None = None,
     ) -> tuple[list[ChatMessage], FatalCall | None, bool, int]:
         """Execute tool calls. Returns (tool_msgs, fatal, all_terminate, denied_calls).
 
@@ -461,6 +463,10 @@ class ToolRunner:
 
         `denied_calls` counts the calls a governance wrapper or a `before_tool` hook refused; it
         is truthy exactly when the batch had a refusal.
+
+        `on_result` is handed each call's result as that call returns -- in completion order under
+        `parallel` -- so a caller can log it then rather than once the whole batch has: a run that
+        dies mid-batch keeps what finished (felix-run/felix#574). `tool_msgs` stays in call order.
         """
         for call in calls:
             if not call.id:
@@ -472,11 +478,25 @@ class ToolRunner:
         fatal: FatalCall | None = None
         denied_calls = 0
 
+        async def landed(msg: ChatMessage) -> None:
+            if on_result is None:
+                return
+            try:
+                await on_result(msg)
+            except Exception:
+                # A failed hand-off must not rewrite the call's result, nor drop the rest of the batch.
+                logger.warning(
+                    "tool result hand-off failed for %s", loggable(msg.name, limit=64), exc_info=True
+                )
+
         if mode == "parallel" and len(calls) > 1:
-            results = await asyncio.gather(
-                *[self.dispatch(c, thread_id) for c in calls],
-                return_exceptions=True,
-            )
+
+            async def dispatched(call: ToolCall) -> tuple[ToolErrorCode | None, ChatMessage, bool, bool]:
+                outcome = await self.dispatch(call, thread_id)
+                await landed(outcome[1])
+                return outcome
+
+            results = await asyncio.gather(*[dispatched(c) for c in calls], return_exceptions=True)
             for call, res in zip(calls, results, strict=True):
                 if isinstance(res, BaseException):
                     tool_msgs.append(
@@ -507,10 +527,12 @@ class ToolRunner:
                     )
                     tool_msgs.append(skipped)
                     terminates.append(True)
+                    await landed(skipped)
                     continue
                 code, tool_msg, terminate, denied = await self.dispatch(call, thread_id)
                 tool_msgs.append(tool_msg)
                 terminates.append(terminate)
+                await landed(tool_msg)
                 if code is not None:
                     fatal = FatalCall(tool_call_id=call.id, error_code=code)
                     break

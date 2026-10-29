@@ -1125,11 +1125,28 @@ class _ReactAgent:
         # `approval_required` at all, and the client showed a tool card sitting
         # at `running` with nothing to say why. The same applies to
         # `tool_request` and `ui_request`, which block the same way.
+        #
+        # And each result is logged as its call returns, not once the batch has: a run that dies
+        # mid-batch then keeps what finished, and `_interrupted_tool_results` closes only the calls
+        # that had not -- rather than telling the model to distrust a write that succeeded, and
+        # asking again for an approval it already had (felix-run/felix#574). Parallel results
+        # chain in the log in the order they land (`session.tree` holds the thread's lock across
+        # each append), and the rest of this run reads them in that same order, so the next run,
+        # rebuilt from the log, sends the provider the prefix it cached. An append that has begun
+        # is finished even if the run is cancelled, so a logged result never leaves the stored
+        # leaf behind it.
+        landed: list[ChatMessage] = []
+
+        async def log_result(tool_msg: ChatMessage) -> None:
+            await asyncio.shield(self._append_produced(input.thread_id, [tool_msg]))
+            landed.append(tool_msg)
+
         batch = asyncio.create_task(
             self._tools.run_batch(
                 calls,
                 thread_id=input.thread_id,
                 tenant_id=tenant_id,
+                on_result=log_result,
             )
         )
         try:
@@ -1146,8 +1163,9 @@ class _ReactAgent:
             # client that hangs up mid-tool would otherwise leave it running.
             batch.cancel()
             raise
-        for tool_msg in tool_msgs:
-            if emit_events:
+        if emit_events:
+            # The frames keep call order: a client's tool cards follow the calls it was shown.
+            for tool_msg in tool_msgs:
                 yield Event(event="tool_end", data=_tool_end_data(tool_msg))
                 yield Event(
                     event="tool_execution_update",
@@ -1157,10 +1175,14 @@ class _ReactAgent:
                         "status": "complete",
                     },
                 )
+        # What never landed through `log_result` -- a call whose dispatch raised -- goes last, in
+        # the log as in this run.
+        seen = {id(m) for m in landed}
+        unlogged = [m for m in tool_msgs if id(m) not in seen]
+        await self._append_produced(input.thread_id, unlogged)
+        for tool_msg in [*landed, *unlogged]:
             messages.append(tool_msg)
             produced.append(tool_msg)
-
-        await self._append_produced(input.thread_id, tool_msgs)
         round_.fatal, round_.all_terminate, round_.denied = batch_fatal, all_terminate, batch_denied
 
     async def _run_skill_preamble(
