@@ -129,29 +129,54 @@ class BuildDeps:
     compiled_egress: dict[str, EgressBound] = field(default_factory=dict)
 
 
+def _refuse_misnamed_children(m: Manifest, deps: BuildDeps) -> None:
+    """Refuse a child found under one name whose manifest calls itself another.
+
+    `compiled_manifests` is keyed by `metadata.name`, and each door check on a child reads it by
+    the name the parent wrote. A child found under `a` that calls itself `b` would have that check
+    read `b`'s door -- and, compiled anywhere in the tree, replace `b`'s entry for every sibling
+    that reads it next. Refused for `sub_agents` and `delegation` alike, so the entry a check reads
+    is always the child's own. An agent that carries no `manifest_id` (a custom
+    `sub_agent_builder` that bypasses `build_agent`) is let through; `_child_manifest` treats it
+    as unreadable.
+    """
+    for name in child_agent_names(m.spec):
+        found = getattr(deps.compiled[name], "manifest_id", None)
+        if found is not None and found != name:
+            raise ValueError(
+                f"child agent '{name}' resolved to a manifest named '{found}'; the names must match"
+            )
+
+
+def _child_manifest(deps: BuildDeps, name: str) -> Manifest | None:
+    """The manifest child `name` compiled from, or None when this build cannot read its door."""
+    if getattr(deps.compiled[name], "manifest_id", None) != name:
+        return None
+    return deps.compiled_manifests.get(name)
+
+
 def _refuse_anonymous_door_to_closed_child(m: Manifest, deps: BuildDeps) -> None:
     """Refuse a composite that admits anonymous callers but names a child that does not.
 
-    A router forwards the caller's turn to its child without checking the child's inbound auth
-    (`inbound_auth._enforce_manifest_pin`: sub-agents are the operator's choice), so an anonymous
-    `router` naming `deep` handed anonymous callers `deep`'s unconfined fetch. `delegation`
-    children are checked per call by `task`; these are fixed at compile, so they are checked here.
-
-    A child is read by the name its compiled agent carries, and one this build cannot read the
-    door of counts as closed: a bundled file whose `metadata.name` differs from its file name, or
-    a custom `sub_agent_builder` that bypasses `build_agent`, would otherwise skip the check.
+    A router forwards the caller's turn to its child without the child's inbound check, so an
+    anonymous `router` naming `deep` handed anonymous callers `deep`'s unconfined fetch.
+    `delegation` children are checked per call by `task`; `sub_agents` are fixed at compile, so
+    they are checked here. Both sides are read with `admits_anonymous`, the door check a request
+    makes, so a child closed by `required_scopes` or `schemes` counts as closed too; and a child
+    whose door this build cannot read (`_child_manifest`) counts as closed.
     """
-    if not m.spec.auth.inbound.allow_anonymous:
+    from felix.manifests.inbound_auth import admits_anonymous
+
+    if not admits_anonymous(m):
         return
     closed = []
     for name in m.spec.sub_agents:
-        child_id = getattr(deps.compiled[name], "manifest_id", name)
-        child = deps.compiled_manifests.get(name) if child_id == name else None
-        if child is None or not child.spec.auth.inbound.allow_anonymous:
+        child = _child_manifest(deps, name)
+        if child is None or not admits_anonymous(child):
             closed.append(name)
     if closed:
         raise ValueError(
-            f"manifest '{m.metadata.name}' allows anonymous callers but its sub_agents "
+            f"manifest '{m.metadata.name}' admits anonymous callers but its sub_agents "
             f"{', '.join(closed)} do not; set auth.inbound.allow_anonymous to false or drop them"
         )
 
@@ -2089,20 +2114,12 @@ async def build_agent(
                     if name not in deps.compiled or deps.compiled_egress.get(name) != egress:
                         deps.compiled[name] = await builder(name)
                         deps.compiled_egress[name] = egress
+                _refuse_misnamed_children(m, deps)
                 if m.spec.sub_agents:
                     _refuse_anonymous_door_to_closed_child(m, deps)
                     sub_agents = {name: deps.compiled[name] for name in m.spec.sub_agents}
                 if m.spec.delegation is not None:
                     delegates = {ref.name: deps.compiled[ref.name] for ref in m.spec.delegation.agents}
-                    for ref_name, child in delegates.items():
-                        # `task` checks the child's inbound auth from `compiled_manifests`, keyed
-                        # by `metadata.name`. A child found under one name that calls itself
-                        # another would have the gate read some other manifest's door.
-                        if getattr(child, "manifest_id", ref_name) != ref_name:
-                            raise ValueError(
-                                f"delegate '{ref_name}' resolved to a manifest named "
-                                f"'{child.manifest_id}'; the names must match"
-                            )
 
         resolved: list[Tool] = []
         if not m.spec.sub_agents:

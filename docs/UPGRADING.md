@@ -34,8 +34,11 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 ## Unreleased: an anonymous router may not name an agent that refuses anonymous callers
 
 **A stored composite can stop compiling.** A manifest with `sub_agents` that sets
-`auth.inbound.allow_anonymous: true` while a child it names does not now fails on every request
-with `allows anonymous callers but its sub_agents … do not`. A router forwards the caller's turn
+`auth.inbound.allow_anonymous: true` while a child it names refuses anonymous callers (by
+`allow_anonymous: false`, `required_scopes` or `schemes`) now fails on every request with
+`admits anonymous callers but its sub_agents … do not`. So does any composite whose child is found
+under one name but whose manifest calls itself another (`the names must match`), which only
+`delegation` children were refused for before. A router forwards the caller's turn
 without the child's own inbound check, so such a router was an anonymous way into the child. The
 bundled `router` now refuses anonymous callers for this reason, since it names `deep`: an anonymous
 client of `router` gets 401, and can call `quick` or `support` by name. Before the roll, list your
