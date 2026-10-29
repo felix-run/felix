@@ -107,6 +107,8 @@ _HYDRATE_MAP: dict[str, tuple[str, ...]] = {
     # `felix.auth.github.redirect_enabled` is asked per request rather than decided at boot.
     "github_client_secret": ("GITHUB_CLIENT_SECRET", "github_client_secret", "felix/github_client_secret"),
     "github_token_key": ("GITHUB_TOKEN_KEY", "github_token_key", "felix/github_token_key"),
+    # The key that seals every stored connection (`felix.auth.connections`).
+    "connection_token_key": ("CONNECTION_TOKEN_KEY", "connection_token_key", "felix/connection_token_key"),
     # Google sign-in: the OAuth client's secret and the key that seals its two cookies. Asked per
     # request for the same reason (`felix.auth.google.redirect_enabled`), so they may arrive here.
     "google_client_secret": ("GOOGLE_CLIENT_SECRET", "google_client_secret", "felix/google_client_secret"),

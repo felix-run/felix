@@ -1031,8 +1031,22 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
   - Found, not fixed: a plugin tool that declares no `egress_hosts` is still unbounded under
     `allow_hosts`. Refusing every undeclared non-`local` tool under a bound is the allowlist
     answer, and would break any plugin tool bound today under one.
-- [ ] **Connection vault**: `github_connections` generalised per provider (W5), plus MCP
-      `auth: person`.
+- [ ] **Connection vault** (W5).
+  - [x] The store and its routes: `felix.auth.connections`, one row per person, provider and
+    account (`oauth` or `secret`), sealed with `FELIX_CONNECTION_TOKEN_KEY`, refreshed under an
+    advisory lock through a registered provider, revocable by the person
+    (`DELETE /connections/{provider}/{account}`) and the operator (`connections:admin`).
+  - [ ] MCP `auth: person`: a remote MCP server called with the person's token from the vault.
+  - Owed by the first consumer (Google): its test goes through the real consent callback and
+    then `GET /connections`, never `save_oauth` directly -- nothing in production writes the
+    vault until then. Its tools read `ctx.auth.person`, are untrusted (screened), put sends and
+    event creation behind approvals, and mask the tokens they open for the run: the compile-time
+    mask (`collected_secret_values`) cannot know them.
+  - Open: whether removing a person from `FELIX_GOOGLE_ACCOUNTS` purges their rows, or
+    `access_token` re-checks the allowlist (a durable run in flight is not re-checked today);
+    whether production must set its own `FELIX_CONNECTION_TOKEN_KEY` rather than fall back.
+  - Not done, deliberately: GitHub's connections stay in `github_connections`. Moving them is a
+    data migration of live grants for no capability gained; the vault's first consumer is Google.
 - [ ] **Google and Apple connectors**: Calendar, Gmail drafts, Drive; iCloud CalDAV/CardDAV.
 - [ ] **New bundled agents**: `concierge`, `travel` (`plan_execute`), `markets`, `inbox`,
       `researcher` (`reflect`), `automator`.

@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     # and access tokens (`felix.auth.github_connections`). Rotating it signs nobody out of
     # Felix, but every stored GitHub connection must then be re-made.
     github_token_key: str = Field(default="", repr=False)
+    # 32 bytes, base64. Seals each person's stored connections to other services at rest
+    # (`felix.auth.connections`): OAuth refresh and access tokens, app passwords. Falls back to
+    # FELIX_GITHUB_TOKEN_KEY when unset, so an install with GitHub sign-in needs no second key.
+    # Rotating it means every stored connection must be re-made.
+    connection_token_key: str = Field(default="", repr=False)
     # Comma-separated origins a sign-in may return to, e.g. `https://make.felix.run`. The
     # callback GitHub redirects to is `<origin><FELIX_GITHUB_CALLBACK_PATH>`, and each such URL
     # must be registered on the App. Nothing outside this list is ever a redirect target.

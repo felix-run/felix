@@ -44,6 +44,7 @@ from felix_api.routes import (
     auth_github,
     auth_google,
     chat,
+    connections,
     documents,
     files,
     heartbeats,
@@ -378,6 +379,7 @@ def create_app(
     app.include_router(auth_github.methods_router, prefix="/auth")
     app.include_router(auth_google.router, prefix=GOOGLE_LOGIN_PREFIX)
     app.include_router(auth_github.connection_router, prefix="/github")
+    app.include_router(connections.router, prefix="/connections")
     app.include_router(repos.github_router, prefix="/github")
     app.include_router(repos.checkout_router, prefix="/chat/sessions")
 

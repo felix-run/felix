@@ -123,6 +123,7 @@ def _isolate_process_global_stores():
     """Clear the in-memory manifest store, corpus and resolver caches around every test."""
     from felix.approvals.store import reset_approvals_for_tests
     from felix.audit import store as audit_store
+    from felix.auth.connections import reset_connections_for_tests
     from felix.auth.github_connections import reset_github_connections_for_tests
     from felix.documents.store import reset_documents_for_tests
     from felix.durability.fibers import reset_memory_fibers
@@ -204,6 +205,7 @@ def _isolate_process_global_stores():
         reset_push_keys_for_tests()
         reset_notify_for_tests()
         reset_github_connections_for_tests()
+        reset_connections_for_tests()
         # Audit and usage are the same shape again — a process buffer plus an in-memory twin —
         # and were the two this list missed. Each has *two* globals, so a test that recorded
         # an event without flushing left it in the buffer for whatever flushed next, and the

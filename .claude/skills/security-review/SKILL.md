@@ -31,6 +31,7 @@ Rank findings by this threat model:
 | SSRF, rate limit, constant-time | `security/{ssrf,rate_limit,constant_time,expr}.py` |
 | Secret refs + masking | `manifests/secret_refs.py`, `secrets.py`, `builder.py:apply_secret_masking` |
 | Which secrets a manifest may name (`FELIX_MANIFEST_SECRETS`, per tenant) | `secret_policy.py` |
+| A person's stored credentials (sealed per row and column; never returned by a route) | `auth/github_connections.py`, `auth/connections.py` |
 | Tenant RLS | `db/session.py` (`tenant_session`, `rls_bypass`), `migrations/versions/0006_tenant_rls.py` |
 | Outbound/inbound integrations | `mcp/`, `a2a/peers.py`, `tools/{sandboxes,queues,transports,client_bridge,browser}.py` |
 
