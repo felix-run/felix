@@ -125,6 +125,16 @@ def configure_logging(settings: Any) -> None:
     handler.setFormatter(_build_formatter(settings))
     root.addHandler(handler)
 
+    # httpx logs every request at INFO with its full URL, query string included, and some APIs
+    # take a key nowhere else (Alpha Vantage's `apikey=`). Held at WARNING whatever the root
+    # level, so an outbound call's URL is never a log line: its failures still are.
+    for name in _QUIET_CLIENT_LOGGERS:
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
+
+
+#: HTTP client libraries whose request logging spells out URLs.
+_QUIET_CLIENT_LOGGERS = ("httpx", "httpcore", "httpx2")
+
 
 # Control characters, escaped rather than dropped. `\t`, `\n` and `\r` get their
 # familiar spellings; everything else in the C0 range plus DEL becomes `\xNN`.

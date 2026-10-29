@@ -1,4 +1,4 @@
-"""Felix connectors: tools an agent calls to reach everyday services. Weather and maps today.
+"""Felix connectors: tools an agent calls to reach everyday services: weather, maps, markets, FX.
 
 Installed, this plugin registers its tools with every tool provider; a manifest still names each
 one in `spec.tools` before an agent holds it:
@@ -10,8 +10,9 @@ declares it (`Tool.egress_hosts`), so an agent's `network.allow_hosts` refuses a
 cover at compile, and each request is held to them. The transport is `connectors`, which
 governance does not trust, so a manifest that enables content screening has what comes back
 screened. The defaults need no key: Open-Meteo for the forecast and a point's time zone, the US
-National Weather Service for alerts, OpenStreetMap's Nominatim for places and FOSSGIS's OSRM for
-routes.
+National Weather Service for alerts, OpenStreetMap's Nominatim for places, FOSSGIS's OSRM for
+routes and Frankfurter for exchange rates. Stock quotes need `FELIX_MARKET_API_KEY` (Finnhub or
+Alpha Vantage).
 
 A family is a module exporting `TOOL_NAMES` and `build_tools(settings)`, listed in `FAMILIES`.
 
@@ -24,9 +25,9 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
-from felix_connectors import maps, weather
+from felix_connectors import fx, maps, markets, weather
 
-FAMILIES: tuple[ModuleType, ...] = (weather, maps)
+FAMILIES: tuple[ModuleType, ...] = (weather, maps, markets, fx)
 
 
 def _build(family: ModuleType, name: str) -> Any:
