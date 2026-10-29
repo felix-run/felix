@@ -743,6 +743,7 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
     import yaml
 
     offenders = []
+    untrusted = set()
     # The self-build manifests too: `self/contributor.yaml` binds MCP, the case this rule is for.
     for path in sorted([*(ROOT / "manifests").glob("*.yaml"), *(ROOT / "manifests" / "self").glob("*.yaml")]):
         spec = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spec") or {}
@@ -766,9 +767,13 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
             )
         )
         enabled = bool((spec.get("content_screening") or {}).get("enabled"))
+        if binds_untrusted:
+            untrusted.add(path.name)
         if binds_untrusted and not enabled:
             offenders.append(path.name)
 
+    # A scan that matches nothing passes as though the rule held: these bind fetch, search and MCP.
+    assert {"deep.yaml", "support.yaml", "contributor.yaml"} <= untrusted
     assert offenders == [], (
         f"these bundled manifests bind untrusted tools with content_screening off: {offenders}"
     )

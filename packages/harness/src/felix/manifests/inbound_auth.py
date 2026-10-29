@@ -84,6 +84,19 @@ def enforce_inbound_auth(manifest: Manifest, auth: Any) -> None:
     _enforce_manifest_pin(manifest, auth)
 
 
+def admits_anonymous(manifest: Manifest) -> bool:
+    """Whether an anonymous caller passes `manifest`'s door -- decided by the check a request
+    makes, so `allow_anonymous`, `required_scopes` and `schemes` cannot be read differently here.
+    """
+    from felix.auth.context import ANONYMOUS
+
+    try:
+        enforce_inbound_auth(manifest, ANONYMOUS)
+    except InboundAuthError:
+        return False
+    return True
+
+
 def manifest_pin(auth: Any) -> frozenset[str] | None:
     """The manifests a credential is pinned to, or None when it carries no pin.
 
@@ -109,8 +122,10 @@ def _enforce_manifest_pin(manifest: Manifest, auth: Any) -> None:
     A2A, MCP, side questions, compaction and a rewind's summary, a durable run's resume (the pin
     is stored with the run), and each child `delegation` compiles — so a pinned credential
     reaches nothing a pin does not name by itself. A pinned manifest's `spec.sub_agents` are not
-    checked: the operator chose them when they wrote the manifest, as they chose its tools.
-    `delegation` children are, since the model picks among them. A claim of the wrong shape is
+    checked per call: the operator chose them when they wrote the manifest, as they chose its
+    tools. What the compile does hold them to is `admits_anonymous`: a manifest that admits an
+    anonymous caller may not name a child that refuses one. `delegation` children are checked
+    here per call, since the model picks among them. A claim of the wrong shape is
     refused, never ignored: ignoring it would turn a malformed pin into no pin at all.
 
     The claim is honoured from any credential that carries it — an api-key entry with a
@@ -124,4 +139,4 @@ def _enforce_manifest_pin(manifest: Manifest, auth: Any) -> None:
         )
 
 
-__all__ = ["InboundAuthError", "enforce_inbound_auth", "manifest_pin"]
+__all__ = ["InboundAuthError", "admits_anonymous", "enforce_inbound_auth", "manifest_pin"]
