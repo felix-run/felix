@@ -11,6 +11,10 @@ transcript at `GET /workflows/{id}/runs/{run_id}/steps/{step_id}/thread`.
 
 Starting and cancelling need `workflows:write`: a run executes the manifests its steps name, as
 the person who started it and with their scopes, recorded the way a durable chat records them.
+
+A run an agent started for a person (`trigger` `agent:<manifest>`) is that person's: its steps ran
+with their memory, so its record, stream and transcripts answer only them or an operator, and the
+run list leaves it out for anyone else (`_holds_run`).
 """
 
 from __future__ import annotations
@@ -24,6 +28,8 @@ from fastapi.responses import StreamingResponse
 from felix.auth.mgmt import (
     SCOPE_WORKFLOWS_READ,
     SCOPE_WORKFLOWS_WRITE,
+    auth_from_request,
+    is_operator,
     require_mgmt_scopes,
     subject_from_request,
     tenant_id_from_request,
@@ -193,10 +199,33 @@ def _summary(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _agent_runs_of(request: Request) -> str | None:
+    """Whose agent-started runs the caller may see: anyone's (`None`) for an operator, else only
+    their own -- `acting_for`, which is how the agent recorded the person it ran for (`""` when the
+    caller names nobody, which matches none). An agent-started run's steps ran as that person, with
+    their memory, so a step's output or transcript can carry what that memory held:
+    `workflows:read` is a grant over the tenant's workflows, not over one person's runs of them."""
+    from felix.context import try_get_context
+
+    if is_operator(request.app.state.settings, auth_from_request(request).principal.scopes):
+        return None
+    ctx = try_get_context()
+    return ctx.auth.acting_for if ctx is not None else ""
+
+
+def _holds_run(request: Request, run: dict[str, Any]) -> bool:
+    """Whether the caller may see `run`: any run but another person's agent-started one."""
+    if not run_store.is_agent_run(run):
+        return True
+    who = _agent_runs_of(request)
+    return who is None or (bool(who) and who == run.get("started_by"))
+
+
 async def _run_of(request: Request, workflow_id: str, run_id: str) -> dict[str, Any]:
     run = await run_store.get_run(request.app.state.settings, tenant_id_from_request(request), run_id)
-    # A run is addressed under its own workflow: another workflow's id in the path is not found.
-    if run is None or run["workflow_id"] != workflow_id:
+    # A run is addressed under its own workflow: another workflow's id in the path is not found, and
+    # so is another person's agent-started run, rather than a 403 that says it exists.
+    if run is None or run["workflow_id"] != workflow_id or not _holds_run(request, run):
         raise HTTPException(status_code=404, detail="not_found")
     return run
 
@@ -266,7 +295,11 @@ async def list_runs(
     """The workflow's runs, newest first, each with its steps' statuses."""
     require_mgmt_scopes(request, SCOPE_WORKFLOWS_READ)
     runs = await run_store.list_runs(
-        request.app.state.settings, tenant_id_from_request(request), workflow_id, limit=limit
+        request.app.state.settings,
+        tenant_id_from_request(request),
+        workflow_id,
+        limit=limit,
+        agent_runs_of=_agent_runs_of(request),
     )
     return {"items": [_summary(r) for r in runs]}
 

@@ -602,12 +602,18 @@ async def list_thread_metadata(
     second, so both arms put the same rows on the same page.
     """
     from felix.cursors import keyset_before, keyset_order, order_and_seek, take_page
+    from felix.thread_ids import is_workflow_thread
 
+    # A workflow step's thread is read under its run (`/workflows/{id}/runs/...`), which decides
+    # who may: a chat listing would show its prompt as the preview to every caller in the tenant.
+    workflow_threads = f"{tenant_id}:workflow:"
     if _use_memory(settings):
         rows: list[dict[str, Any]] = [
             {"ts": int(meta.get("updated_at") or 0) // 1000, "id": tid, "meta": meta}
             for tid, meta in _meta_by_thread.items()
-            if tid.startswith(f"{tenant_id}:") or tenant_id == "default"
+            if (tid.startswith(f"{tenant_id}:") or tenant_id == "default")
+            # By the thread's own tenant: `default` lists every tenant's threads here.
+            and not is_workflow_thread(tid.split(":", 1)[0], tid)
         ]
         page, next_cursor = take_page(order_and_seek(rows, cursor), limit=limit)
         return [_session_index_dict(row["id"], row["meta"]) for row in page], next_cursor
@@ -620,6 +626,7 @@ async def list_thread_metadata(
     stmt = (
         select(ThreadState)
         .where(ThreadState.tenant_id == tenant_id)
+        .where(~ThreadState.thread_id.startswith(workflow_threads, autoescape=True))
         .order_by(*keyset_order(ThreadState.updated_at, ThreadState.thread_id))
         .limit(limit + 1)
     )

@@ -27,6 +27,7 @@ from felix.auth.actors import TRIGGER_RUN_PREFIX
 from felix.config import Settings
 from felix.db.models import WorkflowRun
 from felix.db.session import _use_memory, tenant_session
+from felix.workflows.store import AGENT_VIA_PREFIX
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -175,16 +176,36 @@ async def get_run(settings: Settings, tenant_id: str, run_id: str) -> dict[str, 
         return _run_dict(found) if found else None
 
 
+def is_agent_run(run: dict[str, Any]) -> bool:
+    """Whether an agent started `run` for a person (`agent_tools`): its steps ran as them."""
+    return str(run.get("trigger") or "").startswith(AGENT_VIA_PREFIX)
+
+
 async def list_runs(
-    settings: Settings, tenant_id: str, workflow_id: str, *, limit: int = 50
+    settings: Settings,
+    tenant_id: str,
+    workflow_id: str,
+    *,
+    limit: int = 50,
+    agent_runs_of: str | None = None,
 ) -> list[dict[str, Any]]:
-    """One workflow's runs, newest first, ending on the id in byte order."""
+    """One workflow's runs, newest first, ending on the id in byte order.
+
+    `agent_runs_of` set keeps an agent-started run (`is_agent_run`) only when it was started for
+    that person (`""` keeps none); filtered before the limit, so a page is never cut short by runs
+    the caller may not see."""
     limit = max(1, min(limit, MAX_RUN_LIST))
     if _use_memory(settings):
         items = [
             _run_dict(r)
             for (t, _), r in _memory_runs.items()
-            if t == tenant_id and r["workflow_id"] == workflow_id
+            if t == tenant_id
+            and r["workflow_id"] == workflow_id
+            and (
+                agent_runs_of is None
+                or not is_agent_run(r)
+                or (agent_runs_of and r["started_by"] == agent_runs_of)
+            )
         ]
         items.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
         return items[:limit]
@@ -196,6 +217,11 @@ async def list_runs(
             .order_by(WorkflowRun.created_at.desc(), collate(WorkflowRun.id, "C").desc())
             .limit(limit)
         )
+        if agent_runs_of is not None:
+            not_agents = ~WorkflowRun.trigger.startswith(AGENT_VIA_PREFIX, autoescape=True)
+            stmt = stmt.where(
+                not_agents | (WorkflowRun.started_by == agent_runs_of) if agent_runs_of else not_agents
+            )
         return [_run_dict(r) for r in (await db.scalars(stmt)).all()]
 
 

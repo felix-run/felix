@@ -195,6 +195,24 @@ async def test_a_steps_transcript_is_read_under_its_run(boot: Any) -> None:
     assert by_chat.status_code == 400
 
 
+async def test_no_chat_surface_lists_searches_or_polls_a_steps_thread(boot: Any) -> None:
+    """A step's transcript is read under its run, which decides who may; the chat surfaces answer
+    any caller in the tenant. A step's child run id is derived from the run and step ids, so
+    `/chat/runs/{id}` would hand its answer to anyone who learned the run id."""
+    async with boot([CLASSIFIED], manifests={"e2e-wf": _manifest()}) as app:
+        run_url = await _start(app, {"issue": "Zucchini importer crashes"})
+        classify = (await _tick(app, run_url, {"waiting"}))["steps"]["classify"]
+        hits = (await app.client.get("/chat/sessions/search", params={"q": "zucchini"})).json()["hits"]
+        listed = (await app.client.get("/chat/sessions")).json()["items"]
+        polled = await app.client.get(f"/chat/runs/{classify['fiber_id']}")
+        under_run = await app.client.get(f"{run_url}/steps/classify/thread")
+    assert classify["status"] == "completed" and classify["fiber_id"]
+    assert "Zucchini" in under_run.text, "the step's transcript holds the term searched for"
+    assert [h["thread_id"] for h in hits] == []
+    assert [i["id"] for i in listed if ":workflow:" in i["id"]] == []
+    assert polled.status_code == 404
+
+
 def _run_frames(body: str) -> list[tuple[int, dict[str, Any]]]:
     """The `workflow_run` frames of a stream body, with their `id:`; asserts it ends in `[DONE]`."""
     import json

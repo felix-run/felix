@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from felix.config import Settings
+from felix.thread_ids import is_workflow_thread
 
 logger = logging.getLogger("felix.session.search")
 
@@ -75,12 +76,17 @@ async def search_sessions(
         return []
     limit = max(1, min(int(limit), 100))
 
+    # A workflow step's thread is read under its run (`/workflows/{id}/runs/...`), which decides
+    # who may: no chat surface addresses one, and a search that matched its text would.
+    workflow_threads = f"{tenant_id}:workflow:"
     if _use_memory(settings):
         needle = q.lower()
         hits = [
             e
             for e in _memory_index
-            if e["tenant_id"] == tenant_id and needle in (e.get("content") or "").lower()
+            if e["tenant_id"] == tenant_id
+            and needle in (e.get("content") or "").lower()
+            and not is_workflow_thread(tenant_id, e.get("thread_id"))
         ]
         return hits[:limit]
 
@@ -103,12 +109,13 @@ async def search_sessions(
                                    ts_rank(content_tsv, plainto_tsquery('english', :q)) AS rank
                             FROM session_events
                             WHERE tenant_id = :tenant
+                              AND left(thread_id, length(:wf)) <> :wf
                               AND content_tsv @@ plainto_tsquery('english', :q)
                             ORDER BY rank DESC
                             LIMIT :lim
                             """
                             ),
-                            {"tenant": tenant_id, "q": q, "lim": limit},
+                            {"tenant": tenant_id, "wf": workflow_threads, "q": q, "lim": limit},
                         )
                     )
                     .mappings()
@@ -126,12 +133,13 @@ async def search_sessions(
                                    event_metadata->>'event_id' AS event_id
                             FROM session_events
                             WHERE tenant_id = :tenant
+                              AND left(thread_id, length(:wf)) <> :wf
                               AND content ILIKE :pat
                             ORDER BY seq DESC
                             LIMIT :lim
                             """
                             ),
-                            {"tenant": tenant_id, "pat": f"%{q}%", "lim": limit},
+                            {"tenant": tenant_id, "wf": workflow_threads, "pat": f"%{q}%", "lim": limit},
                         )
                     )
                     .mappings()
