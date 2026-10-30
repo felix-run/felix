@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from felix.security.expr import evaluate_expression
 from felix.tools.errors import ToolErrorCode, tool_error_output
 from felix.tools.provider import InMemoryToolProvider, ToolProvider
-from felix.tools.types import ToolOutput, define_tool
+from felix.tools.types import Tool, ToolOutput, define_tool
 
 logger = logging.getLogger("felix.tools.builtins")
 
@@ -44,6 +44,15 @@ async def _trigger_event_handler(_args: dict[str, Any] | None = None) -> ToolOut
         return tool_error_output(ToolErrorCode.INVALID_ARGUMENTS, "this run was not started by a trigger")
     # Written by the event's sender: screened as an untrusted tool's output, whatever this tool is.
     return untrusted_output(event_view(event))
+
+
+def _time_tool(name: str) -> Tool:
+    """`name` from the time tools, a zone left out meaning the install's `FELIX_TIMEZONE`, read
+    when the provider first builds it."""
+    from felix.config import get_settings
+    from felix.tools.time_tools import time_tools
+
+    return next(t for t in time_tools(get_settings().timezone) if t.name == name)
 
 
 async def _list_skills_stub(_args: dict[str, Any] | None = None) -> str:
@@ -116,6 +125,10 @@ def register_builtin_tools(provider: InMemoryToolProvider) -> None:
             handler=_trigger_event_handler,
         ),
     )
+    from felix.tools.time_tools import TOOL_NAMES as TIME_TOOLS
+
+    for time_tool in TIME_TOOLS:
+        provider.register(time_tool, lambda n=time_tool: _time_tool(n))
     from felix.tools.todos import TODO_TOOL_NAME, make_todo_tool
 
     provider.register(TODO_TOOL_NAME, make_todo_tool)

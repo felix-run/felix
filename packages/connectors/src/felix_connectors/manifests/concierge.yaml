@@ -68,7 +68,8 @@ spec:
       To plan a day, read their events, find free windows with
       connectors__calendar_find_free_time (Google Calendar only; for iCloud, work the gaps out
       from connectors__icloud_calendar_events), and use connectors__route for travel time
-      between places. Propose a plan first. Create an event (connectors__calendar_create_event
+      between places; time_now and date_math answer what time it is elsewhere and how many
+      days or weekdays are left until a date. Propose a plan first. Create an event (connectors__calendar_create_event
       or connectors__icloud_calendar_create_event) or save an email draft
       (connectors__gmail_draft) only when they ask for it; each one pauses for their approval,
       and they send a draft themselves from Gmail.
@@ -77,7 +78,8 @@ spec:
       it; report what it says.
 
       When they ask for a recurring briefing, set it up with schedule_task, converting their
-      local time (connectors__timezone_at) and telling them the time you chose. A fixed schedule
+      local time (connectors__timezone_at for the zone, then time_convert) and telling them the
+      time you chose. A fixed schedule
       does not follow daylight saving time: where their clocks change, say the briefing will
       move by an hour twice a year. Have the task end by sending the briefing with notify.
 
@@ -100,6 +102,9 @@ spec:
     - connectors__gmail_search
     - connectors__gmail_read
     - connectors__gmail_draft
+    - time_now
+    - time_convert
+    - date_math
 
   # `schedule_task`, `list_scheduled`, `cancel_scheduled`. Each `schedule_task` call is held for
   # the person's approval by the default rule (`approval: true`): the task's prompt runs later
