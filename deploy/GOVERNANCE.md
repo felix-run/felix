@@ -541,9 +541,16 @@ window and compaction, so repeated ones grew each turn's context past what the m
 bounds. A queue's write-back (`/internal/sessions/{id}/events`) cannot choose where its event lands
 or pin it either, and writes only a message, a tool result or an entry: any other kind is stored as a
 message, so it cannot write a `compaction` the strategies would read as the thread's summary. Nor can
-it write a skill tool's result: one named `activate_skill` (or any of the four skill tools) is stored
-as `queue:activate_skill`, because a real one is read back as the thread's activation and re-shown
-after every window and compaction (`skills/activation.py`) -- the pin, by another name.
+it write a result under a harness tool's name: every tool result it writes is stored under
+`queue:<name>` (`activate_skill` as `queue:activate_skill`), as is any event naming one of the four
+skill tools. The harness reads results back by name as what it ran -- a skill's activation, re-shown
+after every window and compaction (`skills/activation.py`); the thread's checklist (`todo_write`,
+`tools/todos.py`) -- so a write-back under the real name was an activation or a checklist the model
+never made. The model still sees it answer its `tool_call_id`; the OpenAI wire leaves out a message
+`name` the API would refuse, as `queue:<name>` is. Rows written before this rule keep the names they
+were written with. A write-back still chooses its result's `tool_call_id`, and an `assistant` event's
+`tool_calls` keep their names (a wire tool name cannot hold `:`): every reader of a skill tool's or
+`todo_write`'s result also parses its content, so neither is read back as the harness's.
 
 A person's `/skill-name args` and a manifest's `preload` are activated by the harness, not
 written into the person's turn: before the model's first step it calls `activate_skill` through the
