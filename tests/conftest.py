@@ -125,6 +125,7 @@ def _isolate_process_global_stores():
     from felix.audit import store as audit_store
     from felix.auth.connections import reset_connections_for_tests
     from felix.auth.github_connections import reset_github_connections_for_tests
+    from felix.destinations.ledger import reset_destination_posts_for_tests
     from felix.documents.store import reset_documents_for_tests
     from felix.durability.fibers import reset_memory_fibers
     from felix.eval.store import reset_eval_for_tests
@@ -204,6 +205,7 @@ def _isolate_process_global_stores():
         reset_push_for_tests()
         reset_push_keys_for_tests()
         reset_notify_for_tests()
+        reset_destination_posts_for_tests()
         reset_github_connections_for_tests()
         reset_connections_for_tests()
         # Audit and usage are the same shape again — a process buffer plus an in-memory twin —

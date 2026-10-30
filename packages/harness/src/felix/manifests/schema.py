@@ -1001,6 +1001,51 @@ class NotifySpec(_Strict):
     approval: bool = False
 
 
+class DestinationsSpec(_Strict):
+    """Let the agent post to shared places the operator registered: binds `post`
+    (`felix/destinations/tool.py`).
+
+    `ids` names entries of `FELIX_DESTINATIONS` -- a team channel, a webhook -- never a URL or a
+    channel: the operator's registration is the advance approval, and the manifest picks among the
+    destinations open to its tenant. An id that is not, or whose kind is not installed, fails the
+    compile. Each post names an `edition`, and an edition already posted to a destination is not
+    posted again, by a retry or by the next run. The text has known secrets redacted and is screened
+    (the marker scan always, `content_screening` when on) before it leaves; links are kept. Works
+    from a scheduled job or a heartbeat's firing, which is what it is for -- and only from an
+    unattended run unless `attended` says otherwise. A manifest that admits anonymous callers is
+    refused. Whether links survive is the destination's registration, not the manifest's. Unset binds
+    nothing.
+    """
+
+    #: The `FELIX_DESTINATIONS` ids `post` may name.
+    ids: list[str] = Field(min_length=1, max_length=MAX_REFS)
+    #: Posts one run may make, across every destination. A durable run's resume, a background child
+    #: and a workflow step each start their own count; the edition ledger is the bound across runs.
+    max_per_run: int = Field(default=3, ge=1, le=20)
+    #: Hold every `post` call for a person's approval -- one-shot, bound to the caller -- unless
+    #: `spec.approvals` has a rule naming `post` literally that gates every call. No permission mode
+    #: waives either. Off by default: the runs that post are unattended, and registering the
+    #: destination was the approval; an unattended run reaching it is refused rather than parked.
+    approval: bool = False
+    #: What a call from an attended run -- a person's chat, not a job, heartbeat or trigger -- does.
+    #: `refuse` (the default): it is refused, since a post speaks for the deployment to a shared
+    #: place and a conversation can be steered by whatever it reads. `approval`: the call is held for
+    #: that person's approval, one-shot and bound to them, which no permission mode waives; it cannot
+    #: be combined with a `spec.approvals` rule matching `post` unless `approval` is on. Closed on
+    #: purpose: each value is a rule the harness adds, not an implementation to swap.
+    attended: Literal["refuse", "approval"] = "refuse"
+
+    @field_validator("ids")
+    @classmethod
+    def _ids(cls, v: list[str]) -> list[str]:
+        bad = [name for name in v if not REGISTRY_ID_RE.match(name)]
+        if bad:
+            raise ValueError(f"destination ids must match {REGISTRY_ID_RE.pattern}: {bad}")
+        if len(set(v)) != len(v):
+            raise ValueError("destinations.ids must not repeat an id")
+        return v
+
+
 class WorkflowAuthoringSpec(_Strict):
     """Let the agent build workflows for the person it acts for: binds `workflow_catalog`,
     `check_workflow`, `save_workflow`, `list_my_workflows` and `run_workflow`
@@ -1628,6 +1673,8 @@ class Spec(_Strict):
     scheduling: SchedulingSpec | None = None
     # Binds `notify`. Unset binds nothing.
     notify: NotifySpec | None = None
+    # Binds `post`, to the operator-registered destinations named here. Unset binds nothing.
+    destinations: DestinationsSpec | None = None
     # Binds the workflow authoring tools. Unset binds nothing.
     workflow_authoring: WorkflowAuthoringSpec | None = None
     # A check-in each person may turn on for themselves (`/heartbeats`). Needs `notify`.

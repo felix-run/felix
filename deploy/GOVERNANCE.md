@@ -1321,6 +1321,78 @@ manifest author's:
   starting deliveries, and endpoints within one, after half the 120 s claim, so a slow receiver
   delays the rest rather than doubling them; the timeout's bound keeps one attempt inside that.
 
+### Shared destinations: `spec.destinations` and `post`
+
+A scheduled job or a heartbeat can publish to a shared place — a team channel, a status feed —
+through `post` (`felix/destinations/tool.py`). It carries text a model wrote, unattended, under the
+deployment's name, so the places are the operator's and the manifest only picks among them:
+
+- **Ids, never URLs or channels.** `FELIX_DESTINATIONS` maps an id to `{kind, tenants, links?,
+  link_hosts?, …}`; a manifest names ids in `spec.destinations.ids`. The registration is the
+  advance approval, which is why `approval` defaults to off. `tenants` is required (`"*"` written
+  out). An id unregistered or another tenant's fails the compile with one message,
+  `unknown destination: <id>` (`422` on `/chat`), so it is not a registry oracle; so does a kind no
+  package registered, or fields the kind refuses.
+- **Who may post.** Unattended runs — a job's firing, a heartbeat, a trigger, and what they start
+  (`RequestContext.unattended`). A call from a person's conversation is refused (`attended`) unless
+  the manifest sets `attended: approval`, which holds that call for the person's approval (one-shot,
+  bound to them, rule `destinations.post.attended`) and cannot be combined with a `spec.approvals`
+  rule matching `post` unless `approval: true` already holds every call. A call with no request
+  context is refused. A manifest that admits anonymous callers does not compile.
+- **Unwaivable, scoped to the block.** `approval: true` and `attended: approval` add rules no
+  permission mode waives, and in a manifest with `spec.destinations` every rule over `post` (the
+  manifest's own included) is unwaivable, since the block bound that `post` and a clash fails the
+  compile. A third-party tool named `post` in a manifest without the block keeps its manifest's
+  ordinary rules (`BuiltinApproval.unwaivable_tool`, `bound_unwaivable_tools`).
+- **Kinds are an open registry** (`register_destination_kind`, or
+  `PluginRegistry.register_destination_kind`). Core's `webhook` names a `FELIX_WEBHOOK_ENDPOINTS`
+  endpoint, which must open to the tenant too, and is delivered and signed as a completion webhook
+  is (above), egress guard included. Its body carries `unattended` (never who), and its
+  `webhook-id` is stable for one tenant, destination, manifest and edition, so a receiver can
+  dedupe as well. A kind's `Delivery.detail` (cut to 300 characters) and its `DestinationError`
+  messages reach the model and the manifest author as written: a plugin writes them for those
+  readers, never an exception's text, a URL or a credential.
+- **At most once per edition.** Each call names an `edition`, and `destination_posts` (migration
+  0049, tenant RLS) holds one row per tenant, destination, manifest and edition — two agents'
+  `brief:2026-10-29` are two posts. The call reads the row before it cleans or screens anything (an
+  edition already `posted` answers `already_posted` with the provider's ref, and the approval
+  preview refuses it, so no approval is asked for), then claims it with an insert-if-absent before
+  anything is sent. A delivery that certainly did not land (refused before sending; a `4xx` other
+  than `408` and `409`) releases the row so the edition may be tried again. One whose outcome is
+  unknown (a timeout, a `5xx`, a `408`, a `409` — what a receiver deduping on `webhook-id` answers
+  — a connection lost mid-request, an adapter that raised) is `maybe_posted`, and every later call
+  naming it is refused with `maybe_posted`: never retried, because a person must check the
+  destination. A `posting` row under two minutes old answers `in_flight`; an older one is a process
+  that died mid-delivery, and reads as `maybe_posted`.
+- **Clearing a stuck edition.** Until a route for it lands, an operator who has checked the
+  destination clears a `posting` or `maybe_posted` row by hand; the next call naming the edition
+  then posts it. As the table's owner (so through the RLS bypass the policy honours):
+
+  ```sql
+  BEGIN;
+  SET LOCAL app.rls_bypass = 'on';
+  DELETE FROM destination_posts
+   WHERE tenant_id = 'acme' AND destination = 'team-brief'
+     AND manifest_id = 'briefer' AND edition = 'brief:2026-10-29'
+     AND status IN ('posting', 'maybe_posted');
+  COMMIT;
+  ```
+
+  If the post did land, leave the row — or set `status = 'posted'` — so it is not posted twice.
+- **What leaves.** Known secret values are redacted from the title and text, links are handled as
+  the registration says, and the result is screened as `notify` is (the marker scan always;
+  `content_screening` when on and covering `post`): a flag, or a screener that cannot run, refuses
+  the call.
+- **Links are the operator's choice.** `links: strip` (the default) removes every link as `notify`
+  does; `link_hosts: [...]` (with `strip`, `allow_hosts` patterns) keeps only links to those hosts;
+  `links: keep` keeps them all. A manifest cannot loosen it. Choose `keep` knowingly: a chat
+  service that unfurls links fetches each one server-side the moment it is posted, so a link a
+  model wrote — under an injection, with data in its path or query — is an exfiltration channel to
+  any host even if no person ever clicks it. `link_hosts` bounds that to hosts you trust.
+- **Bounds and record.** `max_per_run` (3) counts posts per run, reserved before anything awaits;
+  an `already_posted` is not counted. Every delivery and every edition found already there is
+  audited as `post.sent` with the destination, edition, status and ref — never the text.
+
 ### Inbound triggers: `POST /triggers/{id}`
 
 A signed event from elsewhere starts a durable run (`felix/triggers.py`,

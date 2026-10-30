@@ -163,6 +163,18 @@ class PluginRegistry:
 
         register_decision_provider(name, factory)
 
+    def register_destination_kind(self, kind: str, adapter: Any) -> None:
+        """Register a destination kind, selected by `kind` in `FELIX_DESTINATIONS`: `adapter` has
+        `validate(settings, tenant_id, destination_id, spec)` and an async `deliver(settings,
+        tenant_id, destination_id, spec, post) -> Delivery` (`felix.destinations.DestinationAdapter`).
+
+        Forwarded to the destination registry, like `register_model_provider` above: `post`
+        (`felix.destinations.tool`) reads it when a manifest naming the destination compiles and
+        again when a post is delivered."""
+        from felix.destinations import register_destination_kind
+
+        register_destination_kind(kind, adapter)
+
     def register_startup_hook(self, hook: Callable[..., Awaitable[Any]]) -> None:
         self._startup_hooks.append(hook)
 

@@ -59,6 +59,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -152,12 +153,28 @@ def _normalize(text: str) -> str:
     return "".join(c for c in folded if c != "\u00ad" and unicodedata.category(c) != "Cf")
 
 
-def strip_links(text: str) -> str:
-    """`text`, normalized, with every link-shaped run replaced by `[link removed]`."""
+def strip_links(text: str, keep: Callable[[str], bool] | None = None) -> str:
+    """`text`, normalized, with every link-shaped run replaced by `[link removed]` -- except, with
+    ``keep``, a run whose host ``keep`` accepts (`link_host`), which stays as written. Each pattern
+    asks again of what it matches, so a link kept by one is judged afresh by the next; an obfuscated
+    run (`evil[.]com`) has no host to accept and is removed."""
     text = _normalize(text)
     for rx in _LINKS:
-        text = rx.sub(LINK_REMOVED, text)
+        if keep is None:
+            text = rx.sub(LINK_REMOVED, text)
+        else:
+            text = rx.sub(lambda m: m.group(0) if keep(link_host(m.group(0))) else LINK_REMOVED, text)
     return text
+
+
+def link_host(run: str) -> str:
+    """The host a link-shaped run names, as a request would carry it (`url_host`), or `""` for one
+    with no host (`mailto:`, `javascript:`, an obfuscated name). A run with no scheme is read as
+    `https://` plus the run, so `docs.example.com/x` and `www.example.com` have their hosts too."""
+    from felix.security.host_allowlist import url_host
+
+    candidate = run if "://" in run else f"https://{run}"
+    return url_host(candidate)
 
 
 class _NotifyArgs(BaseModel):
@@ -255,49 +272,19 @@ class _Notices:
         return title, body
 
     async def screen(self, text: str) -> None:
-        """Screen `text`: always the free marker scan (`governance/content_screening.py`), then, when
-        the manifest's content screening is on, its model and decider as the screening wrapper runs
-        them on tool output. A notice cannot be quarantined, so a flag refuses it, and so does a
-        screener that could not run: unscreened is not clean."""
-        from felix.governance.content_screening import screen_content
+        """Screen `text` as every outbound text is (`governance/outbound_screening.py`). A notice
+        cannot be quarantined, so a flag refuses it, and so does a screener that could not run:
+        unscreened is not clean."""
+        from felix.governance.outbound_screening import screen_outbound
 
-        refused = ToolRefused(
-            "screened", "the notice was flagged by content screening and was not sent; nothing was sent"
+        await screen_outbound(
+            self.settings,
+            self.manifest,
+            NOTIFY,
+            text,
+            flagged="the notice was flagged by content screening and was not sent; nothing was sent",
+            unavailable="the notice could not be screened, so it was not sent; nothing was sent",
         )
-        verdict = await screen_content(
-            text, settings=self.settings, block_on_injection=True, redact_pii=False
-        )
-        if verdict.denied:
-            raise refused
-        screening = self.manifest.spec.content_screening
-        if not screening.enabled:
-            return
-        from felix.manifests.tool_match import matches_any
-
-        if screening.model_tools and not matches_any(screening.model_tools, NOTIFY):
-            return
-        from felix.governance.screening import screening_decider
-        from felix.governance.tool_screening import screen_tool_output
-
-        try:
-            decider = screening_decider(self.manifest, self.settings)
-        except Exception:
-            logger.warning(
-                "notify screening decider unavailable manifest=%s", self.manifest_id, exc_info=True
-            )
-            raise ToolRefused(
-                "screened", "the notice could not be screened, so it was not sent; nothing was sent"
-            ) from None
-        model_id = screening.model.strip()
-        if not (model_id or decider is not None):
-            return
-        result = await screen_tool_output(self.settings, text, model_id, decider)
-        if result.unavailable:
-            raise ToolRefused(
-                "screened", "the notice could not be screened, so it was not sent; nothing was sent"
-            )
-        if result.flagged:
-            raise refused
 
     @staticmethod
     def own_thread(ctx: RequestContext, call: ToolInvocationCtx | None) -> str:
@@ -471,6 +458,7 @@ __all__ = [
     "NOTICE_ENTRY_TYPE",
     "NOTIFY",
     "hourly_key",
+    "link_host",
     "make_notify_tool",
     "notice_entry",
     "reset_notify_for_tests",
