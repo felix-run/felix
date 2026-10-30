@@ -1,5 +1,6 @@
 """Felix connectors: tools an agent calls to reach everyday services: weather, maps, markets, FX,
-and a person's own Google Calendar, Gmail and Drive, and iCloud Calendar and Contacts.
+Wikipedia, and a person's own Google Calendar, Gmail and Drive, iCloud Calendar and Contacts, and
+published calendar feeds.
 
 Installed, this plugin registers its tools with every tool provider; a manifest still names each
 one in `spec.tools` before an agent holds it:
@@ -12,7 +13,7 @@ cover at compile, and each request is held to them. The transport is `connectors
 governance does not trust, so a manifest that enables content screening has what comes back
 screened. The defaults need no key: Open-Meteo for the forecast and a point's time zone, the US
 National Weather Service for alerts, OpenStreetMap's Nominatim for places, FOSSGIS's OSRM for
-routes and Frankfurter for exchange rates. Stock quotes need `FELIX_MARKET_API_KEY` (Finnhub or
+routes, Frankfurter for exchange rates and Wikipedia. Stock quotes need `FELIX_MARKET_API_KEY` (Finnhub or
 Alpha Vantage). The Google tools act as the person the run acts for, with the grant they
 connected (`felix.auth.google_connect`), and need the `google` extra; the iCloud tools, with
 the app-specific password they connected (`icloud_connect`), and need the `icloud` extra; the
@@ -30,7 +31,18 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
-from felix_connectors import fx, gmail, google_calendar, google_drive, icloud, ics, maps, markets, weather
+from felix_connectors import (
+    fx,
+    gmail,
+    google_calendar,
+    google_drive,
+    icloud,
+    ics,
+    maps,
+    markets,
+    weather,
+    wikipedia,
+)
 
 FAMILIES: tuple[ModuleType, ...] = (
     weather,
@@ -42,6 +54,7 @@ FAMILIES: tuple[ModuleType, ...] = (
     google_drive,
     icloud,
     ics,
+    wikipedia,
 )
 
 
