@@ -3380,7 +3380,9 @@ counted and audited; it is tried again each sweep, so it alerts once routing exi
 entry makes it the harness's own: no manifest may name it (`spec.destinations` answers it as an
 unknown id), `tenants` is not read, and the watch posts there about every tenant -- for the `webhook`
 kind, the endpoint's own `tenants` is not consulted either, so list there only tenants whose manifests
-may announce runs to it. A non-operator alert destination reaches only the tenants in its `tenants`
+may announce runs to it; for the `slack` kind, the app's own tenant is not consulted, so the one app
+posts about every tenant -- make it the operator's own Slack app and workspace, never a tenant's, or
+that tenant's workspace reads every tenant's job names. A non-operator alert destination reaches only the tenants in its `tenants`
 list, and that list is also a `post` grant: every manifest in those tenants may post to the ops
 channel. A `tenants` list holding `"*"` fails the boot in every registry -- it named a tenant called
 `*`; the string `"*"` is what opens an entry to all. The watch runs on the scheduler it watches; `/health/scheduler` is the watch
