@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from felix.manifests.loader import parse_manifest
-from felix.mcp.client import UNAVAILABLE_SOURCES_TAG
+from felix.run_sources import UNAVAILABLE_SOURCES_TAG
 from felix_ai.providers.scripted import ScriptedTurn
 
 KEYS = {"sk-e2e-alice": {"tenant_id": "default", "sub": "alice", "scopes": ["jobs:write", "jobs:read"]}}
@@ -76,7 +76,7 @@ async def test_a_source_that_is_down_is_named_to_the_model_and_on_the_run(
 
     assert run["status"] == "ok", run
     assert run["result"]["unavailable_sources"] == {"e2e-brief": ["tracker"]}
-    note = system[system.index(TAG) :]
+    note = system[system.index(TAG) : system.index(f"</{UNAVAILABLE_SOURCES_TAG}>")]
     assert "`tracker`" in note and "`channel`" not in note, note
     assert "channel__search" in offered and not any(t.startswith("tracker__") for t in offered), offered
 

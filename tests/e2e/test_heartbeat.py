@@ -576,3 +576,38 @@ async def _runs(app: Any, name: str) -> list[dict[str, Any]]:
     from felix.jobs import store as jobs_store
 
     return await jobs_store.list_runs(app.settings, "default", name, limit=100)
+
+
+def _tracker_down(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The manifest's MCP server, faked at discovery and down: what a heartbeat reads from."""
+    from felix.mcp import client
+
+    async def down(ref: Any, *, allow_http: bool = False, handshake: Any = None) -> list[Any]:
+        raise ConnectionError(f"{ref.name} is down")
+
+    client.clear_discovery_cache()
+    monkeypatch.setattr(client, "list_remote_tools", down)
+    return {
+        "mcp_servers": [{"name": "tracker", "url": "https://tracker.example.com/mcp", "transport": "http"}]
+    }
+
+
+async def test_a_quiet_firing_without_its_source_says_so_on_the_run(
+    boot: Any, clock: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heartbeat is the run most likely to answer HEARTBEAT_OK, so it is where a source that was
+    never read most needs telling apart from a quiet one -- answered or failed."""
+    servers = _tracker_down(monkeypatch)
+    async with boot(
+        [ScriptedTurn(content="HEARTBEAT_OK")], env=_env(), manifests={"e2e-hb": _manifest(**servers)}
+    ) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        assert await _sweep(app, clock) == 1
+        quiet = await _last_run(app, name)
+        # The script is spent: the next firing's model call raises, and the run is an error.
+        assert await _sweep(app, clock) == 1
+        failed = await _last_run(app, name)
+    assert (quiet["status"], quiet["result"]["quiet"]) == ("ok", True)
+    assert quiet["result"]["unavailable_sources"] == {"e2e-hb": ["tracker"]}
+    assert failed["status"] == "error", failed
+    assert failed["result"]["unavailable_sources"] == {"e2e-hb": ["tracker"]}
