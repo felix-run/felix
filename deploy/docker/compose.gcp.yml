@@ -9,8 +9,8 @@
 # `RELEASING.md` already records twice.
 #
 # The image needs the `gcp` extra for Secret Manager, so this points at the
-# `-gcp` variant. Releases publish both `:X.Y.Z` and `:X.Y.Z-gcp`, each for
-# linux/amd64 and linux/arm64.
+# `-gcp` variant, which also carries `otel` (compose.otel-gcp.yml). Releases
+# publish both `:X.Y.Z` and `:X.Y.Z-gcp`, each for linux/amd64 and linux/arm64.
 # Usage on GCE (repo root / /opt/felix); deploy/gcp/roll.sh does this for an upgrade:
 #   make up-gcp
 #   docker compose -f deploy/docker/compose.yml \

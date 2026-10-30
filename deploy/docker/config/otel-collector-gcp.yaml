@@ -1,0 +1,99 @@
+# OpenTelemetry Collector for a GCE + Compose deployment, exporting to Google Cloud.
+#
+# Mounted by deploy/docker/compose.otel-gcp.yml. The collector is the only telemetry process on
+# the VM: traces go to Cloud Trace, logs to Cloud Logging, and metrics to Google Cloud Managed
+# Service for Prometheus. Storage and dashboards live off the host, so they survive the host
+# having a bad day, which is when they are wanted.
+#
+# Credentials are the VM's service account through the metadata server: no key on disk. The
+# account needs roles/cloudtrace.agent, roles/logging.logWriter and roles/monitoring.metricWriter
+# (deploy/gcp/README.md, "Telemetry to Google Cloud").
+
+receivers:
+  # Traces and trace-correlated logs from felix-api and felix-worker (FELIX_OTEL_ENDPOINT).
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+  # Felix's metrics are pulled, not pushed: nothing sends them over OTLP. The collector scrapes
+  # them the way the local stack's Prometheus does and forwards the samples.
+  prometheus:
+    config:
+      global:
+        # Managed Prometheus bills per sample; a minute is plenty for a single VM.
+        scrape_interval: 60s
+      scrape_configs:
+        # `/metrics` is not public: its labels include tenant-supplied manifest ids and remote
+        # MCP tool names. The token holds only `metrics:read`; under FELIX_AUTH_MODE=jwt it is
+        # a JWT minted on the host (deploy/gcp/README.md), since that mode accepts no API key.
+        - job_name: felix-api
+          metrics_path: /metrics
+          authorization:
+            type: Bearer
+            credentials_file: /etc/otel/metrics-token
+          static_configs:
+            - targets: ["api:8080"]
+        # Unauthenticated, so it stays on the compose network: the worker publishes no port.
+        - job_name: felix-worker
+          static_configs:
+            - targets: ["worker:9100"]
+        # The collector's own counters: how "no traces" is told apart from "traces dropped".
+        - job_name: otel-collector
+          static_configs:
+            - targets: ["localhost:8888"]
+
+processors:
+  # Bound the collector's own memory before it becomes the reason the host struggles.
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  # Project, zone and instance from the metadata server, which Managed Prometheus needs to place
+  # a series and Cloud Trace uses to label a span.
+  resourcedetection:
+    detectors: [gcp]
+    timeout: 10s
+    override: false
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: ${env:FELIX_ENVIRONMENT}
+        action: upsert
+
+exporters:
+  googlecloud:
+    log:
+      default_log_name: felix
+  googlemanagedprometheus: {}
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [googlecloud]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [googlecloud]
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, resourcedetection, resource, batch]
+      exporters: [googlemanagedprometheus]

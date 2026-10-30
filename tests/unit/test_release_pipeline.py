@@ -76,7 +76,13 @@ def test_images_are_scanned_per_platform_before_the_release_tag_exists() -> None
     image = wf["jobs"]["image"]
     variants = {m["variant"]: m for m in image["strategy"]["matrix"]["include"]}
     assert set(variants) == {"plain", "gcp"}
-    assert variants["gcp"]["extras"] == "gcp" and variants["plain"]["extras"] == ""
+    assert variants["gcp"]["extras"] == "gcp,otel" and variants["plain"]["extras"] == ""
+    # CI builds and scans the gcp variant on every pull request, with the extras the release
+    # ships, so a dependency only that set brings fails a PR rather than the tag.
+    ci_build = next(
+        s for s in _load("ci.yml")["jobs"]["docker"]["steps"] if s.get("name") == "Build gcp image"
+    )
+    assert f"FELIX_EXTRAS={variants['gcp']['extras']}" in ci_build["with"]["build-args"].splitlines()
     steps = _by_id(image)
     build = steps["build"]["with"]
     assert build["platforms"] == "linux/amd64,linux/arm64"

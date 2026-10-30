@@ -110,8 +110,10 @@ jobs:
           - variant: plain
             extras: ""
             suffix: ""
+          # `otel` so a GCE host can export telemetry (deploy/docker/compose.otel-gcp.yml)
+          # without building its own image; it is inert until FELIX_OTEL_ENABLED is set.
           - variant: gcp
-            extras: gcp
+            extras: gcp,otel
             suffix: -gcp
     env:
       VERSION: ${{ needs.verify.outputs.version }}

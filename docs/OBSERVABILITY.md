@@ -22,7 +22,10 @@ Traces go wherever you point them. Every `FELIX_OTEL_*` setting is passed throug
 run — an OTel Collector, a hosted vendor, a console self-hosted on another host — with no
 overlay and no code that names the destination. `make up-observability` is the local
 version of the same thing: it points Felix at a collector it starts. See
-`deploy/docker/README.md`, "Sending traces to an external backend".
+`deploy/docker/README.md`, "Sending traces to an external backend". On a GCE + Compose host,
+`deploy/docker/compose.otel-gcp.yml` is the production shape: one collector on the VM that sends
+traces, logs and the scraped metrics to Google Cloud (`deploy/gcp/README.md`, "Telemetry to Google
+Cloud").
 
 A backend is an **egress destination**. Prompts stay off spans unless
 `FELIX_OTEL_CAPTURE_CONTENT=true` (they are outside governance content screening), and

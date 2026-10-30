@@ -422,7 +422,7 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile
           build-args: |
-            FELIX_EXTRAS=gcp
+            FELIX_EXTRAS=gcp,otel
             APT_REFRESH=${{ steps.apt.outputs.day }}
           tags: felix:ci-gcp
           load: true

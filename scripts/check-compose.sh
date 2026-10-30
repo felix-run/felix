@@ -39,6 +39,7 @@ check() {
 check
 check -f deploy/docker/compose.lite.yml
 check -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
+check -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml -f deploy/docker/compose.otel-gcp.yml
 check -f deploy/docker/compose.pgbouncer.yml
 check -f deploy/docker/compose.replicas.yml
 check -f deploy/docker/compose.observability.yml
@@ -50,5 +51,7 @@ render() { docker compose "${base[@]}" "$@" --project-directory . config --forma
 render | python3 scripts/check-compose-render.py
 render -f deploy/docker/compose.self.yml | python3 scripts/check-compose-render.py
 render -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
+  | python3 scripts/check-compose-render.py --published
+render -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml -f deploy/docker/compose.otel-gcp.yml \
   | python3 scripts/check-compose-render.py --published
 echo "compose: every overlay parses and renders as required"

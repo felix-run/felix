@@ -1,8 +1,9 @@
-.PHONY: help bootstrap install install-full install-warehouse test test-cov e2e conformance lint lint-md fmt type check check-ci bundle schema-check contract-check toolkit eval lock-check deps-age compose-check helm-lint schema contract dev db migrate seed doctor cli dev-key metrics-token up up-lite up-gcp up-full up-pooled up-replicas up-observability up-self down down-all docker-build
+.PHONY: help bootstrap install install-full install-warehouse test test-cov e2e conformance lint lint-md fmt type check check-ci bundle schema-check contract-check toolkit eval lock-check deps-age compose-check helm-lint schema contract dev db migrate seed doctor cli dev-key metrics-token up up-lite up-gcp up-gcp-otel up-full up-pooled up-replicas up-observability up-self down down-all docker-build
 
 COMPOSE := docker compose -f deploy/docker/compose.yml --project-directory .
 COMPOSE_LITE := $(COMPOSE) -f deploy/docker/compose.lite.yml
 COMPOSE_GCP := $(COMPOSE) -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml
+COMPOSE_GCP_OTEL := $(COMPOSE_GCP) -f deploy/docker/compose.otel-gcp.yml
 COMPOSE_PGB := $(COMPOSE) -f deploy/docker/compose.pgbouncer.yml
 COMPOSE_REPLICAS := $(COMPOSE) -f deploy/docker/compose.replicas.yml
 COMPOSE_OBS := $(COMPOSE) -f deploy/docker/compose.observability.yml
@@ -209,6 +210,9 @@ up-lite: dev-key  ## up with tighter memory caps for ~2–4 GiB hosts
 
 up-gcp: dev-key  ## up -d with the gcp + lite overlays (published image, no DB/cache publish)
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-gcp} $(COMPOSE_GCP) up --build -d
+
+up-gcp-otel:  ## up -d as up-gcp, plus an OTel Collector exporting to Google Cloud (needs deploy/docker/.metrics-token)
+	$(COMPOSE_GCP_OTEL) up -d
 
 up-full: dev-key  ## up --profile full: MinIO and the aws extra
 	FELIX_DOCKER_EXTRAS=$${FELIX_DOCKER_EXTRAS:-aws} FELIX_OBJECT_STORE=s3 \
