@@ -219,19 +219,12 @@ async def list_remote_tools(
 ) -> list[dict[str, Any]]:
     """The server's tools, as wire dicts. ``handshake``, when given, receives what the session
     negotiated: `protocolVersion`, and the server's `instructions` when it sent any."""
-    try:
-        async with _session(ref, allow_http=allow_http) as client:
-            if handshake is not None:
-                handshake["protocolVersion"] = client.protocol_version
-                if client.instructions:
-                    handshake["instructions"] = client.instructions
-            return await _list_tools(client)
-    except Exception:
-        if ref.transport != "stdio":
-            raise
-        # A stdio server that cannot be spawned binds nothing rather than failing the compile.
-        logger.warning("MCP stdio tools/list failed for %s", ref.name, exc_info=True)
-        return []
+    async with _session(ref, allow_http=allow_http) as client:
+        if handshake is not None:
+            handshake["protocolVersion"] = client.protocol_version
+            if client.instructions:
+                handshake["instructions"] = client.instructions
+        return await _list_tools(client)
 
 
 def _bind_remote_tool(
@@ -363,6 +356,10 @@ def _allowlist_patterns(ref: McpServerRef) -> list[str]:
 # command, its resolved auth, timeouts) and `allow_http`, never the raw credential; two refs
 # that hash alike reach the same server as the same caller. Failures are not remembered.
 DISCOVERY_TTL_S = 60.0
+#: `RequestContext.extras` key: the MCP servers this run's compile could not reach, by manifest.
+UNAVAILABLE_SOURCES_EXTRA = "unavailable_sources"
+#: The tag the prompt note is wrapped in.
+UNAVAILABLE_SOURCES_TAG = "unavailable_sources"
 _DISCOVERY_CONCURRENCY = 8
 _DISCOVERY = BoundedCache(256, ttl_s=DISCOVERY_TTL_S)
 
@@ -385,9 +382,8 @@ async def _discover(ref: McpServerRef, *, allow_http: bool) -> tuple[list[dict[s
         return copy.deepcopy(hit)
     handshake: dict[str, Any] = {}
     remotes = await list_remote_tools(ref, allow_http=allow_http, handshake=handshake)
-    # Only an answer with tools is remembered. A stdio server that cannot be spawned degrades to no
-    # tools rather than raising (an HTTP server's failure raises, and nothing is cached), and
-    # caching that would leave the server toolless for the whole TTL.
+    # Only an answer with tools is remembered: a server that failed raised, and one that answered
+    # with none may have tools a moment later, so caching it would leave it toolless for the TTL.
     if remotes:
         _DISCOVERY[key] = copy.deepcopy((remotes, handshake))
     return remotes, handshake
@@ -398,11 +394,14 @@ async def tools_from_mcp_servers(
     *,
     allow_http: bool = False,
     manifest_id: str = "",
+    unavailable: list[str] | None = None,
 ) -> list[Tool]:
     """Discover and bind tools from each MCP server ref.
 
     Servers are asked concurrently: one slow server used to delay every server after it, and
     the compile waits for all of them either way. Binding keeps the manifest's server order.
+    A server that cannot be reached binds nothing rather than failing the compile, and its name
+    is appended to ``unavailable`` so the caller can say so (`unavailable_sources_note`).
     """
     # Bounded: a manifest may name up to `MAX_REFS` servers, and each discovery is a connection
     # or a process spawn.
@@ -419,6 +418,8 @@ async def tools_from_mcp_servers(
             if not isinstance(result, Exception):
                 raise result
             logger.warning("failed to list MCP tools from %s", ref.name, exc_info=result)
+            if unavailable is not None:
+                unavailable.append(ref.name)
             continue
         remotes, handshake = result
         if ref.tools:
@@ -447,4 +448,40 @@ async def tools_from_mcp_servers(
     return out
 
 
-__all__ = ["DEFAULT_MCP_TIMEOUT_S", "list_remote_tools", "tools_from_mcp_servers"]
+def unavailable_sources_note(names: list[str]) -> str:
+    """What the model is told when MCP servers it was given could not be reached or started.
+
+    Without it a server that is down binds no tools and nothing else changes, so an agent asked
+    "what is new in the tracker" finds no tracker tools and answers "nothing new": an outage
+    reported as a quiet day, which is worse than no answer. The names are the manifest's own."""
+    listed = ", ".join(f"`{n}`" for n in names)
+    return (
+        f"<{UNAVAILABLE_SOURCES_TAG}>These tool sources could not be reached or started when this run "
+        f"began, so their tools are missing: {listed}. What you would have read from them is unknown, "
+        "not empty: never report it as having nothing new. Work from the sources you do have, and say "
+        f"plainly which ones you could not read.</{UNAVAILABLE_SOURCES_TAG}>"
+    )
+
+
+def record_unavailable_sources(manifest_id: str, names: list[str]) -> None:
+    """Record ``names`` on the run (`RequestContext.extras[UNAVAILABLE_SOURCES_EXTRA]`, which a job's
+    run result carries) as ``{manifest: [server, ...]}``: a run compiles its children too, and a
+    router whose `billing` child lost its server should not read as the router's outage."""
+    from felix.context import try_get_context
+
+    ctx = try_get_context()
+    if ctx is None:
+        return
+    seen = ctx.extras.setdefault(UNAVAILABLE_SOURCES_EXTRA, {}).setdefault(manifest_id, [])
+    seen.extend(n for n in names if n not in seen)
+
+
+__all__ = [
+    "DEFAULT_MCP_TIMEOUT_S",
+    "UNAVAILABLE_SOURCES_EXTRA",
+    "UNAVAILABLE_SOURCES_TAG",
+    "list_remote_tools",
+    "record_unavailable_sources",
+    "tools_from_mcp_servers",
+    "unavailable_sources_note",
+]

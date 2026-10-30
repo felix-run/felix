@@ -328,7 +328,7 @@ async def _invoke_job_manifest(
             return await _failed_task(settings, tenant_id, job, resolved.manifest, req_ctx, exc)
         answer = result.final.content if result.final else ""
         if firing is not None:
-            return firing.result(str(answer or ""), req_ctx.extras, thread)
+            return _with_unread_sources(firing.result(str(answer or ""), req_ctx.extras, thread), req_ctx)
         from felix.jobs.agent_tools import report_back
 
         # A task's answer, into the conversation it was scheduled from.
@@ -336,7 +336,19 @@ async def _invoke_job_manifest(
     out: dict[str, Any] = {"status": "ok", "answer": answer}
     if report is not None:
         out["report"] = report
-    return out
+    return _with_unread_sources(out, req_ctx)
+
+
+def _with_unread_sources(result: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
+    """The run's result, naming the MCP servers its compile could not reach, by the manifest that
+    named each -- the job's own, or a child it compiled (`mcp.client.record_unavailable_sources`).
+    A run that answered without one of its sources is still `ok` -- it said so in its answer -- but
+    the run record says it too, so an operator reading a quiet run's history can tell an outage
+    from a quiet day; and a run that failed says it, since the missing source may be why."""
+    from felix.mcp.client import UNAVAILABLE_SOURCES_EXTRA
+
+    unread = ctx.extras.get(UNAVAILABLE_SOURCES_EXTRA)
+    return {**result, "unavailable_sources": {m: list(s) for m, s in unread.items()}} if unread else result
 
 
 def _error_result(job: dict[str, Any], exc: Exception) -> dict[str, Any]:
@@ -362,7 +374,7 @@ async def _failed_task(
     report = await report_back(settings, tenant_id, job, manifest, ctx, out["error"], failed=True)
     if report is not None:
         out["report"] = report
-    return out
+    return _with_unread_sources(out, ctx)
 
 
 async def _start_job_workflow(settings: Settings, *, tenant_id: str, job: dict[str, Any]) -> dict[str, Any]:

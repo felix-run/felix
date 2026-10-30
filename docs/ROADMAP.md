@@ -1079,6 +1079,39 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
   - **`felix bundle-manifests --strict` misses inert rules.** An approval rule naming tools the
     manifest never binds is only a compile-time `felix_rule_targets_nothing` warning.
 
+### Unattended automations (2026-10-29)
+
+Audit against the scheduled-agent shape in Anthropic's "Building effective agent automations"
+post: a scheduled agent that reads its sources, posts to one destination approved in advance,
+keeps its own state, and reads preferences its reader writes, under caps and a heartbeat that
+someone watches. Felix covers the schedule, read-only sources, caps and unattended approvals.
+The gaps, in order:
+
+- [x] **A source that is down is named, not dropped.** An MCP server whose discovery failed bound
+      no tools and nothing else changed, so an agent asked what was new in it answered "nothing
+      new" and the run recorded `ok`. The model is now told which servers could not be reached
+      (`mcp/client.py:unavailable_sources_note`), and a job's run result lists them by the manifest
+      that named each (`unavailable_sources`), failed runs included. A stdio server that cannot start
+      now counts too; it was swallowed as an empty tool list. *Follow-up:* `required: true` on `McpServerRef`, so a firing stops
+      instead of running without a source it cannot do without.
+- [ ] **Destinations as a seam, with a dedupe key.** `register_notifier` (notify PR 3) with
+      Slack-channel and email notifiers, so a job can post to a named place. The platform checks a
+      key such as `brief:<date>` before sending, and records sent or maybe-sent only on the
+      provider's confirmation. Today `felix_channels.slack.post_message` only answers an inbound
+      message, and `notify` caps volume without deduplicating.
+- [ ] **Job health watch.** A worker sweep that flags a job whose `next_run_at` is long past, or
+      whose last N runs errored, to its owner (`notify`) or an operator webhook. Today a failing
+      operator job, or a stopped `felix-scheduler`, is silent. `report_back` covers only
+      agent-scheduled tasks.
+- [ ] **Per-job `timezone`.** Cron is evaluated in UTC (`jobs/schedule.py`); `FELIX_TIMEZONE`
+      sets only the date in the prompt. "7:32 on weekdays, New York" has to be converted by hand
+      and drifts at DST.
+- [ ] **Reader-owned preferences and agent state.** A preferences document on the job that its
+      reader writes, the agent cannot, and every firing reads in full (failing closed when it is
+      missing). Beside it, a small store for the agent's own bookmarks and ledger. Today state lives
+      in the job thread's workspace by convention, and per-person memory is writable by the agent
+      and recalled by rank.
+
 ### Auth audit (2026-10-12)
 
 A read of authentication, per-route authorization and tenancy against v0.14.1, landed as four PRs.

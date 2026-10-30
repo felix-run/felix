@@ -38,6 +38,7 @@ from felix.manifests.schema import (
     Guardrails,
     Limits,
     Manifest,
+    McpServerRef,
     PermissionsSpec,
     Policy,
     child_agent_names,
@@ -2139,6 +2140,31 @@ def _bind_notify(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: 
     resolved.append(make_notify_tool(deps.settings, tenant_id=tenant_id, manifest=m))
 
 
+async def _bind_mcp_servers(
+    resolved: list[Tool], refs: list[McpServerRef], m: Manifest, *, allow_http: bool
+) -> str:
+    """Bind each MCP server's tools into ``resolved``. Returns the prompt note naming the servers
+    that could not be reached (`unavailable_sources_note`), or "" when every one answered: a
+    source that is down binds nothing, and unsaid, it reads as a source with nothing new. The
+    servers are also recorded on the run under this manifest's name (`record_unavailable_sources`),
+    so a child's outage is not read as its parent's."""
+    from felix.mcp.client import record_unavailable_sources, tools_from_mcp_servers, unavailable_sources_note
+
+    unreached: list[str] = []
+    try:
+        mcp_tools = await tools_from_mcp_servers(
+            refs, allow_http=allow_http, manifest_id=m.metadata.name, unavailable=unreached
+        )
+        _append_unique_tools(resolved, mcp_tools)
+    except Exception:
+        logger.warning("MCP client tool binding failed", exc_info=True)
+        unreached = [ref.name for ref in refs]
+    if not unreached:
+        return ""
+    record_unavailable_sources(m.metadata.name, unreached)
+    return unavailable_sources_note(unreached)
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -2266,6 +2292,7 @@ async def build_agent(
         if m.spec.governance.transparency_notice:
             system_prompt = apply_transparency_notice(system_prompt or "", m.metadata.name)
 
+        unreachable_note = ""
         mcp_refs, peer_refs, container_refs = await resolve_outbound_secrets(
             m, deps.settings, tenant_id=tenant_id
         )
@@ -2274,15 +2301,7 @@ async def build_agent(
 
         # Outbound MCP servers → remote tools.
         if mcp_refs:
-            try:
-                from felix.mcp.client import tools_from_mcp_servers
-
-                mcp_tools = await tools_from_mcp_servers(
-                    mcp_refs, allow_http=allow_http, manifest_id=m.metadata.name
-                )
-                _append_unique_tools(resolved, mcp_tools)
-            except Exception:
-                logger.warning("MCP client tool binding failed", exc_info=True)
+            unreachable_note = await _bind_mcp_servers(resolved, mcp_refs, m, allow_http=allow_http)
 
         # A2A peers → peer__{name} tools.
         if peer_refs:
@@ -2899,6 +2918,8 @@ async def build_agent(
             guidance = tool_guidance_section(resolved, m.spec.tool_guidance)
             if guidance:
                 final_prompt = f"{final_prompt}\n\n{guidance}"
+        if unreachable_note:
+            final_prompt = f"{final_prompt}\n\n{unreachable_note}"
         now = _wall_clock(m, deps)
         if now is not None:
             final_prompt = f"{final_prompt}\n\n{date_block(now())}"
