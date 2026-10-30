@@ -63,10 +63,12 @@ def _manifest(*, required: bool = True, **spec: Any) -> Any:
 
 @pytest.fixture(autouse=True)
 def _tracker_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import urlsplit
+
     from felix.mcp import client
 
     async def fake_list(ref: Any, *, allow_http: bool = False, handshake: Any = None) -> list[Any]:
-        if "tracker.example.com" in ref.url:
+        if urlsplit(ref.url).hostname == "tracker.example.com":
             raise ConnectionError("dial tcp 10.0.0.7:443: connection refused")
         return [{"name": "search", "inputSchema": {"type": "object", "properties": {}}}]
 
