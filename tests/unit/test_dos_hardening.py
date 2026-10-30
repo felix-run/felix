@@ -232,6 +232,21 @@ def test_calculator_exponent_is_bounded() -> None:
         evaluate_expression("10**100000")
 
 
+def test_calculator_bounds_a_base_too_big_for_a_float() -> None:
+    """A base past ~1e308 overflows `float()`; it was then sized as one digit, so chaining
+    powers built a multi-hundred-megabyte int on the event loop."""
+    from felix.security.expr import evaluate_expression
+
+    # Cheap first: on the unfixed sizing this one returns a 4,400-digit int and fails at once,
+    # where the chain below would compute until killed.
+    with pytest.raises(ValueError, match="too large"):
+        evaluate_expression("(10**400)**11")
+    assert evaluate_expression("(10**400)**10") == 10**4000
+    assert len(str(evaluate_expression("9999**1024"))) == 4096
+    with pytest.raises(ValueError, match="too large"):
+        evaluate_expression("((10**400)**1024)**1024")
+
+
 def test_search_query_length_is_capped() -> None:
     import pydantic
     from felix.tools.workspace import SearchFilesArgs

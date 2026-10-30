@@ -23,6 +23,10 @@ def _bounded_pow(base: Any, exponent: Any) -> Any:
 def _digits(value: Any) -> float:
     import math
 
+    # An int past ~1e308 overflows `float()`, and answering 1.0 for it let `((10**400)**1024)**1024`
+    # through as a one-digit base. `math.log10` takes an int of any size without overflowing.
+    if isinstance(value, int):
+        return 1.0 if -10 < value < 10 else math.log10(abs(value))
     try:
         magnitude = abs(float(value))
     except TypeError, ValueError, OverflowError:
