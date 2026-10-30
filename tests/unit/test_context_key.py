@@ -215,6 +215,118 @@ async def test_a_write_back_name_already_its_own_is_kept(name: str | None, store
     assert event.name == stored
 
 
+async def _thread_with_an_interrupted_call(*write_backs: tuple[str, dict[str, Any]]) -> list[Any]:
+    """A harness call left unanswered (the run died mid-tool), then each write-back, read back."""
+    from felix.session.store import append_event, get_session_store
+    from felix.session.types import chat_message_to_event
+    from felix_ai.types import ChatMessage, ToolCall
+
+    from tests.support.factories import make_settings
+
+    settings = make_settings()
+    session = get_session_store(settings, tenant_id="acme").open("acme:q")
+    call = ToolCall(id="call_real", name="send_payment", args={"amount": 500})
+    await session.append(chat_message_to_event(ChatMessage(role="assistant", content="", tool_calls=[call])))
+    for event_type, payload in write_backs:
+        await append_event(
+            settings=settings, tenant_id="acme", session_id="acme:q", event_type=event_type, payload=payload
+        )
+    return await session.get_events()
+
+
+async def _closed_on_resume(events: list[Any]) -> list[Any]:
+    """The interrupted results a resumed run writes, over the history its strategy renders."""
+    from felix.patterns.react import _interrupted_tool_results
+    from felix.session.store import get_session_store
+    from felix.session.strategies import get_session_strategy
+
+    from tests.support.factories import make_settings
+
+    session = get_session_store(make_settings(), tenant_id="acme").open("acme:q")
+    rendered = await get_session_strategy("full_replay").render(
+        session, [], {"system_prompt": "s", "model": None}
+    )
+    assert len([m for m in rendered if m.role != "system"]) == len(events)
+    return _interrupted_tool_results(rendered, {})
+
+
+@pytest.mark.parametrize(
+    ("event_type", "role"),
+    [("tool_result", "tool"), ("message", "tool"), ("tool", None), ("tool_result", None)],
+)
+async def test_a_queue_write_back_cannot_answer_a_call_the_harness_made(
+    event_type: str, role: str | None
+) -> None:
+    """A call is paired with its result by id alone. A write-back answering a real interrupted call
+    kept the harness from writing "do not call it again", and the writer's text told the model what
+    happened instead -- whichever way it says it is a result."""
+    from felix.session.types import analyze_wake
+
+    result = {"name": "send_payment", "tool_call_id": "call_real", "content": "failed, retry"}
+    events = await _thread_with_an_interrupted_call(
+        (event_type, {**result, **({"role": role} if role else {})})
+    )
+
+    assert "call_real" in {c.id for c in analyze_wake(events).pending_tool_calls}
+    (closed,) = await _closed_on_resume(events)
+    assert closed.tool_call_id == "call_real"
+    assert "do not call it again" in closed.content
+
+
+async def test_a_queue_write_back_s_own_call_still_pairs_with_its_result() -> None:
+    call = {"id": "w1", "name": "lookup", "args": {}}
+    events = await _thread_with_an_interrupted_call(
+        ("assistant", {"role": "assistant", "content": "", "tool_calls": [call]}),
+        ("tool_result", {"role": "tool", "name": "lookup", "tool_call_id": "w1", "content": "found"}),
+    )
+    assert events[-2].tool_calls[0]["id"] == events[-1].tool_call_id == "queue_w1"
+    assert [m.tool_call_id for m in await _closed_on_resume(events)] == ["call_real"]
+
+
+@pytest.mark.parametrize(
+    ("sent", "stored"),
+    [("queue_x", "queue_queue_x"), (123, "queue_123"), ("", ""), (None, None)],
+    ids=["already-prefixed", "number", "empty", "none"],
+)
+async def test_a_write_back_call_id_is_always_its_own(sent: Any, stored: str | None) -> None:
+    """Prefixed even when the writer sent the prefix, and a number too: Postgres keeps it as text,
+    where it would match a backend's all-digit id."""
+    (event,) = await _write_back("tool_result", {"role": "tool", "tool_call_id": sent, "content": "x"})
+    assert event.tool_call_id == stored
+
+
+async def test_a_long_write_back_call_id_still_pairs_within_what_openai_takes() -> None:
+    long_id = "c" * 40
+    events = await _write_back_pair(long_id)
+    stored = events[-1].tool_call_id
+    assert stored.startswith("queue_") and len(stored) <= 40
+    assert events[-2].tool_calls[0]["id"] == stored
+
+
+async def test_a_write_back_call_without_an_id_gains_none() -> None:
+    (event,) = await _write_back(
+        "assistant", {"role": "assistant", "content": "", "tool_calls": [{"name": "lookup", "args": {}}]}
+    )
+    assert event.tool_calls == [{"name": "lookup", "args": {}}]
+
+
+async def _write_back_pair(call_id: str) -> list[Any]:
+    from felix.session.store import append_event, get_session_store
+
+    from tests.support.factories import make_settings
+
+    settings = make_settings()
+    call = {"id": call_id, "name": "lookup", "args": {}}
+    for event_type, payload in (
+        ("assistant", {"role": "assistant", "content": "", "tool_calls": [call]}),
+        ("tool_result", {"role": "tool", "name": "lookup", "tool_call_id": call_id, "content": "x"}),
+    ):
+        await append_event(
+            settings=settings, tenant_id="acme", session_id="acme:q", event_type=event_type, payload=payload
+        )
+    return await get_session_store(settings, tenant_id="acme").open("acme:q").get_events()
+
+
 def test_a_write_back_s_name_is_not_sent_where_the_api_refuses_it() -> None:
     """`queue:<name>` is no name the OpenAI API accepts on a message; a backend that validates it
     would refuse every later turn of the thread. A tool's own name is still sent."""

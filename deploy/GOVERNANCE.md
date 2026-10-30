@@ -548,9 +548,16 @@ after every window and compaction (`skills/activation.py`); the thread's checkli
 `tools/todos.py`) -- so a write-back under the real name was an activation or a checklist the model
 never made. The model still sees it answer its `tool_call_id`; the OpenAI wire leaves out a message
 `name` the API would refuse, as `queue:<name>` is. Rows written before this rule keep the names they
-were written with. A write-back still chooses its result's `tool_call_id`, and an `assistant` event's
-`tool_calls` keep their names (a wire tool name cannot hold `:`): every reader of a skill tool's or
-`todo_write`'s result also parses its content, so neither is read back as the harness's.
+were written with. Its call ids are its own the same way: a result's `tool_call_id` and the ids in an
+`assistant` event's `tool_calls` are stored as `queue_<id>` (`_`, a separator Anthropic takes in an
+id), always, even when the writer sent the prefix, and a number as well as a string; one that would
+pass OpenAI's 40 characters is stored as `queue_` and a digest of it instead. A call is paired with its result by id alone, so
+a write-back answering a real call the run never finished stood in for the harness's "may have
+already taken effect; do not call it again" result. A writer's own call and result still pair, as
+long as both are written after this rule: rows written before it keep their ids. An
+`assistant` event's `tool_calls` keep their names (a wire tool name cannot hold `:`): every reader of
+a skill tool's or `todo_write`'s result also parses its content, so neither is read back as the
+harness's.
 
 A person's `/skill-name args` and a manifest's `preload` are activated by the harness, not
 written into the person's turn: before the model's first step it calls `activate_skill` through the

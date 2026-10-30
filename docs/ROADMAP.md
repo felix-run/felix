@@ -933,8 +933,13 @@ side was already conformant. Four PRs, landed in order:
   - [x] A write-back writes no `tool_result` under a harness tool's name
     (`fix/tool-result-provenance`): every one it writes is stored under `queue:<name>`, which
     also closed a forged `todo_write` checklist. Chosen over a marker on every real result,
-    which would have dropped every existing thread's activations and checklists at deploy. Open:
-    a write-back still picks its result's `tool_call_id` (#739).
+    which would have dropped every existing thread's activations and checklists at deploy.
+  - [x] A write-back cannot answer a call the harness made (#739, `fix/write-back-call-id`): its
+    call ids, on a result and in an `assistant` event's `tool_calls`, are stored as `queue_<id>`,
+    so a real interrupted call still gets its interrupted result. Open: a result no call matches
+    is still sent to the model, which Anthropic refuses for the thread. The write-back rules
+    (`_payload_to_appendable` and its helpers) belong in their own `session/write_back.py`, out of
+    the 970-line store module.
   - Open: a side question does not get retention, since it renders without a catalog. Two
     `activate_skill` calls in one parallel batch both return the body (both read the log
     before the batch is appended). Retained text is not counted inside a compacting
