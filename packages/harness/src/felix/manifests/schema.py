@@ -1069,6 +1069,24 @@ class DestinationsSpec(_Strict):
         return v
 
 
+class StateSpec(_Strict):
+    """Let a scheduled job's runs keep a little state of their own: binds `state_get`, `state_set`,
+    `state_list` and `state_delete` (`felix/jobs/state_tools.py`).
+
+    For what one firing leaves the next -- a bookmark per source ("read up to item 4182"), a ledger
+    of what it has already done -- read back by key, never recalled by rank. The state belongs to
+    the **job** (its tenant and name), not to the manifest: two jobs on one manifest keep their own.
+    A run that is not a job's firing -- a person's chat, a workflow step -- is refused. Values are
+    text, read back fenced as data, since a run may have copied them from a source. Deleting the
+    job deletes its state, and so does a re-save by another writer. Unset binds nothing.
+    """
+
+    #: Keys one job may hold. A new key past it is refused; overwriting one is not.
+    max_keys: int = Field(default=50, ge=1, le=200)
+    #: The most one value may hold, in UTF-8 bytes.
+    max_value_bytes: int = Field(default=4096, ge=64, le=16384)
+
+
 class WorkflowAuthoringSpec(_Strict):
     """Let the agent build workflows for the person it acts for: binds `workflow_catalog`,
     `check_workflow`, `save_workflow`, `list_my_workflows` and `run_workflow`
@@ -1703,6 +1721,9 @@ class Spec(_Strict):
     destinations: DestinationsSpec | None = None
     # Binds the workflow authoring tools. Unset binds nothing.
     workflow_authoring: WorkflowAuthoringSpec | None = None
+    # Binds `state_get`, `state_set`, `state_list` and `state_delete`: a job's own state. Unset binds
+    # nothing.
+    state: StateSpec | None = None
     # A check-in each person may turn on for themselves (`/heartbeats`). Needs `notify`.
     heartbeat: HeartbeatSpec | None = None
     permissions: PermissionsSpec = Field(default_factory=PermissionsSpec)
@@ -1830,6 +1851,18 @@ class Spec(_Strict):
         would run on someone's behalf and have no way to say what it found."""
         if self.heartbeat is not None and self.notify is None:
             raise ValueError("heartbeat needs spec.notify: a heartbeat speaks only through a notice")
+        return self
+
+    @model_validator(mode="after")
+    def _state_runs_in_its_firing(self) -> Spec:
+        """A job's state is reached through the firing's own request context
+        (`jobs/scheduler.py:FIRING_JOB_EXTRA`). A durable run is resumed by a worker in a context of
+        its own, which carries no job, so every state call there would be refused."""
+        if self.state is not None and self.execution.mode == "durable":
+            raise ValueError(
+                "spec.state cannot be combined with execution.mode: durable: a durable run resumes "
+                "outside the job's firing, where the job's state cannot be reached; drop one of them"
+            )
         return self
 
     @model_validator(mode="after")

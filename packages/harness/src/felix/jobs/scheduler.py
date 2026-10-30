@@ -32,6 +32,26 @@ CRON_ACTOR = CRON
 SCHEDULED_FROM_EXTRA = "scheduled_from"
 
 
+# On every manifest job's firing -- a heartbeat's included -- `extras[FIRING_JOB_EXTRA]` names the job,
+# the manifest it fired, and how the job was held when the firing read it: what `state_get` and its
+# siblings (`jobs/state_tools.py`) key the job's state by and check a write against. Set only here,
+# never from a request; a run with none is not a job's, and is refused. Not carried into a run the
+# firing starts in a context of its own (a workflow's step, a durable child); a `task` child shares it,
+# and is refused by the manifest id.
+FIRING_JOB_EXTRA = "firing_job"
+
+
+class FiringJob(TypedDict):
+    """`extras[FIRING_JOB_EXTRA]`: the job a run is a firing of, its tenant, the manifest it fired, and
+    the job's writer and `state_cleared_at` as the firing read them."""
+
+    tenant_id: str
+    name: str
+    manifest_id: str
+    created_by: str | None
+    state_cleared_at: int | None
+
+
 class ScheduledFrom(TypedDict):
     """`extras[SCHEDULED_FROM_EXTRA]`: where a task was scheduled from, and who wrote the job."""
 
@@ -277,6 +297,13 @@ async def _invoke_job_manifest(
         # a test — would share a thread again, which is the one thing this exists to prevent.
         thread = f"{thread}:{uuid.uuid4().hex[:16]}"
     req_ctx = RequestContext(settings=settings, auth=auth, manifest_id=manifest_id, thread_id=thread)
+    req_ctx.extras[FIRING_JOB_EXTRA] = FiringJob(
+        tenant_id=tenant_id,
+        name=str(job["name"]),
+        manifest_id=manifest_id,
+        created_by=job.get("created_by"),
+        state_cleared_at=job.get("state_cleared_at"),
+    )
     by = jobs_store.scheduled_by(job)
     if by is not None and isinstance(by.get("thread_id"), str) and by["thread_id"]:
         req_ctx.extras[SCHEDULED_FROM_EXTRA] = ScheduledFrom(
@@ -769,7 +796,9 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
 
 __all__ = [
     "CRON_ACTOR",
+    "FIRING_JOB_EXTRA",
     "SCHEDULED_FROM_EXTRA",
+    "FiringJob",
     "ScheduledFrom",
     "creator_auth",
     "fire_job",

@@ -2855,6 +2855,17 @@
           ],
           "default": null
         },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "heartbeat": {
           "anyOf": [
             {
@@ -3035,6 +3046,28 @@
         "prompt"
       ],
       "title": "Starter",
+      "type": "object"
+    },
+    "StateSpec": {
+      "additionalProperties": false,
+      "description": "Let a scheduled job's runs keep a little state of their own: binds `state_get`, `state_set`,\n`state_list` and `state_delete` (`felix/jobs/state_tools.py`).\n\nFor what one firing leaves the next -- a bookmark per source (\"read up to item 4182\"), a ledger\nof what it has already done -- read back by key, never recalled by rank. The state belongs to\nthe **job** (its tenant and name), not to the manifest: two jobs on one manifest keep their own.\nA run that is not a job's firing -- a person's chat, a workflow step -- is refused. Values are\ntext, read back fenced as data, since a run may have copied them from a source. Deleting the\njob deletes its state, and so does a re-save by another writer. Unset binds nothing.",
+      "properties": {
+        "max_keys": {
+          "default": 50,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Max Keys",
+          "type": "integer"
+        },
+        "max_value_bytes": {
+          "default": 4096,
+          "maximum": 16384,
+          "minimum": 64,
+          "title": "Max Value Bytes",
+          "type": "integer"
+        }
+      },
+      "title": "StateSpec",
       "type": "object"
     },
     "SystemPrompt": {

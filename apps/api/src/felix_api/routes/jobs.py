@@ -307,17 +307,15 @@ def _is_job_writer(job: dict[str, Any] | None, *, shared_ok: bool = False) -> bo
     return True
 
 
-async def _preferences_job(request: Request, name: str) -> tuple[dict[str, Any], str]:
-    """The job whose preferences the caller asks for, and who the caller acts for.
+async def _writer_or_operator_job(request: Request, name: str) -> tuple[dict[str, Any], str]:
+    """The job `name`, for its writer or an operator only, and who the caller acts for.
 
-    Only the job's writer -- the person it runs for, whose scopes and memory every firing carries,
-    so whose text it may carry -- or an operator (`admin` / `*`), as for `POST /jobs/{name}/run`.
-    `jobs:write` is not enough: a holder of it who could write another person's preferences would
-    put their own words into that person's runs without re-saving the job, which is what moves a job
-    to whoever writes it. The writer needs no jobs scope at all, so a person steers the task an
-    agent scheduled for them, or their heartbeat. Anyone else gets the same 403 whether or not the
-    job exists; an operator gets 404 for one that does not. A workflow job is refused (422): its
-    firings have no prompt to carry preferences, so a document there would do nothing."""
+    The writer -- the person it runs for, whose scopes and memory every firing carries -- or an
+    operator (`admin` / `*`), as for `POST /jobs/{name}/run`. `jobs:write` is not enough: what this
+    guards (the reader's preferences, the runs' state) belongs to the writer's runs and may be
+    personal. The writer needs no jobs scope at all, so a person steers the task an agent scheduled
+    for them, or their heartbeat. Anyone else gets the same 403 whether or not the job exists; an
+    operator gets 404 for one that does not."""
     from felix.auth.mgmt import SCOPE_ADMIN, auth_from_request, is_operator, missing_scopes
     from felix.context import try_get_context
     from felix.jobs import store as jobs_store
@@ -329,10 +327,20 @@ async def _preferences_job(request: Request, name: str) -> tuple[dict[str, Any],
         raise missing_scopes(SCOPE_ADMIN)
     if job is None:
         raise HTTPException(status_code=404, detail="not_found")
-    if job.get("workflow_id"):
-        raise HTTPException(status_code=422, detail={"error": "preferences_need_a_manifest"})
     ctx = try_get_context()
     return job, ctx.auth.acting_for if ctx is not None else ""
+
+
+async def _preferences_job(request: Request, name: str) -> tuple[dict[str, Any], str]:
+    """The job whose preferences the caller asks for, and who the caller acts for: its writer or an
+    operator (`_writer_or_operator_job`). A holder of `jobs:write` who could write another person's
+    preferences would put their own words into that person's runs without re-saving the job, which
+    is what moves a job to whoever writes it. A workflow job is refused (422): its firings have no
+    prompt to carry preferences, so a document there would do nothing."""
+    job, who = await _writer_or_operator_job(request, name)
+    if job.get("workflow_id"):
+        raise HTTPException(status_code=422, detail={"error": "preferences_need_a_manifest"})
+    return job, who
 
 
 def _preferences_out(job: dict[str, Any]) -> dict[str, Any]:
@@ -403,3 +411,85 @@ async def delete_job_preferences(name: str, request: Request) -> dict[str, Any]:
     """Clear the job's preferences. A job that requires them then skips its firings until they are
     written again. Who may: as for `PUT`."""
     return await _write_preferences(request, name, None)
+
+
+class StateEntryOut(BaseModel):
+    key: str
+    # The text the job's runs stored. Written by the agent, and may hold text it copied from a source.
+    value: str
+    bytes: int
+    updated_at: int
+    # The thread of the firing that last wrote it (`/sessions/{thread_id}`), or "".
+    updated_by_thread: str = ""
+
+
+class StateOut(BaseModel):
+    name: str
+    # Every key the job holds, by key.
+    items: list[StateEntryOut] = Field(default_factory=list)
+
+
+class StateDeleted(BaseModel):
+    name: str
+    # How many keys were removed.
+    deleted: int
+
+
+def _audit_state(request: Request, job: dict[str, Any], who: str, status: str, deleted: int) -> None:
+    """Audit a person's delete of the job's state: who, and how many keys -- never a key's value."""
+    from felix.audit import store as audit_store
+
+    audit_store.record_event(
+        request.app.state.settings,
+        tenant_id_from_request(request),
+        "job.state",
+        manifest_id=str(job.get("manifest_id") or ""),
+        principal_subj=who,
+        status=status,
+        payload={"job": job["name"], "keys": deleted},
+    )
+
+
+@router.get("/{name}/state", response_model=StateOut)
+async def get_job_state(name: str, request: Request) -> dict[str, Any]:
+    """The state the job's runs keep for themselves (`spec.state`): every key, its value, size and
+    when it was written. The job's writer or an operator only -- values may be personal, as the
+    preferences are. The agent writes these; nobody else does."""
+    from felix.jobs import state as job_state
+
+    job, _who = await _writer_or_operator_job(request, name)
+    rows = await job_state.list_state(
+        request.app.state.settings, tenant_id_from_request(request), job["name"]
+    )
+    return {"name": job["name"], "items": rows}
+
+
+@router.delete("/{name}/state", response_model=StateDeleted)
+async def delete_job_state(name: str, request: Request) -> dict[str, Any]:
+    """Clear every key the job's runs keep, so its next firing starts from nothing -- the way to
+    reset a bookmark that went wrong. Who may: as for `GET`. Audited (`job.state`, the key count)."""
+    from felix.jobs import state as job_state
+
+    job, who = await _writer_or_operator_job(request, name)
+    deleted = await job_state.clear(request.app.state.settings, tenant_id_from_request(request), job["name"])
+    _audit_state(request, job, who, "cleared", deleted)
+    return {"name": job["name"], "deleted": deleted}
+
+
+@router.delete("/{name}/state/{key}", response_model=StateDeleted)
+async def delete_job_state_key(name: str, key: str, request: Request) -> dict[str, Any]:
+    """Remove one key the job's runs keep. 404 when the job holds no such key. Who may: as for `GET`."""
+    from felix.jobs import state as job_state
+
+    job, who = await _writer_or_operator_job(request, name)
+    if not job_state.valid_key(key):
+        raise HTTPException(
+            status_code=422, detail={"error": "invalid_key", "pattern": job_state.KEY_PATTERN}
+        )
+    deleted = await job_state.delete_key(
+        request.app.state.settings, tenant_id_from_request(request), job["name"], key
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="not_found")
+    _audit_state(request, job, who, "deleted", 1)
+    return {"name": job["name"], "deleted": 1}

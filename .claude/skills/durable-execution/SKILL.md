@@ -176,8 +176,9 @@ is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SC
 Jobs are claimed with a compare-and-set on `next_run_at`, and a `running` mark holds off a second
 firing until it is older than `RUNNING_STALE_MS`; a firing is unattended and runs as the job's
 recorded writer. The
-claim and clear paths, the schedule grammar, `spec.scheduling`'s `schedule_task` tools, and
-heartbeats are in [references/jobs.md](references/jobs.md).
+claim and clear paths, the schedule grammar, `spec.scheduling`'s `schedule_task` tools,
+heartbeats, the reader's preferences and `spec.state`'s job state are in
+[references/jobs.md](references/jobs.md).
 
 ## Workflows
 

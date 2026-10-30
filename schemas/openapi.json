@@ -6860,6 +6860,77 @@
         "title": "StartRefused",
         "type": "object"
       },
+      "StateDeleted": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "deleted"
+        ],
+        "title": "StateDeleted",
+        "type": "object"
+      },
+      "StateEntryOut": {
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          },
+          "updated_by_thread": {
+            "default": "",
+            "title": "Updated By Thread",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value",
+          "bytes",
+          "updated_at"
+        ],
+        "title": "StateEntryOut",
+        "type": "object"
+      },
+      "StateOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StateEntryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "StateOut",
+        "type": "object"
+      },
       "SteerRequest": {
         "additionalProperties": false,
         "properties": {
@@ -15972,6 +16043,142 @@
           }
         },
         "summary": "List Job Runs",
+        "tags": [
+          "Jobs"
+        ]
+      }
+    },
+    "/jobs/{name}/state": {
+      "delete": {
+        "description": "Clear every key the job's runs keep, so its next firing starts from nothing -- the way to\nreset a bookmark that went wrong. Who may: as for `GET`. Audited (`job.state`, the key count).",
+        "operationId": "delete_job_state_jobs__name__state_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateDeleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Job State",
+        "tags": [
+          "Jobs"
+        ]
+      },
+      "get": {
+        "description": "The state the job's runs keep for themselves (`spec.state`): every key, its value, size and\nwhen it was written. The job's writer or an operator only -- values may be personal, as the\npreferences are. The agent writes these; nobody else does.",
+        "operationId": "get_job_state_jobs__name__state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job State",
+        "tags": [
+          "Jobs"
+        ]
+      }
+    },
+    "/jobs/{name}/state/{key}": {
+      "delete": {
+        "description": "Remove one key the job's runs keep. 404 when the job holds no such key. Who may: as for `GET`.",
+        "operationId": "delete_job_state_key_jobs__name__state__key__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateDeleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Job State Key",
         "tags": [
           "Jobs"
         ]

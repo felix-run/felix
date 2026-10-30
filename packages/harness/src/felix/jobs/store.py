@@ -53,9 +53,12 @@ def scheduled_by(job: dict[str, Any], tool: str | None = None) -> dict[str, Any]
 
 
 def reset_jobs_for_tests() -> None:
-    """Clear the in-memory jobs and their run history."""
+    """Clear the in-memory jobs, their run history and their state."""
+    from felix.jobs.state import reset_job_state_for_tests
+
     _memory_jobs.clear()
     _memory_runs.clear()
+    reset_job_state_for_tests()
 
 
 def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +88,7 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             "preferences_updated_at": row.get("preferences_updated_at"),
             "preferences_updated_by": row.get("preferences_updated_by"),
             "preferences_required": bool(row.get("preferences_required")),
+            "state_cleared_at": row.get("state_cleared_at"),
         }
     return {
         "tenant_id": row.tenant_id,
@@ -108,6 +112,7 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
         "preferences_updated_at": row.preferences_updated_at,
         "preferences_updated_by": row.preferences_updated_by,
         "preferences_required": bool(row.preferences_required),
+        "state_cleared_at": row.state_cleared_at,
     }
 
 
@@ -309,6 +314,9 @@ async def put_job(
             )
             if _new_writer(existing.get("created_by"), created_by):
                 row.update(_NO_PREFERENCES)
+                # And the state the old writer's runs stored (`felix.jobs.state`), for the same reason.
+                row["state_cleared_at"] = _next_clear_stamp(existing.get("state_cleared_at"))
+                await _drop_job_dependents(tenant_id, name)
         row.update(
             schedule=schedule,
             timezone=timezone,
@@ -361,11 +369,52 @@ async def put_job(
                 # this writer's scopes and memory. Same writer: left as they are (`set_preferences`).
                 for column, value in _NO_PREFERENCES.items():
                     setattr(row, column, value)
+                await _reassign_writer(db, row, created_by)
             row.created_by = created_by
             row.created_auth = deepcopy(created_auth)
             row.preferences_required = preferences_required
         await db.commit()
         return _job_dict(row)
+
+
+def _next_clear_stamp(previous: int | None) -> int:
+    """`state_cleared_at` for a clear now: the clock, but always past `previous`, so two clears in one
+    millisecond still differ and a firing that read the first cannot pass for one that read the second."""
+    return max(now_ms(), (previous or 0) + 1)
+
+
+async def _drop_job_dependents(tenant_id: str, name: str, db: Any = None) -> None:
+    """Delete what a job's runs left that must not outlive the job or its writer: its state
+    (`felix.jobs.state`). `db` is the Postgres arm's transaction -- the job write's own, after that
+    write took the job's row lock (`_reassign_writer`, `delete_job`); None is the memory arm."""
+    from felix.jobs import state as job_state
+
+    if db is None:
+        job_state.forget_memory_job(tenant_id, name)
+        return
+    await db.execute(job_state.delete_for_job(tenant_id, name))
+
+
+async def _reassign_writer(db: Any, row: Job, created_by: str | None) -> None:
+    """Move the job to a new writer and clear its state, in this order and in this transaction.
+
+    The job row's UPDATE is flushed first, which takes its row lock -- the lock every run's state
+    write takes too (`felix.jobs.state._lock_job`, `FOR NO KEY UPDATE`). So a run's write that held
+    the lock first has committed before the DELETE below runs, and the DELETE (a statement of its
+    own, reading after that commit) removes it; a write after this commit finds the new writer and a
+    moved `state_cleared_at`, and is refused. Deleting first would read before the lock was taken,
+    and miss a write still in flight."""
+    row.created_by = created_by
+    row.state_cleared_at = _next_clear_stamp(row.state_cleared_at)
+    await db.flush()
+    await _drop_job_dependents(row.tenant_id, row.name, db)
+
+
+def memory_job_holder(tenant_id: str, name: str) -> tuple[str | None, int | None] | None:
+    """The memory arm's job's `(created_by, state_cleared_at)`, or None when there is no such job --
+    synchronous, so a state write checks and writes with no await between (`felix.jobs.state`)."""
+    job = _memory_jobs.get((tenant_id, name))
+    return None if job is None else (job.get("created_by"), job.get("state_cleared_at"))
 
 
 async def set_preferences(
@@ -698,18 +747,24 @@ async def set_health(
 
 
 async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
+    """Delete the job, its run history and its state (`felix.jobs.state`) -- so a job written later
+    under the same name, by anyone, starts with none of what this one's runs stored."""
     if _use_memory(settings):
         deleted = _memory_jobs.pop((tenant_id, name), None) is not None
         if deleted:
             for key in list(_memory_runs):
                 if key[0] == tenant_id and key[1] == name:
                     _memory_runs.pop(key, None)
+            await _drop_job_dependents(tenant_id, name)
         return deleted
 
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         await db.execute(delete(JobRun).where(JobRun.tenant_id == tenant_id, JobRun.job_name == name))
         result = await db.execute(delete(Job).where(Job.tenant_id == tenant_id, Job.name == name))
+        # After the job's row: its lock orders this against a run's write, so a write that took
+        # the lock first is deleted here and one after it finds no job and is refused.
+        await _drop_job_dependents(tenant_id, name, db)
         await db.commit()
         return result.rowcount > 0
 
@@ -943,6 +998,7 @@ __all__ = [
     "get_job",
     "list_jobs",
     "list_runs",
+    "memory_job_holder",
     "put_job",
     "record_run",
     "reset_jobs_for_tests",
