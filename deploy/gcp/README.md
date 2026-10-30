@@ -31,7 +31,7 @@ The compose overlay deploys the published `-gcp` image rather than building on t
 release you want in the host `.env` and bring it up:
 
 ```bash
-echo 'FELIX_IMAGE_TAG=0.2.2' >> .env          # the release to run; required, not defaulted
+echo 'FELIX_IMAGE_TAG=0.18.0' >> .env         # the release to run; required, not defaulted
 docker compose -f deploy/docker/compose.yml \
   -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
   --project-directory . up -d
@@ -48,7 +48,7 @@ On the VM (`/opt/felix`), set:
 ```bash
 FELIX_SECRETS_BACKEND=gcp
 FELIX_GCP_PROJECT=your-project
-FELIX_DOCKER_EXTRAS=gcp
+FELIX_IMAGE_TAG=0.18.0     # the published `-gcp` image already carries the gcp extra
 # Leave Anthropic empty — hydrate from Secret Manager:
 #   secret id: felix-anthropic-api-key  (or ANTHROPIC_API_KEY)
 ANTHROPIC_API_KEY=
@@ -63,7 +63,7 @@ make up-gcp
 # or:
 docker compose -f deploy/docker/compose.yml \
   -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
-  --project-directory . up -d --build
+  --project-directory . up -d
 ```
 
 See `deploy/docker/README.md`.
@@ -80,6 +80,28 @@ The questions are read from the terminal, so run it from one. With no terminal �
 shell, Claude Code's `!` prefix — it refuses before doing anything, unless you pass `--yes`, which
 answers every confirmation yes and prints each one. `--yes` still stops if durable runs are in
 flight: restarting the worker under them is a decision to make interactively.
+
+### Rolling from CI
+
+`roll.sh` is also what a CI job runs: `--yes` answers its confirmations, and two things exist for
+a caller with no terminal.
+
+- `FELIX_SSH_FLAGS` is appended to every `gcloud compute ssh`. A runner reaching a VM that takes
+  SSH only from IAP passes `--tunnel-through-iap` (and `--ssh-key-expire-after=1h`, so OS Login
+  keys do not pile up on the deployer's profile).
+- Exit status 75 means *deferred*: durable runs are in flight, `--yes` does not roll over them,
+  and nothing was changed. Try again later. Any other non-zero status is a failure.
+
+Before it reports done, the roll waits for `/health` to report the version and then for `/ready`
+to answer 200, so a release that boots but cannot reach its database, cache or object store
+fails the roll.
+
+A release that needs a person before it rolls (a new setting in the host `.env`, a decision)
+carries `<!-- deploy: manual -->` in its `docs/UPGRADING.md` section; an automated caller should
+stand down for it, and for any such release between the live version and the target.
+
+The reference deployment (api.felix.run) is rolled this way from a private operations
+repository, so production logs and the deployer identity stay out of this public one.
 
 ### Backups
 

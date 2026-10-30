@@ -97,8 +97,9 @@ def test_yes_gets_past_the_terminal_check(tmp_path: Path) -> None:
 
 
 def test_yes_does_not_roll_over_durable_runs(tmp_path: Path) -> None:
+    """Deferred, not failed: a CI caller reads 75 as "try again later", not as a broken roll."""
     proc, calls = _run(tmp_path, "0.5.1", "--yes", fibers="abc\tdurable\trunning\t2026-09-30 17:00:00\n")
-    assert proc.returncode == 1
+    assert proc.returncode == 75
     assert "--yes does not roll over them" in proc.stderr
     # Stopped before the backup, so nothing was written on the host.
     assert "pg_dump" not in calls
@@ -135,3 +136,22 @@ def test_the_project_can_be_overridden(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     gcloud = _gcloud_calls(calls)
     assert gcloud and all("--project my-project" in line for line in gcloud), gcloud
+
+
+def test_ssh_flags_reach_every_gcloud_call(tmp_path: Path) -> None:
+    """CI has no route to the VM's port 22 but IAP's, so every remote call must carry the flag."""
+    proc, calls = _run(
+        tmp_path, "0.5.1", "--check", env_extra={"FELIX_SSH_FLAGS": "--tunnel-through-iap --ssh-flag=-v"}
+    )
+    assert proc.returncode == 0, proc.stderr
+    gcloud = _gcloud_calls(calls)
+    assert gcloud and all(
+        "--quiet --tunnel-through-iap --ssh-flag=-v --command" in line for line in gcloud
+    ), gcloud
+
+
+def test_no_ssh_flags_adds_nothing(tmp_path: Path) -> None:
+    proc, calls = _run(tmp_path, "0.5.1", "--check", env_extra={"FELIX_SSH_FLAGS": ""})
+    assert proc.returncode == 0, proc.stderr
+    gcloud = _gcloud_calls(calls)
+    assert gcloud and all("--quiet --command" in line for line in gcloud), gcloud
