@@ -30,6 +30,7 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix_ai.providers.base import ProviderConfigError
     from felix_ai.types import MessageFormatError
 
+    from felix.destinations import DestinationError
     from felix.manifests.governance import GovernanceError
     from felix.manifests.inbound_auth import InboundAuthError
     from felix.manifests.loader import ManifestParseError
@@ -75,6 +76,9 @@ def _relayable() -> tuple[type[BaseException], ...]:
         # its host; never a value, and the same words for an id that is unregistered or another
         # tenant's.
         EgressCredentialError,
+        # Names the destination id the manifest asked for, never a URL, an endpoint id or another
+        # tenant's registration; the same words for an id that is unregistered or another tenant's.
+        DestinationError,
     )
     try:
         # Optional package on a lean install, so its absence must not turn a content

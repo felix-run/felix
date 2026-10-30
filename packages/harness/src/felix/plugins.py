@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from felix.config import Settings
+    from felix.destinations import DestinationAdapter
     from felix.hooks import (
         AfterModelHook,
         AfterToolHook,
@@ -162,6 +163,20 @@ class PluginRegistry:
         from felix.decisions import register_decision_provider
 
         register_decision_provider(name, factory)
+
+    def register_destination_kind(self, kind: str, adapter: DestinationAdapter) -> None:
+        """Register a destination kind, selected by `kind` in `FELIX_DESTINATIONS`: `adapter` has
+        `validate(settings, tenant_id, dest)` and an async `deliver(settings, tenant_id, dest, post)
+        -> Delivery`, `dest` the typed `felix.destinations.Destination`, within
+        `felix.destinations.DELIVERY_BUDGET_S` (`felix.destinations.DestinationAdapter`). An HTTP
+        kind classifies with `delivery_for_status` / `delivery_for_send_error`.
+
+        Forwarded to the destination registry, like `register_model_provider` above: `post`
+        (`felix.destinations.tool`) reads it when a manifest naming the destination compiles and
+        again when a post is delivered."""
+        from felix.destinations import register_destination_kind
+
+        register_destination_kind(kind, adapter)
 
     def register_startup_hook(self, hook: Callable[..., Awaitable[Any]]) -> None:
         self._startup_hooks.append(hook)

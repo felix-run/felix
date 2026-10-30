@@ -950,6 +950,36 @@ class ConnectionRow(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class DestinationPostRow(Base):
+    """One edition an agent posted, or tried to post, to an operator-registered destination
+    (`felix.destinations.ledger`): the check that keeps a retry or a second run from posting it twice.
+
+    Keyed by tenant, destination id, manifest and the edition the agent named: an edition is one
+    agent's name for its post, so two agents' `brief:2026-10-29` at one destination are two posts.
+    `status` is `posting` while a delivery is in flight, `posted` once the destination confirmed it
+    (`ref` is its id for the post), and `maybe_posted` when the delivery's outcome is unknown; an
+    edition that certainly did not land has no row, so it may be tried again.
+    """
+
+    __tablename__ = "destination_posts"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    destination: Mapped[str] = mapped_column(Text, primary_key=True)
+    manifest_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    edition: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thread_id: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('posting', 'posted', 'maybe_posted')", name="ck_destination_posts_status"
+        ),
+    )
+
+
 __all__ = [
     "A2ATask",
     "Approval",
@@ -958,6 +988,7 @@ __all__ = [
     "AuditEvent",
     "Base",
     "ConnectionRow",
+    "DestinationPostRow",
     "DocumentChunk",
     "EvalDataset",
     "EvalDatasetItem",

@@ -12,7 +12,8 @@ talked into telling someone else. A caller that names no person -- anonymous, or
 holder shares -- is refused rather than broadcast to (`tools/refusal.py:require_person`).
 
 What it sends is text a model wrote, possibly under a prompt injection, landing on a lock screen
-with the deployment's authority behind it. So, in order, before anything leaves:
+with the deployment's authority behind it. So, in order, before anything leaves -- the outbound
+step `post` shares (`governance/outbound_text.py:prepare_outbound`):
 
 1. known secret values are redacted (the governance stack masks a tool's *output*; a notice's text
    is its *arguments*);
@@ -58,11 +59,11 @@ import contextvars
 import hashlib
 import json
 import logging
-import re
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from felix.governance.outbound_text import LINK_REMOVED, link_host, strip_links
 from felix.governance.permission_mode import NOTIFY_TOOL_NAME
 from felix.jobs import origin_thread
 from felix.session import idle_append
@@ -87,7 +88,6 @@ HOUR_S = 3600
 # How long a push service holds a notice for a browser that is offline. A notice is not a wait;
 # a day late it is still worth reading.
 NOTICE_TTL_SECONDS = 12 * 60 * 60
-LINK_REMOVED = "[link removed]"
 # The `metadata.type` of the entry a notice leaves in the conversation it links to.
 NOTICE_ENTRY_TYPE = "notice"
 # What became of the notice in the conversation it links to (the result's `thread`), when it was
@@ -100,64 +100,6 @@ _THREAD_NOTES = {
 
 # One limiter per process: an in-process one is the counter, so a fresh one per call counts nothing.
 _limiter: RateLimiterBackend | None = None
-
-# --- links ---------------------------------------------------------------------------------------
-# A dot, or one of the ways people write one to get past a filter: the ideographic, fullwidth,
-# halfwidth, one-dot-leader and small full stops, percent-encoding, and the bracketed and spelled-out
-# forms. NFKC folds most of the Unicode ones to `.` first; they are listed so the class does not
-# depend on it.
-_DOT = r"(?:\.|。|．|｡|․|﹒|%2e|\[\.\]|\(\.\)|\{\.\}|\s*\[dot\]\s*|\s*\(dot\)\s*|\s+dot\s+)"
-# A label in any script: a letter or digit, then letters, digits or hyphens.
-_LABEL = r"[^\W_](?:[^\W_]|-){0,62}"
-# A top-level domain: letters only, in any script, so versions (`1.4`, `v2.0.1`) never end in one.
-_TLD = r"[^\W\d_]{2,24}"
-_TAIL = r"(?:[:/?#][^\s]*)?"
-_HEX = r"[0-9a-f]{1,4}"
-_LINKS = (
-    # Anything with a scheme: https://, hxxps://, ftp://, an app's own scheme; `http://3232235777`.
-    re.compile(r"\b[a-z][a-z0-9+.-]{0,30}://[^\s]*", re.I),
-    re.compile(r"\b(?:javascript|data|mailto|tel|sms|intent):[^\s]+", re.I),
-    re.compile(rf"\bwww{_DOT}[^\s]+", re.I),
-    # IPv4, dotted with decimal or hex parts, and a whole address written as one hex number.
-    re.compile(
-        rf"\b(?:0x[0-9a-f]{{1,8}}|\d{{1,3}})(?:{_DOT}(?:0x[0-9a-f]{{1,8}}|\d{{1,3}})){{3}}\b{_TAIL}", re.I
-    ),
-    re.compile(r"\b0x[0-9a-f]{8}\b", re.I),
-    # IPv6: bracketed, compressed (it has a `::`), or all eight groups.
-    re.compile(rf"\[[0-9a-f:.]*:[0-9a-f:.]*\]{_TAIL}", re.I),
-    re.compile(
-        rf"(?<![\w:])(?:{_HEX}(?::{_HEX}){{0,6}})?::(?:{_HEX}(?::{_HEX}){{0,6}})?(?![\w:]){_TAIL}", re.I
-    ),
-    re.compile(rf"\b{_HEX}(?::{_HEX}){{7}}\b{_TAIL}", re.I),
-    # A host split across lines (`evil.` / `com`). The TLD is lowercase only here, so a sentence
-    # ending a line and the next beginning with a capital is not taken for one.
-    re.compile(rf"\b(?:{_LABEL}{_DOT})*{_LABEL}\.[\r\n]+[a-z]{{2,24}}\b{_TAIL}"),
-    # A bare host: two or more labels ending in an alphabetic TLD, and any path after it. This
-    # takes some filenames (`notes.md`) with it; a notice that loses one is cheaper than one that
-    # carries a link.
-    re.compile(rf"\b(?:{_LABEL}{_DOT})+{_TLD}\b{_TAIL}", re.I),
-    # A single-label host with a port (`localhost:8080/x`). The label must start with a letter and
-    # the port have two digits or more, so a time (`10:30`) is not one.
-    re.compile(r"\b[^\W\d_](?:[^\W_]|-){0,62}:\d{2,5}\b(?:/[^\s]*)?", re.I),
-    re.compile(r"\blocalhost(?:/[^\s]*)?", re.I),
-)
-
-
-def _normalize(text: str) -> str:
-    """NFKC (fullwidth letters and dots become plain ones), with every invisible format character
-    -- zero-width joiners, direction marks, the soft hyphen -- deleted, so none can hide a host."""
-    import unicodedata
-
-    folded = unicodedata.normalize("NFKC", text)
-    return "".join(c for c in folded if c != "\u00ad" and unicodedata.category(c) != "Cf")
-
-
-def strip_links(text: str) -> str:
-    """`text`, normalized, with every link-shaped run replaced by `[link removed]`."""
-    text = _normalize(text)
-    for rx in _LINKS:
-        text = rx.sub(LINK_REMOVED, text)
-    return text
 
 
 class _NotifyArgs(BaseModel):
@@ -245,59 +187,21 @@ class _Notices:
         return ctx, auth
 
     async def clean(self, args: _NotifyArgs) -> tuple[str, str]:
-        """The title and message as they would be sent: secrets redacted, links removed, screened."""
-        from felix.secrets import collected_secret_values, redact_text
+        """The title and message as they would be sent: secrets redacted, links removed, screened
+        (`governance/outbound_text.py:prepare_outbound`). A notice cannot be quarantined, so a flag
+        refuses it, and so does a screener that could not run."""
+        from felix.governance.outbound_text import prepare_outbound
 
-        secrets = collected_secret_values(self.settings)
-        title = strip_links(redact_text(args.title, secrets))
-        body = strip_links(redact_text(args.message, secrets))
-        await self.screen(f"{title}\n{body}")
+        title, body = await prepare_outbound(
+            self.settings,
+            self.manifest,
+            NOTIFY,
+            [args.title, args.message],
+            links=strip_links,
+            flagged="the notice was flagged by content screening and was not sent; nothing was sent",
+            unavailable="the notice could not be screened, so it was not sent; nothing was sent",
+        )
         return title, body
-
-    async def screen(self, text: str) -> None:
-        """Screen `text`: always the free marker scan (`governance/content_screening.py`), then, when
-        the manifest's content screening is on, its model and decider as the screening wrapper runs
-        them on tool output. A notice cannot be quarantined, so a flag refuses it, and so does a
-        screener that could not run: unscreened is not clean."""
-        from felix.governance.content_screening import screen_content
-
-        refused = ToolRefused(
-            "screened", "the notice was flagged by content screening and was not sent; nothing was sent"
-        )
-        verdict = await screen_content(
-            text, settings=self.settings, block_on_injection=True, redact_pii=False
-        )
-        if verdict.denied:
-            raise refused
-        screening = self.manifest.spec.content_screening
-        if not screening.enabled:
-            return
-        from felix.manifests.tool_match import matches_any
-
-        if screening.model_tools and not matches_any(screening.model_tools, NOTIFY):
-            return
-        from felix.governance.screening import screening_decider
-        from felix.governance.tool_screening import screen_tool_output
-
-        try:
-            decider = screening_decider(self.manifest, self.settings)
-        except Exception:
-            logger.warning(
-                "notify screening decider unavailable manifest=%s", self.manifest_id, exc_info=True
-            )
-            raise ToolRefused(
-                "screened", "the notice could not be screened, so it was not sent; nothing was sent"
-            ) from None
-        model_id = screening.model.strip()
-        if not (model_id or decider is not None):
-            return
-        result = await screen_tool_output(self.settings, text, model_id, decider)
-        if result.unavailable:
-            raise ToolRefused(
-                "screened", "the notice could not be screened, so it was not sent; nothing was sent"
-            )
-        if result.flagged:
-            raise refused
 
     @staticmethod
     def own_thread(ctx: RequestContext, call: ToolInvocationCtx | None) -> str:
@@ -471,6 +375,7 @@ __all__ = [
     "NOTICE_ENTRY_TYPE",
     "NOTIFY",
     "hourly_key",
+    "link_host",
     "make_notify_tool",
     "notice_entry",
     "reset_notify_for_tests",

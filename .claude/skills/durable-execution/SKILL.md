@@ -1,9 +1,9 @@
 ---
 name: durable-execution
-description: How Felix runs work that outlives a request: durable runs (spec.execution.mode durable, 202 + resume_token), the worker's claim/lease/retry loop, resume streams, webhooks, waiters for approvals and client tools, steer, Idempotency-Key, Web Push, scheduled jobs, triggers, authored workflows, cron. Use when editing felix/durability/, jobs/, workflows/, push/, waiters.py, idempotency.py, steer.py or apps/worker, when a run never starts, stalls or repeats a tool call, or a webhook or push is not delivered.
+description: How Felix runs work that outlives a request: durable runs (spec.execution.mode durable, 202 + resume_token), the worker's claim/lease/retry loop, resume streams, webhooks, waiters for approvals and client tools, steer, Idempotency-Key, Web Push, scheduled jobs, triggers, authored workflows, cron. Use when editing felix/durability/, jobs/, workflows/, push/, waiters.py, idempotency.py, steer.py or apps/worker, when a run never starts, stalls or repeats a tool call, or a webhook, push or post never arrives.
 allowed-tools: Read Grep Glob Bash(./scripts/test.sh:*)
 metadata:
-  covers: felix/durability/, felix/jobs/, felix/workflows/, felix/triggers.py, felix/push/, felix/idempotency.py, felix/waiters.py, felix/steer.py, felix_worker/
+  covers: felix/durability/, felix/jobs/, felix/workflows/, felix/triggers.py, felix/push/, felix/destinations/, felix/idempotency.py, felix/waiters.py, felix/steer.py, felix_worker/
 ---
 
 # Durable execution
@@ -126,6 +126,32 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
   (`push` only when `delivered > 0`), `thread` is `appended | run_live | missing | failed |
   not_eligible`. Push off, no subscription, a 410, or a send that raises is a written zero, never an
   error; `notify.sent` audits the same fields and never the text.
+- **`post` and destinations.** `spec.destinations.ids` names `FELIX_DESTINATIONS` entries
+  (`destinations/__init__.py:parse_destinations`, boot-validated shape; `resolve_destinations` at
+  compile checks tenant, an installed kind from `register_destination_kind`, and the kind's own
+  `validate`, raising `DestinationError` -- relayed, `422` on `/chat`). `builder._bind_destinations`
+  binds `destinations/tool.py:make_post_tool` beside `_bind_notify`, refusing a manifest that
+  `admits_anonymous`. Order: `admit` (a context, else `no_context`; attended under `attended:
+  refuse` is `attended`; id, edition grammar, lengths, per-run cap reserved synchronously) →
+  `EditionKey` (tenant, destination, manifest, edition; built once per call) → `ledger.get` (a row
+  answers before any screening) → `governance/outbound_text.py:prepare_outbound` (redact, then the
+  registration's `links` / `link_hosts` via `Destination.apply_links` → `strip_links(keep=)`, then
+  `screen_outbound` -- the same step `notify` takes, with `strip_links`) → `ledger.claim`
+  (insert-if-absent on `destination_posts`, migration 0049) → adapter `deliver(settings, tenant,
+  dest, post)` with the typed `Destination` (kind fields in `dest.fields`, minus `HARNESS_FIELDS`),
+  cancelled past `DELIVERY_BUDGET_S` (90 s, inside `ledger.IN_FLIGHT_MS`) → `posted` settles with
+  `ref`, `not_posted` releases, `unknown` (a raise or the budget too) settles `maybe_posted`. A row
+  found `posted` answers `already_posted` (and gives the run slot back); `posting` under
+  `IN_FLIGHT_MS` refuses `in_flight`; otherwise `maybe_posted`. The approval preview runs `admit`
+  and the ledger read too. Core kind `webhook` (`destinations/webhook.py`) signs as a completion
+  webhook with `webhook-id = EditionKey.post_key` and `unattended` in the body, and classifies with
+  the package's `delivery_for_status` (2xx posted; 4xx but 408/409 not_posted; else unknown) and
+  `delivery_for_send_error` (egress refusal, connect error or connect timeout not_posted; else
+  unknown) -- what an HTTP kind reuses. A kind's detail is cut to `MAX_DETAIL_CHARS`. `post.sent`
+  audits destination, edition, status, ref, never the text. `post` is not in `UNWAIVABLE_TOOLS`
+  (`unwaivable_tool=False`): its rules are unwaivable by id (`destinations.post` and the row's
+  `extra_rule_ids`, `destinations.post.attended`) and, where the block bound it, every rule over it
+  (`permission_mode.bound_unwaivable_tools` → the required `apply_approvals(unwaivable_tools=)`).
 
 ## Idempotency-Key
 

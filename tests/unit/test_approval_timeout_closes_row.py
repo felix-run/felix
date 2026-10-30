@@ -69,6 +69,7 @@ async def test_an_unanswered_approval_is_denied_on_its_row() -> None:
         [define_tool(name="write_file", description="w", handler=_write)],
         [ApprovalRule(id="workspace-write", tools=["write_file"], ttl_seconds=1)],
         "cowork",
+        unwaivable_tools=frozenset(),
     )[0]
     settings = _settings()
     req = RequestContext(

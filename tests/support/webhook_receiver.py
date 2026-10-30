@@ -78,3 +78,28 @@ async def hook_receiver(
     finally:
         server.close()
         await server.wait_closed()
+
+
+@asynccontextmanager
+async def hangup_receiver() -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
+    """An HTTP server that reads each request whole, then closes the connection without answering:
+    the request was delivered, and the sender never learns what became of it."""
+    seen: list[dict[str, Any]] = []
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = (await reader.readuntil(b"\r\n\r\n")).decode("latin-1")
+        lines = head.split("\r\n")
+        headers = {
+            k.strip().lower(): v.strip() for k, _, v in (ln.partition(":") for ln in lines[1:] if ":" in ln)
+        }
+        body = await reader.readexactly(int(headers.get("content-length") or 0))
+        seen.append({"path": lines[0].split(" ")[1], "headers": headers, "body": body})
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/hook", seen
+    finally:
+        server.close()
+        await server.wait_closed()

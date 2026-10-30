@@ -464,7 +464,7 @@ def _gated_tool(rules, name="github__delete_repo"):
     from felix.manifests.builder import apply_approvals
 
     inner = _tool("DID THE THING", name=name)
-    return inner, apply_approvals([inner], rules, "m")[0]
+    return inner, apply_approvals([inner], rules, "m", unwaivable_tools=frozenset())[0]
 
 
 @pytest.mark.parametrize("order", ["literal-then-glob", "glob-then-literal"], ids=lambda o: o)
