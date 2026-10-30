@@ -1052,6 +1052,15 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     by the egress-guarded client, so `allow_hosts` and the SSRF guard hold. Open: per-run masking
     of the access tokens opened (no answer or error carries one today); Microsoft 365 on the same
     shape.
+  - [x] iCloud in `felix-connectors` (the `icloud` extra): `POST /connections/icloud` keeps an
+    app-specific password Apple accepted as a `secret` connection; Calendar events/create and
+    Contacts search over CalDAV and CardDAV, requests built by Felix and sent guarded
+    (`*.icloud.com`), iCalendar and vCards read by `icalendar`, `recurring-ical-events` and
+    `vobject`. Not the `caldav` library: it sends through its own `niquests` session, past the
+    egress guard. Reminders left out: upgraded Reminders lists are not served over CalDAV.
+    Open: the CardDAV `addressbook-query` and the CalDAV query are checked against a fake shaped
+    like iCloud, not a live account; `pytz` (a `vobject` dependency) locked at 2026.5 until
+    2026.6 clears the deps-age hold.
   - [ ] MCP `auth: person`: a remote MCP server called with the person's token from the vault.
   - Owed by the first consumer (Google): its test goes through the real consent callback and
     then `GET /connections`, never `save_oauth` directly -- nothing in production writes the

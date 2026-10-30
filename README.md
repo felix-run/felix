@@ -1057,6 +1057,11 @@ Storage and execution:
   `_read`), each acting as the person the run acts for with the Google account they connected
   (`/connections/google/start`). Requests are built by Google's own client and sent through
   Felix's egress guard.
+- A person's own iCloud, from the same plugin (`uv sync --extra icloud-connectors`): Calendar
+  (`connectors__icloud_calendar_events`, `connectors__icloud_calendar_create_event`) and Contacts
+  (`connectors__icloud_contacts_search`), over CalDAV and CardDAV through Felix's egress guard
+  (`*.icloud.com`), with the Apple ID and app-specific password the person connected
+  (`POST /connections/icloud`).
 - Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

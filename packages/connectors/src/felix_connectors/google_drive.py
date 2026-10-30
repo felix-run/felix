@@ -14,7 +14,8 @@ from felix.config import Settings
 from felix.tools.types import Tool
 from pydantic import Field
 
-from felix_connectors.google_common import AccountArgs, GoogleApis, Id, answered, capped
+from felix_connectors.google_common import AccountArgs, GoogleApis, Id
+from felix_connectors.person import answered, capped
 from felix_connectors.tools import connector_tool, one_line
 
 SERVICE = "Google Drive"

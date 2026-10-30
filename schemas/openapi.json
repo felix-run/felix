@@ -1542,6 +1542,58 @@
         "title": "HeartbeatUpsert",
         "type": "object"
       },
+      "ICloudConnection": {
+        "description": "Who and whether it works; never the password. Core's `ConnectionOut` less what a secret\nconnection never has (scopes, an expiry): a plugin cannot import the API's models.",
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "oauth",
+              "secret"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "account",
+          "label",
+          "kind",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ICloudConnection",
+        "type": "object"
+      },
       "ImportIn": {
         "additionalProperties": false,
         "properties": {
@@ -13766,6 +13818,62 @@
           }
         },
         "summary": "Start Google Connect",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/icloud": {
+      "post": {
+        "description": "Connect your iCloud (Calendar, Contacts) with an app-specific password.",
+        "operationId": "connect_icloud_connections_icloud_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "app_password": {
+                    "description": "An app-specific password from appleid.apple.com.",
+                    "format": "password",
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "title": "App Password",
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "apple_id": {
+                    "description": "The email the person signs in to Apple with.",
+                    "maxLength": 320,
+                    "minLength": 1,
+                    "title": "Apple Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "apple_id",
+                  "app_password"
+                ],
+                "title": "ICloudConnect",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ICloudConnection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Connect Icloud",
         "tags": [
           "Connections"
         ]

@@ -45,6 +45,8 @@ channels = ["felix-channels"]
 connectors = ["felix-connectors"]
 # Its Google tools, which act as a person through their connection vault.
 google-connectors = ["felix-connectors[google]"]
+# Its iCloud tools, the same, with the app-specific password the person hands over.
+icloud-connectors = ["felix-connectors[icloud]"]
 full = [
     "felix-harness[aws,gcp,otel]",
 ]

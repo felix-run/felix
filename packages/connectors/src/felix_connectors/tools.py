@@ -14,12 +14,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
 
 from felix.auth.connections import ProviderFailed, StoreUnavailable
 from felix.tools.errors import ToolErrorCode, code_for_status, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 
 from felix_connectors.http import Busy, KeyRefused, QuotaSpent, UpstreamError
 
@@ -163,4 +163,14 @@ def one_line(value: object, cap: int) -> str:
     return text[:cap] + "…" if len(text) > cap else text
 
 
-__all__ = ["TRANSPORT", "Point", "connector_tool", "iso_day", "number", "one_line"]
+def _one_line_header(value: str) -> str:
+    if any(ch in value for ch in "\r\n"):
+        raise ValueError("a header value is one line")
+    return value
+
+
+#: A model-written value that lands in a mail header or an iCalendar property: one line, so it
+#: cannot end its field and start another.
+Header = Annotated[str, AfterValidator(_one_line_header)]
+
+__all__ = ["TRANSPORT", "Header", "Point", "connector_tool", "iso_day", "number", "one_line"]

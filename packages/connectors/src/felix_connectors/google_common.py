@@ -1,9 +1,7 @@
 """What the Google families (`google_calendar`, `gmail`, `google_drive`) share: whose Google, sent how.
 
-Each tool acts for the person the run acts for (`AuthContext.person`), with the Google grant they
-connected (`felix.auth.google_connect`) and keep in their vault (`felix.auth.connections`): never
-an operator's key, never another person's. A run that acts for no one person -- an anonymous
-caller, a shared API key, a trigger -- has no Google account to use, and the tool says so.
+Each tool acts for the person the run acts for (`person.person_connection`), with the Google grant
+they connected (`felix.auth.google_connect`) and keep in their vault.
 
 Requests are built by Google's own client (`googleapiclient`, the `google` extra) from the
 discovery documents it ships -- the method, the URL, the parameters' encoding -- and sent by
@@ -19,7 +17,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from functools import lru_cache
 from typing import Annotated, Any
 
@@ -27,19 +25,13 @@ from felix.config import Settings
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from felix_connectors.http import UpstreamError, allow_http, send, user_agent
+from felix_connectors.person import PersonConnection, Unavailable, person_connection
 from felix_connectors.tools import one_line
 
 SOURCE = "Google"
 GOOGLEAPIS = "https://www.googleapis.com"
 GMAIL_API = "https://gmail.googleapis.com"
-#: What one mail body or file contributes to an answer.
-MAX_TEXT = 8000
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-
-
-class Unavailable(Exception):
-    """Something the model should be told in words and not retry around: the person has no
-    Google account connected, it lacks a scope, they named an account they do not have."""
 
 
 def require_client() -> None:
@@ -73,42 +65,16 @@ def scope_refusal(label: str, scopes: Sequence[str]) -> str:
     return f"{one_line(label, 120)} has not granted {wanted}; the person can reconnect Google with it"
 
 
-async def connection(scopes: Sequence[str], account: str | None) -> tuple[Any, str, str, str]:
-    """(settings, tenant, person, account id) for the person this run acts for, with a Google
-    account that granted one of `scopes` (`google_connect.SCOPES` names). `Unavailable` otherwise."""
-    from felix.auth import connections
+async def connection(scopes: Sequence[str], account: str | None) -> PersonConnection:
+    """The person this run acts for's Google connection, one that granted one of `scopes`
+    (`google_connect.SCOPES` names). `Unavailable` otherwise."""
     from felix.auth.google_connect import SCOPES
-    from felix.context import try_get_context
 
-    ctx = try_get_context()
-    person = ctx.auth.person if ctx is not None else ""
-    if ctx is None or not person or not ctx.auth.tenant_id:
-        raise Unavailable("this run acts for no one person, so there is no Google account to use")
-    mine = [
-        c
-        for c in await connections.list_for_person(ctx.settings, ctx.auth.tenant_id, person)
-        if c["provider"] == "google"
-    ]
-    if account:
-        mine = [c for c in mine if account in (c["label"], c["account"])]
-        if not mine:
-            raise Unavailable(f"the person has not connected the Google account {one_line(account, 120)}")
-    if not mine:
-        raise Unavailable("the person has not connected a Google account; they can connect one in Felix")
-    if len(mine) > 1:
-        labels = ", ".join(one_line(c["label"], 120) for c in mine)
-        raise Unavailable(
-            f"the person has connected several Google accounts ({labels}); name one with `account`"
-        )
-    (row,) = mine
-    if row["status"] != "active":
-        raise Unavailable(
-            f"the Google connection for {one_line(row['label'], 120)} no longer works; "
-            "the person must reconnect it"
-        )
+    found = await person_connection("google", SOURCE, account)
+    row = found.row
     if not any(SCOPES[s] in set(row["scopes"]) for s in scopes):
         raise Unavailable(scope_refusal(row["label"], scopes))
-    return ctx.settings, ctx.auth.tenant_id, person, row["account"]
+    return found
 
 
 class GoogleApis:
@@ -144,18 +110,7 @@ class GoogleApis:
         """Send one request Google's client built, as the person, through the egress guard."""
         from felix.auth import connections
 
-        settings, tenant, person, account_id = await connection(scopes, account)
-        try:
-            token = await connections.access_token(settings, tenant, person, "google", account_id)
-        except connections.ConnectionRevoked:
-            # Google refused the refresh just now: the person withdrew Felix, or the grant expired.
-            raise Unavailable(
-                "the person's Google connection no longer works; they must reconnect it"
-            ) from None
-        except connections.NotConnected, connections.AmbiguousConnection:
-            raise Unavailable("the person's Google connection changed just now; try again") from None
-        except connections.ProviderUnavailable:
-            raise Unavailable("this deployment cannot refresh Google connections") from None
+        token = await (await connection(scopes, account)).opened(connections.access_token)
         headers = {
             "authorization": f"Bearer {token}",
             "accept": "application/json",
@@ -195,38 +150,13 @@ class GoogleApis:
         return body
 
 
-def answered(service: str, fn: Callable[[Any], Awaitable[str]]) -> Callable[[Any], Awaitable[str]]:
-    """`fn`, with an `Unavailable` answered as a finding rather than an outage to retry."""
-
-    async def run(args: Any) -> str:
-        try:
-            return await fn(args)
-        except Unavailable as exc:
-            return f"source: {service}\n{exc}"
-
-    return run
-
-
-def capped(text: str) -> str:
-    """Line breaks kept -- a mail or a document reads in paragraphs -- control characters not."""
-    clean = "".join(ch if ch.isprintable() or ch in "\n\t" else " " for ch in text)
-    return clean[:MAX_TEXT] + "\n(… cut)" if len(clean) > MAX_TEXT else clean
-
-
 def _id(value: str) -> str:
     if not _ID.match(value):
         raise ValueError("an id is letters, digits, - and _")
     return value
 
 
-def _one_line_header(value: str) -> str:
-    if any(ch in value for ch in "\r\n"):
-        raise ValueError("a header value is one line")
-    return value
-
-
 Id = Annotated[str, AfterValidator(_id)]
-Header = Annotated[str, AfterValidator(_one_line_header)]
 
 
 def is_id(value: object) -> bool:
@@ -244,15 +174,10 @@ class AccountArgs(BaseModel):
 __all__ = [
     "GMAIL_API",
     "GOOGLEAPIS",
-    "MAX_TEXT",
     "SOURCE",
     "AccountArgs",
     "GoogleApis",
-    "Header",
     "Id",
-    "Unavailable",
-    "answered",
-    "capped",
     "connection",
     "is_id",
     "require_client",

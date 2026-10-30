@@ -229,7 +229,9 @@ async def _fetch(
         # whatever `params` holds, so an empty mapping would strip the one Google's client built.
         client.stream(method, url, params=dict(params) or None, headers=headers, content=content) as resp,
     ):
-        if resp.status_code >= 400:
+        # A redirect is never followed (`safe_async_client`), so a 3xx is no answer either: taken
+        # as one, a PUT moved elsewhere would read as written.
+        if not 200 <= resp.status_code < 300:
             raise UpstreamError(resp.status_code)
         return await _read_capped(resp)
 

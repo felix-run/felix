@@ -23,6 +23,20 @@ def auth_from_request(request: Request) -> AuthContext:
     return auth if isinstance(auth, AuthContext) else ANONYMOUS
 
 
+def request_person(request: Request) -> tuple[str, str]:
+    """The caller's tenant and person key (`issuer|subject`); 403 `not_a_person` for a caller that
+    names no one person -- anonymous, a sub-less API key, a workflow, a machine actor. The one rule
+    for who may keep a connection, shared by core's connection routes and a plugin's."""
+    from felix.auth.persons import caller_person
+
+    auth = auth_from_request(request)
+    principal = auth.principal
+    person = caller_person(issuer=principal.issuer, subject=principal.subject or "", anonymous=auth.anonymous)
+    if not person:
+        raise HTTPException(status_code=403, detail="not_a_person")
+    return principal.tenant_id, person
+
+
 def _scopes_of(auth: AuthContext) -> frozenset[str]:
     return frozenset(auth.principal.scopes or ())
 

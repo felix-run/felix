@@ -3551,6 +3551,40 @@ email, with the scopes Google says it carries (granular consent may grant fewer 
   the OAuth client -- so the same Google account connected by another person, or in another
   tenant, stops working too and is marked `revoked` on its next use.
 
+### Connecting iCloud
+
+Apple has no OAuth for iCloud data, so `POST /connections/icloud` (a person, signed in; mounted by
+the `felix-connectors` plugin with its `icloud` extra) takes their Apple ID and an **app-specific
+password** made at appleid.apple.com. Only that format (`xxxx-xxxx-xxxx-xxxx`) is accepted: an
+Apple ID's own password is refused before anything is sent, and an app-specific one can be revoked
+at Apple without touching the account. The pair is checked with Apple first -- the CalDAV
+principal lookup the tools start from -- and kept only if Apple accepts it, sealed in the person's
+vault (provider `icloud`, kind `secret`). It answers 404 without a vault key, 403 to a caller that
+names no person, 429 past five tries a person makes in an hour (so the route is no way to test
+Apple credentials in bulk from this deployment's address), and a refusal as a written code
+(`invalid_body`, `app_password_format`, `apple_id_invalid`, `app_password_refused`,
+`icloud_unavailable`, `connect_failed`); the password is never logged, returned or put in an
+error -- the body is read by the route, not FastAPI, whose 422 would echo it. Disconnecting (`DELETE /connections/icloud/{apple_id}`) forgets it here; the person revokes
+it at Apple.
+
+- An app-specific password opens the person's whole iCloud calendar and contacts, read and write,
+  for as long as it lives: there are no scopes to narrow. Grant the tools per manifest.
+- **The tools** (`connectors__icloud_calendar_events`, `_calendar_create_event`,
+  `_contacts_search`) act as `AuthContext.person`, as the Google tools do. Felix builds the
+  CalDAV and CardDAV requests and its egress-guarded client sends them, held to `*.icloud.com`:
+  discovery names a partition host of the person's (`p42-caldav.icloud.com`), from Apple's answer,
+  never the model's. A manifest with `network.allow_hosts` lists `*.icloud.com`. An answer that
+  declares a DTD is refused unparsed, and a redirect is an error, never a success. Reading covers
+  every calendar the person sees, shared ones included, and every answer is untrusted text: enable
+  content screening. A repeating event is expanded only after its cost is estimated -- a rule
+  repeating each second, which anyone can put on the calendar with an invitation, is left out and
+  the answer says so. Adding an event is not read-only and belongs behind an approval. It writes
+  only to a calendar that is the person's own and writable, never one shared with them (whose
+  owner reads it) and never one picked between two of the same name; it writes no ORGANIZER or
+  ATTENDEE, so nothing is mailed; and its UID is derived from the person, title and time, so a
+  retry finds the event it made (`If-None-Match: *`, 412). Reminders are not offered: Apple
+  stopped serving upgraded Reminders lists over CalDAV.
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes

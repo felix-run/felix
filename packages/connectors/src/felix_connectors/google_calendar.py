@@ -12,7 +12,6 @@ timeout finds the one it already made instead of making another.
 from __future__ import annotations
 
 import base64
-import hashlib
 from datetime import datetime, timedelta
 from functools import partial
 from typing import Any
@@ -21,9 +20,10 @@ from felix.config import Settings
 from felix.tools.types import Tool
 from pydantic import AwareDatetime, Field, model_validator
 
-from felix_connectors.google_common import AccountArgs, GoogleApis, Header, answered
+from felix_connectors.google_common import AccountArgs, GoogleApis
 from felix_connectors.http import UpstreamError
-from felix_connectors.tools import connector_tool, one_line
+from felix_connectors.person import answered, event_key
+from felix_connectors.tools import Header, connector_tool, one_line
 
 SERVICE = "Google Calendar"
 MAX_EVENTS = 25
@@ -61,8 +61,7 @@ def event_id(person: str, args: CreateEventArgs) -> str:
     """A Calendar event id (base32hex, lowercase) for this person's event of this title and time.
     The same call twice -- a retry after a timeout -- names the same event, which Google refuses
     to create again (409)."""
-    key = "\x1f".join([person, args.summary, args.start.isoformat(), args.end.isoformat()])
-    digest = hashlib.sha256(key.encode()).digest()
+    digest = event_key(person, args.summary, args.start, args.end)
     return base64.b32hexencode(digest).decode().rstrip("=").lower()
 
 
