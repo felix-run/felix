@@ -2504,6 +2504,29 @@ The warning reports what **compiled**, not what was declared: every outbound bin
 own failure, so an unreachable MCP server binds zero tools and produces no warning. In staging,
 CI and `felix validate-manifest` that means a manifest declaring five MCP servers can be silent.
 
+At run time an unreachable server is not silent. A server whose discovery failed, or a stdio one
+that could not start, is named to the model in an `<unavailable_sources>` note, and a job's run
+result lists it under `unavailable_sources` by the manifest that named it, failed runs included
+(`felix/run_sources.py`). A server the agent cannot do without is marked `required: true`: then
+that outage stops the compile before any model call (`RequiredSourceUnavailable`), and so does a
+required server that answers but binds no tools (it lists none, or none its `tools:` allowlist
+matches -- an upstream outage can look like an empty list), and a required `person:<provider>`
+server left out of the run for any reason: the run acts for no person, the person has no
+connection, or the operator has withdrawn the server from `FELIX_MCP_PERSON_AUTH`. The last is
+intended: an agent that cannot do its work without the server stops rather than runs without it. A job's
+run is an `error` with a fixed message naming the manifest and its servers (and still lists
+`unavailable_sources`), so it counts toward the health watch's `failing` streak, classed
+`required_source_unavailable` in the alert; `/chat` and `/v1` answer 503 with the same message
+(a stream sends it as an error frame typed `required_source_unavailable`), an A2A task fails with
+it, an MCP client's call is refused with it, and a durable or trigger run fails with it. The
+message carries only the manifest author's names, cleaned of backticks, angle brackets and line
+breaks, never what the server said.
+
+Discovery is cached for `DISCOVERY_TTL_S` (60 seconds, `mcp/client.py`), and only an answer with
+tools is cached. A required server that goes down within a minute of a successful discovery
+therefore still compiles from the cache: the run starts, and its calls to that server fail as tool
+errors mid-run rather than as this refusal.
+
 ## Memory: who may retire what
 
 Every memory row records its writer, and writers have two ranks: the **operator** (the

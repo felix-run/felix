@@ -135,6 +135,12 @@ def error_class(job: dict[str, Any]) -> str:
     }
     if error in known:
         return known[error]
+    from felix.run_sources import REQUIRED_SOURCES_UNAVAILABLE, RequiredSourceUnavailable
+
+    # The class only: the sources it names are the manifest's, which an alert outside the tenant
+    # does not carry.
+    if error.startswith(REQUIRED_SOURCES_UNAVAILABLE):
+        return RequiredSourceUnavailable.code
     # `felix.errors.internal_error_message`: "internal error", with a request id or without.
     if error == "internal error" or error.startswith("internal error ("):
         return "internal_error"

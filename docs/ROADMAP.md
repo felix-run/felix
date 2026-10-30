@@ -1138,8 +1138,18 @@ The gaps, in order:
       new" and the run recorded `ok`. The model is now told which servers could not be reached
       (`run_sources.unavailable_sources_note`), and a job's run result lists them by the manifest
       that named each (`unavailable_sources`), failed runs included. A stdio server that cannot start
-      now counts too; it was swallowed as an empty tool list. *Follow-up:* `required: true` on `McpServerRef`, so a firing stops
-      instead of running without a source it cannot do without.
+      now counts too; it was swallowed as an empty tool list. `required: true` on `McpServerRef` (done
+      in this PR) stops the compile instead (`RequiredSourceUnavailable`, relayed): a job's run is an
+      error before any model call, still listing `unavailable_sources`, that counts toward the
+      `failing` streak (`error_class` `required_source_unavailable`); `/chat` and `/v1` answer 503,
+      streams a typed error frame, A2A a failed task, MCP serve a refusal, and a durable or trigger
+      run fails, all with one written message. A required `person:<provider>` server left out
+      counts, and so does a required server that answers with no tools, or none matching its
+      `tools:` allowlist. *Follow-up:* the "compile refusal → status/code" mapping is four ladders
+      (`chat.py:_http_from_invoke_prep`, the `/chat/stream` excepts, `openai_compat.py`'s
+      non-stream and stream excepts); one table in `felix/errors.py` read by all four would stop
+      them drifting -- the `/v1` stream already answers `SecretNotFoundError` and
+      `ProviderConfigError` as `stream_failed`.
 - [x] **Shared destinations, at most once per edition.** `FELIX_DESTINATIONS` (operator registry,
       open `kind` registry with `register_destination_kind` on the plugin seam), `spec.destinations`
       binding `post`, the `destination_posts` ledger (migration `0049`, both arms, conformance
@@ -1257,6 +1267,42 @@ one member act with another's authority.
       (`LookupError` vs `ValueError`); `resolve_tenant_manifest` should raise one type. Four wrappers
       exist today: `runtime.UnknownManifest`, `workspace_files.UnknownManifest`,
       `side_question.UnknownManifestError`, MCP's `_UnknownManifest`; define it in `manifests/resolver.py`.
+
+### OWASP audit (2026-10-30)
+
+OWASP Top 10 and LLM Top 10 against `main` at #753, read-only. No critical or high finding beyond
+per-principal thread ownership above. Dependencies: `pip-audit` clean on the locked set with extras.
+
+- [x] **Calculator bound.** `_digits` sized an int past ~1e308 as one digit, so a 24-character
+      chained power built a multi-hundred-megabyte int on the event loop; ints are now sized by
+      `math.log10`, which takes any size. Worst product under the 1,000-character cap is ~0.1 s.
+- [ ] **Workflow step transcripts.** `GET /workflows/{id}/runs/{run}/steps/{step}/thread`
+      (`routes/workflow_runs.py`) needs only `workflows:read`; a run an agent started for a person
+      carries that person's memory. Limit `agent:*` runs to the starter or an operator, as
+      `routes/jobs.py:_writer_or_operator_job` does.
+- [ ] **Denied requests leave no trace.** A 401 from `auth/middleware.py` or a 403 from
+      `require_mgmt_scopes` logs nothing and counts nothing; add `felix_auth_denied_total` and
+      `felix_scope_denied_total` and a sampled warning keyed by client, never the token.
+- [ ] **MCP tool definitions unscreened.** `mcp/client.py` passes a remote tool's `description` and
+      `inputSchema` through verbatim and re-discovers every 60 s; give them the marker scan and cap
+      the server's `instructions` already get.
+- [ ] **`remember_procedure` and publish-mode `create_skill`.** Neither has a built-in approval or
+      an unattended refusal, so injected content can persist instructions every person's runs of
+      that agent read. Both are opt-in.
+- [ ] **Path prefix matching.** `security/host_allowlist.py:within_prefix` is a bare `startswith`, so
+      `/v1` admits `/v1admin`, for `http_tools` and scoped egress credentials alike.
+- [ ] **Deep pattern plan tools.** `patterns/__init__.py` appends `plan_*` after the governance
+      stack, and they read or overwrite any plan in the tenant by id.
+- [ ] **Masking coverage.** Felix's own credentials (API keys, `jwks_private`, VAPID, S3, DB and
+      Redis URL passwords, the GitHub App key) are not in `collected_secret_values`; masking matches
+      exact text only, not base64 or percent-encoded copies.
+- [ ] **Small items.** The workspace-gateway Dockerfile's base image is unpinned; the GitHub
+      sign-in handoff cookie is single-use only on the client; `jobs:read` sees a run's `result`
+      where preferences and state are writer-only.
+- [ ] **Decisions.** A per-tenant spend ceiling (default `max_cost_usd` equals the 1,000 ceiling);
+      a floor under `governance.retention_days`, which `manifests:write` can set to 1; whether an
+      approver's `edited_args` on `save_workflow` should still leave the agent holding it; say in
+      `deploy/GOVERNANCE.md` that the shell prefix allowlist does not constrain arguments.
 
 ### Harness
 

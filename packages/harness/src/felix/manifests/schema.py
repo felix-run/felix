@@ -253,6 +253,11 @@ class McpServerRef(_Strict):
     # land in the *system* prompt, which is the server writing instructions to your agent.
     # Capped, collapsed to one line, and dropped if the injection markers flag them.
     use_instructions: bool = False
+    # A source the agent cannot do without. Unreachable, unstartable, or a `person:<provider>`
+    # server with no person or connection for this run: the compile raises
+    # `run_sources.RequiredSourceUnavailable` and the run stops before any model call, rather than
+    # running with a note that the source is missing (what an optional server does).
+    required: bool = False
 
     @field_validator("auth", mode="before")
     @classmethod
