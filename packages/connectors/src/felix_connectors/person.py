@@ -57,40 +57,48 @@ class PersonConnection:
             raise Unavailable(f"this deployment cannot refresh {self.service} connections") from None
 
 
-async def person_connection(provider: str, service: str, account: str | None) -> PersonConnection:
-    """The one `provider` connection of the person this run acts for -- the one named `account`
-    (its label or id) when they have several, and active. `Unavailable`, worded with `service`
-    ("Google"), otherwise."""
+async def person_connections(provider: str, service: str, noun: str = "") -> list[PersonConnection]:
+    """Every `provider` connection of the person this run acts for, working or not, for a family
+    that reads several at once (calendar feeds). `Unavailable` when the run acts for no one person,
+    worded with `noun` (default "`service` account")."""
     from felix.auth import connections
     from felix.context import try_get_context
 
-    noun = f"{service} account"
-    article = "an" if service[:1].lower() in "aeiou" else "a"
+    noun = noun or f"{service} account"
     ctx = try_get_context()
     person = ctx.auth.person if ctx is not None else ""
     if ctx is None or not person or not ctx.auth.tenant_id:
         raise Unavailable(f"this run acts for no one person, so there is no {noun} to use")
-    mine = [
-        c
+    return [
+        PersonConnection(ctx.settings, ctx.auth.tenant_id, person, provider, service, c)
         for c in await connections.list_for_person(ctx.settings, ctx.auth.tenant_id, person)
         if c["provider"] == provider
     ]
+
+
+async def person_connection(provider: str, service: str, account: str | None) -> PersonConnection:
+    """The one `provider` connection of the person this run acts for -- the one named `account`
+    (its label or id) when they have several, and active. `Unavailable`, worded with `service`
+    ("Google"), otherwise."""
+    noun = f"{service} account"
+    article = "an" if service[:1].lower() in "aeiou" else "a"
+    mine = await person_connections(provider, service)
     if account:
-        mine = [c for c in mine if account in (c["label"], c["account"])]
+        mine = [c for c in mine if account in (c.row["label"], c.account)]
         if not mine:
             raise Unavailable(f"the person has not connected the {noun} {one_line(account, 120)}")
     if not mine:
         raise Unavailable(f"the person has not connected {article} {noun}; they can connect one in Felix")
     if len(mine) > 1:
-        labels = ", ".join(one_line(c["label"], 120) for c in mine)
+        labels = ", ".join(one_line(c.row["label"], 120) for c in mine)
         raise Unavailable(f"the person has connected several {noun}s ({labels}); name one with `account`")
-    (row,) = mine
-    if row["status"] != "active":
+    (found,) = mine
+    if found.row["status"] != "active":
         raise Unavailable(
-            f"the {service} connection for {one_line(row['label'], 120)} no longer works; "
+            f"the {service} connection for {one_line(found.row['label'], 120)} no longer works; "
             "the person must reconnect it"
         )
-    return PersonConnection(ctx.settings, ctx.auth.tenant_id, person, provider, service, row)
+    return found
 
 
 def event_key(person: str, summary: str, start: datetime, end: datetime) -> bytes:
@@ -128,4 +136,5 @@ __all__ = [
     "capped",
     "event_key",
     "person_connection",
+    "person_connections",
 ]

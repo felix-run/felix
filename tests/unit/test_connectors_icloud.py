@@ -286,13 +286,13 @@ async def test_a_series_too_costly_to_expand_is_left_out_quickly(rule: str) -> N
     assert time.monotonic() - began < 2
     assert out.splitlines()[1:] == [
         "- 2026-11-02T10:00:00-07:00 to 2026-11-02T11:00:00-07:00 · Dentist · at 12 Main St · calendar Home · uid d1",
-        "(1 repeating events left out: they repeat too often to list)",
+        "(1 events left out: they repeat too often, or the calendar holds too many, to list)",
     ]
 
 
 def test_years_of_an_ordinary_series_cost_little() -> None:
     import icalendar
-    from felix_connectors.icloud import MAX_STEPS, expansion_steps
+    from felix_connectors.ical import MAX_STEPS, expansion_steps
 
     def cost(rule: str) -> float:
         cal = icalendar.Calendar.from_ical(

@@ -1,7 +1,7 @@
 [project]
 name = "felix-connectors"
 version = "0.18.0"
-description = "Tools that reach everyday services for Felix agents: weather, maps, markets, Google, iCloud. An optional plugin."
+description = "Tools that reach everyday services for Felix agents: weather, maps, markets, Google, iCloud, calendar feeds. An optional plugin."
 requires-python = ">=3.14"
 license = "Apache-2.0"
 # Core never imports this package (tests/unit/test_plugin_boundary.py); it arrives through the
@@ -18,6 +18,8 @@ google = ["google-api-python-client>=2.201.0"]
 # The iCloud tools (Calendar, Contacts) speak CalDAV and CardDAV through Felix's egress-guarded
 # client; these read and write what travels in it -- iCalendar events and vCards.
 icloud = ["icalendar>=7.3.0", "recurring-ical-events>=3.8.2", "vobject>=0.9.9"]
+# The calendar feed tool reads a published `.ics` link through the same guarded client.
+ics = ["icalendar>=7.3.0", "recurring-ical-events>=3.8.2"]
 
 [project.entry-points."felix.plugins"]
 connectors = "felix_connectors:register"

@@ -21,12 +21,16 @@ from tests.support.optional_deps import require_optional
 CORE = ("researcher", "automator", "summarizer")
 #: The connectors plugin's agents, and the extras each one's tools need beyond the plugin.
 CONNECTORS = {
-    "concierge": ("google-connectors", "icloud-connectors"),
+    "concierge": ("google-connectors", "icloud-connectors", "ics-connectors"),
     "travel": (),
     "markets": (),
     "inbox": ("google-connectors",),
 }
-_EXTRA_MODULE = {"google-connectors": "googleapiclient", "icloud-connectors": "icalendar"}
+_EXTRA_MODULE = {
+    "google-connectors": "googleapiclient",
+    "icloud-connectors": "icalendar",
+    "ics-connectors": "icalendar",
+}
 
 #: (agent, tool) pairs that change something and run with no approval, on purpose. Keyed by the
 #: agent: each reason holds for that manifest, not for every one that binds the tool.

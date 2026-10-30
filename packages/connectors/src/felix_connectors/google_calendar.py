@@ -22,6 +22,7 @@ from pydantic import AwareDatetime, Field, model_validator
 
 from felix_connectors.google_common import AccountArgs, GoogleApis
 from felix_connectors.http import UpstreamError
+from felix_connectors.ical import default_start
 from felix_connectors.person import answered, event_key
 from felix_connectors.tools import Header, connector_tool, one_line
 
@@ -148,7 +149,7 @@ def calendar_tools(apis: GoogleApis) -> list[Tool]:
         return apis.service("calendar", "v3").events()
 
     async def list_events(args: ListEventsArgs) -> str:
-        start = args.start or datetime.now().astimezone()
+        start = args.start or default_start()
         request = events().list(
             calendarId="primary",
             timeMin=start.isoformat(),

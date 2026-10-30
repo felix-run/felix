@@ -400,6 +400,10 @@ class Settings(BaseSettings):
     market_backend: str = "finnhub"
     market_api_key: str = Field(default="", repr=False)
     fx_backend: str = "frankfurter"
+    # The hosts a person's published calendar feed (`POST /connections/ics`) may live on,
+    # comma-separated `allow_hosts` patterns: a feed link is the person's, so where it may point is
+    # the operator's. The defaults are where Outlook, Google Calendar and iCloud publish them.
+    ics_hosts: str = "outlook.office365.com,outlook.live.com,calendar.google.com,*.icloud.com"
     # Appended to the User-Agent every connector sends -- an email or URL. Nominatim's and the
     # National Weather Service's usage policies ask for a way to reach whoever runs the client.
     connectors_contact: str = ""
@@ -839,6 +843,16 @@ class Settings(BaseSettings):
         if not all(0x21 <= ord(ch) <= 0x7E for ch in v):
             raise ValueError("FELIX_MARKET_API_KEY must be printable ASCII with no spaces")
         return v
+
+    @field_validator("ics_hosts")
+    @classmethod
+    def _ics_hosts_are_patterns(cls, v: str) -> str:
+        from felix.security.host_allowlist import normalise_host_pattern
+
+        try:
+            return ",".join(normalise_host_pattern(h) for h in v.split(",") if h.strip())
+        except ValueError as exc:
+            raise ValueError(f"FELIX_ICS_HOSTS: {exc}") from None
 
     @field_validator("connectors_contact")
     @classmethod

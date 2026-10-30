@@ -47,6 +47,8 @@ connectors = ["felix-connectors"]
 google-connectors = ["felix-connectors[google]"]
 # Its iCloud tools, the same, with the app-specific password the person hands over.
 icloud-connectors = ["felix-connectors[icloud]"]
+# Its calendar feed tool, reading the published .ics links a person connects.
+ics-connectors = ["felix-connectors[ics]"]
 full = [
     "felix-harness[aws,gcp,otel]",
 ]

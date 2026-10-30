@@ -14,7 +14,9 @@
 #
 # What an operator configures:
 #   - The felix-connectors plugin, with its `google` extra for Calendar and Gmail and its
-#     `icloud` extra for iCloud Calendar. Weather, geocoding, routing and time zones need no key.
+#     `icloud` extra for iCloud Calendar, and its `ics` extra for calendars a person connects by
+#     their published link (Outlook, a shared calendar). Weather, geocoding, routing and time
+#     zones need no key.
 #   - Google connect (FELIX_GOOGLE_CLIENT_ID, FELIX_GOOGLE_CLIENT_SECRET, FELIX_GOOGLE_COOKIE_KEY),
 #     so a person can connect their Google account to their vault;
 #     iCloud is connected per person with an app-specific password.
@@ -66,8 +68,9 @@ spec:
       few that matter). Say what needs them; skip what does not.
 
       To plan a day, read their events, find free windows with
-      connectors__calendar_find_free_time (Google Calendar only; for iCloud, work the gaps out
-      from connectors__icloud_calendar_events), and use connectors__route for travel time
+      connectors__calendar_find_free_time (Google Calendar only; for iCloud and connected
+      calendar feeds, work the gaps out from connectors__icloud_calendar_events and
+      connectors__ics_events), and use connectors__route for travel time
       between places; time_now and date_math answer what time it is elsewhere and how many
       days or weekdays are left until a date. Propose a plan first. Create an event (connectors__calendar_create_event
       or connectors__icloud_calendar_create_event) or save an email draft
@@ -98,6 +101,7 @@ spec:
     - connectors__calendar_find_free_time
     - connectors__calendar_create_event
     - connectors__icloud_calendar_events
+    - connectors__ics_events
     - connectors__icloud_calendar_create_event
     - connectors__gmail_search
     - connectors__gmail_read
@@ -146,7 +150,7 @@ spec:
     # it. So the reads of what anyone can mail or invite the person to are also scored by a
     # small model -- a briefing that fires with nobody watching reads mail too.
     model: claude-haiku
-    model_tools: [connectors__gmail_read, connectors__gmail_search, connectors__calendar_list_events, connectors__icloud_calendar_events]
+    model_tools: [connectors__gmail_read, connectors__gmail_search, connectors__calendar_list_events, connectors__icloud_calendar_events, connectors__ics_events]
 
   # Everything here that changes something outside the conversation. `allow_unattended: false`
   # refuses these in a run nobody is watching -- a scheduled briefing reads, it never writes.
