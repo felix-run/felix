@@ -28,9 +28,15 @@ DATE_TAG = "current_date"
 TIME_NOTE_PREFIX = "The current time is"
 
 
+def zone(zone_name: str) -> ZoneInfo:
+    """The IANA zone `zone_name`; raises `ZoneInfoNotFoundError` (or `ValueError` for a name that is
+    not a key at all) for an unknown one. What `wall_clock` and a job's `timezone` both read."""
+    return ZoneInfo(zone_name)
+
+
 def wall_clock(zone_name: str) -> Now:
     """`datetime.now` in the IANA zone `zone_name`; raises `ZoneInfoNotFoundError` for an unknown one."""
-    return partial(datetime.now, ZoneInfo(zone_name))
+    return partial(datetime.now, zone(zone_name))
 
 
 def date_block(moment: datetime) -> str:

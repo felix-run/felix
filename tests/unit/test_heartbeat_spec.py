@@ -247,7 +247,7 @@ async def test_a_schedule_refresh_never_brings_back_a_heartbeat_deleted_meanwhil
 
     read = await _heartbeat_job(settings)
     await jobs_store.delete_job(settings, "default", "hb-m-1")
-    await hb.keep_schedule_current(settings, "default", read, "every:2h")
+    await hb.keep_schedule_current(settings, "default", read, "every:2h", None)
     assert await jobs_store.get_job(settings, "default", "hb-m-1") is None
 
 
@@ -256,7 +256,7 @@ async def test_a_schedule_refresh_never_re_enables_a_heartbeat_turned_off_meanwh
 
     read = await _heartbeat_job(settings)
     await _heartbeat_job(settings, enabled=False)
-    await hb.keep_schedule_current(settings, "default", read, "every:2h")
+    await hb.keep_schedule_current(settings, "default", read, "every:2h", None)
     job = await jobs_store.get_job(settings, "default", "hb-m-1")
     assert job is not None and (job["enabled"], job["schedule"]) == (False, "every:2h")
 
@@ -289,3 +289,73 @@ def test_a_task_its_writer_moved_to_another_manifest_is_no_longer_swept_as_a_tas
     fired = {"enabled": False, "last_run_at": 1, "schedule": "every:60m", "payload": {"scheduled_by": by}}
     assert is_fired_task({**fired, "manifest_id": "assistant"})
     assert not is_fired_task({**fired, "manifest_id": "other"})
+
+
+# --- spec.heartbeat.timezone ----------------------------------------------------------------
+
+
+def test_a_heartbeat_cron_may_be_read_in_a_zone() -> None:
+    heartbeat = {"checklist": "x", "schedule": "0 8 * * 1-5", "timezone": "America/New_York"}
+    assert _manifest(heartbeat).spec.heartbeat.timezone == "America/New_York"
+
+
+@pytest.mark.parametrize(
+    ("heartbeat", "said"),
+    [
+        # The default schedule is an interval, which no zone moves: a zone there would do nothing.
+        ({"checklist": "x", "timezone": "Europe/London"}, "heartbeat.timezone: only a cron expression"),
+        (
+            {"checklist": "x", "schedule": "@daily", "timezone": "Mars/Base"},
+            "heartbeat.timezone: not an IANA",
+        ),
+    ],
+)
+def test_a_heartbeat_zone_that_does_nothing_or_does_not_exist_is_refused(
+    heartbeat: dict[str, Any], said: str
+) -> None:
+    assert said in _refusal(heartbeat)
+
+
+def test_the_floor_holds_at_a_zones_spring_change() -> None:
+    """`30 2,3 * * *` is an hour apart in UTC, and 30 minutes apart in New York on the day the
+    spring change sends 02:30 to 03:00 -- under a 45-minute floor."""
+    heartbeat: dict[str, Any] = {"checklist": "x", "schedule": "30 2,3 * * *", "min_interval_minutes": 45}
+    assert _manifest(heartbeat).spec.heartbeat is not None
+    assert "fires every 30 minute(s)" in _refusal({**heartbeat, "timezone": "America/New_York"})
+
+
+def test_the_cap_warning_reads_the_schedule_in_its_zone() -> None:
+    """A daily 19:00 in New York lands twice in the UTC day of the spring change."""
+    from felix.manifests.governance import manifest_warnings
+
+    heartbeat = {"checklist": "x", "schedule": "0 19 * * *", "max_firings_per_day": 1}
+    assert [w for w in manifest_warnings(_manifest(heartbeat)) if "max_firings_per_day" in w] == []
+    zoned = manifest_warnings(_manifest({**heartbeat, "timezone": "America/New_York"}))
+    assert any("fires up to 2 times" in w for w in zoned)
+
+
+async def test_a_schedule_refresh_moves_the_zone_when_only_the_zone_changed(
+    settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operator moved the heartbeat from New York to Tokyo, same expression: the next firing
+    puts the job on Tokyo's clock, rather than reading "nothing changed" off the schedule alone.
+    Tokyo, not London: in late October London is on GMT, where reading the zone or not agree."""
+    from felix.jobs import scheduler
+    from felix.jobs import store as jobs_store
+
+    monkeypatch.setattr(scheduler, "now_ms", lambda: 1_793_318_400_000)  # 2026-10-30T00:00Z, 09:00 Tokyo
+
+    payload = {"scheduled_by": {"tool": "heartbeat", "manifest": "m", "thread_id": None}}
+    read = await jobs_store.put_job(
+        settings,
+        "default",
+        "hb-m-1",
+        schedule="0 8 * * *",
+        timezone="America/New_York",
+        manifest_id="m",
+        payload=payload,
+    )
+    await hb.keep_schedule_current(settings, "default", read, "0 8 * * *", "Asia/Tokyo")
+    job = await jobs_store.get_job(settings, "default", "hb-m-1")
+    assert (job["schedule"], job["timezone"]) == ("0 8 * * *", "Asia/Tokyo")
+    assert job["next_run_at"] == 1_793_401_200_000, "2026-10-30T23:00Z: 08:00 on the 31st in Tokyo"
