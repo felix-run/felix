@@ -48,7 +48,7 @@ On the VM (`/opt/felix`), set:
 ```bash
 FELIX_SECRETS_BACKEND=gcp
 FELIX_GCP_PROJECT=your-project
-FELIX_IMAGE_TAG=0.18.0     # the published `-gcp` image already carries the gcp extra
+FELIX_IMAGE_TAG=0.18.0     # the published `-gcp` image already carries the gcp (and, from 0.19.0, otel) extras
 # Leave Anthropic empty — hydrate from Secret Manager:
 #   secret id: felix-anthropic-api-key  (or ANTHROPIC_API_KEY)
 ANTHROPIC_API_KEY=
@@ -102,6 +102,48 @@ stand down for it, and for any such release between the live version and the tar
 
 The reference deployment (api.felix.run) is rolled this way from a private operations
 repository, so production logs and the deployer identity stay out of this public one.
+
+### Telemetry to Google Cloud
+
+[`compose.otel-gcp.yml`](../docker/compose.otel-gcp.yml) adds one OpenTelemetry Collector to the
+stack (192 MiB). Felix sends it traces and trace-correlated logs over OTLP, and it scrapes the API's
+`/metrics` and the worker's metrics port. Everything goes to Cloud Trace, Cloud Logging and Managed
+Service for Prometheus, authenticated by the VM's service account. Nothing stores or shows telemetry
+on the VM, so the record survives the VM having a bad day. The local
+[`compose.observability.yml`](../docker/compose.observability.yml) (Grafana, Jaeger, Loki) is not a
+production shape: its traces live in memory and its Grafana is an anonymous admin.
+
+The `-gcp` image carries the `otel` extra from 0.19.0. To turn it on:
+
+1. Enable the APIs (`gcloud services enable cloudtrace.googleapis.com logging.googleapis.com
+   monitoring.googleapis.com`; Cloud Trace is off in a new project), grant the VM's service account
+   `roles/cloudtrace.agent`, `roles/logging.logWriter` and `roles/monitoring.metricWriter`, and
+   check that the VM's access scopes allow them (`cloud-platform`, or the three APIs).
+2. Write `deploy/docker/.metrics-token` (git-ignored): a credential holding only `metrics:read`,
+   which `/metrics` requires. Under `FELIX_AUTH_MODE=api_key`, `scripts/metrics-token.sh` mints a
+   key. Under `jwt`, which accepts no API key, mint a JWT in the running API container. The file
+   must be readable by the collector, which runs as uid 10001, and a failed mint must not leave an
+   empty token behind (the scrape would fail quietly):
+
+   ```bash
+   cd /opt/felix
+   sudo docker compose -p felix exec -T api felix mint-jwt --sub metrics-scrape --tenant default \
+     --scopes metrics:read --ttl 7776000 --allow-long-ttl | sudo tee /tmp/metrics-token >/dev/null
+   sudo test -s /tmp/metrics-token && sudo install -o 10001 -g 10001 -m 600 /tmp/metrics-token \
+     deploy/docker/.metrics-token; sudo rm -f /tmp/metrics-token
+   ```
+
+   The token lasts 90 days. Renew it before then, and alert on `up{job="felix-api"} == 0` in Cloud
+   Monitoring, which is how an expired one shows.
+3. Bring the stack up with the overlay once (`make up-gcp-otel`, or the `docker compose` line above
+   with `-f deploy/docker/compose.otel-gcp.yml` added last). `roll.sh` reuses the compose files the
+   running stack was started with, so every later roll keeps it. Rolling back to a release older
+   than the overlay means bringing the stack up without it first: the old checkout has no
+   `compose.otel-gcp.yml`, and `roll.sh` would fail its pull after moving the checkout.
+
+Prompts stay off spans unless `FELIX_OTEL_CAPTURE_CONTENT=true`; the overlay pins the rest of the
+transport, so a vendor's OTLP settings left in `.env` do not reach the collector. Managed Prometheus
+bills per sample, which is why the collector scrapes once a minute.
 
 ### Backups
 

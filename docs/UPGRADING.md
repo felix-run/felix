@@ -53,6 +53,12 @@ or drop the closed child. `triage` (served from `manifests/self`) also refuses a
 now; a scheduled triage job written under `FELIX_AUTH_MODE=none` recorded an anonymous writer and
 will fail until it is rewritten with a key.
 
+**The `-gcp` image carries the `otel` extra.** Nothing changes until `FELIX_OTEL_ENABLED` is set;
+the image is larger by the OpenTelemetry SDK. To export telemetry from a GCE host to Google Cloud,
+see `deploy/gcp/README.md`, "Telemetry to Google Cloud" — an opt-in overlay, not part of the roll.
+Once a host runs it, rolling back past this release means bringing the stack up without the overlay
+first: the older checkout has no `compose.otel-gcp.yml`.
+
 ## 0.18.0: workflow triggers pin a revision, agent steps count toward a run's approval, and the Claude routes move to 5.5
 
 **Every workflow trigger must pin `revision`** (#681). A `FELIX_TRIGGERS` entry that names a

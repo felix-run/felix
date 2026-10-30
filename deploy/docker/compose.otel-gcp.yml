@@ -1,0 +1,99 @@
+# Telemetry to Google Cloud — one OTel Collector beside a GCE + Compose stack.
+#
+# Layered on the gcp + lite overlays, never on its own:
+#   docker compose -f deploy/docker/compose.yml -f deploy/docker/compose.gcp.yml \
+#     -f deploy/docker/compose.lite.yml -f deploy/docker/compose.otel-gcp.yml \
+#     --project-directory . up -d
+#
+# Felix exports OTLP traces and logs to the collector, and the collector scrapes the API's and
+# the worker's metrics; it forwards all three to Cloud Trace, Cloud Logging and Managed Service
+# for Prometheus (deploy/docker/config/otel-collector-gcp.yaml). Nothing stores or shows telemetry
+# on the VM: compose.observability.yml is the local stack, with in-memory traces and an anonymous
+# Grafana, and is not a production shape.
+#
+# Needs, on the host (deploy/gcp/README.md, "Telemetry to Google Cloud"):
+#   - the -gcp image, which carries felix-harness[otel] from 0.19.0;
+#   - deploy/docker/.metrics-token: a credential holding only `metrics:read`;
+#   - the VM's service account granted roles/cloudtrace.agent, roles/logging.logWriter and
+#     roles/monitoring.metricWriter.
+#
+# deploy/gcp/roll.sh reuses the compose files the running stack was started with, so once the
+# stack is up with this overlay every later roll keeps it.
+
+name: felix
+
+x-otel-env: &otel-env
+  # The whole transport is pinned, as compose.observability.yml pins it: compose.yml passes every
+  # FELIX_OTEL_* setting through, and a hosted vendor's protocol, TLS flag or Authorization header
+  # left in the host .env would otherwise reach a plaintext collector on the compose network.
+  FELIX_OTEL_ENABLED: "true"
+  FELIX_OTEL_ENDPOINT: http://otel-collector:4317
+  FELIX_OTEL_PROTOCOL: grpc
+  FELIX_OTEL_INSECURE: "true"
+  FELIX_OTEL_HEADERS: ""
+  FELIX_OTEL_SAMPLE_RATIO: ${FELIX_OTEL_SAMPLE_RATIO:-1.0}
+  # Prompts and completions stay off spans unless you opt in: Cloud Trace is an egress
+  # destination and span attributes are not content-screened.
+  FELIX_OTEL_CAPTURE_CONTENT: ${FELIX_OTEL_CAPTURE_CONTENT:-false}
+  FELIX_OTEL_LOGS: ${FELIX_OTEL_LOGS:-true}
+  # Managed Prometheus bills per sample, and prometheus_client otherwise adds a `_created`
+  # series beside every counter and histogram.
+  PROMETHEUS_DISABLE_CREATED_SERIES: "True"
+
+services:
+  api:
+    environment:
+      <<: *otel-env
+      # One service per process, so Cloud Trace tells the API's spans from the worker's.
+      FELIX_OTEL_SERVICE_NAME: ${FELIX_OTEL_SERVICE_NAME:-felix}-api
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  worker:
+    environment:
+      <<: *otel-env
+      FELIX_OTEL_SERVICE_NAME: ${FELIX_OTEL_SERVICE_NAME:-felix}-worker
+      # No host port is published for this: the worker has no auth middleware. The collector
+      # reaches it on the compose network.
+      FELIX_METRICS_PORT: "9100"
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  # No `scheduler` block: felix-scheduler never fires the worker-startup hook that configures
+  # telemetry, so enabling it there would configure nothing (compose.observability.yml says the same).
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0@sha256:799dc6cf12c96192af37b5bdba804da8c10b3bc563b43cb90c3f3c58d9572ad6
+    command: ["--config=/etc/otel/config.yaml"]
+    environment:
+      FELIX_ENVIRONMENT: ${FELIX_ENVIRONMENT:-production}
+      # Go's soft limit under the container's, so the runtime collects before memory_limiter
+      # starts refusing data.
+      GOMEMLIMIT: ${FELIX_OTEL_GOMEMLIMIT:-150MiB}
+    volumes:
+      - ./deploy/docker/config/otel-collector-gcp.yaml:/etc/otel/config.yaml:ro
+      # Long form so a missing token fails the `up` rather than Docker creating a directory in
+      # its place and every API scrape failing quietly. The file must be readable by uid 10001,
+      # the user the collector image runs as (deploy/gcp/README.md).
+      - type: bind
+        source: ./deploy/docker/.metrics-token
+        target: /etc/otel/metrics-token
+        read_only: true
+        bind:
+          create_host_path: false
+    # The metadata server: the VM's service account, and the project, zone and instance the
+    # resource detector stamps on everything.
+    extra_hosts:
+      - "metadata.google.internal:169.254.169.254"
+      - "metadata:169.254.169.254"
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: ${FELIX_OTEL_MEM_LIMIT:-192m}
+    cpus: ${FELIX_OTEL_CPUS:-0.5}
+    restart: unless-stopped
