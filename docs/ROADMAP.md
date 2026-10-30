@@ -1102,7 +1102,11 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     (whether either redirects, which would read as an error); a feed is fetched and parsed whole
     on every call, with no caching, in a thread a run's time limit does not stop; whether the
     tool should set `relays_untrusted` so it is marker-screened without a manifest asking.
-  - [ ] Microsoft 365 (Graph) on the vault; Wikipedia/Wikidata; news/RSS.
+  - [x] Wikipedia: `connectors__wikipedia_search` and `connectors__wikipedia_article`, keyless,
+    any edition, through the Action API (which resolves redirects; the REST summary answers one
+    with a 302 the egress guard never follows). `travel` binds them. Open: Wikidata facts.
+  - [ ] News/RSS: feeds a person connects, on the ICS shape.
+  - [ ] Microsoft 365 (Graph) on the vault.
 - Found, not fixed:
   - **No per-manifest session retention.** `governance.retention_days` shortens only the audit
     TTL, so `kids` keeps children's transcripts for as long as `FELIX_SESSION_RETENTION_DAYS`

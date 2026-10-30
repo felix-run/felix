@@ -72,6 +72,9 @@ spec:
       at the European Central Bank's daily reference rate, which is not the rate a card or a
       kiosk charges. Use calculator for budgets and totals. search, when it is configured, finds
       opening hours and things to do; a result is a snippet, so say where a claim came from.
+      For what a place is and why it is worth the visit, connectors__wikipedia_search finds the
+      article and connectors__wikipedia_article reads its lead, with the URL to cite; Wikipedia
+      has other language editions (lang) for places better covered in their own language.
 
       Keep each step to one lookup or one calculation. In the answer, lay the trip out day by
       day, give each travel time and figure with the tool it came from, and list what you could
@@ -88,6 +91,8 @@ spec:
     - calculator
     - time_convert
     - date_math
+    - connectors__wikipedia_search
+    - connectors__wikipedia_article
 
   # Bound unconditionally: with FELIX_SEARCH_BACKEND=none the tool answers that search is off,
   # so the manifest compiles on every install that has the plugin.
