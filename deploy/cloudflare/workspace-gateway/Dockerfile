@@ -13,7 +13,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=docker.io/cloudflare/sandbox:1.0.0 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
+COPY --from=docker.io/cloudflare/sandbox:1.0.0@sha256:5bc187515bad0d9d486a4f1476f7d8ad39fe97c57965f044e4b0a0dcc93eac06 /usr/local/bin/sandbox-shim /usr/local/bin/sandbox-shim
 COPY helper/felix_fs.py /opt/felix-fs/felix_fs.py
 # No /workspace here. A restore swaps a new directory in by rename, and overlayfs refuses to rename
 # over a directory that comes from an image layer (EXDEV). The Durable Object makes it at start, or

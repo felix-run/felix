@@ -96,8 +96,11 @@ def test_the_image_is_pinned_to_a_tag_that_could_exist() -> None:
     can prove a tag exists; a shape check is what catches the plausible-looking wrong one.
     """
     image = _load(OVERLAY)["services"]["pgbouncer"]["image"]
-    repo, _, tag = image.partition(":")
+    name, _, digest = image.partition("@")
+    repo, _, tag = name.partition(":")
     assert tag and tag != "latest", image
+    # The digest is what is pulled; the tag stays for the reader and for Dependabot.
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest), f"{image!r} is not pinned by digest"
     if repo == "edoburu/pgbouncer":
         assert re.fullmatch(r"v\d+\.\d+\.\d+-p\d+", tag), (
             f"{tag!r} is not edoburu's tag scheme (vMAJOR.MINOR.PATCH-pN); "

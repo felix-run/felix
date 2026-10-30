@@ -114,7 +114,8 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
    ```
 
    Two things that look like fussiness and are not. **Waiting for CI** is the only cheap moment to
-   catch a bad release: a published tag must never be moved or deleted (see *If a release is wrong*),
+   catch a bad release (`verify` refuses a tag whose commit's CI has not passed, but by then the
+   tag is pushed): a published tag must never be moved or deleted (see *If a release is wrong*),
    so a tag placed on a commit that then goes red cannot be taken back, only superseded. And **push
    the tag by name** rather than `--follow-tags`, which would also try to push `main` — already
    pushed by the merge, and blocked besides.
@@ -185,7 +186,8 @@ than in code:
 | **Require review from code owners** on `main` (plus dismiss stale reviews and require last-push approval) | `.github/CODEOWNERS` is advisory until this is on; with one owner who authors most PRs it also blocks self-merge on those paths without an admin bypass |
 
 `verify` does what a workflow can: the tag's version must be the tree's everywhere, the
-commit must be an ancestor of `main`, and the version must not already have a release.
+commit must be an ancestor of `main`, its own CI run on `main` must have passed, and the version
+must not already have a release.
 
 ## If a release is wrong
 
