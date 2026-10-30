@@ -832,6 +832,22 @@ and `deploy/docker/compose.self.yml` is what points `FELIX_MANIFESTS_DIR` at the
 `FELIX_SKILLS_DIR` at their skills in `manifests/self/skills/`. Running them anywhere else
 needs both.
 
+A plugin may ship agents of its own (`registry.register_manifest_dir`), served after both and only
+where it is installed, so an install without it never lists an agent whose tools it lacks. A name
+held in two places -- `manifests/`, `FELIX_MANIFESTS_DIR`, a plugin's -- is refused rather than
+picked. The connectors plugin ships four this way, each an example of one primitive:
+
+| Agent | Shows | Needs |
+|---|---|---|
+| `concierge` | Tools acting *as the person* (Google, iCloud), memory, a self-scheduled briefing, `notify` | the `google` and/or `icloud` extras, a connection per person, Web Push |
+| `travel` | `plan_execute`: a plan, then its steps | nothing keyed (maps, weather, FX); search if `FELIX_SEARCH_BACKEND` is set |
+| `markets` | A reply judge holding every answer to "no personalised investment advice" | `FELIX_MARKET_API_KEY` |
+| `inbox` | A person in the loop: `ask_user`, and a draft that waits for approval | the `google` extra, a connection |
+
+Beside them in `manifests/`, on core tools only: `researcher` (`reflect`, `network.allow_hosts`,
+delegation to `summarizer`) and `automator` (an agent that builds and runs workflows,
+`spec.workflow_authoring`).
+
 An activation, a rollback or a canary change takes effect at once on the process that made it.
 Each API replica and worker caches a manifest's active version for 30 seconds, so the others
 follow within that window — a rollback is not instant fleet-wide, and a canary split briefly
@@ -851,7 +867,7 @@ Two things to know before flipping an existing deployment:
 
 - **Stored manifests stop being served.** Every tenant collapses onto the image's file, so
   any per-tenant `spec.auth.inbound` tightening — `required_scopes` in particular — is
-  dropped. Five of the eleven bundled manifests are `allow_anonymous: true`.
+  dropped. Five of the fourteen bundled manifests are `allow_anonymous: true`.
 - **`pin_compile` threads will 409 once.** The resolved version becomes `null` and the
   content hash becomes the bundled YAML's, which is drift by design.
 

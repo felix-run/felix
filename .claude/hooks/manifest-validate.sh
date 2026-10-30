@@ -16,7 +16,7 @@ fp=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
 root=$(hook_repo_root "$fp")
 [ -n "$root" ] || exit 0
 rel=$(hook_repo_rel "$fp")
-case "$rel" in manifests/*.yaml|manifests/*.yml) ;; *) exit 0 ;; esac
+case "$rel" in manifests/*.yaml|manifests/*.yml|packages/*/src/*/manifests/*.yaml) ;; *) exit 0 ;; esac
 cd "$root" 2>/dev/null || exit 0
 [ -d .venv ] || exit 0
 
@@ -29,7 +29,7 @@ status=$?
 if [ "$status" -ne 0 ] || printf '%s' "$out" | grep -qiE 'invalid|governance fail'; then
   jq -cn --arg ctx "felix validate-manifest $rel -e $env failed:
 $out
-Fix the manifest before continuing -- 'felix bundle-manifests' loads every file in manifests/ and CI runs it before pytest. Field reference: packages/harness/src/felix/manifests/schema.py; the manifest-authoring skill maps spec fields to the builder code that consumes them." \
+Fix the manifest before continuing -- 'felix bundle-manifests' loads every file in manifests/ and every installed plugin's manifests, and CI runs it before pytest. Field reference: packages/harness/src/felix/manifests/schema.py; the manifest-authoring skill maps spec fields to the builder code that consumes them." \
     '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$ctx}}'
 fi
 exit 0

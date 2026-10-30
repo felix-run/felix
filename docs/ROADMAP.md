@@ -1073,8 +1073,12 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
   - Not done, deliberately: GitHub's connections stay in `github_connections`. Moving them is a
     data migration of live grants for no capability gained; the vault's first consumer is Google.
 - [ ] **Google and Apple connectors**: Calendar, Gmail drafts, Drive; iCloud CalDAV/CardDAV.
-- [ ] **New bundled agents**: `concierge`, `travel` (`plan_execute`), `markets`, `inbox`,
-      `researcher` (`reflect`), `automator`.
+- [x] **New example agents**: `researcher` (`reflect`, `allow_hosts`, delegation to `summarizer`)
+      and `automator` (`workflow_authoring`) in `manifests/`; `concierge`, `travel`
+      (`plan_execute`), `markets` (reply judge) and `inbox` (`ask_user`, approved drafts) shipped
+      by the connectors plugin through `register_manifest_dir`, so an install without it never
+      lists them. Open: no eval fixture scores them yet (concierge's needs mocked connector
+      tools); `travel` and `researcher` search only where an operator runs SearXNG.
 - Found, not fixed:
   - **No per-manifest session retention.** `governance.retention_days` shortens only the audit
     TTL, so `kids` keeps children's transcripts for as long as `FELIX_SESSION_RETENTION_DAYS`

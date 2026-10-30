@@ -61,7 +61,11 @@ class ConnectorsPlugin:
 
 def register(registry: Any) -> None:
     """Entry point, called once at startup in the API and the worker."""
+    from pathlib import Path
+
     registry.register_plugin(ConnectorsPlugin())
+    # Example agents built on these tools: listed only where the plugin is installed.
+    registry.register_manifest_dir(Path(__file__).parent / "manifests")
 
 
 __all__ = ["FAMILIES", "ConnectorsPlugin", "register"]
