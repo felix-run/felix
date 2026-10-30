@@ -15,7 +15,7 @@ import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx2
@@ -29,6 +29,7 @@ from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 
 from felix import __version__
 from felix.bounded_cache import BoundedCache
+from felix.logging_setup import loggable
 from felix.manifests.schema import McpServerRef
 from felix.manifests.tool_match import matches_any, unmatched_patterns
 from felix.observability.metrics import record_counter
@@ -219,19 +220,12 @@ async def list_remote_tools(
 ) -> list[dict[str, Any]]:
     """The server's tools, as wire dicts. ``handshake``, when given, receives what the session
     negotiated: `protocolVersion`, and the server's `instructions` when it sent any."""
-    try:
-        async with _session(ref, allow_http=allow_http) as client:
-            if handshake is not None:
-                handshake["protocolVersion"] = client.protocol_version
-                if client.instructions:
-                    handshake["instructions"] = client.instructions
-            return await _list_tools(client)
-    except Exception:
-        if ref.transport != "stdio":
-            raise
-        # A stdio server that cannot be spawned binds nothing rather than failing the compile.
-        logger.warning("MCP stdio tools/list failed for %s", ref.name, exc_info=True)
-        return []
+    async with _session(ref, allow_http=allow_http) as client:
+        if handshake is not None:
+            handshake["protocolVersion"] = client.protocol_version
+            if client.instructions:
+                handshake["instructions"] = client.instructions
+        return await _list_tools(client)
 
 
 def _bind_remote_tool(
@@ -385,24 +379,38 @@ async def _discover(ref: McpServerRef, *, allow_http: bool) -> tuple[list[dict[s
         return copy.deepcopy(hit)
     handshake: dict[str, Any] = {}
     remotes = await list_remote_tools(ref, allow_http=allow_http, handshake=handshake)
-    # Only an answer with tools is remembered. A stdio server that cannot be spawned degrades to no
-    # tools rather than raising (an HTTP server's failure raises, and nothing is cached), and
-    # caching that would leave the server toolless for the whole TTL.
+    # Only an answer with tools is remembered: a server that failed raised, and one that answered
+    # with none may have tools a moment later, so caching it would leave it toolless for the TTL.
     if remotes:
         _DISCOVERY[key] = copy.deepcopy((remotes, handshake))
     return remotes, handshake
 
 
+@dataclass(frozen=True)
+class McpBinding:
+    """What binding a manifest's MCP servers produced: the tools, and the servers that could not be
+    reached or started, which bound none (`felix.run_sources` says so to the model and the run)."""
+
+    tools: list[Tool]
+    unavailable: list[str]
+
+
 async def tools_from_mcp_servers(
-    refs: list[McpServerRef],
-    *,
-    allow_http: bool = False,
-    manifest_id: str = "",
+    refs: list[McpServerRef], *, allow_http: bool = False, manifest_id: str = ""
 ) -> list[Tool]:
+    """`bind_mcp_servers`' tools alone."""
+    return (await bind_mcp_servers(refs, allow_http=allow_http, manifest_id=manifest_id)).tools
+
+
+async def bind_mcp_servers(
+    refs: list[McpServerRef], *, allow_http: bool = False, manifest_id: str = ""
+) -> McpBinding:
     """Discover and bind tools from each MCP server ref.
 
     Servers are asked concurrently: one slow server used to delay every server after it, and
     the compile waits for all of them either way. Binding keeps the manifest's server order.
+    A server that cannot be reached binds nothing rather than failing the compile, and is named
+    in the binding's `unavailable`.
     """
     # Bounded: a manifest may name up to `MAX_REFS` servers, and each discovery is a connection
     # or a process spawn.
@@ -414,11 +422,13 @@ async def tools_from_mcp_servers(
 
     found = await asyncio.gather(*(discover(ref) for ref in refs), return_exceptions=True)
     out: list[Tool] = []
+    unavailable: list[str] = []
     for ref, result in zip(refs, found, strict=True):
         if isinstance(result, BaseException):
             if not isinstance(result, Exception):
                 raise result
-            logger.warning("failed to list MCP tools from %s", ref.name, exc_info=result)
+            logger.warning("failed to list MCP tools from %s", loggable(ref.name, limit=100), exc_info=result)
+            unavailable.append(ref.name)
             continue
         remotes, handshake = result
         if ref.tools:
@@ -444,7 +454,13 @@ async def tools_from_mcp_servers(
                 out.append(replace(tool, prompt_guidance=guidance) if guidance else tool)
             except Exception:
                 logger.debug("skip remote tool %s from %s", remote.get("name"), ref.name, exc_info=True)
-    return out
+    return McpBinding(tools=out, unavailable=unavailable)
 
 
-__all__ = ["DEFAULT_MCP_TIMEOUT_S", "list_remote_tools", "tools_from_mcp_servers"]
+__all__ = [
+    "DEFAULT_MCP_TIMEOUT_S",
+    "McpBinding",
+    "bind_mcp_servers",
+    "list_remote_tools",
+    "tools_from_mcp_servers",
+]

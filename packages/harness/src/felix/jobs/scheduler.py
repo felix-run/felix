@@ -254,7 +254,6 @@ async def _invoke_job_manifest(
     if not manifest_id:
         return {"status": "skipped", "reason": "no_manifest"}
 
-    from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
     from felix.tools.builtins import default_tool_provider
 
     payload = job.get("payload") or {}
@@ -277,66 +276,102 @@ async def _invoke_job_manifest(
             thread_id=by["thread_id"], created_by=str(job.get("created_by") or "")
         )
     async with async_run_with_context(req_ctx):
-        # Resolved inside the context, as a fiber's is: that is what binds the tenant for RLS.
         try:
-            resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
-        except LookupError:
-            gone = await hb.manifest_missing(settings, tenant_id, job)
-            if gone is None:
-                raise
-            return gone
-        # A firing of a kind with its own prompt, manifest adjustments and record (a heartbeat's),
-        # or None for a plain job, which runs its payload's prompt as it always has.
-        firing = await hb.begin_firing(settings, tenant_id, job, resolved.manifest)
-        if firing is not None:
-            if firing.refusal is not None:
-                return firing.refusal
-            prompt = firing.prompt
-        try:
-            # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
-            # credential's manifest pin -- and the thread's compile pin, as every other way into a
-            # run checks them. A job used to compile straight past both, so `jobs:write` reached any
-            # manifest in the tenant. A refusal raises, and is recorded as the run's error.
-            await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
-            if firing is not None:
-                # After the checks above, which judged the manifest as stored.
-                resolved.manifest = firing.adjust(resolved.manifest)
-            # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
-            # it like any user turn; a refusal raises and is recorded as an error run.
-            messages = [ChatMessage(role="user", content=prompt)]
-            try:
-                agent = await build_tenant_agent(
-                    settings,
-                    manifest=resolved.manifest,
-                    sub_agents=resolved.sub_agents,
-                    tools=provider,
-                    tenant_id=tenant_id,
-                    # The tenant's library only: a writer's personal skills are not recorded with the
-                    # job, and a job running on them would follow instructions its readers cannot see.
-                    skill_owner=None,
-                    # The writer's memory, though: a job runs for its writer, whose person key the
-                    # recorded caller carried (`AuthContext.person`).
-                    person=auth.person,
-                )
-                result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
-            finally:
-                if firing is not None:
-                    await firing.after()
+            out = await _run_job_turn(settings, tenant_id, job, prompt=prompt, provider=provider, ctx=req_ctx)
         except Exception as exc:
-            if firing is not None:
-                raise  # a heartbeat's failure is recorded by `fire_job`, as before; it has no report
-            return await _failed_task(settings, tenant_id, job, resolved.manifest, req_ctx, exc)
-        answer = result.final.content if result.final else ""
-        if firing is not None:
-            return firing.result(str(answer or ""), req_ctx.extras, thread)
-        from felix.jobs.agent_tools import report_back
+            # Recorded here as `fire_job` would record it, so the run's sources are on it too: a
+            # failed heartbeat's, and anything else that escapes the turn.
+            out = _error_result(job, exc)
+    return _with_unavailable_sources(out, req_ctx)
 
-        # A task's answer, into the conversation it was scheduled from.
-        report = await report_back(settings, tenant_id, job, resolved.manifest, req_ctx, str(answer or ""))
+
+async def _run_job_turn(
+    settings: Settings,
+    tenant_id: str,
+    job: dict[str, Any],
+    *,
+    prompt: str,
+    provider: Any,
+    ctx: RequestContext,
+) -> dict[str, Any]:
+    """The job's turn inside its request context -- resolve, check, compile, invoke -- and the
+    result its run records. `_invoke_job_manifest` adds the run's unavailable sources to whatever
+    this returns or raises, in one place, so no exit here can drop them."""
+    from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
+
+    req_ctx, auth, thread, manifest_id = ctx, ctx.auth, str(ctx.thread_id), ctx.manifest_id
+    # Resolved inside the context, as a fiber's is: that is what binds the tenant for RLS.
+    try:
+        resolved = await resolve_tenant_manifest(settings, tenant_id, manifest_id, thread_id=thread)
+    except LookupError:
+        gone = await hb.manifest_missing(settings, tenant_id, job)
+        if gone is None:
+            raise
+        return gone
+    # A firing of a kind with its own prompt, manifest adjustments and record (a heartbeat's),
+    # or None for a plain job, which runs its payload's prompt as it always has.
+    firing = await hb.begin_firing(settings, tenant_id, job, resolved.manifest)
+    if firing is not None:
+        if firing.refusal is not None:
+            return firing.refusal
+        prompt = firing.prompt
+    try:
+        # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
+        # credential's manifest pin -- and the thread's compile pin, as every other way into a
+        # run checks them. A job used to compile straight past both, so `jobs:write` reached any
+        # manifest in the tenant. A refusal raises, and is recorded as the run's error.
+        await prepare_tenant_invoke(settings, resolved=resolved, auth=auth, thread_id=thread)
+        if firing is not None:
+            # After the checks above, which judged the manifest as stored.
+            resolved.manifest = firing.adjust(resolved.manifest)
+        # The prompt is job payload, writable with `jobs:write`. The compiled agent screens
+        # it like any user turn; a refusal raises and is recorded as an error run.
+        messages = [ChatMessage(role="user", content=prompt)]
+        try:
+            agent = await build_tenant_agent(
+                settings,
+                manifest=resolved.manifest,
+                sub_agents=resolved.sub_agents,
+                tools=provider,
+                tenant_id=tenant_id,
+                # The tenant's library only: a writer's personal skills are not recorded with the
+                # job, and a job running on them would follow instructions its readers cannot see.
+                skill_owner=None,
+                # The writer's memory, though: a job runs for its writer, whose person key the
+                # recorded caller carried (`AuthContext.person`).
+                person=auth.person,
+            )
+            result = await agent.invoke(InvokeInput(messages=messages, thread_id=thread))
+        finally:
+            if firing is not None:
+                await firing.after()
+    except Exception as exc:
+        if firing is not None:
+            raise  # a heartbeat's failure is recorded by `fire_job`, as before; it has no report
+        return await _failed_task(settings, tenant_id, job, resolved.manifest, req_ctx, exc)
+    answer = result.final.content if result.final else ""
+    if firing is not None:
+        return firing.result(str(answer or ""), req_ctx.extras, thread)
+    from felix.jobs.agent_tools import report_back
+
+    # A task's answer, into the conversation it was scheduled from.
+    report = await report_back(settings, tenant_id, job, resolved.manifest, req_ctx, str(answer or ""))
     out: dict[str, Any] = {"status": "ok", "answer": answer}
     if report is not None:
         out["report"] = report
     return out
+
+
+def _with_unavailable_sources(result: dict[str, Any], ctx: RequestContext) -> dict[str, Any]:
+    """The run's result, naming the tool sources its compile could not reach, by the manifest that
+    named each -- the job's own, or a child it compiled (`felix.run_sources`). A run that answered
+    without one of its sources is still `ok` -- it said so in its answer -- but the run record says
+    it too, so an operator reading a quiet run's history can tell an outage from a quiet day; and a
+    run that failed says it, since the missing source may be why."""
+    from felix.run_sources import unavailable_sources
+
+    unavailable = unavailable_sources(ctx.extras)
+    return {**result, "unavailable_sources": unavailable} if unavailable else result
 
 
 def _error_result(job: dict[str, Any], exc: Exception) -> dict[str, Any]:
