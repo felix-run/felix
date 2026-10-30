@@ -38,14 +38,45 @@ class JobUpsert(BaseModel):
     workflow_revision: str | None = Field(default=None, max_length=128)
     payload: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+    # When true, a firing with no reader's preferences (`/jobs/{name}/preferences`) runs nothing and
+    # is recorded `skipped`, reason `preferences_missing`. A manifest job's only: refused (422) beside
+    # a `workflow_id`, whose firings have no prompt to carry them.
+    preferences_required: bool = False
+
+
+class PreferencesPut(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    # Free text, read whole by every firing. The byte cap is `PREFERENCES_MAX_BYTES` (422 past it);
+    # an empty document is a DELETE.
+    preferences: str = Field(min_length=1)
+
+
+class PreferencesOut(BaseModel):
+    name: str
+    # The reader's document, or null when there is none.
+    preferences: str | None = None
+    # When and by whom it was last written or cleared; null before either.
+    updated_at: int | None = None
+    updated_by: str | None = None
+    # The job's `preferences_required`: whether a firing without them is skipped.
+    required: bool = False
 
 
 def _public(job: dict[str, Any]) -> dict[str, Any]:
     """A job as a reader sees it: who wrote it and when that was recorded (`recorded_at`, null for
-    a job written before writers were), but not the scopes and pin its runs carry."""
+    a job written before writers were), but not the scopes and pin its runs carry -- nor its
+    preferences' text, which `GET /jobs/{name}/preferences` serves; only whether it has some."""
+    from felix.jobs.preferences import has_preferences
+
     recorded = job.get("created_auth")
     at = recorded.get("recorded_at") if isinstance(recorded, dict) else None
-    return {**{k: v for k, v in job.items() if k != "created_auth"}, "recorded_at": at}
+    hidden = {"created_auth", "preferences"}
+    return {
+        **{k: v for k, v in job.items() if k not in hidden},
+        "recorded_at": at,
+        "preferences_set": has_preferences(job),
+    }
 
 
 @router.get("")
@@ -129,6 +160,10 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     again, the job refuses to fire until it is re-saved, so a later edit never runs on the writer's
     scopes unless the writer saves the job over it.
 
+    The job's reader's preferences (`/jobs/{name}/preferences`) are not part of the body: a
+    re-save by the job's writer carries them over, and one by anyone else clears them -- they were
+    written for the earlier writer's runs, and must not run on the new writer's scopes.
+
     `payload.scheduled_by` in the body is ignored, not refused. It is the record `schedule_task`
     alone writes -- what marks a job as an agent's task, and the conversation it was scheduled
     from, which a firing's `notify` links to and writes into -- so a caller never supplies one.
@@ -146,6 +181,8 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
     tenant_id = tenant_id_from_request(request)
     if body.manifest_id and body.workflow_id:
         raise HTTPException(status_code=422, detail={"error": "manifest_and_workflow"})
+    if body.preferences_required and body.workflow_id:
+        raise HTTPException(status_code=422, detail={"error": "preferences_need_a_manifest"})
     revision = await _workflow_revision(request, tenant_id, body) if body.workflow_id else ""
     ctx = try_get_context()
     if ctx is None:
@@ -169,6 +206,7 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
             enabled=body.enabled,
             created_by=writer,
             created_auth=creator_auth(ctx.auth),
+            preferences_required=body.preferences_required,
         )
     except ScheduleError as exc:
         raise HTTPException(
@@ -204,7 +242,6 @@ async def run_job_now(name: str, request: Request) -> Any:
     it theirs, with their own scopes. A job written before writers were recorded is an operator's.
     """
     from felix.auth.mgmt import auth_from_request, is_operator
-    from felix.context import try_get_context
     from felix.jobs import store as jobs_store
     from felix.jobs.scheduler import fire_job, now_ms
 
@@ -214,10 +251,10 @@ async def run_job_now(name: str, request: Request) -> Any:
     job = await jobs_store.get_job(settings, tenant, name)
     if job is None:
         raise HTTPException(status_code=404, detail="not_found")
-    ctx = try_get_context()
-    asker = ctx.auth.acting_for if ctx is not None else ""
-    writer = str(job.get("created_by") or "")
-    if not (writer and asker == writer) and not is_operator(
+    # `shared_ok`: this route has always matched the writer by subject alone, a shared one
+    # included; the caller also holds `jobs:write` here, so a shared key's holders could re-save the
+    # job and run it as their own anyway.
+    if not _is_job_writer(job, shared_ok=True) and not is_operator(
         settings, auth_from_request(request).principal.scopes
     ):
         raise HTTPException(status_code=403, detail="not_job_writer")
@@ -246,3 +283,118 @@ async def list_job_runs(
         request.app.state.settings, tenant_id_from_request(request), name, limit=limit
     )
     return {"items": items}
+
+
+def _is_job_writer(job: dict[str, Any] | None, *, shared_ok: bool = False) -> bool:
+    """Whether the caller is who `job` runs for: its `created_by`, which a machine acting for that
+    person also matches (`acting_for`). A named person only (`require_person`) unless `shared_ok`:
+    a subject every holder of a credential shares -- a sub-less API key's `api_key` -- names no
+    one, and matching on it would make one holder's job every holder's."""
+    from felix.context import try_get_context
+    from felix.tools.refusal import ToolRefused, require_person
+
+    ctx = try_get_context()
+    asker = ctx.auth.acting_for if ctx is not None else ""
+    writer = str((job or {}).get("created_by") or "")
+    if not writer or asker != writer:
+        return False
+    if shared_ok:
+        return True
+    try:
+        require_person(no_caller="", shared_subject="")
+    except ToolRefused:
+        return False
+    return True
+
+
+async def _preferences_job(request: Request, name: str) -> tuple[dict[str, Any], str]:
+    """The job whose preferences the caller asks for, and who the caller acts for.
+
+    Only the job's writer -- the person it runs for, whose scopes and memory every firing carries,
+    so whose text it may carry -- or an operator (`admin` / `*`), as for `POST /jobs/{name}/run`.
+    `jobs:write` is not enough: a holder of it who could write another person's preferences would
+    put their own words into that person's runs without re-saving the job, which is what moves a job
+    to whoever writes it. The writer needs no jobs scope at all, so a person steers the task an
+    agent scheduled for them, or their heartbeat. Anyone else gets the same 403 whether or not the
+    job exists; an operator gets 404 for one that does not. A workflow job is refused (422): its
+    firings have no prompt to carry preferences, so a document there would do nothing."""
+    from felix.auth.mgmt import SCOPE_ADMIN, auth_from_request, is_operator, missing_scopes
+    from felix.context import try_get_context
+    from felix.jobs import store as jobs_store
+
+    settings = request.app.state.settings
+    job = await jobs_store.get_job(settings, tenant_id_from_request(request), name)
+    if not _is_job_writer(job) and not is_operator(settings, auth_from_request(request).principal.scopes):
+        # Not the writer, so the one way in left is an operator's scope.
+        raise missing_scopes(SCOPE_ADMIN)
+    if job is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    if job.get("workflow_id"):
+        raise HTTPException(status_code=422, detail={"error": "preferences_need_a_manifest"})
+    ctx = try_get_context()
+    return job, ctx.auth.acting_for if ctx is not None else ""
+
+
+def _preferences_out(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": job["name"],
+        "preferences": job.get("preferences"),
+        "updated_at": job.get("preferences_updated_at"),
+        "updated_by": job.get("preferences_updated_by"),
+        "required": bool(job.get("preferences_required")),
+    }
+
+
+@router.get("/{name}/preferences", response_model=PreferencesOut)
+async def get_job_preferences(name: str, request: Request) -> dict[str, Any]:
+    """The job's reader's preferences: what every firing of it reads, in full. The job's writer or an
+    operator only -- the text may be personal; `GET /jobs` says only whether there is any."""
+    job, _who = await _preferences_job(request, name)
+    return _preferences_out(job)
+
+
+async def _write_preferences(request: Request, name: str, text: str | None) -> dict[str, Any]:
+    """Write (or, with None, clear) the preferences and audit it -- never the text, which is the
+    reader's and may be personal; its size says enough."""
+    from felix.audit import store as audit_store
+    from felix.jobs import store as jobs_store
+    from felix.jobs.preferences import PREFERENCES_MAX_BYTES, PreferencesTooLong
+
+    job, who = await _preferences_job(request, name)
+    settings = request.app.state.settings
+    tenant_id = tenant_id_from_request(request)
+    try:
+        row = await jobs_store.set_preferences(settings, tenant_id, name, text, by=who)
+    except PreferencesTooLong:
+        raise HTTPException(
+            status_code=422, detail={"error": "preferences_too_long", "max_bytes": PREFERENCES_MAX_BYTES}
+        ) from None
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    audit_store.record_event(
+        settings,
+        tenant_id,
+        "job.preferences",
+        manifest_id=str(job.get("manifest_id") or ""),
+        principal_subj=who,
+        status="cleared" if text is None else "saved",
+        payload={"job": name, "bytes": len(text.encode("utf-8")) if text is not None else 0},
+    )
+    return _preferences_out(row)
+
+
+@router.put("/{name}/preferences", response_model=PreferencesOut)
+async def put_job_preferences(name: str, body: PreferencesPut, request: Request) -> dict[str, Any]:
+    """Write the preferences the job's reader holds for its output: what to cover, skip, its tone
+    and length. Every firing carries them whole in its prompt, fenced as the reader's, and they can
+    grant no tool nor change where the output goes. The job's writer or an operator only -- never
+    the agent. Re-saving the job (`PUT /jobs/{name}`) keeps them for the same writer and clears them
+    for a new one, whose scopes they would otherwise run on."""
+    return await _write_preferences(request, name, body.preferences)
+
+
+@router.delete("/{name}/preferences", response_model=PreferencesOut)
+async def delete_job_preferences(name: str, request: Request) -> dict[str, Any]:
+    """Clear the job's preferences. A job that requires them then skips its firings until they are
+    written again. Who may: as for `PUT`."""
+    return await _write_preferences(request, name, None)

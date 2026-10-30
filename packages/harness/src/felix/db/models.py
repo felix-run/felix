@@ -185,6 +185,14 @@ class Job(Base):
     health_json: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"), default=dict
     )
+    # The reader's standing preferences for the job's output (`felix.jobs.preferences`,
+    # `0052_job_preferences`): written only over `/jobs/{name}/preferences`, never by the agent nor
+    # by a job write, which carries them over. Every firing reads them whole.
+    preferences: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferences_updated_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    preferences_updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The job writer's: a firing with no preferences runs nothing and is recorded `skipped`.
+    preferences_required: Mapped[bool] = mapped_column(Boolean, server_default=false(), default=False)
 
 
 class Approval(Base):

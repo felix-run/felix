@@ -107,6 +107,31 @@ definition of deleting a thread whole, which retention's memory arm also uses; c
 and never the conversation. An expired enrolment takes `fire_job`'s credential-expired path with
 `hb.CREDENTIAL_EXPIRED`. e2e: `tests/e2e/test_heartbeat.py`.
 
+**Reader's preferences** (`jobs/preferences.py`, `0052_job_preferences`). `jobs.preferences` (text,
+at most `PREFERENCES_MAX_BYTES` = 8 KiB of UTF-8, refused past it as `PreferencesTooLong`) with
+`preferences_updated_at` / `_by`, written only by `store.set_preferences` (one conditional UPDATE,
+never an upsert) from `GET/PUT/DELETE /jobs/{name}/preferences`. All three need the job's writer
+(`routes/jobs.py:_is_job_writer`: `created_by == acting_for`, a named person per `require_person`)
+or an operator (`is_operator`) -- not `jobs:read` / `jobs:write`, since the text runs on the
+writer's scopes; anyone else gets `missing_scopes(SCOPE_ADMIN)` whether the job exists or not, and a
+workflow job 422 `preferences_need_a_manifest`. `run_job_now` uses the same helper with
+`shared_ok=True`, its long-standing subject-only match. Each write is audited `job.preferences`
+(`saved` / `cleared`, payload the job and the byte count, never the text). `put_job` keeps them on
+a re-save by the same `created_by` and clears them (`_NO_PREFERENCES`) when the writer changes, on
+both arms; the memory arm starts from a copy of the stored row, so any column the writer does not
+write is kept as the Postgres UPDATE keeps it. `preferences_required` is the writer's (`JobUpsert`,
+false when left out; a heartbeat's enrolment passes the stored value). No tool, manifest field or
+`schedule_task` argument sets them. In `_invoke_job_manifest`, `missing_preferences(job)` returns a
+`skipped` result (`reason: preferences_missing`, `error: PREFERENCES_MISSING_MESSAGE`, which
+`fire_job` writes to `last_error`) before anything resolves, so no model call; `_run_job_turn` calls
+`with_preferences(prompt, job)` after `begin_firing` -- on a heartbeat's checklist as on a job's
+prompt -- appending the text whole in `fence_fresh(..., PREFERENCES_TAG)` (a region named
+`reader_preferences-<12 hex>` per firing) and `PREFERENCES_FRAME`, in the *user* turn (the reader's
+authority, screened like the prompt), never the system prompt. `GET /jobs` shows `preferences_set`,
+not the text. The watch ignores the skipped runs (`failing_streak`) and a skipping job keeps its
+schedule, so it is never `overdue` either: visible on `last_status` / `last_error`, never alerted.
+e2e: `tests/e2e/test_job_preferences.py`; contract in `tests/conformance/test_jobs_store.py`.
+
 ## Job health watch
 
 `jobs/tick.py`: `run_due_jobs_all_tenants` ends with `record_tick` (Redis key `TICK_KEY`, never moved

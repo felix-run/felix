@@ -105,8 +105,13 @@ def require_mgmt_scopes(request: Request, *scopes: str) -> None:
     if holds_mgmt_scopes(cfg, _scopes_of(auth), *scopes):
         return
     have = _scopes_of(auth)
-    missing = [s for s in scopes if not _satisfied(have, s)]
-    raise HTTPException(status_code=403, detail=f"missing scopes: {', '.join(missing)}")
+    raise missing_scopes(*(s for s in scopes if not _satisfied(have, s)))
+
+
+def missing_scopes(*scopes: str) -> HTTPException:
+    """The 403 every management check answers a caller lacking `scopes` with -- one spelling, for a
+    route whose own rule (an owner, or an operator) falls back to naming the scope it lacked."""
+    return HTTPException(status_code=403, detail=f"missing scopes: {', '.join(scopes)}")
 
 
 def tenant_id_from_request(request: Request) -> str:
@@ -219,6 +224,7 @@ __all__ = [
     "auth_from_request",
     "holds_mgmt_scopes",
     "is_operator",
+    "missing_scopes",
     "require_mgmt_scopes",
     "subject_from_request",
     "tenant_id_from_request",

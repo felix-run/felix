@@ -1179,11 +1179,21 @@ The gaps, in order:
       local day. A job's zone must be a canonical `available_timezones()` key, but `FELIX_TIMEZONE`'s
       validator still takes any name `ZoneInfo` loads (`america/new_york` on macOS, `Factory`), and
       lets an overlong one raise `OSError` at boot.
-- [ ] **Reader-owned preferences and agent state.** A preferences document on the job that its
-      reader writes, the agent cannot, and every firing reads in full (failing closed when it is
-      missing). Beside it, a small store for the agent's own bookmarks and ledger. Today state lives
-      in the job thread's workspace by convention, and per-person memory is writable by the agent
-      and recalled by rank.
+- [~] **Reader-owned preferences and agent state.** *Preferences: done in this PR.* A document on
+      the job (`jobs.preferences`, migration `0052`, both arms, conformance contract; 8 KiB) read and
+      written over `GET/PUT/DELETE /jobs/{name}/preferences` by the job's own writer -- who needs no
+      jobs scope, so a task's or heartbeat's person steers it -- or an operator, never by every
+      `jobs:write` holder, since the text runs on the writer's scopes. Audited (`job.preferences`,
+      never the text). No tool, manifest field or `schedule_task` argument sets it; a re-save by the
+      same writer keeps it and one by another writer clears it. Every firing appends it whole to its
+      user turn in a per-firing `fence_fresh` region with a fixed line saying it cannot grant tools or
+      change where the output goes, a heartbeat's checklist included. `preferences_required: true`
+      fails closed: a firing with none runs nothing and is recorded `skipped` (`preferences_missing`,
+      "waiting for its reader's preferences" on `last_error`); the watch does not alert on it.
+      *Open:* the agent's own state -- a small store for its bookmarks and ledger; today that lives
+      in the job thread's workspace by convention. *Follow-ups:* a `FelixClient` method for the
+      route; `list_scheduled` saying whether a task has preferences; `POST /jobs/{name}/run` still
+      matches a shared subject as the writer (`shared_ok`), where the preferences routes refuse it.
 
 ### Auth audit (2026-10-12)
 

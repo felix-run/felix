@@ -81,6 +81,10 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             "created_by": row.get("created_by"),
             "created_auth": deepcopy(row.get("created_auth")),
             "health": deepcopy(row.get("health_json") or {}),
+            "preferences": row.get("preferences"),
+            "preferences_updated_at": row.get("preferences_updated_at"),
+            "preferences_updated_by": row.get("preferences_updated_by"),
+            "preferences_required": bool(row.get("preferences_required")),
         }
     return {
         "tenant_id": row.tenant_id,
@@ -100,6 +104,10 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
         "created_by": row.created_by,
         "created_auth": row.created_auth,
         "health": row.health_json or {},
+        "preferences": row.preferences,
+        "preferences_updated_at": row.preferences_updated_at,
+        "preferences_updated_by": row.preferences_updated_by,
+        "preferences_required": bool(row.preferences_required),
     }
 
 
@@ -180,6 +188,14 @@ async def get_job(settings: Settings, tenant_id: str, name: str) -> dict[str, An
         return _job_dict(row) if row else None
 
 
+# A job with no preferences: what a new job holds, and what a rewrite by another writer leaves.
+_NO_PREFERENCES: dict[str, Any] = {
+    "preferences": None,
+    "preferences_updated_at": None,
+    "preferences_updated_by": None,
+}
+
+
 async def put_job(
     settings: Settings,
     tenant_id: str,
@@ -195,6 +211,7 @@ async def put_job(
     created_by: str | None = None,
     created_auth: dict[str, Any] | None = None,
     first_run_at: int | None = None,
+    preferences_required: bool = False,
 ) -> dict[str, Any]:
     """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar, or
     `timezone` is not a zone or is given with a schedule it cannot move (`parse_schedule`), and
@@ -215,6 +232,11 @@ async def put_job(
     `first_run_at` is when a recurring job this write *creates* is first due, for a writer that
     wants it to wait for its schedule (`jobs/agent_tools.py`); by default a new job is due on the
     next sweep. A rewrite ignores it, and so does a one-shot, which is due at its own moment.
+
+    The job's preferences (`felix.jobs.preferences`) are written only by `set_preferences`. A rewrite
+    by the same `created_by` carries them over; one by anyone else clears them, since their text
+    would otherwise run on the new writer's scopes and memory -- so a job requiring them then waits
+    for its new writer to set them. `preferences_required` is the writer's, replaced like the rest.
     """
     from felix.jobs.schedule import ScheduleError, parse_schedule
 
@@ -250,34 +272,46 @@ async def put_job(
 
     if _use_memory(settings):
         existing = _memory_jobs.get((tenant_id, name))
-        row = {
-            "tenant_id": tenant_id,
-            "name": name,
-            "schedule": schedule,
-            "timezone": timezone,
-            "manifest_id": manifest_id,
-            "workflow_id": workflow_id,
-            "workflow_revision": workflow_revision,
-            "last_run_at": existing.get("last_run_at") if existing else None,
-            "next_run_at": _next_run_at(
-                (existing["schedule"], existing.get("timezone")), existing.get("next_run_at")
+        if existing is None:
+            row: dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "name": name,
+                "last_run_at": None,
+                "next_run_at": _due_on_new_schedule(),
+                "last_status": "",
+                "last_error": "",
+                "created_at": ts,
+                "health_json": {},
+                **_NO_PREFERENCES,
+            }
+        else:
+            # Everything the writer does not write is kept -- the run state, the watch's incidents
+            # (`set_health`), the reader's preferences (`set_preferences`) -- so a column added later
+            # is carried over here by default, as the Postgres arm's UPDATE carries it.
+            row = deepcopy(existing)
+            row.update(
+                next_run_at=_next_run_at(
+                    (existing["schedule"], existing.get("timezone")), existing.get("next_run_at")
+                ),
+                last_status=_status_after_write(existing.get("last_status", ""), enabled),
+                last_error=_error_after_write(
+                    existing.get("last_status", ""), existing.get("last_error", ""), enabled
+                ),
             )
-            if existing
-            else _due_on_new_schedule(),
-            "last_status": _status_after_write(existing.get("last_status", ""), enabled) if existing else "",
-            "last_error": (
-                _error_after_write(existing.get("last_status", ""), existing.get("last_error", ""), enabled)
-                if existing
-                else ""
-            ),
-            "created_at": existing["created_at"] if existing else ts,
-            "payload_json": deepcopy(payload) if payload else {},
-            "enabled": enabled,
-            "created_by": created_by,
-            "created_auth": deepcopy(created_auth),
-            # The watch's, never the writer's: a re-save leaves an open incident open (`set_health`).
-            "health_json": deepcopy(existing.get("health_json") or {}) if existing else {},
-        }
+            if existing.get("created_by") != created_by:
+                row.update(_NO_PREFERENCES)
+        row.update(
+            schedule=schedule,
+            timezone=timezone,
+            manifest_id=manifest_id,
+            workflow_id=workflow_id,
+            workflow_revision=workflow_revision,
+            payload_json=deepcopy(payload) if payload else {},
+            enabled=enabled,
+            created_by=created_by,
+            created_auth=deepcopy(created_auth),
+            preferences_required=preferences_required,
+        )
         _memory_jobs[(tenant_id, name)] = row
         return _job_dict(row)
 
@@ -299,6 +333,7 @@ async def put_job(
                 enabled=enabled,
                 created_by=created_by,
                 created_auth=deepcopy(created_auth),
+                preferences_required=preferences_required,
             )
             db.add(row)
         else:
@@ -312,10 +347,53 @@ async def put_job(
             row.last_error = _error_after_write(row.last_status, row.last_error, enabled)
             row.last_status = _status_after_write(row.last_status, enabled)
             row.enabled = enabled
+            if row.created_by != created_by:
+                # A new writer: the text was written for the old one's runs, and must not run on
+                # this writer's scopes and memory. Same writer: left as they are (`set_preferences`).
+                for column, value in _NO_PREFERENCES.items():
+                    setattr(row, column, value)
             row.created_by = created_by
             row.created_auth = deepcopy(created_auth)
+            row.preferences_required = preferences_required
         await db.commit()
         return _job_dict(row)
+
+
+async def set_preferences(
+    settings: Settings, tenant_id: str, name: str, text: str | None, *, by: str
+) -> dict[str, Any] | None:
+    """Write the job's preferences -- `text`, or None to clear them -- as `by`, now. Nothing else
+    about the job changes: not its writer, its schedule nor its runs. One `UPDATE ... WHERE`, never
+    an upsert, so it cannot re-create a job deleted meanwhile. The job as it is now, or None when it
+    is gone. Raises `PreferencesTooLong` past `PREFERENCES_MAX_BYTES`."""
+    from felix.jobs.preferences import check_preferences
+
+    if text is not None:
+        text = check_preferences(text)
+    values = {
+        "preferences": text,
+        "preferences_updated_at": now_ms(),
+        "preferences_updated_by": by or None,
+    }
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None:
+            return None
+        row.update(values)
+        return _job_dict(row)
+
+    from sqlalchemy import update
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Job).where(Job.tenant_id == tenant_id, Job.name == name).values(**values)
+        )
+        await db.commit()
+        if not getattr(result, "rowcount", 0):
+            return None
+        row = await db.get(Job, (tenant_id, name), populate_existing=True)
+        return _job_dict(row) if row else None
 
 
 # Disabling a job is the operator's kill switch (`PUT /jobs/{name}` with `enabled: false`), and it
@@ -853,6 +931,7 @@ __all__ = [
     "reset_jobs_for_tests",
     "scheduled_by",
     "set_health",
+    "set_preferences",
     "set_schedule",
     "touch_run",
     "trim_runs",

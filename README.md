@@ -578,7 +578,13 @@ Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/
 (`{"schedule": "0 8 * * 1-5", "timezone": "America/New_York"}` is 08:00 New York time on weekdays,
 all year). Across a daylight-saving change a time the clocks skip fires at the first instant after the
 gap and a time they repeat fires once, at its first occurrence; a zone beside an interval or `at:`,
-which no zone moves, is refused. `POST /jobs/{name}/run` runs a job now
+which no zone moves, is refused. A job's reader writes its **preferences** over
+`PUT /jobs/{name}/preferences` (free text, at most 8 KiB: what to cover, skip, tone, length) — the
+job's own writer, who needs no jobs scope (so a person steers the task an agent scheduled for them),
+or an operator; not every `jobs:write` holder. Every firing carries them whole in its prompt; the
+agent cannot change them; re-saving the job keeps them, and a re-save by someone else clears them. A
+job with `"preferences_required": true` and none yet runs nothing: its run is recorded `skipped`,
+"waiting for its reader's preferences". `POST /jobs/{name}/run` runs a job now
 instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are
 unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting
 — see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back
