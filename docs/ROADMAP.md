@@ -5,7 +5,7 @@ concrete enough to pick up in a single session.
 
 **Repos:** `felix-run/felix` (harness) · `felix-run/web` (chat-ui + docs)
 **Live:** [api.felix.run](https://api.felix.run) · [make.felix.run](https://make.felix.run) · [docs.felix.run](https://docs.felix.run)
-**Last reviewed:** 2026-10-23 (cutting 0.18.0: required trigger revision pins (#680/#681), agent steps toward run approval (#683), Claude Haiku 5.5 pricing and the 5.5 default routes (#682); no open item closed); before that 2026-10-23 (cutting 0.17.0: per-person memory (#677), agent workflow authoring and run approval (#671/#676) landed; person-bound threads added as open); before that 2026-10-22 (cutting 0.16.1: the memory audit's duplicate capture, task expiry and embedding backfill landed in #666/#669; per-person memory scope stays open under Harness); before that 2026-10-22 (cutting 0.16.0: self-scheduling, notify, unattended runs and heartbeats landed through #663; the W4 entry is current); before that 2026-10-15 (cutting 0.15.0: the workflows console and #647 marked done, the open workflow decisions listed); before that 2026-10-10 (completed items folded into HISTORY.md); before that 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
+**Last reviewed:** 2026-10-30 (cutting 0.19.0: the OWASP audit's calculator bound (#755) and agent-run visibility (#756) landed, and the `-gcp` image carries `otel` with a Google Cloud collector overlay (#757)); before that 2026-10-23 (cutting 0.18.0: required trigger revision pins (#680/#681), agent steps toward run approval (#683), Claude Haiku 5.5 pricing and the 5.5 default routes (#682); no open item closed); before that 2026-10-23 (cutting 0.17.0: per-person memory (#677), agent workflow authoring and run approval (#671/#676) landed; person-bound threads added as open); before that 2026-10-22 (cutting 0.16.1: the memory audit's duplicate capture, task expiry and embedding backfill landed in #666/#669; per-person memory scope stays open under Harness); before that 2026-10-22 (cutting 0.16.0: self-scheduling, notify, unattended runs and heartbeats landed through #663; the W4 entry is current); before that 2026-10-15 (cutting 0.15.0: the workflows console and #647 marked done, the open workflow decisions listed); before that 2026-10-10 (completed items folded into HISTORY.md); before that 2026-10-08 (after 0.12.0 rolled to production; the full open-item check was
 2026-09-29, after 0.5.0)
 
 Completed waves and what they taught now live in [HISTORY.md](HISTORY.md).
@@ -1273,13 +1273,13 @@ one member act with another's authority.
 OWASP Top 10 and LLM Top 10 against `main` at #753, read-only. No critical or high finding beyond
 per-principal thread ownership above. Dependencies: `pip-audit` clean on the locked set with extras.
 
-- [x] **Calculator bound.** `_digits` sized an int past ~1e308 as one digit, so a 24-character
+- [x] **Calculator bound** (#755). `_digits` sized an int past ~1e308 as one digit, so a 24-character
       chained power built a multi-hundred-megabyte int on the event loop; ints are now sized by
       `math.log10`, which takes any size. Worst product under the 1,000-character cap is ~0.1 s.
-- [ ] **Workflow step transcripts.** `GET /workflows/{id}/runs/{run}/steps/{step}/thread`
-      (`routes/workflow_runs.py`) needs only `workflows:read`; a run an agent started for a person
-      carries that person's memory. Limit `agent:*` runs to the starter or an operator, as
-      `routes/jobs.py:_writer_or_operator_job` does.
+- [x] **Workflow step transcripts** (#756). A run an agent started for a person answers only that
+      person or an operator, and no chat route lists, searches or polls a step's thread. Open: an
+      approval step's row still carries its payload under `approvals:read`; the person is matched
+      on the bare subject; job-started runs for a person keep tenant-wide visibility.
 - [ ] **Denied requests leave no trace.** A 401 from `auth/middleware.py` or a 403 from
       `require_mgmt_scopes` logs nothing and counts nothing; add `felix_auth_denied_total` and
       `felix_scope_denied_total` and a sampled warning keyed by client, never the token.
