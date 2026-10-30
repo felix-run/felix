@@ -3506,7 +3506,10 @@ firing records when it starts). The stamp is what catches a shared credential: e
 sub-less API key is the one subject `api_key`, so a re-save by one holder counts as a new writer and
 clears the state, and a firing already running for another holder passes the subject check but not
 the stamp. A writer re-saving their own job (a named person) clears nothing and moves no stamp, so
-their firing in flight keeps writing.
+their firing in flight keeps writing. **So a job saved under a shared credential loses its state on
+every re-save** -- a deploy that re-PUTs its jobs with a sub-less API key resets their bookmarks each
+time; save jobs that keep state as a named person (a key with a `sub`). `DELETE /jobs/{name}/state`
+takes no row lock: a write from the writer's own firing already in flight can land just after it.
 
 **Values never reach logs.** A store failure inside a state tool is logged by the error's class, the
 job and the key alone -- never with its traceback, since a database driver's error renders the
