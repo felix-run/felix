@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from datetime import date
 from typing import Any
 
+from felix.auth.connections import ProviderFailed, StoreUnavailable
 from felix.tools.errors import ToolErrorCode, code_for_status, tool_error_output
 from felix.tools.types import Tool, ToolInput, ToolInvocationCtx, ToolOutput, define_tool_with_executor
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -46,6 +47,11 @@ def _failed(service: str, exc: Exception) -> ToolOutput:
     if isinstance(exc, UpstreamError):
         code = code_for_status(exc.status)
         return tool_error_output(code, f"{service} answered {exc.status}")
+    if isinstance(exc, ProviderFailed | StoreUnavailable):
+        # A person's connection that could not be refreshed or read just now: an outage, not theirs.
+        return tool_error_output(
+            ToolErrorCode.TRANSPORT_UNAVAILABLE, f"{service} could not be reached just now"
+        )
     if isinstance(exc, KeyRefused):
         return tool_error_output(ToolErrorCode.PERMISSION_DENIED, f"{service} refused this deployment's key")
     if isinstance(exc, QuotaSpent):
@@ -89,11 +95,14 @@ def connector_tool(
     run: Run,
     hosts: Iterable[str],
     prompt_guidance: str = "",
+    read_only: bool = True,
 ) -> Tool:
-    """A read-only connector tool: it changes nothing anywhere, so it is replay-safe and plan
-    mode lets it run. `service` names the upstream in what a failure tells the model -- one family
-    can have several (weather's forecast and alerts), and "it failed" should say which. `hosts`
-    may not be empty: a tool that declares nothing is one `network.allow_hosts` cannot hold."""
+    """A connector tool, read-only unless said otherwise. One that only reads changes nothing
+    anywhere, so it is replay-safe and plan mode lets it run; one that writes (`read_only=False`:
+    an event created, a draft saved) is neither, so plan mode holds it and a resumed run never
+    repeats it. `service` names the upstream in what a failure tells the model -- one family can
+    have several (weather's forecast and alerts), and "it failed" should say which. `hosts` may not
+    be empty: a tool that declares nothing is one `network.allow_hosts` cannot hold."""
     hosts = frozenset(hosts)
     if not hosts:
         raise ValueError(f"connector tool {name!r} declares no hosts")
@@ -103,8 +112,8 @@ def connector_tool(
         executor=_ConnectorExecutor(service=service, args=args, run=run),
         args=args,
         source=f"connectors:{family}",
-        replay_safe=True,
-        read_only=True,
+        replay_safe=read_only,
+        read_only=read_only,
         prompt_guidance=prompt_guidance,
         egress_hosts=hosts,
     )

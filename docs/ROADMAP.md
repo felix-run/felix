@@ -1046,7 +1046,12 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     (`DELETE /connections/{provider}/{account}`) and the operator (`connections:admin`).
   - [x] Connecting Google: `/connections/google/start` and `/callback` (`felix.auth.google_connect`),
     the vault's first writer, with Google as its first registered provider (refresh, revoke).
-  - [ ] Google tools in `felix-connectors`: Calendar, Gmail drafts, Drive, reading `ctx.auth.person`.
+  - [x] Google tools in `felix-connectors` (the `google` extra): Calendar list/free/create, Gmail
+    search/read/draft (no send), Drive search/read, each as `ctx.auth.person` through the vault.
+    Requests are built by `google-api-python-client` from its shipped discovery documents and sent
+    by the egress-guarded client, so `allow_hosts` and the SSRF guard hold. Open: per-run masking
+    of the access tokens opened (no answer or error carries one today); Microsoft 365 on the same
+    shape.
   - [ ] MCP `auth: person`: a remote MCP server called with the person's token from the vault.
   - Owed by the first consumer (Google): its test goes through the real consent callback and
     then `GET /connections`, never `save_oauth` directly -- nothing in production writes the
