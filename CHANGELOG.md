@@ -10,6 +10,326 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-10-30
+
+### Added
+
+- `spec.scheduling.report_back` (default on): a scheduled task's answer is added to the conversation it was scheduled from, as an in-context assistant entry the next turn reads; the job's run records the outcome as `report`. (#690)
+
+- `deploy/gcp/backup/`: nightly backups of Postgres and the object store for a single GCE VM running the Compose stack. It copies to a GCS bucket the VM cannot delete from, adds daily disk snapshots, and includes `felix-restore-drill`, which restores the newest copy into a throwaway container and checks it. The runbook is `deploy/gcp/backup/README.md`. (#691)
+
+- A scheduled task whose firing fails now reports in its conversation that it did not finish, with the run's recorded error. (#693)
+
+- **Start from an issue or pull request.** `GET /github/repos/{owner}/{repo}/items` lists a repository's open issues and pull requests (`kind`, `state`, `q` by title; at most 30, `truncated` past that), and `GET .../items/{number}` reads one with its markdown body (at most 20,000 characters, `body_truncated`), both read as you through the GitHub App. (#694)
+
+- `POST /chat/compact` reports `outcome`: `compacted`, `nothing_to_compact`, `cancelled`, `empty_summary`. (#696)
+
+- `metadata.context_key` on custom session entries: among in-context entries sharing a key, only the newest reaches the model. A client's keys over `/chat/sessions/custom` are stored as `client:<key>`. (#700)
+
+- `felix skills validate <dir>` checks a local Agent Skill against the agentskills.io frontmatter rules and what a skill library saves, before it is published. (#705)
+
+- A person runs an Agent Skill by typing `/skill-name args` in a chat turn. The harness activates it before the model's first step, through the full governance stack, with the arguments substituted where the skill says `$ARGUMENTS`, `$ARGUMENTS[N]` or `$N`. (#708)
+
+- `spec.skills[].preload: true` starts every conversation with a declared skill activated, once. (#708)
+
+- Skill frontmatter `user-invocable` and `argument-hint`, reported with `user_invocable` and `argument_hint` on `GET /skills/{manifest}`. (#708)
+
+- Agent Skills with frontmatter `context: fork` run in a subagent. `activate_skill` hands the skill and a `task` to one of the manifest's `spec.delegation.agents`, named by `agent:`, as a call of the governed `task` tool, and returns only that agent's answer. `model:` picks the subagent's model where the deployment defines the route and governance allows it. (#710)
+
+- A foreground `task` child's tool calls now stream to the parent as `subagent_tool` frames, between `subagent_start` and `subagent_end`. Each call has a `start` frame carrying its arguments and an `end` frame carrying the first line of its result. They are live only: not in the session log, and not sent from durable runs. (#712)
+
+- `spec.skill_scripts` and `run_skill_script`: run a script from an active skill's `scripts/` through the shell runner (or a development box), under interpreters both the manifest and the new `FELIX_SKILL_SCRIPT_INTERPRETERS` allow. Disabled by default. (#713)
+
+- `FELIX_SKILL_SCRIPT_SOURCES` (default `host`): which skills' scripts may run. `library` and `personal` are opt-in. (#713)
+
+- The shell runner admits `kind: "skill_script"` by its own interpreter list, and `felix doctor` reports the list. (#713)
+
+- The optional `felix-connectors` plugin (`uv sync --extra connectors`) adds weather tools: `connectors__weather_current`, `connectors__weather_forecast` and `connectors__weather_alerts`.
+  - They need no key: Open-Meteo provides the forecast and the US National Weather Service provides alerts.
+  - `FELIX_WEATHER_BACKEND` selects the forecast backend from an open registry. `FELIX_WEATHER_UNITS` sets the default units. `FELIX_CONNECTORS_CONTACT` is added to the User-Agent. (#716)
+
+- `Tool.egress_hosts` lets a plugin tool declare the hosts it reaches. (#716)
+
+- A person's `/skill-name` now runs in `plan_execute`, `parallel`, `groupchat` and threadless
+  `reflect` agents: each child step starts with the skill activated under its own catalog. (#717)
+
+- Maps tools in the `felix-connectors` plugin: `connectors__geocode`, `connectors__reverse_geocode`, `connectors__places_search`, `connectors__route` (driving, walking, cycling) and `connectors__timezone_at`.
+  They need no key, using OpenStreetMap Nominatim, FOSSGIS OSRM and Open-Meteo. The public instances are paced to one request a second per process.
+  The backends are selected by `FELIX_MAPS_GEOCODER` and `FELIX_MAPS_ROUTER`. (#718)
+
+- A `context: fork` skill that names no `agent:` (or names its own manifest) now runs in a react
+  manifest that has no `spec.delegation`. The manifest itself runs it as its subagent, compiled
+  on the first fork, governed by every control on `task`, and one level deep. (#719)
+
+- Market tools in the `felix-connectors` plugin: `connectors__quote`, `connectors__quote_history` and `connectors__symbol_search`, from Finnhub or Alpha Vantage (`FELIX_MARKET_BACKEND`, `FELIX_MARKET_API_KEY`).
+  Also keyless `connectors__fx_rate`, the ECB's reference rates via Frankfurter (`FELIX_FX_BACKEND`). (#720)
+
+- A per-person connection vault (`felix.auth.connections`). It keeps OAuth grants and app passwords sealed with `FELIX_CONNECTION_TOKEN_KEY`, keyed by the person's `issuer|subject`.
+  Routes: `GET /connections` and `DELETE /connections/{provider}/{account}` for the caller's own, and `GET /connections/tenant` and `POST /connections/tenant/revoke` under the new `connections:admin` scope. (#721)
+
+- Connecting a Google account to a person's vault: `POST /connections/google/start`, `GET /connections/google/callback` and `POST /connections/google/finish`, with `FELIX_GOOGLE_CONNECT_CALLBACK_PATH`. Google is the vault's first refresh and revoke provider. (#723)
+
+- Google Calendar, Gmail and Drive connector tools that act as the person through their vault connection, behind the `google-connectors` extra. Calendar lists events, finds free time and creates guest-less events; Gmail searches, reads and saves drafts that are never sent; Drive searches and reads files as text. (#730)
+
+- `spec.destinations` binds `post`, which publishes to operator-registered destinations (`FELIX_DESTINATIONS`) at most once per edition. The edition is held in the `destination_posts` ledger and checked before every delivery. An unclear delivery is held as `maybe_posted` and never retried. Core ships a signed `webhook` kind, and plugins can add kinds with `register_destination_kind`. Only unattended runs post unless `attended: approval` is set, and links are stripped unless the registration keeps them. (#733)
+
+- iCloud Calendar and Contacts connector tools that act as the person, behind the `icloud-connectors` extra: list events (repeats expanded), add an event to one of the person's own calendars with no guests, and search contacts. A person connects with an app-specific password through `POST /connections/icloud`, checked with Apple before it is kept. (#734)
+
+- Example agents: `researcher`, `automator` and `summarizer` in `manifests/`, and `concierge`, `travel`, `markets` and `inbox` shipped by the connectors plugin. (#735)
+
+- A plugin can ship agents built on its own tools (`registry.register_manifest_dir`), listed only where it is installed; a manifest name two directories hold is refused. (#735)
+
+- A `slack` destination kind (in `felix-channels`): `post` can publish to a Slack conversation the operator registers in `FELIX_DESTINATIONS`, using a `FELIX_CHANNELS` app's bot token. Mentions are inert, unfurling is off, and Slack's answers are classified, so an edition posts at most once. (#736)
+
+- `mcp_servers[].auth: person:<provider>`: call a remote MCP server with the token of the person the agent runs for, from their connection vault, or their GitHub connection for `person:github`. Tools are discovered per person, and a run for no one person, or a person without the connection, binds none of the server's tools; the model is told which are missing and why. (#738)
+
+- `FELIX_MCP_PERSON_AUTH`: the operator's allowlist of servers, per provider and tenant, that may receive a person's token. Empty allows none. (#738)
+
+- `GET /health/scheduler` reports whether `felix-scheduler` is still sweeping (503 `stale`, `never` or `unknown`), so an outside monitor can page on a dead scheduler. (#742)
+
+- A job health watch flags scheduled jobs that are overdue or keep failing. It records the incident on the job (`GET /jobs`), audits it, and posts it once to `FELIX_JOB_ALERT_DESTINATION`. New settings: `FELIX_SCHEDULER_STALE_SECONDS`, `FELIX_JOB_OVERDUE_GRACE_SECONDS`, `FELIX_JOB_FAILURE_THRESHOLD`, `FELIX_JOB_ALERT_DESTINATION`. (#742)
+
+- `"operator": true` on a destination makes it the harness's own alert channel, which no manifest may post to. It works with both the `webhook` and `slack` kinds. (#742)
+
+- Built-in tools `time_now`, `time_convert` and `date_math`: the time in any IANA zone, a date-time converted between zones (naming a wall time daylight saving skips or repeats), and calendar arithmetic (adding months, weeks, days or hours, and counting days, the calendar difference and weekdays between dates). A zone left out is `FELIX_TIMEZONE`. The example `concierge` and `travel` agents use them. (#746)
+
+- `deploy/gcp/roll.sh` honours `FELIX_SSH_FLAGS` on every `gcloud compute ssh` (e.g. `--tunnel-through-iap`), so it can run from CI against a VM reachable only through IAP. (#747)
+
+- A release can mark its `docs/UPGRADING.md` section `` so automated rolls stand down until a person rolls it. (#747)
+
+- A scheduled job may name an IANA `timezone` (`PUT /jobs`, `GET /jobs`). Its cron expression or `@daily`-style macro is then read on that zone's wall clock, so `0 8 * * 1-5` in `America/New_York` is 08:00 there all year.
+  - A local time skipped by a daylight-saving change fires at the first instant after the gap; a repeated one fires once, at its first occurrence.
+  - With no zone, a job runs in UTC, so existing jobs do not move. Migration `0051_job_timezone`. (#748)
+
+- `spec.heartbeat.timezone`, and `timezone` on `GET /heartbeats`. (#748)
+
+- `schedule_task` takes a `timezone`. A cron or macro task defaults to `FELIX_TIMEZONE`, the zone the agent is told the time in, and the zone is recorded on the job. `list_scheduled` shows each task's zone. (#748)
+
+- The smoke workflow warns 30 days before `FELIX_SMOKE_API_KEY` expires, and names the cause once it has. (#749)
+
+- Calendar feeds in the `felix-connectors` plugin (the `ics-connectors` extra). A person connects a published `.ics` link (Outlook, Google Calendar, iCloud) through `POST /connections/ics`, kept sealed in their vault, and `connectors__ics_events` lists its events. `FELIX_ICS_HOSTS` sets the hosts a link may name. (#750)
+
+- Wikipedia tools in the `felix-connectors` plugin, keyless: `connectors__wikipedia_search` and `connectors__wikipedia_article` (an article's lead, its URL to cite and when it last changed, following a redirected title), in any language edition. (#752)
+
+- A scheduled job's preferences, written by its reader: `GET/PUT/DELETE /jobs/{name}/preferences`, free text up to 8 KiB covering what the output should cover or skip, its tone and its length.
+  - Only the job's own writer may read or write them, and they need no jobs scope, so a person can steer the task an agent scheduled for them, or their heartbeat. An operator (`admin`) may too; a `jobs:write` holder may not.
+  - Every write is audited as `job.preferences`, with the size but never the text. `GET /jobs` shows `preferences_set`. (#751)
+
+- Every firing of the job carries the preferences in full in its prompt, a heartbeat's checklist included. They sit inside a fence named afresh for each firing, with a fixed line saying they cannot grant tools or change where the output goes.
+  - The agent has no tool, manifest field or `schedule_task` argument that sets them.
+  - A re-save by the job's writer keeps them, and a re-save by anyone else (or under a shared API key) clears them. A preferences write that loses a race with such a re-save answers 409 `job_changed_hands`. Migration `0052_job_preferences`. (#751)
+
+- `preferences_required` on `PUT /jobs/{name}` (false when left out): a firing of a job with no preferences runs nothing, makes no model call, and is recorded `skipped` with `last_error` "waiting for its reader's preferences". A job naming a workflow refuses it, and refuses preferences too (422 `preferences_need_a_manifest`). (#751)
+
+- `spec.state` gives a scheduled job's runs a small store of their own, such as a bookmark per source or a ledger of what they did, through `state_get`, `state_set`, `state_list` and `state_delete` (`max_keys` 50, `max_value_bytes` 4096).
+  - The state is keyed by the job, not the manifest, so two jobs on one manifest keep their own.
+  - Any run that is not that manifest's job or heartbeat firing is refused, including a chat, a workflow step and a `task` child. `spec.state` beside `execution.mode: durable` does not load.
+  - `state_set` with `expected` is compare-and-set; the key cap and compare-and-set are exact on Postgres.
+  - Values come back fenced as data, screened as untrusted output, and never logged. (#753)
+
+- `GET /jobs/{name}/state`, `DELETE /jobs/{name}/state` and `DELETE /jobs/{name}/state/{key}` for the job's writer or an operator, audited as `job.state` with key counts only.
+  - Deleting a job deletes its state, and a re-save by another writer clears it. A firing still running when either happens writes nothing more, even when the two writers share one API key.
+  - Migration `0053_job_state`. (#753)
+
+- `required: true` on an MCP server (`spec.mcp_servers[]`): the run stops before any model call instead of running without it when that server:
+  - cannot be reached or started;
+  - answers with no tools to bind (none listed, or none matching its `tools:` allowlist);
+  - acts as a person the run cannot use it for (no person, no connection, or withdrawn from `FELIX_MCP_PERSON_AUTH`).
+
+  How each surface reports it:
+  - A job's run is an error naming the manifest and its servers, still listing `unavailable_sources`, and counts toward the health watch's `failing` streak (`required_source_unavailable`).
+  - `/chat` and `/v1` answer 503 with the same message, and streams send it as an error typed `required_source_unavailable`.
+  - An A2A task fails with it, an MCP client's call is refused with it, and a durable or trigger run fails with it.
+
+  Servers without the flag behave as before. Discovery is cached for 60 seconds, so a required server that goes down just after a successful discovery still compiles and fails as tool errors mid-run. (#754)
+
+- `deploy/docker/compose.otel-gcp.yml` (`make up-gcp-otel`): on a GCE + Compose host, an OpenTelemetry Collector sends Felix's traces, logs and metrics to Cloud Trace, Cloud Logging and Managed Service for Prometheus, authenticated by the VM's service account. See `deploy/gcp/README.md`, "Telemetry to Google Cloud". (#757)
+
+### Changed
+
+- A scheduled task's report that finds a run going on in its conversation now waits and is added when the run ends (`report: queued`; the newest 20, for at most a day), rather than being dropped. (#693)
+
+- Only a scheduled task's newest report stays in the model's context; earlier reports stay in the conversation. (#700)
+
+- Skill discovery in the bundled `skills/` and `FELIX_SKILLS_DIR` follows the agentskills.io layout. Only `<dir>/SKILL.md` packages are loaded, a `SKILL.md` nested inside another skill is part of that skill, and hidden, `node_modules` and symlinked directories are skipped. The walk is bounded and logs a shadowed name. (#705)
+
+- A skill name that is not lowercase, a name that differs from its directory, or an over-long description now logs a warning and loads. (#705)
+
+- The skills catalog in the system prompt is sorted by name and says where a skill's relative paths resolve. The skill tools' `name` argument lists the invocable skills. (#705)
+
+- `activate_skill` caps a body at 256K characters, reports a skill's `license`, `compatibility` and `allowed-tools` as information, and says when its file listing was cut. (#705)
+
+- The router classifier, reflect's verifier and the `summarizing:N` summary no longer share the conversation's prompt cache. The `summarizing:N` transcript is capped at 120,000 characters, as compaction's is. (#704)
+
+- A summariser shown a transcript longer than its 120,000-character cap now sees the first quarter and the last three quarters, with the cut marked, instead of only the start. This applies to compaction, the branch summary and `summarizing:N`. (#707)
+
+- A skill is active in the conversation that activated it, read from that thread's session log, instead of for every caller and conversation of a manifest. `list_skills` reports the conversation's own state. A rewind or fork past an activation removes it. (#706)
+
+- An activated skill's instructions stay in front of the model for the rest of the conversation. They are never cleared by `clear_tool_results` or spilled to an artifact, and are re-shown, bounded and fenced, when a window or compaction drops their turn. A skill the catalog no longer offers is not re-shown. (#706)
+
+- Activating the same skill again in a conversation answers `already_active` instead of resending its instructions. (#706)
+
+- `create_skill` and `update_skill` report when the skill becomes usable (`available`: `next_turn`, `after_publish` or `never`). (#706)
+
+- A skill marked `disable-model-invocation` can be run by a person as `/skill-name` where the manifest declares it in `spec.skills`. It still never reaches the model, and an undeclared one stays unavailable. (#708)
+
+- `list_skills`, `activate_skill` and `deactivate_skill` are read-only, so they work in plan mode, and each activation's audit row records who asked (`by`: `person`, `preload` or `model`). (#708)
+
+- `activate_skill` takes optional `arguments`, honoured only for a person's `/skill-name`. (#708)
+
+- The `task` tool and forked skills share one admission and foreground path. `subagent_stop`, approvals, policies and limits on `task` apply to both. (#710)
+
+- Compose delivers `FELIX_CONNECTION_TOKEN_KEY` and Google's OAuth client to the worker, which refreshes connections for durable runs and jobs. (#723)
+
+- A forked skill's `task` call goes through the tool runner: hooks on `task` fire for it, a hook's block stops it, and it has its own `tool_call` audit row. (#731)
+
+- A forked skill's subagent reads the model's task before the skill's instructions. (#731)
+
+- A connector upstream answering a redirect is now reported as an error rather than taken as an answer. (#734)
+
+- `allow_any_host` confined by an exact `network.allow_hosts` list logs at info instead of warning; a list with a wildcard still warns. (#735)
+
+- httplib2 is locked at 0.32.1. (#741)
+
+- A `tenants` list containing `"*"` in any tenant-scoped registry now fails at boot. Write the string `"*"` to mean every tenant. (#742)
+
+- `roll.sh --yes` exits 75 instead of 1 when durable runs are in flight, so a caller can tell a deferral from a failure. Nothing on the host changes in either case. (#747)
+
+- `roll.sh` waits for `/ready` to answer 200 after `/health` reports the new version, and fails the roll if it does not within two minutes. (#747)
+
+- The `schedule_task` and heartbeat interval floors, and the heartbeat's `max_firings_per_day` write warning, also check the next year's daylight-saving changes for a zoned cron, where firings can fall closer together or twice in one UTC day. (#748)
+
+- A release tag is refused unless CI passed on that commit's own push run. (#749)
+
+- CI runs on `main` are no longer cancelled by the next merge. (#749)
+
+- CI builds and scans the `-gcp` image as well as the lean one. (#749)
+
+- The pgbouncer and replicas Compose overlays and the workspace gateway image pin their third-party images by digest. (#749)
+
+- iCloud's calendar reads are held to a calendar-wide budget as well as a per-series one, and an event with no start is skipped instead of failing the read. (#750)
+
+- iCloud, Google Calendar and feed reads without a `start` begin now in `FELIX_TIMEZONE`, not the server's zone. (#750)
+
+- The `-gcp` image now includes the `otel` extra. Nothing is exported until `FELIX_OTEL_ENABLED` is set. (#757)
+
+### Removed
+
+- A loose `*.md` file at the root of a skills directory is no longer loaded as a skill. Move it to `<name>/SKILL.md`. (#705)
+
+- The `skill_activation` table (migration `0047`), and the manifest-wide `active` fields of `GET /skills/{manifest}` and `GET /skills/{manifest}/{skill}`. (#706)
+
+### Fixed
+
+- `limits.max_cost_usd` now refuses an unpriced `http_tools[].extract_model` even when `spec.model.price` is set; the override never priced the extraction model, so its calls were counted at $0 against the cap. (#686)
+
+- `deploy/gcp/backup/felix-backup` finds `gcloud` when it is installed as a snap (GCE's Ubuntu images). Under systemd it uploaded nothing and failed after writing the dump. (#695)
+
+- `POST /chat/compact` answers `502 compaction_failed` when the summariser's model call fails, instead of `200 ok: true` for a compaction that did nothing; an unconfigured model provider is a `503` as for a turn; and the thread's phase returns to `idle` however the request ends. (#696)
+
+- `felix-restore-drill` lists tables alphabetically. They were sorted by row count read as text. (#697)
+
+- **Issues and pull requests on a GitHub App without the Issues permission.** `GET /github/repos/{owner}/{repo}/items` and `…/items/{number}` fall back to the pulls API when GitHub refuses the issues endpoints (403), as they already did when issues are turned off. The list now reports `issue_access` (`ok`, `disabled` or `forbidden`), so a client can say it is showing pull requests only. (#698)
+
+- A skill with `disable-model-invocation`, or a declared skill that no source has, can no longer be activated or read by a model that guesses its name. Such a skill is also no longer listed in the system prompt. (#705)
+
+- A SKILL.md that starts with a byte-order mark no longer fails validation. (#705)
+
+- A file a skill links to outside its own directory is no longer listed by `activate_skill`. (#705)
+
+- Bundled manifests now declare explicit tool-call, wall-clock and input-token limits. `deep` and `support` bind the skill activation tools their prompts assume. (#714)
+
+- GitHub MCP tool names in `triage`, `contributor` and the `felix-self` skill now match the current GitHub server. (#714)
+
+- `governed` no longer carries an approval rule that targets no bound tool. (#714)
+
+- Manifest prompts and descriptions no longer claim capabilities the bound tools lack. (#714)
+
+- A manifest write no longer fails when a plugin tool cannot be built for lack of configuration, such as a missing key. (#720)
+
+- A run that dies in the middle of a batch of tool calls keeps the results of the calls that had
+  finished. Each result is logged as its call returns, so the next run closes only the unfinished
+  calls as interrupted, instead of telling the model to distrust work that succeeded and asking
+  again for approvals it already had (#574). (#722)
+
+- A forked skill counted as two calls against `max_tool_calls`, so a fork made at the last allowed call was refused. (#731)
+
+- A run now knows which MCP servers it could not reach or start. Before, it silently lost their tools and could report a source it never read as having nothing new. The system prompt names them as unknown rather than empty, and a scheduled job's run result lists them under `unavailable_sources` by manifest. A stdio server that fails to start now counts as unreachable instead of binding an empty tool list. (#732)
+
+- The job health watch now flags as overdue a recurring job that was never swept and whose schedule no longer parses; it was read as a one-shot that had already fired. (#748)
+
+### Security
+
+- `auth.outbound.providers` and the `limits.max_cost_usd` pricing check now cover every model route a manifest names (vision and the default vision route, confidence escalation, plan/execute, heartbeat, reflect verifier, judges, content and image screening, memory capture and consolidation, fetch extraction), not only the primary model and its fallbacks. The memory consolidation sweep checks the pin before sending a pool to its model. A stored manifest that names an off-pin or unpriced route in one of these fields is now refused at compile and needs editing. (#688)
+
+- A request's `model` override on `/chat`, `/chat/stream` and `/chat/continue` is now held to `auth.outbound.providers` and `limits.max_cost_usd` of the manifest and every sub-agent it reaches; before, any configured route was accepted. Clients that pin `model` may now see `400 model_provider_not_allowed`, `model_unpriced` or `model_not_priced_by_manifest`. A durable run re-checks its override on resume. (#689)
+
+- Lock dnspython 2.9.0, past CVE-2026-114605 (reached through `email_validator`). (#690)
+
+- `/chat/compact` and a rewind's branch summary are held to the manifest's provider pin, its measurable cost cap and the thread's `pin_compile` record, as a turn is; compaction answers `422` or `409`, and a rewind summarises without a model. (#692)
+
+- A repository name of `..` no longer resolves to another GitHub endpoint when opening a checkout. (#694)
+
+- `POST /chat/sessions/custom` drops metadata only the harness may set (`event_id`, `parent_id`, `origin_request`, `pinned`, `attachments`, `thinking`): a client entry can no longer replace or graft events in the history the model reads, send the model an image on a non-user turn, or pin itself past the manifest's context bounds. (#701)
+
+- A queue write-back (`/internal/sessions/{id}/events`) cannot choose where its event lands, pin it, or write a kind other than a message, a tool result or an entry; a `compaction` from it replaced the thread's history in the model's context. (#701)
+
+- The model judge (tool, reply and eval judges) now reads the text it scores fenced as untrusted data under its own system prompt, so an answer can no longer address the judge with its own score. The model injection screener fences the screened text the same way, and the `llm` decision provider tells its model that the state is data. (#702)
+
+- A governance judge whose model reply carries no score is now scored by its criteria heuristic. Before, the eval judge's "non-empty" stand-in passed any text at 1.0. (#702)
+
+- A workflow agent step now reads every value wired from another step fenced as data, whoever started the run. Before, only runs a third party started were fenced, so a page an earlier step fetched reached the next agent as written. (#704)
+
+- `plan_execute` notes, `parallel` specialist answers and `reflect` drafts are fenced as data when one model call hands them to the next. (#704)
+
+- What a composite pattern hands from one model call to the next (`plan_execute` notes, `parallel` answers, `reflect` drafts) is fenced in a tag made new for each call, so no spelling of a closing tag, fullwidth lookalikes included, can end the region early. (#707)
+
+- A queue write-back can no longer write a result under a skill tool's name, which would have been kept in the model's context as an activation for the rest of the thread. (#706)
+
+- Summariser transcripts, side questions and memory-extraction excerpts are fenced in a tag made new for each call, so no spelling of the closing tag, fullwidth lookalikes included, can end the region early. (#709)
+
+- With `content_screening.enabled`, a conversation summary is screened before it is stored, as a user turn is: injection markers, then `content_screening.model` and the decider. A flagged summary is stored as `[summary withheld: content screening flagged it]`. A summary that cannot be screened is not stored and is retried later. Covers compaction, `POST /chat/compact` and `summarizing:N`. New metric: `felix_summary_withheld`. (#711)
+
+- `.felix-skills` is refused to the model's file tools and hidden from the file pane. (#713)
+
+- A manifest that allows anonymous callers no longer compiles when one of its `sub_agents` refuses them, since a router forwards the turn without the child's own inbound check. The bundled `router` now requires a caller. A stored router that relied on the old behaviour fails on every request until it sets `auth.inbound.allow_anonymous: false` or drops the closed child; see `docs/UPGRADING.md`. (#714)
+
+- The self-build `triage` manifest refuses anonymous callers. A scheduled triage job written while auth was off recorded an anonymous writer, and it is refused until it is rewritten with a key. (#714)
+
+- The compile-time refusal of an anonymous composite over a closed child now reads each child's full inbound check, so a child closed only by `required_scopes` or `schemes` counts as closed. (#715)
+
+- A child found under one name whose manifest calls itself another is refused for `sub_agents` as well as `delegation`. Before, such a child could replace a sibling's entry, and that sibling's door check read the wrong manifest. (#715)
+
+- An agent's `network.allow_hosts`, including any list inherited from a parent, now applies to plugin tools that declare their hosts. The compile refuses such a tool when the list doesn't cover them. Before this, `allow_hosts` bound only `http_tools`. (#716)
+
+- A person's `/skill-name` runs in a manifest only for a caller that manifest's own
+  `auth.inbound` admits. A router's pick or a composite's child no longer gives a parent's callers
+  its declared manual-only skills. (#717)
+
+- The route's "already screened" mark is bound to the manifest it screened for. A composite with no
+  inbound controls no longer lets its first child (a router's pick, or one `parallel` specialist)
+  skip that child's own input screening. (#717)
+
+- The HTTP client libraries' request logging is held at WARNING, so an outbound URL carrying a credential in its query string never reaches the log. (#720)
+
+- A destination kind's secrets are masked before a post's text is cleaned, so a fresh worker cannot send a token it has not masked yet. (#736)
+
+- A `/name` naming a `disable-model-invocation` skill on `/v1` now needs the `skills:invoke` scope (implied by nothing but `admin` / `*`). A deployment that runs manual-only skills over `/v1` with auth on must grant it to those credentials. `/chat` is unchanged. (#737)
+
+- A queue write-back's tool result is stored under `queue:<name>` whatever tool it names, so it can no longer be read back as the thread's `todo_write` checklist (or any harness tool's result). The OpenAI wire no longer sends a message `name` the API would refuse. (#740)
+
+- A queue write-back (`POST /internal/sessions/{id}/events`) can no longer answer a tool call the harness made: every call id it writes is stored as `queue_<id>`, so a run's interrupted call still gets the harness's own "do not call it again" result. (#745)
+
+- A published calendar's content is chosen by whoever publishes it, so expanding one is bounded by events, rule steps and occurrences, not per series alone. (#750)
+
+- joserfc is raised to 1.7.7 for CVE-2026-119284 (fixed in 1.7.6), reported by the dependency audit. (#750)
+
+- The calculator tool no longer accepts a chained power whose base is too large for a float, which let a short expression pin the API's event loop. (#755)
+
+- A workflow run an agent started for a person, and its step transcripts, are now visible only to that person or an operator, not to every holder of `workflows:read`. (#756)
+
+- Workflow step threads no longer appear in `/chat/sessions` or `/chat/sessions/search`, and `GET /chat/runs/{resume_token}` no longer answers for a workflow step's child run. (#756)
+
 ## [0.18.0] — 2026-10-23
 
 ### Added
@@ -5169,3 +5489,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.16.1]: https://github.com/felix-run/felix/releases/tag/v0.16.1
 [0.17.0]: https://github.com/felix-run/felix/releases/tag/v0.17.0
 [0.18.0]: https://github.com/felix-run/felix/releases/tag/v0.18.0
+[0.19.0]: https://github.com/felix-run/felix/releases/tag/v0.19.0

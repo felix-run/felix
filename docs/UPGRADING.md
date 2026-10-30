@@ -37,7 +37,9 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
-## Unreleased: an anonymous router may not name an agent that refuses anonymous callers
+## 0.19.0: an anonymous router may not name an agent that refuses anonymous callers, and the `-gcp` image carries `otel`
+
+<!-- deploy: manual -->
 
 **A stored composite can stop compiling.** A manifest with `sub_agents` that sets
 `auth.inbound.allow_anonymous: true` while a child it names refuses anonymous callers (by
