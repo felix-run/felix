@@ -5,9 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push supersedes a pull request's run. On main every merge keeps its run: a release is
+# tagged on a merge commit whose CI passed (release.yml's `verify` checks), and a run cancelled
+# by the next merge leaves that commit with no result to tag on.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege, stated in the file rather than inherited from a repo setting.
 # `default_workflow_permissions` is `read` today, so this changes nothing at runtime —
@@ -358,7 +361,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Every overlay, not just the base file. `check-yaml` cannot parse the ones
@@ -405,6 +408,30 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: felix:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore.yaml
+      # Production runs the `-gcp` variant. Built here too, so a break that only the gcp extra
+      # brings (a dependency that fails to install, a CVE only it pulls in) fails a pull request
+      # rather than the release.
+      - name: Build gcp image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v6.9.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          build-args: |
+            FELIX_EXTRAS=gcp
+            APT_REFRESH=${{ steps.apt.outputs.day }}
+          tags: felix:ci-gcp
+          load: true
+          cache-from: type=gha,scope=felix-gcp
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,scope=felix-gcp,mode=max' || '' }}
+      - name: Scan the gcp image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: felix:ci-gcp
           format: table
           exit-code: "1"
           ignore-unfixed: true

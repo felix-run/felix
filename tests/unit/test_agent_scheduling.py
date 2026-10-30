@@ -23,7 +23,7 @@ from felix.jobs import store as jobs_store
 from felix.jobs.agent_tools import make_scheduling_tools
 from felix.manifests.loader import parse_manifest
 from felix.manifests.schema import ApprovalRule, SchedulingSpec
-from felix.tools.types import Tool, ToolInvocationCtx, tool_output_content
+from felix.tools.types import Tool, ToolInvocationCtx, tool_input_schema, tool_output_content
 
 from tests.support.factories import make_settings
 
@@ -825,3 +825,60 @@ async def test_a_task_rewritten_after_the_listing_survives_the_sweep(
     monkeypatch.setattr(jobs_store, "get_job", _rearmed)
     assert await retention._sweep_fired_tasks(settings, NOW) == 0
     assert await real(settings, TENANT, "task-1") is not None
+
+
+# --- the zone a task's cron is read in ------------------------------------------------------
+
+
+def _phoenix() -> Settings:
+    return make_settings(
+        auth_mode="api_key",
+        auth_api_keys='{"k":{"sub":"alice","tenant_id":"acme","scopes":["jobs:write"]}}',
+        timezone="America/Phoenix",
+    )
+
+
+async def test_a_cron_task_defaults_to_the_zone_the_agent_tells_the_time_in() -> None:
+    """`FELIX_TIMEZONE` is the zone the model is shown the time in, so "every morning at 8" is 08:00
+    there -- 15:00 UTC in Phoenix -- and the zone is recorded on the job, not read again later."""
+    settings = _phoenix()
+    out = await _schedule(settings, _tools(settings), when="0 8 * * *")
+    assert (out["timezone"], out["next_run_at"]) == ("America/Phoenix", "2026-10-20T15:00:00Z")
+    job = await jobs_store.get_job(settings, TENANT, out["name"])
+    assert (job["timezone"], job["next_run_at"]) == ("America/Phoenix", NOW + 15 * 3_600_000)
+    (listed,) = (await _call(settings, _tools(settings)["list_scheduled"], {}))["tasks"]
+    assert listed["timezone"] == "America/Phoenix"
+
+
+async def test_a_task_may_name_its_own_zone() -> None:
+    settings = _phoenix()
+    out = await _schedule(settings, _tools(settings), when="0 8 * * *", timezone="Europe/London")
+    # 2026-10-20 is British Summer Time: 08:00 there is 07:00 UTC.
+    assert (out["timezone"], out["next_run_at"]) == ("Europe/London", "2026-10-20T07:00:00Z")
+
+
+@pytest.mark.parametrize("when", ["every:2h", LATER])
+async def test_an_interval_or_a_one_shot_records_no_default_zone_and_refuses_a_given_one(when: str) -> None:
+    from felix.jobs.schedule import TIMEZONE_NEEDS_CRON
+
+    settings = _phoenix()
+    out = await _schedule(settings, _tools(settings), when=when)
+    assert out["status"] == "scheduled"
+    assert (await jobs_store.get_job(settings, TENANT, out["name"]))["timezone"] is None
+
+    refused = await _schedule(settings, _tools(settings), when=when, timezone="America/Phoenix")
+    assert refused == {"error": "invalid_schedule", "detail": TIMEZONE_NEEDS_CRON}
+
+
+async def test_an_unknown_zone_is_refused_for_the_model() -> None:
+    settings = _phoenix()
+    refused = await _schedule(settings, _tools(settings), when="0 8 * * *", timezone="Phoenix")
+    assert refused["error"] == "invalid_schedule"
+    assert refused["detail"].startswith("timezone: not an IANA zone name")
+
+
+def test_the_tool_says_which_zone_a_cron_is_read_in() -> None:
+    schedule = _tools(_phoenix())["schedule_task"]
+    assert "America/Phoenix" in schedule.description
+    assert "America/Phoenix" not in _tools(_api_key_settings())["schedule_task"].description
+    assert "in UTC" not in json.dumps(tool_input_schema(schedule))

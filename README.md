@@ -572,7 +572,13 @@ tails the thread. The run itself is still torn down on disconnect, so what you g
 thread, not the abandoned turn.
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/heartbeats`,
-`/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. `POST /jobs/{name}/run` runs a job now
+`/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. A job's `schedule` is seconds,
+`every:30m`, an `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` macro, five-field cron, or a one-shot
+`at:<ISO-8601 with offset>`; cron and macros are read in UTC unless the job names an IANA `timezone`
+(`{"schedule": "0 8 * * 1-5", "timezone": "America/New_York"}` is 08:00 New York time on weekdays,
+all year). Across a daylight-saving change a time the clocks skip fires at the first instant after the
+gap and a time they repeat fires once, at its first occurrence; a zone beside an interval or `at:`,
+which no zone moves, is refused. `POST /jobs/{name}/run` runs a job now
 instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are
 unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting
 — see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back
@@ -1040,7 +1046,7 @@ Storage and execution:
   not registered for the tenant, or a manifest admitting anonymous callers, fails the compile. See
   `deploy/GOVERNANCE.md`.
 - Job health watch: every 5 minutes the worker flags a job that is **overdue** (enabled, scheduled,
-  not running, due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` (900) ago) or **failing** (its last
+  due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` (900) ago, even if marked running: a firing moves the due time on) or **failing** (its last
   `FELIX_JOB_FAILURE_THRESHOLD` (3) runs all errors, skipped ones ignored). Each incident is recorded
   on the job (`health` on `GET /jobs/{name}`), counted (`felix_job_health_incident{kind}`), audited
   (`job.health`) and, when `FELIX_JOB_ALERT_DESTINATION` names a `FELIX_DESTINATIONS` id — best an
@@ -1109,7 +1115,8 @@ Storage and execution:
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to
   `FELIX_PUSH_ALLOWED_HOSTS`, and a push carries the kind of wait and the thread, never the call
 - A heartbeat is a periodic check-in a person turns on for themselves: the operator writes
-  `spec.heartbeat` (what to check, a recurring `schedule`, a `model` route and `max_turns` for
+  `spec.heartbeat` (what to check, a recurring `schedule` and the `timezone` a cron one is read in, a
+  `model` route and `max_turns` for
   firings, `keep_threads`, an optional `max_firings_per_day` — past it a UTC day's firings, manual
   ones included, are recorded `skipped` with no model call; it needs `spec.notify`), and a person
   holding `heartbeats:write` turns theirs on or off with `PUT /heartbeats/{manifest}` (`{enabled}`

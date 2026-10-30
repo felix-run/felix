@@ -94,6 +94,11 @@ curl -s localhost:8080/health | jq
 Cloud specifics: `deploy/aws/`, `deploy/gcp/`. Governance/compliance mapping:
 `deploy/GOVERNANCE.md`. Image details: `deploy/docker/README.md`.
 
+The reference deployment (api.felix.run) is rolled by `deploy/gcp/roll.sh`, by hand or from a
+private operations repository's CI over IAP (`FELIX_SSH_FLAGS`). Exit 75 from `roll.sh` means
+deferred (durable runs in flight), not failed. An automated roll stands down for a release whose
+`docs/UPGRADING.md` section carries `<!-- deploy: manual -->`.
+
 ## Rule
 
 Never run a deploy, `helm upgrade`, `kubectl apply`, or a cloud CLI mutation on the user's behalf.

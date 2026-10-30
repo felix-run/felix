@@ -672,7 +672,14 @@ async def test_first_run_at_sets_a_new_recurring_jobs_due_time_and_a_rewrite_ign
 async def test_set_schedule_moves_only_the_schedule_it_was_told_it_would_find(store_settings: Any) -> None:
     await _put(store_settings, schedule="every:60m", enabled=False, created_by="alice")
     assert await jobs.set_schedule(
-        store_settings, TENANT, JOB, schedule="every:2h", next_run_at=123, expected_schedule="every:60m"
+        store_settings,
+        TENANT,
+        JOB,
+        schedule="every:2h",
+        next_run_at=123,
+        timezone=None,
+        expected_schedule="every:60m",
+        expected_timezone=None,
     )
     fetched = await jobs.get_job(store_settings, TENANT, JOB)
     assert fetched is not None
@@ -681,7 +688,14 @@ async def test_set_schedule_moves_only_the_schedule_it_was_told_it_would_find(st
 
     # Moved since it was read: left alone.
     assert not await jobs.set_schedule(
-        store_settings, TENANT, JOB, schedule="every:3h", next_run_at=456, expected_schedule="every:60m"
+        store_settings,
+        TENANT,
+        JOB,
+        schedule="every:3h",
+        next_run_at=456,
+        timezone=None,
+        expected_schedule="every:60m",
+        expected_timezone=None,
     )
     fetched = await jobs.get_job(store_settings, TENANT, JOB)
     assert fetched is not None and fetched["schedule"] == "every:2h"
@@ -692,9 +706,108 @@ async def test_set_schedule_never_brings_back_a_deleted_job(store_settings: Any)
     await _put(store_settings, schedule="every:60m")
     assert await jobs.delete_job(store_settings, TENANT, JOB)
     assert not await jobs.set_schedule(
-        store_settings, TENANT, JOB, schedule="every:2h", next_run_at=1, expected_schedule="every:60m"
+        store_settings,
+        TENANT,
+        JOB,
+        schedule="every:2h",
+        next_run_at=1,
+        timezone=None,
+        expected_schedule="every:60m",
+        expected_timezone=None,
     )
     assert await jobs.get_job(store_settings, TENANT, JOB) is None
+
+
+@parametrized
+async def test_set_schedule_compares_and_moves_the_zone_too(store_settings: Any) -> None:
+    """A heartbeat's zone moves with the manifest's (`heartbeat.keep_schedule_current`), only over
+    the zone the firing read -- a NULL one included, which SQL compares only with `IS [NOT]
+    DISTINCT FROM`, never `=`."""
+    await _put(store_settings, schedule="0 8 * * *")
+    assert not await jobs.set_schedule(
+        store_settings,
+        TENANT,
+        JOB,
+        schedule="0 9 * * *",
+        timezone="Europe/London",
+        next_run_at=1,
+        expected_schedule="0 8 * * *",
+        expected_timezone="America/New_York",
+    ), "the zone it held is not the one expected"
+    assert await jobs.set_schedule(
+        store_settings,
+        TENANT,
+        JOB,
+        schedule="0 9 * * *",
+        timezone="Europe/London",
+        next_run_at=2,
+        expected_schedule="0 8 * * *",
+        expected_timezone=None,
+    )
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert (fetched["schedule"], fetched["timezone"], fetched["next_run_at"]) == (
+        "0 9 * * *",
+        "Europe/London",
+        2,
+    )
+    assert await jobs.set_schedule(
+        store_settings,
+        TENANT,
+        JOB,
+        schedule="every:2h",
+        timezone=None,
+        next_run_at=3,
+        expected_schedule="0 9 * * *",
+        expected_timezone="Europe/London",
+    )
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["timezone"] is None
+
+
+# --- timezone (`0051_job_timezone`) -------------------------------------------------------------
+
+
+@parametrized
+async def test_a_jobs_zone_round_trips_and_a_rewrite_without_one_is_utc(store_settings: Any) -> None:
+    created = await _put(store_settings, schedule="0 8 * * 1-5", timezone="America/New_York")
+    assert created["timezone"] == "America/New_York"
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert fetched == created
+    (listed,) = await jobs.list_jobs(store_settings, TENANT)
+    assert listed["timezone"] == "America/New_York"
+
+    # Replaced like every other field: left out, the job is back on UTC rather than keeping a zone.
+    await _put(store_settings, schedule="0 8 * * 1-5")
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["timezone"] is None
+
+
+@parametrized
+@pytest.mark.parametrize(
+    ("schedule", "zone"),
+    [("every:30m", "Europe/London"), ("", "Europe/London"), ("0 8 * * *", "Mars/Olympus_Mons")],
+)
+async def test_a_zone_that_cannot_apply_is_refused_and_nothing_is_written(
+    store_settings: Any, schedule: str, zone: str
+) -> None:
+    with pytest.raises(ScheduleError, match=r"^timezone: "):
+        await _put(store_settings, schedule=schedule, timezone=zone)
+    assert await jobs.get_job(store_settings, TENANT, JOB) is None
+
+
+@parametrized
+async def test_a_new_zone_is_a_new_schedule_for_the_due_time_it_keeps(
+    store_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rewrite keeps the due time held while the schedule is unchanged; a changed zone is a
+    changed schedule, so the job is due at the earlier of the two."""
+    monkeypatch.setattr(jobs, "now_ms", lambda: 1_793_340_000_000)  # 2026-10-30T06:00Z, 15:00 Tokyo
+    await _put(
+        store_settings, schedule="0 8 * * *", timezone="America/New_York", first_run_at=9_999_999_999_999
+    )
+    kept = await _put(store_settings, schedule="0 8 * * *", timezone="America/New_York")
+    assert kept["next_run_at"] == 9_999_999_999_999
+    moved = await _put(store_settings, schedule="0 8 * * *", timezone="Asia/Tokyo")
+    assert moved["next_run_at"] == 1_793_401_200_000, "2026-10-30T23:00Z: Tokyo's next 08:00"
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["next_run_at"] == moved["next_run_at"]
 
 
 # --- health incidents (`felix.jobs.watch`) ------------------------------------------------------

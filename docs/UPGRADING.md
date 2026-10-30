@@ -1,8 +1,14 @@
 # Upgrading a deployment
 
-Nothing upgrades itself. [`RELEASING.md`](RELEASING.md) cuts a tag; no workflow builds an image from it and no
-workflow deploys one. Every production upgrade is a deliberate act, and this is the procedure for
-performing one.
+[`RELEASING.md`](RELEASING.md) cuts a tag, and `release.yml` builds and publishes the images from it.
+Publishing is not upgrading: this is the procedure for moving a deployment onto a release.
+`deploy/gcp/roll.sh` runs it against a GCE + Compose host, by hand or from CI
+([`deploy/gcp/README.md`](../deploy/gcp/README.md)).
+
+A release whose upgrade needs a person (a new setting in the host `.env`, a decision before the
+roll) puts `<!-- deploy: manual -->` in its own section below, the `## X.Y.Z:` heading through the
+next `## `. An automated roll stands down for that version, and for any marked release between
+the live version and the target, until a person rolls it.
 
 The rule that shapes all of it: **a migration and the image that expects it are one change, not
 two.** Alembic revisions here are linear, several of them alter behaviour the application code

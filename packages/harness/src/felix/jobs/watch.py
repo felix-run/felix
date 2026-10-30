@@ -116,13 +116,14 @@ def error_class(job: dict[str, Any]) -> str:
     it lacked, a workflow's name); an alert posted outside the tenant carries none of it."""
     from felix.jobs import heartbeat as hb
     from felix.jobs import scheduler
-    from felix.jobs.schedule import ScheduleError, parse_schedule
+    from felix.jobs.schedule import ScheduleError, job_schedule
 
     error = str(job.get("last_error") or "")
     if not error:
         return "none"
     try:
-        parse_schedule(str(job.get("schedule") or ""))
+        # In the job's zone: one the scheduler refuses (a name tzdata no longer has) is what fails it.
+        job_schedule(job)
     except ScheduleError:
         return "invalid_schedule"
     known = {
@@ -150,13 +151,12 @@ def overdue_since(job: dict[str, Any], *, now: int, grace_ms: int) -> int | None
     job for `RUNNING_STALE_MS`. A recurring job holding no due time is due on the next sweep
     (`store.put_job`), so it is due from its last run, or its writing. A schedule that no longer
     parses still counts: the scheduler refuses it, so it never fires."""
-    from felix.jobs.schedule import ScheduleError, parse_schedule
+    from felix.jobs.schedule import ScheduleError, job_schedule
 
-    schedule = str(job.get("schedule") or "").strip()
     if not job.get("enabled"):
         return None
     try:
-        parsed = parse_schedule(schedule)
+        parsed = job_schedule(job)
     except ScheduleError:
         parsed = None
     recurring = parsed is not None and not parsed.one_shot
@@ -165,9 +165,11 @@ def overdue_since(job: dict[str, Any], *, now: int, grace_ms: int) -> int | None
         return None
     due = job.get("next_run_at")
     if due is None:
-        if not recurring:
+        if parsed is not None and parsed.one_shot:
             # A one-shot with no due time has fired.
             return None
+        # A recurring job not yet swept -- or one whose schedule no longer parses (a zone tzdata
+        # has since dropped), which the sweep refuses with its due time kept, so it never gets one.
         due = job.get("last_run_at") or job.get("created_at")
     if not isinstance(due, int):
         return None

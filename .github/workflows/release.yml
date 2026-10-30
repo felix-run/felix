@@ -29,6 +29,9 @@ jobs:
     name: Tag matches the tree
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # this commit's CI runs
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -54,6 +57,23 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: CI passed on the tagged commit
+        # The tag performs the release, so a commit whose CI failed, or is still running, must
+        # not reach the image job. Not the latest run's result for main: this commit's own.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --json event,status,conclusion --jq '[.[] | select(.event == "push")]')"
+          if [ "$(jq '[.[] | select(.conclusion == "success")] | length' <<<"$runs")" -gt 0 ]; then
+            echo "CI passed on $GITHUB_SHA"
+          elif [ "$(jq length <<<"$runs")" = 0 ]; then
+            echo "::error::no CI run on main for $GITHUB_SHA; tag a merge commit whose CI has run"; exit 1
+          else
+            echo "::error::CI on $GITHUB_SHA has not passed ($(jq -r 'map(.status + "/" + (.conclusion // "-")) | join(", ")' <<<"$runs")); wait for it, or fix and tag the next commit"
+            exit 1
+          fi
       - name: The version has not been released before
         # Re-pushing an existing tag would otherwise move the GHCR tag to new bits under
         # the same version, with a valid signature.

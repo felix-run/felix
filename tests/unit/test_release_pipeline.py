@@ -40,7 +40,7 @@ def test_release_permissions_are_minimal_and_per_job() -> None:
         "id-token": "write",
     }
     assert wf["jobs"]["release"]["permissions"] == {"contents": "write"}
-    assert "permissions" not in wf["jobs"]["verify"], "verify needs nothing beyond the workflow default"
+    assert wf["jobs"]["verify"]["permissions"] == {"contents": "read", "actions": "read"}
 
 
 def test_verify_refuses_a_tag_off_main_or_already_released() -> None:
@@ -48,6 +48,19 @@ def test_verify_refuses_a_tag_off_main_or_already_released() -> None:
     assert "scripts/bump-version.py --check" in runs
     assert "git merge-base --is-ancestor" in runs
     assert "releases/tags/" in runs and "could not tell" in runs, "an API failure must not read as unreleased"
+
+
+def test_verify_refuses_a_commit_whose_ci_has_not_passed() -> None:
+    step = next(
+        s
+        for s in _load("release.yml")["jobs"]["verify"]["steps"]
+        if s.get("name") == "CI passed on the tagged commit"
+    )
+    run = step["run"]
+    # This commit's own push run, not main's latest: a later green merge must not vouch for it.
+    assert '--commit "$GITHUB_SHA"' in run and 'select(.event == "push")' in run
+    assert 'select(.conclusion == "success")' in run
+    assert run.count("exit 1") == 2, "no run, and a run that has not passed, both refuse"
 
 
 def test_no_expression_is_interpolated_into_a_shell_line() -> None:

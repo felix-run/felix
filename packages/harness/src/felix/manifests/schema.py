@@ -1136,6 +1136,9 @@ class HeartbeatSpec(_Strict):
     #: When it fires, in the jobs grammar (`felix/jobs/schedule.py`), recurring only: no `at:`,
     #: and never empty. Held to `min_interval_minutes` at its shortest gap.
     schedule: str = Field(default="every:60m", max_length=200)
+    #: The IANA zone a cron `schedule` (or an `@daily`-style macro) is read in, e.g.
+    #: `America/New_York`; unset is UTC. Refused beside an interval, which no zone moves.
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
     #: The shortest gap `schedule` may fire at. Every firing is a model run on someone's behalf.
     min_interval_minutes: int = Field(default=30, ge=15)
     #: What to check, as the operator's instructions to the agent. Each firing wraps it in a fixed
@@ -1169,7 +1172,7 @@ class HeartbeatSpec(_Strict):
         from felix.jobs.schedule import ScheduleError, parse_schedule, shortest_gap_ms
 
         try:
-            parsed = parse_schedule(self.schedule)
+            parsed = parse_schedule(self.schedule, self.timezone)
         except ScheduleError as exc:
             raise ValueError(f"heartbeat.{exc}") from None
         if parsed.one_shot:

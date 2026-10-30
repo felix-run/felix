@@ -197,6 +197,7 @@ def public(job: dict[str, Any]) -> dict[str, Any]:
         "name": job.get("name"),
         "enabled": bool(job.get("enabled")),
         "schedule": job.get("schedule"),
+        "timezone": job.get("timezone"),
         "thread_id": by.get("thread_id"),
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
@@ -283,6 +284,7 @@ async def enrol(
         tenant_id,
         name,
         schedule=heartbeat.schedule,
+        timezone=heartbeat.timezone,
         manifest_id=manifest_id,
         payload={
             "scheduled_by": {"tool": HEARTBEAT, "manifest": manifest_id, "thread_id": thread_id},
@@ -292,22 +294,23 @@ async def enrol(
         created_by=person,
         created_auth=recorded,
         # Waits for its schedule: turning it on is not a request to run it now.
-        first_run_at=parse_schedule(heartbeat.schedule).next_after(now),
+        first_run_at=parse_schedule(heartbeat.schedule, heartbeat.timezone).next_after(now),
     )
 
 
 async def keep_schedule_current(
-    settings: Settings, tenant_id: str, job: dict[str, Any], schedule: str
+    settings: Settings, tenant_id: str, job: dict[str, Any], schedule: str, timezone: str | None
 ) -> None:
-    """Move the job to the manifest's schedule when they differ, due at its next slot from now: an
-    operator's edit applies from the next firing, and a schedule someone re-saved over `PUT /jobs`
-    lasts one firing. Conditional on the schedule this firing read (`jobs_store.set_schedule`), so a
-    heartbeat deleted, disabled or re-saved meanwhile is left exactly as it now is."""
+    """Move the job to the manifest's schedule and zone when either differs, due at its next slot
+    from now: an operator's edit applies from the next firing, and a schedule someone re-saved over
+    `PUT /jobs` lasts one firing. Conditional on the schedule and zone this firing read
+    (`jobs_store.set_schedule`), so a heartbeat deleted, disabled or re-saved meanwhile is left
+    exactly as it now is."""
     from felix.jobs import store as jobs_store
     from felix.jobs.schedule import parse_schedule
     from felix.jobs.scheduler import now_ms
 
-    if job.get("schedule") == schedule:
+    if (job.get("schedule"), job.get("timezone")) == (schedule, timezone):
         return
     try:
         await jobs_store.set_schedule(
@@ -315,8 +318,10 @@ async def keep_schedule_current(
             tenant_id,
             str(job["name"]),
             schedule=schedule,
-            next_run_at=parse_schedule(schedule).next_after(now_ms()),
+            timezone=timezone,
+            next_run_at=parse_schedule(schedule, timezone).next_after(now_ms()),
             expected_schedule=str(job.get("schedule") or ""),
+            expected_timezone=job.get("timezone"),
         )
     except Exception:
         logger.warning("heartbeat schedule refresh failed", exc_info=True)
@@ -380,7 +385,7 @@ async def begin_firing(
     if heartbeat is None:
         firing.refusal = await _turn_off(settings, tenant_id, job, NO_HEARTBEAT)
         return firing
-    await keep_schedule_current(settings, tenant_id, job, heartbeat.schedule)
+    await keep_schedule_current(settings, tenant_id, job, heartbeat.schedule, heartbeat.timezone)
     firing.refusal = await over_daily_cap(settings, tenant_id, job, heartbeat)
     if firing.refusal is None:
         firing.heartbeat, firing.prompt = heartbeat, firing_prompt(heartbeat.checklist)
@@ -422,7 +427,9 @@ def cap_warnings(manifest: Manifest) -> list[str]:
     if heartbeat is None or heartbeat.max_firings_per_day is None:
         return []
     try:
-        most = most_firings_per_utc_day(parse_schedule(heartbeat.schedule), int(time.time() * 1000))
+        most = most_firings_per_utc_day(
+            parse_schedule(heartbeat.schedule, heartbeat.timezone), int(time.time() * 1000)
+        )
     except ScheduleError:
         return []
     if most is None or heartbeat.max_firings_per_day >= most:
