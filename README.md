@@ -1104,6 +1104,12 @@ Storage and execution:
   (`connectors__icloud_contacts_search`), over CalDAV and CardDAV through Felix's egress guard
   (`*.icloud.com`), with the Apple ID and app-specific password the person connected
   (`POST /connections/icloud`).
+- A person's published calendar feeds, from the same plugin (`uv sync --extra ics-connectors`):
+  `connectors__ics_events` reads the `.ics` links a person connected (`POST /connections/ics`
+  `{label, url}`: Outlook's published calendar, Google Calendar's secret iCal address, an iCloud
+  public calendar), each fetched once and kept only if it serves a calendar, sealed in their vault.
+  The hosts a link may name are `FELIX_ICS_HOSTS` (Outlook, Google Calendar and `*.icloud.com` by
+  default); the link is never shown to the model.
 - Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

@@ -730,6 +730,58 @@
         "title": "ConnectionOut",
         "type": "object"
       },
+      "ConnectionView": {
+        "description": "Who and whether it works; never the secret. Core's `ConnectionOut` less what a secret\nconnection never has (scopes, an expiry): a plugin cannot import the API's models.",
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "oauth",
+              "secret"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "revoked"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider",
+          "account",
+          "label",
+          "kind",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ConnectionView",
+        "type": "object"
+      },
       "ContinueRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1551,58 +1603,6 @@
           }
         },
         "title": "HeartbeatUpsert",
-        "type": "object"
-      },
-      "ICloudConnection": {
-        "description": "Who and whether it works; never the password. Core's `ConnectionOut` less what a secret\nconnection never has (scopes, an expiry): a plugin cannot import the API's models.",
-        "properties": {
-          "account": {
-            "title": "Account",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "integer"
-          },
-          "kind": {
-            "enum": [
-              "oauth",
-              "secret"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "provider": {
-            "title": "Provider",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "active",
-              "revoked"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "updated_at": {
-            "title": "Updated At",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "provider",
-          "account",
-          "label",
-          "kind",
-          "status",
-          "created_at",
-          "updated_at"
-        ],
-        "title": "ICloudConnection",
         "type": "object"
       },
       "ImportIn": {
@@ -13890,7 +13890,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ICloudConnection"
+                  "$ref": "#/components/schemas/ConnectionView"
                 }
               }
             },
@@ -13898,6 +13898,62 @@
           }
         },
         "summary": "Connect Icloud",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/ics": {
+      "post": {
+        "description": "Connect a published calendar feed (an .ics link) by name.",
+        "operationId": "connect_ics_connections_ics_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "description": "A name for the feed, e.g. \"Work\".",
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "title": "Label",
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "The calendar's published ICS link (https:// or webcal://).",
+                    "format": "password",
+                    "maxLength": 2048,
+                    "minLength": 1,
+                    "title": "Url",
+                    "type": "string",
+                    "writeOnly": true
+                  }
+                },
+                "required": [
+                  "label",
+                  "url"
+                ],
+                "title": "FeedConnect",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Connect Ics",
         "tags": [
           "Connections"
         ]

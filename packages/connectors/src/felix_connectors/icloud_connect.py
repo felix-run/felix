@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
+from felix_connectors.connect import ConnectionView, refused
 from felix_connectors.icloud_dav import PROVIDER, Dav, Refused, basic, check_app_password, check_apple_id
 
 logger = logging.getLogger("felix_connectors.icloud_connect")
@@ -44,37 +45,20 @@ class ICloudConnect(BaseModel):
     )
 
 
-class ICloudConnection(BaseModel):
-    """Who and whether it works; never the password. Core's `ConnectionOut` less what a secret
-    connection never has (scopes, an expiry): a plugin cannot import the API's models."""
-
-    provider: str
-    account: str
-    label: str
-    kind: Literal["oauth", "secret"]
-    status: Literal["active", "revoked"]
-    created_at: int
-    updated_at: int
-
-
-def _refused(code: str, message: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": code, "message": message}, status_code=status)
-
-
 async def _credential(request: Request) -> tuple[str, str] | JSONResponse:
     """(Apple ID, app-specific password) from the body, checked, or the written refusal."""
     try:
         body = ICloudConnect.model_validate(json.loads(await request.body()))
     except ValueError, ValidationError:
-        return _refused("invalid_body", "send {apple_id, app_password} as JSON")
+        return refused("invalid_body", "send {apple_id, app_password} as JSON")
     try:
         apple_id = check_apple_id(body.apple_id)
     except ValueError:
-        return _refused("apple_id_invalid", "an Apple ID is the email you sign in to Apple with")
+        return refused("apple_id_invalid", "an Apple ID is the email you sign in to Apple with")
     try:
         return apple_id, check_app_password(body.app_password.get_secret_value())
     except ValueError:
-        return _refused(
+        return refused(
             "app_password_format", "use an app-specific password from appleid.apple.com (xxxx-xxxx-xxxx-xxxx)"
         )
 
@@ -84,7 +68,7 @@ def build_router() -> APIRouter:
 
     @router.post(
         "",
-        response_model=ICloudConnection,
+        response_model=ConnectionView,
         openapi_extra={
             "requestBody": {
                 "required": True,
@@ -104,7 +88,7 @@ def build_router() -> APIRouter:
         if not await request.app.state.icloud_limiter.hit(
             f"icloud-connect:{tenant}:{person}", limit=ATTEMPTS, window_seconds=WINDOW_S
         ):
-            return _refused("rate_limited", "too many tries; wait an hour and try again", 429)
+            return refused("rate_limited", "too many tries; wait an hour and try again", 429)
         checked = await _credential(request)
         if isinstance(checked, JSONResponse):
             return checked
@@ -113,12 +97,12 @@ def build_router() -> APIRouter:
         try:
             await dav.principal(dav.caldav, basic(apple_id, password))
         except Refused:
-            return _refused(
+            return refused(
                 "app_password_refused", "Apple did not accept this Apple ID and app-specific password"
             )
         except Exception as exc:
             logger.warning("icloud connect check failed error=%s", type(exc).__name__)
-            return _refused("icloud_unavailable", "iCloud could not be reached just now; try again", 502)
+            return refused("icloud_unavailable", "iCloud could not be reached just now; try again", 502)
         try:
             stored = await connections.save_secret(
                 settings,
@@ -130,8 +114,8 @@ def build_router() -> APIRouter:
                 label=apple_id,
             )
         except connections.StoreUnavailable:
-            return _refused("connect_failed", "connecting did not finish; try again", 503)
-        return ICloudConnection.model_validate(connections.public_view(stored))
+            return refused("connect_failed", "connecting did not finish; try again", 503)
+        return ConnectionView.model_validate(connections.public_view(stored))
 
     return router
 
@@ -154,4 +138,4 @@ def mount(app: Any) -> None:
     app.include_router(build_router(), prefix=MOUNT)
 
 
-__all__ = ["ATTEMPTS", "MOUNT", "ICloudConnect", "ICloudConnection", "build_router", "mount"]
+__all__ = ["ATTEMPTS", "MOUNT", "ICloudConnect", "build_router", "mount"]

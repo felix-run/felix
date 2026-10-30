@@ -3704,6 +3704,45 @@ it at Apple.
   retry finds the event it made (`If-None-Match: *`, 412). Reminders are not offered: Apple
   stopped serving upgraded Reminders lists over CalDAV.
 
+### Connecting a calendar feed
+
+`POST /connections/ics` (a person, signed in; mounted by the `felix-connectors` plugin with its
+`ics` extra) takes `{label, url}`: a name the person picks and the link their calendar service
+published the calendar at -- Outlook's "Publish a calendar" ICS link, Google Calendar's "Secret
+address in iCal format", an iCloud public calendar's `webcal://` link (read as `https://`). **The
+link is the credential**: anyone holding it reads the calendar, with no sign-in. So it is never
+logged, returned, put in an error or shown to the model, and the body is read by the route, not
+FastAPI, whose 422 would echo it.
+
+- **Where it may point is the operator's**: `FELIX_ICS_HOSTS`, comma-separated `allow_hosts`
+  patterns, defaulting to `outlook.office365.com`, `outlook.live.com`, `calendar.google.com` and
+  `*.icloud.com`, checked at load. A link on any other host or port than 443, over http (outside
+  the development exemption), with credentials or a fragment, is refused before anything is
+  sent. The guard still pins the address, so an allowed name resolving to a private one is
+  refused too.
+- **Anyone can publish a calendar** on iCloud or Google, so the default hosts mean feed content a
+  person chose, possibly crafted. That is what the budgets below are for, and why content
+  screening matters more than the host list. The tool
+  declares the list (`Tool.egress_hosts`), so a manifest with `network.allow_hosts` covers it, and
+  every read checks a kept link again, so narrowing the list stops a link already connected.
+- The link is fetched once and kept only if it serves an iCalendar calendar, sealed in the person's
+  vault as `https://` (provider `ics`, kind `secret`, account the name case folded, so "Work" and
+  "work" are one feed; a name holds no slash). Connecting a name again replaces its link; a person
+  keeps at most five. Refusals are written codes (`invalid_body`, `label_invalid`, `url_invalid`,
+  `host_not_allowed`, `too_many_feeds`, `feed_refused`, `feed_unavailable`, `feed_too_large`,
+  `not_a_calendar`, `connect_failed`); ten tries a person an hour, 404 without a vault key, 403 to
+  a caller that names no person. Disconnecting (`DELETE /connections/ics/{account}`) forgets the
+  link here; only withdrawing it at the calendar service stops it working for anyone who copied it.
+- **The tool** (`connectors__ics_events`) reads every feed the person connected, or one by name,
+  as `AuthContext.person`: up to five feeds, 3 MB each, redirects never followed. A feed that fails
+  is named in the answer, with what the person can do about it, and the rest are still read. Every
+  answer is untrusted text: enable content screening. Each calendar is held to a budget
+  (`felix_connectors.ical`), shared with iCloud: a series past 20,000 rule steps, and anything past
+  20,000 events, 500,000 steps in all or 2,000 occurrences in the window, is left out, and the
+  answer counts it. A series with no start is skipped. Parsing still costs about three seconds
+  for a 3 MB feed on every call, so up to fifteen for five, in a worker thread that a run's time
+  limit does not stop.
+
 ### MCP servers as the person
 
 `mcp_servers[].auth: person:<provider>` calls a remote (http/sse) MCP server with the token of the

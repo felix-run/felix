@@ -1094,7 +1094,14 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
   - [x] Time, in core: `time_now`, `time_convert` and `date_math` (`felix.tools.time_tools`),
     local and read-only. A daylight-saving gap or repeated hour is named, not guessed through;
     calendar units move the wall clock and hours are elapsed time. `concierge` and `travel` bind them.
-  - [ ] ICS: read a subscribed `.ics` feed (Outlook and shared calendars without OAuth).
+  - [x] ICS: `connectors__ics_events` reads the published `.ics` links a person connects
+    (`POST /connections/ics`), sealed in their vault, on hosts `FELIX_ICS_HOSTS` allows; the
+    iCalendar expansion is shared with iCloud (`felix_connectors.ical`), under a calendar-wide
+    budget (events, steps, occurrences in the window) since a published feed's content is the
+    person's to choose. Open: not checked against a live Outlook or Google published link
+    (whether either redirects, which would read as an error); a feed is fetched and parsed whole
+    on every call, with no caching, in a thread a run's time limit does not stop; whether the
+    tool should set `relays_untrusted` so it is marker-screened without a manifest asking.
   - [ ] Microsoft 365 (Graph) on the vault; Wikipedia/Wikidata; news/RSS.
 - Found, not fixed:
   - **No per-manifest session retention.** `governance.retention_days` shortens only the audit

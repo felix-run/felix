@@ -144,9 +144,11 @@ async def send(
     content: bytes | None = None,
     allow_http: bool = False,
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    max_bytes: int = MAX_RESPONSE_BYTES,
 ) -> bytes:
     """One request through the egress guard, its body returned raw: what `get_json` does, for any
-    method and for a body that is not JSON (a file's bytes). The same bound, deadline and cap."""
+    method and for a body that is not JSON (a file's bytes). The same bound and deadline; the cap
+    is `max_bytes`, for the one answer that is a whole document (a published calendar)."""
     from felix.security.host_allowlist import EgressBound, HostAllowlist, normalise_host_pattern
     from felix.security.ssrf import BLOCKED_MESSAGE, EgressBlocked
 
@@ -167,6 +169,7 @@ async def send(
                 egress=declared,
                 allow_http=allow_http,
                 timeout_s=timeout_s,
+                max_bytes=max_bytes,
             )
     except EgressBlocked:
         raise
@@ -218,6 +221,7 @@ async def _fetch(
     egress: Any,
     allow_http: bool,
     timeout_s: float,
+    max_bytes: int,
 ) -> bytes:
     import httpx
     from felix.security.egress import safe_async_client
@@ -233,17 +237,17 @@ async def _fetch(
         # as one, a PUT moved elsewhere would read as written.
         if not 200 <= resp.status_code < 300:
             raise UpstreamError(resp.status_code)
-        return await _read_capped(resp)
+        return await _read_capped(resp, max_bytes)
 
 
-async def _read_capped(resp: Any) -> bytes:
-    """The body, streamed, refused past `MAX_RESPONSE_BYTES` before it is all held."""
+async def _read_capped(resp: Any, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
+    """The body, streamed, refused past `max_bytes` before it is all held."""
     chunks: list[bytes] = []
     total = 0
     async for chunk in resp.aiter_bytes():
         total += len(chunk)
-        if total > MAX_RESPONSE_BYTES:
-            raise ResponseTooLarge(f"response exceeded {MAX_RESPONSE_BYTES} bytes")
+        if total > max_bytes:
+            raise ResponseTooLarge(f"response exceeded {max_bytes} bytes")
         chunks.append(chunk)
     return b"".join(chunks)
 

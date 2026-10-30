@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 from xml.sax.saxutils import escape
@@ -34,6 +34,7 @@ from felix.tools.types import Tool
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from felix_connectors.http import UpstreamError
+from felix_connectors.ical import default_start, event_line, left_out_note, occurrences, start_moment
 from felix_connectors.icloud_dav import (
     CALDAV,
     CARDDAV,
@@ -56,9 +57,6 @@ MAX_CALENDARS = 20
 MAX_BOOKS = 5
 MAX_EVENTS = 25
 MAX_CONTACTS = 10
-#: Rule steps one series may cost to expand: years of a weekly meeting are a few hundred, a rule
-#: that repeats each second is millions. A series over it is left out, and the answer says so.
-MAX_STEPS = 20_000
 PRODID = "-//Felix//felix-connectors//EN"
 CS = "http://calendarserver.org/ns/"
 
@@ -69,17 +67,6 @@ _CALENDARS = f"""<?xml version="1.0" encoding="utf-8"?>
 _BOOKS = b"""<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:displayname/></d:prop></d:propfind>"""
 _WRITE = {f"{{{DAV}}}write", f"{{{DAV}}}write-content", f"{{{DAV}}}all"}
-# Seconds one step of each FREQ advances: the yardstick for what expanding a series costs.
-_STEP_S = {
-    "SECONDLY": 1,
-    "MINUTELY": 60,
-    "HOURLY": 3600,
-    "DAILY": 86_400,
-    "WEEKLY": 604_800,
-    "MONTHLY": 28 * 86_400,
-    "YEARLY": 365 * 86_400,
-}
-_BY = ("BYSECOND", "BYMINUTE", "BYHOUR", "BYDAY", "BYMONTHDAY", "BYYEARDAY", "BYWEEKNO", "BYMONTH")
 
 
 class ICloudArgs(BaseModel):
@@ -197,66 +184,6 @@ def events_query(start: datetime, end: datetime) -> bytes:
 </c:calendar-query>""".encode()
 
 
-def _moment(value: Any, zone: tzinfo | None) -> datetime:
-    """A start as a sortable aware datetime: a day at its midnight, a floating time as `zone`'s."""
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=zone)
-    if isinstance(value, date):
-        return datetime(value.year, value.month, value.day, tzinfo=zone)
-    raise ValueError("an event with no start")
-
-
-def expansion_steps(event: Any, end: datetime) -> float:
-    """An upper bound on the rule steps expanding `event` up to `end` takes: from the series'
-    first occurrence, one per FREQ interval, times every BY-list's length (each can multiply what
-    one step yields). 1 for an event with no rule."""
-    rules = event.get("RRULE")
-    if rules is None:
-        return 1
-    first = _moment(event["DTSTART"].dt, UTC)
-    span = max((end - first).total_seconds(), 0.0)
-    worst = 1.0
-    for rule in rules if isinstance(rules, list) else [rules]:
-        step = _STEP_S.get(str((rule.get("FREQ") or ["SECONDLY"])[0]).upper(), 1)
-        steps = span / (step * max(int((rule.get("INTERVAL") or [1])[0]), 1)) + 1
-        for part in _BY:
-            steps *= max(len(rule.get(part) or ()), 1)
-        worst = max(worst, steps)
-    return worst
-
-
-def occurrences(ics: str, start: datetime, end: datetime) -> tuple[list[Any], int]:
-    """(each occurrence in [start, end) of the events `ics` holds, how many series were left out
-    as too costly to expand). CPU only -- run it off the event loop."""
-    import icalendar
-    import recurring_ical_events
-
-    cal = icalendar.Calendar.from_ical(ics)
-    costly = [c for c in cal.walk("VEVENT") if expansion_steps(c, end) > MAX_STEPS]
-    for component in costly:
-        cal.subcomponents.remove(component)
-    return list(recurring_ical_events.of(cal).between(start, end)), len(costly)
-
-
-def _shown(value: Any, zone: tzinfo | None) -> str:
-    if isinstance(value, datetime):
-        return (value.astimezone(zone) if value.tzinfo else value).isoformat()
-    return value.isoformat() if isinstance(value, date) else "?"
-
-
-def event_line(event: Any, calendar: str, zone: tzinfo | None) -> str:
-    start, end = event.get("DTSTART"), event.get("DTEND")
-    line = (
-        f"{_shown(start.dt if start else None, zone)} to {_shown(end.dt if end else None, zone)} · "
-        f"{one_line(str(event.get('SUMMARY') or '(no title)'), 160)}"
-    )
-    if event.get("LOCATION"):
-        line += f" · at {one_line(str(event['LOCATION']), 120)}"
-    if calendar:
-        line += f" · calendar {one_line(calendar, 80)}"
-    return line + f" · uid {one_line(str(event.get('UID') or ''), 128)}"
-
-
 def event_uid(person: str, args: CreateEventArgs) -> str:
     """The UID (and file name) of this person's event of this title and time (`event_key`)."""
     return f"felix-{event_key(person, args.summary, args.start, args.end).hex()[:40]}"
@@ -298,7 +225,7 @@ async def _calendar_events(
         try:
             events, costly = await asyncio.to_thread(occurrences, data.text, start, end)
             found += [
-                (_moment(e["DTSTART"].dt, start.tzinfo), event_line(e, cal.name, start.tzinfo))
+                (start_moment(e["DTSTART"].dt, start.tzinfo), event_line(e, cal.name, start.tzinfo))
                 for e in events
             ]
         except Exception as exc:  # one object the libraries cannot read is skipped, not fatal
@@ -309,7 +236,7 @@ async def _calendar_events(
 
 
 async def list_events(dav: Dav, args: ListEventsArgs) -> str:
-    start = args.start or datetime.now().astimezone()
+    start = args.start or default_start()
     end = start + timedelta(days=args.days)
     _, auth = await credential(args.account)
     found: list[tuple[datetime, str]] = []
@@ -324,7 +251,7 @@ async def list_events(dav: Dav, args: ListEventsArgs) -> str:
     if len(lines) == 1:
         lines.append("no events")
     if left_out:
-        lines.append(f"({left_out} repeating events left out: they repeat too often to list)")
+        lines.append(left_out_note(left_out))
     return "\n".join(lines)
 
 
@@ -462,7 +389,6 @@ def icloud_tools(dav: Dav) -> list[Tool]:
 
 
 __all__ = [
-    "MAX_STEPS",
     "TOOL_NAMES",
     "Collection",
     "address_books",
@@ -471,10 +397,7 @@ __all__ = [
     "contact_line",
     "contacts_query",
     "event_ics",
-    "event_line",
     "event_uid",
     "events_query",
-    "expansion_steps",
     "icloud_tools",
-    "occurrences",
 ]

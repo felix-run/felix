@@ -1043,6 +1043,9 @@ granian = [
 icloud-connectors = [
     { name = "felix-connectors", extra = ["icloud"] },
 ]
+ics-connectors = [
+    { name = "felix-connectors", extra = ["ics"] },
+]
 image = [
     { name = "felix-harness", extra = ["image"] },
 ]
@@ -1093,6 +1096,7 @@ requires-dist = [
     { name = "felix-connectors", marker = "extra == 'connectors'", editable = "packages/connectors" },
     { name = "felix-connectors", extras = ["google"], marker = "extra == 'google-connectors'", editable = "packages/connectors" },
     { name = "felix-connectors", extras = ["icloud"], marker = "extra == 'icloud-connectors'", editable = "packages/connectors" },
+    { name = "felix-connectors", extras = ["ics"], marker = "extra == 'ics-connectors'", editable = "packages/connectors" },
     { name = "felix-harness", editable = "packages/harness" },
     { name = "felix-harness", extras = ["a2a"], marker = "extra == 'a2a'", editable = "packages/harness" },
     { name = "felix-harness", extras = ["aws"], marker = "extra == 'aws'", editable = "packages/harness" },
@@ -1111,7 +1115,7 @@ requires-dist = [
     { name = "felix-harness", extras = ["warehouse-doris"], marker = "extra == 'warehouse-doris'", editable = "packages/harness" },
     { name = "felix-worker", editable = "apps/worker" },
 ]
-provides-extras = ["aws", "gcp", "otel", "a2a", "oidc", "granian", "browser", "image", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "sandbox", "pii", "channels", "connectors", "google-connectors", "icloud-connectors", "full"]
+provides-extras = ["aws", "gcp", "otel", "a2a", "oidc", "granian", "browser", "image", "embeddings", "warehouse", "warehouse-clickhouse", "warehouse-doris", "sandbox", "pii", "channels", "connectors", "google-connectors", "icloud-connectors", "ics-connectors", "full"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1210,16 +1214,22 @@ icloud = [
     { name = "recurring-ical-events" },
     { name = "vobject" },
 ]
+ics = [
+    { name = "icalendar" },
+    { name = "recurring-ical-events" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "felix-harness", editable = "packages/harness" },
     { name = "google-api-python-client", marker = "extra == 'google'", specifier = ">=2.201.0" },
     { name = "icalendar", marker = "extra == 'icloud'", specifier = ">=7.3.0" },
+    { name = "icalendar", marker = "extra == 'ics'", specifier = ">=7.3.0" },
     { name = "recurring-ical-events", marker = "extra == 'icloud'", specifier = ">=3.8.2" },
+    { name = "recurring-ical-events", marker = "extra == 'ics'", specifier = ">=3.8.2" },
     { name = "vobject", marker = "extra == 'icloud'", specifier = ">=0.9.9" },
 ]
-provides-extras = ["google", "icloud"]
+provides-extras = ["google", "icloud", "ics"]
 
 [[package]]
 name = "felix-harness"
@@ -1321,8 +1331,8 @@ requires-dist = [
     { name = "granian", marker = "extra == 'granian'", specifier = ">=2.8.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'a2a'", specifier = ">=0.28.1" },
-    { name = "joserfc", specifier = ">=1.7.4" },
-    { name = "joserfc", marker = "extra == 'oidc'", specifier = ">=1.7.4" },
+    { name = "joserfc", specifier = ">=1.7.7" },
+    { name = "joserfc", marker = "extra == 'oidc'", specifier = ">=1.7.7" },
     { name = "mcp", specifier = ">=2.3.0" },
     { name = "openai", specifier = ">=3.3.1" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.39.0" },
@@ -1984,14 +1994,14 @@ wheels = [
 
 [[package]]
 name = "joserfc"
-version = "1.7.5"
+version = "1.7.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/94/80fea1514b7c6d7d37804d3fe9ca81455f633347fc98731bd71ffe1faa17/joserfc-1.7.5.tar.gz", hash = "sha256:d5ff536e658e17664f8c1b1ab60dc4aa62aa973fcef1edd33cc44bda45d6f5ea", size = 234990, upload-time = "2026-08-29T13:05:42.057Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/15/48ff246732232d35ee234228def22b52455fcc55577f06146602399a29b0/joserfc-1.7.7.tar.gz", hash = "sha256:471d0fd12a5a0d1c0942de280f39efe6f597878315033270b504d4d006d25510", size = 237446, upload-time = "2026-10-19T00:30:29.974Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/c5/82addfd375e5ee6520644e0553e4aadde92d668c4fc99cc716d337fe7bb3/joserfc-1.7.5-py3-none-any.whl", hash = "sha256:add2c2c84e8373b084d526a8b53daba5d7a513a118cd2dcd9fc9f979d0922159", size = 71269, upload-time = "2026-08-29T13:05:40.718Z" },
+    { url = "https://files.pythonhosted.org/packages/df/9f/934db284aa22f37af59708e382903860d4b81329c137b1b0ed2745daeb65/joserfc-1.7.7-py3-none-any.whl", hash = "sha256:06979cfbab78bc802f14c0358f32969826cc26720e13cb38926ffdc86bc0cb2c", size = 71758, upload-time = "2026-10-19T00:30:28.498Z" },
 ]
 
 [[package]]

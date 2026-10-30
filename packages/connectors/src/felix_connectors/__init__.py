@@ -15,7 +15,9 @@ National Weather Service for alerts, OpenStreetMap's Nominatim for places, FOSSG
 routes and Frankfurter for exchange rates. Stock quotes need `FELIX_MARKET_API_KEY` (Finnhub or
 Alpha Vantage). The Google tools act as the person the run acts for, with the grant they
 connected (`felix.auth.google_connect`), and need the `google` extra; the iCloud tools, with
-the app-specific password they connected (`icloud_connect`), and need the `icloud` extra.
+the app-specific password they connected (`icloud_connect`), and need the `icloud` extra; the
+calendar feed tool, with the published `.ics` links they connected (`ics_connect`), and needs the
+`ics` extra.
 
 A family is a module exporting `TOOL_NAMES` and `build_tools(settings)`, listed in `FAMILIES`.
 
@@ -28,9 +30,19 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
-from felix_connectors import fx, gmail, google_calendar, google_drive, icloud, maps, markets, weather
+from felix_connectors import fx, gmail, google_calendar, google_drive, icloud, ics, maps, markets, weather
 
-FAMILIES: tuple[ModuleType, ...] = (weather, maps, markets, fx, google_calendar, gmail, google_drive, icloud)
+FAMILIES: tuple[ModuleType, ...] = (
+    weather,
+    maps,
+    markets,
+    fx,
+    google_calendar,
+    gmail,
+    google_drive,
+    icloud,
+    ics,
+)
 
 
 def _build(family: ModuleType, name: str) -> Any:
@@ -53,10 +65,11 @@ class ConnectorsPlugin:
                 register(tool_name, lambda f=family, n=tool_name: _build(f, n))
 
     def routes(self, app: Any, *, tools: Any) -> None:
-        from felix_connectors import icloud_connect
+        from felix_connectors import icloud_connect, ics_connect
 
         _ = tools
         icloud_connect.mount(app)
+        ics_connect.mount(app)
 
 
 def register(registry: Any) -> None:
