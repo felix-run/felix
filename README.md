@@ -484,6 +484,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | MCP | `POST /mcp` (the default manifest), `POST /mcp/{manifest}` |
 | Agent card | `GET /.well-known/agent-card.json` |
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
+| Scheduler heartbeat | `GET /health/scheduler` — 503 when `felix-scheduler` stopped sweeping; for an external monitor, not a probe |
 | Metrics | `GET /metrics` — **authenticated**, see below |
 
 `/mcp` is the official `mcp` Python SDK's stateless Streamable HTTP transport, serving a manifest's
@@ -1038,6 +1039,16 @@ Storage and execution:
   screened. `max_per_run` (3) bounds a run; `approval: true` holds each post for a person. An id
   not registered for the tenant, or a manifest admitting anonymous callers, fails the compile. See
   `deploy/GOVERNANCE.md`.
+- Job health watch: every 5 minutes the worker flags a job that is **overdue** (enabled, scheduled,
+  not running, due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` (900) ago) or **failing** (its last
+  `FELIX_JOB_FAILURE_THRESHOLD` (3) runs all errors, skipped ones ignored). Each incident is recorded
+  on the job (`health` on `GET /jobs/{name}`), counted (`felix_job_health_incident{kind}`), audited
+  (`job.health`) and, when `FELIX_JOB_ALERT_DESTINATION` names a `FELIX_DESTINATIONS` id — best an
+  `"operator": true` one, which no manifest may name — posted there once: fixed text naming the
+  error's class, never its text. It clears
+  when the job next succeeds or is disabled. `GET /health/scheduler` answers 503 once the scheduler's
+  last sweep is older than `FELIX_SCHEDULER_STALE_SECONDS` (300), none was recorded, or Redis cannot
+  be read: point an uptime monitor at it, not a probe. See `deploy/GOVERNANCE.md`.
 - `POST /triggers/{id}` starts a durable run from a signed event: a pushed commit, a failed
   payment, an alert. The operator registers each trigger in `FELIX_TRIGGERS` (a JSON map of id →
   `{tenant, manifest, scheme, secret, prompt, events?, scopes?, rate_limit?}`, or `workflow`, `inputs`

@@ -78,6 +78,7 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             "enabled": row.get("enabled", False),
             "created_by": row.get("created_by"),
             "created_auth": deepcopy(row.get("created_auth")),
+            "health": deepcopy(row.get("health_json") or {}),
         }
     return {
         "tenant_id": row.tenant_id,
@@ -95,6 +96,7 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
         "enabled": row.enabled,
         "created_by": row.created_by,
         "created_auth": row.created_auth,
+        "health": row.health_json or {},
     }
 
 
@@ -259,6 +261,8 @@ async def put_job(
             "enabled": enabled,
             "created_by": created_by,
             "created_auth": deepcopy(created_auth),
+            # The watch's, never the writer's: a re-save leaves an open incident open (`set_health`).
+            "health_json": deepcopy(existing.get("health_json") or {}) if existing else {},
         }
         _memory_jobs[(tenant_id, name)] = row
         return _job_dict(row)
@@ -544,6 +548,34 @@ async def disable_job(settings: Settings, tenant_id: str, name: str) -> None:
         await db.commit()
 
 
+async def set_health(
+    settings: Settings, tenant_id: str, name: str, *, seen: dict[str, Any], health: dict[str, Any]
+) -> bool:
+    """Write the job's open health incidents (`felix.jobs.watch`) -- only if they are still `seen`,
+    what the caller read. One `UPDATE ... WHERE` on Postgres, comparing the JSONB whole, so of two
+    overlapping sweeps that read the same incidents only one records a new one, and so only one
+    counts, audits and alerts it. False when the job is gone or its incidents moved."""
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None or (row.get("health_json") or {}) != seen:
+            return False
+        row["health_json"] = deepcopy(health)
+        return True
+
+    from sqlalchemy import cast, update
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        result = await db.execute(
+            update(Job)
+            .where(Job.tenant_id == tenant_id, Job.name == name, Job.health_json == cast(seen, JSONB))
+            .values(health_json=deepcopy(health))
+        )
+        await db.commit()
+        return bool(getattr(result, "rowcount", 0))
+
+
 async def delete_job(settings: Settings, tenant_id: str, name: str) -> bool:
     if _use_memory(settings):
         deleted = _memory_jobs.pop((tenant_id, name), None) is not None
@@ -794,6 +826,7 @@ __all__ = [
     "record_run",
     "reset_jobs_for_tests",
     "scheduled_by",
+    "set_health",
     "set_schedule",
     "touch_run",
     "trim_runs",

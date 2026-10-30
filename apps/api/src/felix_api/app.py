@@ -323,6 +323,23 @@ def create_app(
                     logger.warning("readiness probe %s failed: %s", probe.name, probe.detail)
         return report.as_dict(include_detail=False)
 
+    @app.get("/health/scheduler", tags=["System"])
+    async def scheduler_health(response: Response) -> dict[str, Any]:
+        """Is `felix-scheduler` sweeping? 503 when its last completed sweep is older than
+        `FELIX_SCHEDULER_STALE_SECONDS` (`stale`), none was ever recorded (`never`), or Redis could
+        not be read (`unknown`) -- `felix.jobs.tick`.
+
+        For an external monitor, not a kubelet probe: a stopped scheduler is not this pod's fault,
+        and restarting the API, or taking it out of rotation, fixes nothing. Public like `/ready`,
+        and carries no tenant data -- one age, one threshold.
+        """
+        from felix.jobs.tick import scheduler_health as read_health
+
+        health = await read_health(cfg)
+        if not health.ok:
+            response.status_code = 503
+        return health.as_dict()
+
     @app.get("/metrics", tags=["System"])
     async def metrics(request: Request) -> Response:
         """Prometheus exposition. Needs `metrics:read`: the label values span every tenant."""

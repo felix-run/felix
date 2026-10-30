@@ -45,6 +45,9 @@ def parse_tenant_list(value: Any, *, what: str) -> frozenset[str] | None:
         return None
     if not (isinstance(value, list) and value and all(isinstance(t, str) and t for t in value)):
         raise ValueError(f'{what} must be a list of tenant ids, or "*" for all')
+    if "*" in value:
+        # In a list it is a tenant literally named `*`, which nobody meant: refused, not guessed.
+        raise ValueError(f'{what} lists "*"; write the string "*" (not a list) to open it to every tenant')
     return frozenset(value)
 
 

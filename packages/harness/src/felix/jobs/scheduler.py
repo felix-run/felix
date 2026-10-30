@@ -728,7 +728,9 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
     from felix.db.session import rls_tenant
 
     total = 0
-    for tenant_id in await jobs_store.list_tenants_with_jobs(settings):
+    tenants = await jobs_store.list_tenants_with_jobs(settings)
+    failed = 0
+    for tenant_id in tenants:
         try:
             # Bind the tenant for the sweep. The worker has no request context, so nothing
             # else supplies `app.tenant_id`: under `FELIX_DATABASE_RLS` the policy then has no
@@ -739,7 +741,18 @@ async def run_due_jobs_all_tenants(settings: Settings) -> int:
                 total += await run_due_jobs(settings, tenant_id=tenant_id)
         except Exception:
             # One tenant's bad job must not stop every other tenant's schedule.
+            failed += 1
             logger.exception("job_sweep_failed tenant=%s", loggable(tenant_id, limit=64))
+    if tenants and failed == len(tenants):
+        # Every tenant failed: a schema the code is ahead of (an image deployed before `felix migrate
+        # head`), a database refusing reads. Nothing fired, so no stamp -- `GET /health/scheduler`
+        # goes stale -- and the task fails, so `FelixWorkerTaskFailing` sees it too.
+        raise RuntimeError(f"the job sweep failed for every tenant ({failed})")
+    # Only a sweep that got this far counts as one: a sweep that could not list its tenants
+    # raised above and stamps nothing, so `GET /health/scheduler` goes stale on a dead database too.
+    from felix.jobs.tick import record_tick
+
+    await record_tick(now_ms())
     return total
 
 

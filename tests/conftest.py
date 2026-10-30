@@ -130,6 +130,7 @@ def _isolate_process_global_stores():
     from felix.durability.fibers import reset_memory_fibers
     from felix.eval.store import reset_eval_for_tests
     from felix.jobs.store import reset_jobs_for_tests
+    from felix.jobs.tick import reset_tick_for_tests
     from felix.manifests import store as manifest_store
     from felix.manifests.resolver import clear_resolver_cache
     from felix.memory.store import reset_memory_for_tests
@@ -199,6 +200,7 @@ def _isolate_process_global_stores():
         # globals they clear and a store refactor touches one file rather than this one.
         reset_eval_for_tests()
         reset_jobs_for_tests()
+        reset_tick_for_tests()
         reset_workflows_for_tests()
         reset_workflow_runs_for_tests()
         reset_approvals_for_tests()
