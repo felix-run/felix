@@ -31,6 +31,7 @@ from felix.logging_setup import loggable
 from felix.manifests.schema import PermissionModeName
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
+from felix.run_sources import RequiredSourceUnavailable
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.session.heads import known_head
 from felix.session.meta_memo import THREAD_META_MEMO_EXTRA, memoize_thread_meta
@@ -121,6 +122,10 @@ def _http_from_invoke_prep(exc: Exception) -> HTTPException | None:
 
     if isinstance(exc, SecretNotFoundError):
         # A manifest's `secret:` ref names a secret this deployment does not hold.
+        return HTTPException(status_code=503, detail=client_safe_message(exc))
+    if isinstance(exc, RequiredSourceUnavailable):
+        # A `required: true` MCP server could not be reached, started or connected: the manifest is
+        # fine and the source is down, so unavailable, like a missing secret.
         return HTTPException(status_code=503, detail=client_safe_message(exc))
     if isinstance(exc, SecretNotPermittedError):
         # A manifest's `secret:` ref names a secret its tenant may not reference: the manifest
@@ -1569,6 +1574,10 @@ async def chat_stream(
             # client can show it as a refusal rather than an outage.
             refusal = str(getattr(exc, "code", "content_screening_denied"))
             yield error_frame(client_safe_message(exc), kind=refusal)
+        except RequiredSourceUnavailable as exc:
+            # The compile refused, before any model call: typed like `/chat`'s 503, and logged
+            # where it was raised.
+            yield error_frame(client_safe_message(exc), kind=RequiredSourceUnavailable.code)
         except Exception as exc:
             # Without this the body simply stopped under an already-sent 200 OK, with no
             # error event and no [DONE] — the client could not tell success from failure.

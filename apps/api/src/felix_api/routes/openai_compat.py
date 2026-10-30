@@ -22,6 +22,7 @@ from felix.manifests.loader import list_bundled
 from felix.manifests.pin import ManifestDriftError
 from felix.patterns.model import ModelGatewayError
 from felix.patterns.types import ChatMessage, InvokeInput
+from felix.run_sources import RequiredSourceUnavailable
 from felix.runtime import build_tenant_agent, prepare_tenant_invoke, resolve_tenant_manifest
 from felix.secrets import SecretNotFoundError, SecretNotPermittedError
 from felix.thread_ids import effective_thread_id
@@ -209,6 +210,11 @@ async def _stream_completion(
         # The input was refused inside the run, after the 200: typed, and not a server failure.
         code = getattr(exc, "code", "content_screening_denied")
         yield completion.error_chunk(client_safe_message(exc), "invalid_request_error", code)
+        yield DONE
+        return
+    except RequiredSourceUnavailable as exc:
+        # The compile refused before any model call, after the 200: typed as the 503 is.
+        yield completion.error_chunk(client_safe_message(exc), "server_error", RequiredSourceUnavailable.code)
         yield DONE
         return
     except Exception as exc:
@@ -464,6 +470,9 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         except SecretNotFoundError as exc:
             # A manifest's `secret:` ref the deployment has not provisioned: the same 503.
             return _error_json(client_safe_message(exc), "server_error", "secret_not_found", 503)
+        except RequiredSourceUnavailable as exc:
+            # A `required: true` MCP server could not be used: the same 503 `/chat` answers.
+            return _error_json(client_safe_message(exc), "server_error", RequiredSourceUnavailable.code, 503)
         except SecretNotPermittedError as exc:
             # The same 422 `/chat` answers: the manifest names a secret its tenant may not use.
             return _error_json(client_safe_message(exc), "invalid_request_error", "secret_not_permitted", 422)

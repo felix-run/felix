@@ -15,7 +15,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx2
@@ -393,11 +393,14 @@ async def _discover(
 
 @dataclass(frozen=True)
 class McpBinding:
-    """What binding a manifest's MCP servers produced: the tools, and the servers that could not be
-    reached or started, which bound none (`felix.run_sources` says so to the model and the run)."""
+    """What binding a manifest's MCP servers produced: the tools, the servers that could not be
+    reached or started, which bound none (`felix.run_sources` says so to the model and the run), and
+    the servers that answered and bound none -- they list no tools, or none their `tools:` allowlist
+    matches -- which a `required: true` server may not do either."""
 
     tools: list[Tool]
     unavailable: list[str]
+    empty: list[str] = field(default_factory=list)
 
 
 async def tools_from_mcp_servers(
@@ -443,6 +446,7 @@ async def bind_mcp_servers(
     )
     out: list[Tool] = []
     unavailable: list[str] = []
+    empty: list[str] = []
     for ref, identity, result in zip(refs, who, found, strict=True):
         if isinstance(result, BaseException):
             if not isinstance(result, Exception):
@@ -478,6 +482,7 @@ async def bind_mcp_servers(
                 )
             remotes = [r for r in remotes if matches_any(patterns, str(r["name"]))]
         guidance = server_guidance(ref, handshake, manifest_id=manifest_id)
+        bound = len(out)
         for remote in remotes:
             try:
                 tool = _bind_remote_tool(ref, remote, allow_http=allow_http, mode=_call_mode(handshake))
@@ -485,7 +490,9 @@ async def bind_mcp_servers(
                 out.append(replace(tool, prompt_guidance=guidance) if guidance else tool)
             except Exception:
                 logger.debug("skip remote tool %s from %s", remote.get("name"), ref.name, exc_info=True)
-    return McpBinding(tools=out, unavailable=unavailable)
+        if len(out) == bound:
+            empty.append(ref.name)
+    return McpBinding(tools=out, unavailable=unavailable, empty=empty)
 
 
 __all__ = [
