@@ -135,3 +135,29 @@ def test_the_metrics_server_stays_off_by_default() -> None:
     finally:
         object.__setattr__(tasks._settings, "metrics_port", original)
     assert started == [], "the worker opened an unauthenticated metrics port with FELIX_METRICS_PORT=0"
+
+
+async def test_the_worker_starts_with_the_google_client_and_no_sign_in_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker holds FELIX_GOOGLE_CLIENT_ID only to refresh connector grants (compose.yml gives
+    it no FELIX_GOOGLE_ACCOUNTS). 0.19.0 validated it as a sign-in at startup, so in production the
+    worker refused to start and no durable run or job ran, while the API, which has the accounts,
+    stayed healthy. Driven through the real startup hook, the branch production takes."""
+    import felix.secrets
+    import felix_worker.tasks as tasks
+
+    from tests.support.factories import make_settings
+
+    worker_env = make_settings(google_client_id="client.apps.googleusercontent.com", google_client_secret="s")
+    with pytest.raises(RuntimeError, match="FELIX_GOOGLE_ACCOUNTS"):
+        worker_env.validate_runtime()  # the API's check, which serves the sign-in, still refuses
+
+    async def _no_secrets(_settings: Any) -> None:
+        return None
+
+    monkeypatch.setattr(tasks, "_settings", worker_env)
+    monkeypatch.setattr(felix.secrets, "hydrate_secrets", _no_secrets)
+    for name in ("_start_fiber_loop", "_register_plugin_cron_tasks", "_start_metrics_server"):
+        monkeypatch.setattr(tasks, name, lambda: None)
+    await tasks._on_worker_startup(None)

@@ -65,7 +65,8 @@ async def _on_worker_startup(_state: object) -> None:
     # Backend names are open strings resolved against their registries, so validate
     # here too. The API validated at create_app; without this the worker learned
     # about FELIX_SECRETS_BACKEND=vualt from a traceback in the middle of a task.
-    _settings.validate_runtime()
+    # It serves no sign-in route, and holds the Google client only to refresh connector grants.
+    _settings.validate_runtime(serves_sign_in=False)
     await hydrate_secrets(_settings)
     _register_plugin_cron_tasks()
     _start_fiber_loop()

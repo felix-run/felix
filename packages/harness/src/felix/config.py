@@ -1403,8 +1403,13 @@ class Settings(BaseSettings):
                     "characters; generate one with `openssl rand -hex 24`"
                 )
 
-    def validate_runtime(self) -> None:
-        """Fail fast on unsafe or incomplete configuration."""
+    def validate_runtime(self, *, serves_sign_in: bool = True) -> None:
+        """Fail fast on unsafe or incomplete configuration.
+
+        `serves_sign_in=False` is for a process that serves no sign-in route: the worker. It gets
+        `FELIX_GOOGLE_CLIENT_ID` only to refresh a person's connector grant, and checking it as a
+        sign-in (an accounts list, redirect origins) refused to start a worker the API's own
+        settings made correct -- 0.19.0 did that in production, and no durable run or job ran."""
         self._validate_registry_backed_settings()
         if self.auth_mode == "none":
             if not self.allow_insecure and self.environment != "development":
@@ -1458,8 +1463,9 @@ class Settings(BaseSettings):
         from felix.auth.github import validate_login_config
         from felix.auth.google import validate_google_config
 
-        validate_login_config(self)
-        validate_google_config(self)
+        if serves_sign_in:
+            validate_login_config(self)
+            validate_google_config(self)
         if self.scale_out:
             if "sqlite" in self.database_url:
                 raise RuntimeError("Scale-out requires Postgres (FELIX_DATABASE_URL).")
