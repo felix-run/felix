@@ -1095,15 +1095,23 @@ The gaps, in order:
 - [x] **A source that is down is named, not dropped.** An MCP server whose discovery failed bound
       no tools and nothing else changed, so an agent asked what was new in it answered "nothing
       new" and the run recorded `ok`. The model is now told which servers could not be reached
-      (`mcp/client.py:unavailable_sources_note`), and a job's run result lists them by the manifest
+      (`run_sources.unavailable_sources_note`), and a job's run result lists them by the manifest
       that named each (`unavailable_sources`), failed runs included. A stdio server that cannot start
       now counts too; it was swallowed as an empty tool list. *Follow-up:* `required: true` on `McpServerRef`, so a firing stops
       instead of running without a source it cannot do without.
-- [ ] **Destinations as a seam, with a dedupe key.** `register_notifier` (notify PR 3) with
-      Slack-channel and email notifiers, so a job can post to a named place. The platform checks a
-      key such as `brief:<date>` before sending, and records sent or maybe-sent only on the
-      provider's confirmation. Today `felix_channels.slack.post_message` only answers an inbound
-      message, and `notify` caps volume without deduplicating.
+- [x] **Shared destinations, at most once per edition.** `FELIX_DESTINATIONS` (operator registry,
+      open `kind` registry with `register_destination_kind` on the plugin seam), `spec.destinations`
+      binding `post`, the `destination_posts` ledger (migration `0049`, both arms, conformance
+      contract) that posts an edition at most once and refuses an edition whose delivery outcome is
+      unknown (`maybe_posted`), and the core `webhook` kind over `FELIX_WEBHOOK_ENDPOINTS`. Only
+      unattended runs post (`attended: refuse | approval` for a conversation's call); links are
+      stripped unless the registration keeps them (`links`, `link_hosts`). *Next:* a Slack kind in
+      `packages/channels`, which must neutralise broadcast mentions (`<!channel>`, `<!here>`,
+      `<!everyone>`, `@everyone`, `@here`) before posting -- the text is a model's; a route for a
+      person with the right scope to clear a `posting` or `maybe_posted` edition once they have
+      checked (today an operator deletes the row, `deploy/GOVERNANCE.md`); listing a destination
+      kind's `secret:` refs in the registries `FELIX_MANIFEST_SECRETS` must not reopen
+      (`secret_policy.assert_manifest_secrets_unbound`).
 - [ ] **Job health watch.** A worker sweep that flags a job whose `next_run_at` is long past, or
       whose last N runs errored, to its owner (`notify`) or an operator webhook. Today a failing
       operator job, or a stopped `felix-scheduler`, is silent. `report_back` covers only

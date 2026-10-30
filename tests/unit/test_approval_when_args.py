@@ -133,8 +133,8 @@ def test_compile_warns_once_about_a_name_no_resolved_tool_takes(caplog: pytest.L
     tools = [_tool("gh__push", "repo", "branch")]
     rule = ApprovalRule(id="r1", tools=["gh__push"], when_args=["force"])
     with caplog.at_level(logging.WARNING, logger="felix.manifests.approval_args"):
-        apply_approvals(tools, [rule], "m")
-        apply_approvals(tools, [rule], "m")
+        apply_approvals(tools, [rule], "m", unwaivable_tools=frozenset())
+        apply_approvals(tools, [rule], "m", unwaivable_tools=frozenset())
     warnings = [r.getMessage() for r in caplog.records if "never fires" in r.getMessage()]
     assert len(warnings) == 1, warnings
     assert "force" in warnings[0] and "gh__push" in warnings[0]
@@ -147,7 +147,12 @@ def test_compile_is_quiet_when_some_reached_tool_takes_it(caplog: pytest.LogCapt
     approval_args._warned.clear()
     tools = [_tool("gh__push", "repo", "force"), _tool("gh__list", "repo")]
     with caplog.at_level(logging.WARNING, logger="felix.manifests.approval_args"):
-        apply_approvals(tools, [ApprovalRule(id="r1", tools=["gh__*"], when_args=["force"])], "m")
+        apply_approvals(
+            tools,
+            [ApprovalRule(id="r1", tools=["gh__*"], when_args=["force"])],
+            "m",
+            unwaivable_tools=frozenset(),
+        )
     assert not [r for r in caplog.records if "never fires" in r.getMessage()]
 
 

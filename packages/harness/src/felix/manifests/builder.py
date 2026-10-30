@@ -20,6 +20,7 @@ from felix.governance.judges import judge_calls_out, judge_score
 from felix.governance.permission_mode import (
     EXIT_PLAN_TOOL_NAME,
     apply_permission_mode,
+    bound_unwaivable_tools,
     builtin_approval_rules,
     make_exit_plan_tool,
     plan_approval_rule,
@@ -1415,10 +1416,13 @@ def apply_approvals(
     *,
     permissions: PermissionsSpec | None = None,
     conditional: Sequence[ApprovalRule] = (),
+    unwaivable_tools: frozenset[str],
 ) -> list[Tool]:
     """Wrap each gated tool in its approval. ``conditional`` names rules -- by identity, the objects
     the compile built, so a manifest rule cannot become one by copying an id -- that apply only to
-    the calls whose tool's `approval_condition` says so."""
+    the calls whose tool's `approval_condition` says so. ``unwaivable_tools`` are tools whose every
+    approval no mode waives in this manifest (`permission_mode.bound_unwaivable_tools`): required,
+    never defaulted, since an empty set is a manifest whose `post` any allowed mode may waive."""
     if not any(r.tools for r in rules):
         return tools
     from felix.manifests.approval_args import warn_unknown_when_args
@@ -1482,7 +1486,9 @@ def apply_approvals(
             req = try_get_context()
             # The thread's permission mode may waive this approval (`accept_edits` for an edit
             # tool, `bypass` for any) -- resolved by the permission-mode wrapper outside this one.
-            waived_by = await waives_approval(tool.name, permissions, req, rule_id=rule.id)
+            waived_by = await waives_approval(
+                tool.name, permissions, req, rule_id=rule.id, unwaivable_tools=unwaivable_tools
+            )
             if waived_by is not None and req is not None:
                 record_waiver(req, tool.name, waived_by, manifest_id)
             granted = waived_by is not None
@@ -2153,6 +2159,69 @@ async def _bind_mcp_servers(
     return unavailable_sources_note(unavailable)
 
 
+def _bind_destinations(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """`post` for `spec.destinations`, refused like `_bind_notify` when a tool of that name is
+    already bound. Every id must be a `FELIX_DESTINATIONS` entry open to the tenant, of an installed
+    kind whose own check passes, or the compile is refused (`DestinationError`): a manifest naming a
+    destination it cannot reach is wrong as written, not something to discover on the first post."""
+    if m.spec.destinations is None or deps.settings is None:
+        return
+    from felix.destinations import resolve_destinations
+    from felix.destinations.tool import POST, make_post_tool
+    from felix.manifests.inbound_auth import admits_anonymous
+
+    if admits_anonymous(m):
+        # Anyone could then make the deployment speak in a shared place, as no one.
+        raise ValueError(
+            f"manifest '{m.metadata.name}' admits anonymous callers, and spec.destinations would let "
+            "them post to shared destinations; set auth.inbound.allow_anonymous to false or drop it"
+        )
+
+    if any(t.name == POST for t in resolved):
+        raise ValueError(
+            f"spec.destinations binds a tool named '{POST}', and '{m.metadata.name}' already has one. "
+            f"Remove the other tool or the destinations block."
+        )
+    destinations = resolve_destinations(deps.settings, tenant_id, m.spec.destinations.ids)
+    resolved.append(make_post_tool(deps.settings, tenant_id=tenant_id, manifest=m, destinations=destinations))
+
+
+def _feature_approval_rules(m: Manifest) -> tuple[list[ApprovalRule], list[ApprovalRule]]:
+    """The approval rules `m` compiles: its own `spec.approvals`, then the ones its spec blocks add
+    over the tools they bind -- the plan's, the built-in `approval: true` rules, `run_workflow`'s
+    and `post`'s attended rule -- and, second, the subset `apply_approvals` treats as conditional
+    on each call (`Tool.approval_condition`), by identity."""
+    approval_rules = list(m.spec.approvals)
+    # Rules that gate only the calls their tool's `approval_condition` says need it.
+    conditional_rules: list[ApprovalRule] = []
+    if "plan" in m.spec.permissions.allowed_modes:
+        # The plan is approved through the same flow as any gated call -- the row, the
+        # `approval_required` frame, `GET /approvals` -- and no mode waives it.
+        approval_rules.append(plan_approval_rule())
+    # The approvals a spec block adds over the tool it binds -- `schedule_task`, `notify`,
+    # `save_workflow` -- unless the manifest's own rule already gates every call
+    # (`permission_mode.BUILTIN_APPROVALS`). No mode waives them.
+    approval_rules.extend(builtin_approval_rules(m.spec, list(m.spec.approvals)))
+    if m.spec.workflow_authoring is not None:
+        # `run_approval`: waivable, and under `auto` conditional on the call (see the rule ids).
+        from felix.workflows.agent_tools import workflow_run_rule
+
+        run_rule = workflow_run_rule(m.spec.workflow_authoring, list(m.spec.approvals))
+        if run_rule is not None:
+            approval_rules.append(run_rule)
+            if m.spec.workflow_authoring.run_approval == "auto":
+                conditional_rules.append(run_rule)
+    if m.spec.destinations is not None:
+        # `attended: approval`: unwaivable, and conditional on someone watching the run.
+        from felix.destinations.tool import attended_approval_rule
+
+        attended_rule = attended_approval_rule(m.spec.destinations, list(m.spec.approvals))
+        if attended_rule is not None:
+            approval_rules.append(attended_rule)
+            conditional_rules.append(attended_rule)
+    return approval_rules, conditional_rules
+
+
 async def build_agent(
     manifest: Manifest | str | dict[str, Any],
     tools: ToolProvider | None = None,
@@ -2563,6 +2632,8 @@ async def build_agent(
         _bind_scheduling(resolved, m, deps, tenant_id)
         # `spec.notify` -> `notify`, on the same terms.
         _bind_notify(resolved, m, deps, tenant_id)
+        # `spec.destinations` -> `post`, on the same terms.
+        _bind_destinations(resolved, m, deps, tenant_id)
         # `spec.workflow_authoring` -> the workflow authoring tools, on the same terms.
         _bind_workflow_authoring(resolved, m, deps, tenant_id)
 
@@ -2840,26 +2911,7 @@ async def build_agent(
             resolved = apply_guardrails(resolved, m.spec.guardrails, m.metadata.name)
         if judges_enabled(m.spec.guardrails):
             resolved = apply_judges(resolved, m.spec.guardrails, m.metadata.name, decider=decider)
-        approval_rules = list(m.spec.approvals)
-        # Rules that gate only the calls their tool's `approval_condition` says need it.
-        conditional_rules: list[ApprovalRule] = []
-        if "plan" in m.spec.permissions.allowed_modes:
-            # The plan is approved through the same flow as any gated call -- the row, the
-            # `approval_required` frame, `GET /approvals` -- and no mode waives it.
-            approval_rules.append(plan_approval_rule())
-        # The approvals a spec block adds over the tool it binds -- `schedule_task`, `notify`,
-        # `save_workflow` -- unless the manifest's own rule already gates every call
-        # (`permission_mode.BUILTIN_APPROVALS`). No mode waives them.
-        approval_rules.extend(builtin_approval_rules(m.spec, list(m.spec.approvals)))
-        if m.spec.workflow_authoring is not None:
-            # `run_approval`: waivable, and under `auto` conditional on the call (see the rule ids).
-            from felix.workflows.agent_tools import workflow_run_rule
-
-            run_rule = workflow_run_rule(m.spec.workflow_authoring, list(m.spec.approvals))
-            if run_rule is not None:
-                approval_rules.append(run_rule)
-                if m.spec.workflow_authoring.run_approval == "auto":
-                    conditional_rules.append(run_rule)
+        approval_rules, conditional_rules = _feature_approval_rules(m)
         if approval_rules:
             resolved = apply_approvals(
                 resolved,
@@ -2867,6 +2919,7 @@ async def build_agent(
                 m.metadata.name,
                 permissions=m.spec.permissions,
                 conditional=conditional_rules,
+                unwaivable_tools=bound_unwaivable_tools(m.spec),
             )
         # Outside approvals, so plan mode refuses a change before anyone is asked to approve it,
         # and so the mode it resolves is there when approvals asks whether it waives a call.

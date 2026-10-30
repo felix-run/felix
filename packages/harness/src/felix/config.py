@@ -360,6 +360,13 @@ class Settings(BaseSettings):
     # "/repos/acme/", "secret": "secret:NAME", "scheme": "Bearer", "header": "Authorization",
     # "port": null, "tenants": [...]}}. `tenants` is required ("*" for every tenant).
     egress_credentials: str = Field(default="", repr=False)
+    # Destinations (`felix.destinations`): shared places an agent may post to with `post`, registered
+    # here by the operator and named by id in `spec.destinations.ids` -- a manifest never carries a
+    # URL, a channel or a token. JSON: {"id": {"kind": "webhook", "endpoint": "<FELIX_WEBHOOK_ENDPOINTS
+    # id>", "tenants": [...]}}. `kind` picks the adapter (core: `webhook`; a plugin may register
+    # more); `tenants` is required ("*" for every tenant). The boot checks the shape; a kind's own
+    # fields are checked when a manifest naming the id compiles.
+    destinations: str = Field(default="", repr=False)
     # Inbound triggers (`felix.triggers`): `POST /triggers/{id}` takes a signed event and starts a
     # durable run of `manifest` for `tenant`. JSON: {"id": {"tenant": "acme", "manifest": "triage",
     # "scheme": "standard" | "github", "secret": "secret:NAME" (or a list, to rotate; a literal only
@@ -903,6 +910,7 @@ class Settings(BaseSettings):
         self._validate_decision_route_providers()
         self._validate_webhook_endpoints()
         self._validate_egress_credentials()
+        self._validate_destinations()
         self._validate_manifest_secrets()
         self._validate_triggers()
         self._validate_skill_update_webhooks()
@@ -1027,6 +1035,15 @@ class Settings(BaseSettings):
             parse_egress_credentials(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_EGRESS_CREDENTIALS: {exc}") from exc
+
+    def _validate_destinations(self) -> None:
+        """A malformed `FELIX_DESTINATIONS` fails the boot, not the first compile that names it."""
+        from felix.destinations import parse_destinations
+
+        try:
+            parse_destinations(self)
+        except ValueError as exc:
+            raise RuntimeError(f"FELIX_DESTINATIONS: {exc}") from exc
 
     def _validate_manifest_secrets(self) -> None:
         """A malformed `FELIX_MANIFEST_SECRETS` fails the boot rather than reading as an empty allowlist,

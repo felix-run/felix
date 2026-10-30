@@ -206,7 +206,12 @@ async def test_a_second_principal_cannot_join_the_first_ones_pending_request() -
         return "deployed"
 
     rule = ApprovalRule(id="r1", tools=["deploy"], ttl_seconds=10, bind_principal=True, one_shot=True)
-    (gated,) = apply_approvals([define_tool(name="deploy", description="d", handler=handler)], [rule], "m")
+    (gated,) = apply_approvals(
+        [define_tool(name="deploy", description="d", handler=handler)],
+        [rule],
+        "m",
+        unwaivable_tools=frozenset(),
+    )
     s = make_settings()
 
     def req(principal: str) -> RequestContext:
@@ -285,7 +290,12 @@ async def test_a_machine_run_s_pending_approval_names_the_person_it_runs_for() -
         return "deployed"
 
     rule = ApprovalRule(id="r1", tools=["deploy"], ttl_seconds=10, bind_principal=True)
-    (gated,) = apply_approvals([define_tool(name="deploy", description="d", handler=handler)], [rule], "m")
+    (gated,) = apply_approvals(
+        [define_tool(name="deploy", description="d", handler=handler)],
+        [rule],
+        "m",
+        unwaivable_tools=frozenset(),
+    )
     s = make_settings()
     req = RequestContext(
         settings=s,
@@ -330,7 +340,12 @@ async def test_a_machine_run_joins_a_pending_request_only_for_the_person_who_ope
         return "deployed"
 
     rule = ApprovalRule(id="r1", tools=["deploy"], ttl_seconds=10, bind_principal=True)
-    (gated,) = apply_approvals([define_tool(name="deploy", description="d", handler=handler)], [rule], "m")
+    (gated,) = apply_approvals(
+        [define_tool(name="deploy", description="d", handler=handler)],
+        [rule],
+        "m",
+        unwaivable_tools=frozenset(),
+    )
     s = make_settings()
 
     async def call(auth: AuthContext, call_id: str) -> str:

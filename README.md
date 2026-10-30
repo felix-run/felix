@@ -1004,6 +1004,19 @@ Storage and execution:
   `FELIX_WEBHOOK_MAX_ATTEMPTS` (8) with each attempt bounded by `FELIX_WEBHOOK_TIMEOUT_SECONDS`
   (10, at most 60), and reports each endpoint's state on `GET /chat/runs/{token}`.
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
+- `spec.destinations: {ids: [ops-brief]}` binds `post`, which publishes to shared places the
+  operator registered in `FELIX_DESTINATIONS` (a JSON map of id → `{kind, tenants, links?,
+  link_hosts?, …}`; core's `webhook` kind names a `FELIX_WEBHOOK_ENDPOINTS` endpoint, and a plugin
+  may register more kinds with `register_destination_kind`) — a team channel for a scheduled brief,
+  say. Only unattended runs (jobs, heartbeats, triggers) post; a conversation's call is refused
+  unless `attended: approval` holds it for the person. Each post names an `edition`
+  (`brief:2026-10-29`), and the ledger (`destination_posts`) posts one manifest's edition to a
+  destination at most once: a retry or the next firing gets `already_posted`, and a delivery whose
+  outcome is unknown (a timeout, a 5xx) is `maybe_posted` and never retried. Secrets are redacted,
+  links stripped unless the registration keeps them (`links: keep`, or `link_hosts`), and the text
+  screened. `max_per_run` (3) bounds a run; `approval: true` holds each post for a person. An id
+  not registered for the tenant, or a manifest admitting anonymous callers, fails the compile. See
+  `deploy/GOVERNANCE.md`.
 - `POST /triggers/{id}` starts a durable run from a signed event: a pushed commit, a failed
   payment, an alert. The operator registers each trigger in `FELIX_TRIGGERS` (a JSON map of id →
   `{tenant, manifest, scheme, secret, prompt, events?, scopes?, rate_limit?}`, or `workflow`, `inputs`
