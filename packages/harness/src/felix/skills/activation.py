@@ -308,7 +308,7 @@ class SkillRetentionStrategy:
         active = await thread_activations(session, whole_log=reads.whole_log)
         if not active:
             return rendered
-        # Only `activate_skill` results count as shown: a write-back may reuse a call id, and a
+        # Only `activate_skill` results count as shown: a write-back's result is under `queue:`, and a
         # message's text is anyone's to write -- neither may stand in for the real activation.
         shown = {
             m.tool_call_id
