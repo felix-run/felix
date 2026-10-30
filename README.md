@@ -584,7 +584,9 @@ job's own writer, who needs no jobs scope (so a person steers the task an agent 
 or an operator; not every `jobs:write` holder. Every firing carries them whole in its prompt; the
 agent cannot change them; re-saving the job keeps them, and a re-save by someone else clears them. A
 job with `"preferences_required": true` and none yet runs nothing: its run is recorded `skipped`,
-"waiting for its reader's preferences". `POST /jobs/{name}/run` runs a job now
+"waiting for its reader's preferences". A manifest with `spec.state` lets the job's runs keep their own **state** — bookmarks
+per source, a ledger of what they did — which the same people read and clear over
+`GET/DELETE /jobs/{name}/state`; it goes with the job, and a re-save by someone else clears it. `POST /jobs/{name}/run` runs a job now
 instead of waiting for cron (`409 job_running` while a run of it is in flight; a job's runs are
 unattended, so an approval rule without `allow_unattended` refuses a gated call rather than waiting
 — see `deploy/GOVERNANCE.md`); `GET /manifests/{name}/versions` lists what a rollback can go back
@@ -1050,6 +1052,19 @@ Storage and execution:
   links stripped unless the registration keeps them (`links: keep`, or `link_hosts`), and the text
   screened. `max_per_run` (3) bounds a run; `approval: true` holds each post for a person. An id
   not registered for the tenant, or a manifest admitting anonymous callers, fails the compile. See
+  `deploy/GOVERNANCE.md`.
+- `spec.state: {max_keys: 50, max_value_bytes: 4096}` binds `state_get`, `state_set`, `state_list`
+  and `state_delete`: a few short text values a scheduled job's runs keep for the next one — a
+  bookmark per source, a ledger of what was already done — read back by key, never recalled by rank.
+  The state is the **job's** (tenant and job name), so two jobs on one manifest keep their own; any
+  run that is not a job's or heartbeat's firing (a chat, a workflow step, a `task` child) is refused,
+  and `spec.state` beside `execution.mode: durable` does not load. Keys match
+  `[a-z0-9][a-z0-9._:-]{0,63}`; a new key past `max_keys` is refused, an overwrite is not.
+  `state_set` with `expected` is a compare-and-set (`""` for "must not exist yet"), so two
+  overlapping firings cannot silently overwrite each other. A value comes back fenced as data and
+  screened as an untrusted tool's result. The job's writer or an operator reads it over
+  `GET /jobs/{name}/state` and clears it with `DELETE /jobs/{name}/state[/{key}]` (audited
+  `job.state`); deleting the job, or a re-save by another writer, deletes it. See
   `deploy/GOVERNANCE.md`.
 - Job health watch: every 5 minutes the worker flags a job that is **overdue** (enabled, scheduled,
   due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` (900) ago, even if marked running: a firing moves the due time on) or **failing** (its last

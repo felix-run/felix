@@ -3453,6 +3453,68 @@ preferences". The job stays enabled and keeps its schedule, so the health watch 
 runs as failures nor sees the job as overdue: a job that waits forever is visible on `GET /jobs` and
 its runs, not alerted.
 
+### A job's own state
+
+`spec.state` gives a scheduled job's runs a small store of their own -- a bookmark per source, a
+ledger of what they already did -- through `state_get`, `state_set`, `state_list` and `state_delete`.
+It replaces keeping that state in the job thread's workspace by convention, or in per-person memory,
+which the agent can also write and a firing recalls by rank, so may miss.
+
+**The job's, and only its runs'.** The state is keyed by tenant and **job name** (`job_state`), not by
+manifest, so two jobs on one manifest with different sources keep separate bookmarks. A tool call
+learns its job from the firing's request context, which only the scheduler sets, on a manifest job's
+or a heartbeat's firing (scheduled or `POST /jobs/{name}/run`). Every other run is refused with a
+written result, "state is kept by a scheduled job's runs": a person's chat, a trigger's run, a
+workflow's step (even one a job started -- its steps run in their own context and carry no job), a
+durable or background child. A `task` child the firing runs in-process shares the firing's context,
+but the job is marked with the manifest it fired, and the child's tools answer only for their own
+manifest -- so a child cannot spend the job's state under caps of its own, and is refused too. A
+manifest with `spec.state` and `execution.mode: durable` does not load: a durable run resumes in a
+worker's context, where the job cannot be reached.
+Caps: `max_keys` (default 50, at most 200; a new key past it is refused, overwriting one is not) and
+`max_value_bytes` (default 4096 UTF-8 bytes, at most 16384); keys match `[a-z0-9][a-z0-9._:-]{0,63}`.
+So one job holds at most `max_keys` x `max_value_bytes` of values (about 3.2 MB at the ceilings,
+200 KiB at the defaults), and a tenant at most that times its number of jobs -- which `jobs:write`
+and each manifest's `spec.scheduling.max_tasks` already bound.
+
+**Overlapping firings cannot silently overwrite each other.** `state_set` with `expected` writes only
+when the key holds that value now (`""` or null: it must not exist yet), and is otherwise refused
+`conflict`, so the second of two overlapping firings learns the first moved the bookmark. On Postgres
+every write to one job's state takes that job's row lock first (`FOR NO KEY UPDATE`), so the key cap
+and compare-and-set are exact, not best effort.
+
+**Read back as data.** A value may hold text a run copied from a source, so `state_get` returns it in
+a region named anew per call (`fence_as_data`, `<job_state-<12 hex>>`, whose close the value cannot
+forge in any spelling) with a line saying it is material, never instructions, and marks the result
+as untrusted output: with `spec.content_screening` on, it is screened as an MCP server's result is.
+`state_list` returns keys, sizes and times, never values.
+
+**Who may read and clear it.** `GET /jobs/{name}/state` (every key and value) and
+`DELETE /jobs/{name}/state` / `DELETE /jobs/{name}/state/{key}` take the same rule as the preferences
+routes: the job's current writer (a named person, no jobs scope needed) or an operator; anyone else,
+`jobs:write` holders included, gets the same 403 whether the job exists or not, since values may be
+personal. Nobody but the job's runs writes a value. Each delete is audited (`job.state`, `cleared` /
+`deleted`) with the job and the key count -- never a value.
+
+**It goes with the job and with its writer.** Deleting a job deletes its state, so a job written
+later under the name starts empty. A re-save by another writer clears it as it clears the
+preferences: what the old writer's runs stored could otherwise carry text into the new writer's runs.
+A run still going on when either happens writes nothing more (`job_changed`): every write checks,
+under the same row lock, that the job exists and is still held as the firing read it -- the same
+writer, and no clear of its state since (`jobs.state_cleared_at`, which every such clear moves and a
+firing records when it starts). The stamp is what catches a shared credential: every holder of a
+sub-less API key is the one subject `api_key`, so a re-save by one holder counts as a new writer and
+clears the state, and a firing already running for another holder passes the subject check but not
+the stamp. A writer re-saving their own job (a named person) clears nothing and moves no stamp, so
+their firing in flight keeps writing. **So a job saved under a shared credential loses its state on
+every re-save** -- a deploy that re-PUTs its jobs with a sub-less API key resets their bookmarks each
+time; save jobs that keep state as a named person (a key with a `sub`). `DELETE /jobs/{name}/state`
+takes no row lock: a write from the writer's own firing already in flight can land just after it.
+
+**Values never reach logs.** A store failure inside a state tool is logged by the error's class, the
+job and the key alone -- never with its traceback, since a database driver's error renders the
+statement's parameters, the value among them. The audit log carries key counts, never values.
+
 ## JWT verification
 
 `FELIX_JWT_VERIFIERS` is `scheme:issuer[;aud=…][;tenant=claim|issuer|fixed:<tenant>]`,

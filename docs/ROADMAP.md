@@ -1183,7 +1183,7 @@ The gaps, in order:
       local day. A job's zone must be a canonical `available_timezones()` key, but `FELIX_TIMEZONE`'s
       validator still takes any name `ZoneInfo` loads (`america/new_york` on macOS, `Factory`), and
       lets an overlong one raise `OSError` at boot.
-- [~] **Reader-owned preferences and agent state.** *Preferences: done in this PR.* A document on
+- [x] **Reader-owned preferences and agent state.** *Preferences* (#751): a document on
       the job (`jobs.preferences`, migration `0052`, both arms, conformance contract; 8 KiB) read and
       written over `GET/PUT/DELETE /jobs/{name}/preferences` by the job's own writer -- who needs no
       jobs scope, so a task's or heartbeat's person steers it -- or an operator, never by every
@@ -1194,10 +1194,29 @@ The gaps, in order:
       change where the output goes, a heartbeat's checklist included. `preferences_required: true`
       fails closed: a firing with none runs nothing and is recorded `skipped` (`preferences_missing`,
       "waiting for its reader's preferences" on `last_error`); the watch does not alert on it.
-      *Open:* the agent's own state -- a small store for its bookmarks and ledger; today that lives
-      in the job thread's workspace by convention. *Follow-ups:* a `FelixClient` method for the
-      route; `list_scheduled` saying whether a task has preferences; `POST /jobs/{name}/run` still
-      matches a shared subject as the writer (`shared_ok`), where the preferences routes refuse it.
+      *Agent state: done in this PR.* `spec.state` (`max_keys` 50, `max_value_bytes` 4096) binds
+      `state_get` / `state_set` / `state_list` / `state_delete` over `job_state` (migration `0053`,
+      both arms, conformance contract), keyed by tenant and **job**, so two jobs on one manifest keep
+      their own. The job comes from the firing's context (`FIRING_JOB_EXTRA`, set only by the
+      scheduler), so a chat, a trigger's run and a workflow step -- one a job started included -- are
+      refused. `state_set(expected=)` is compare-and-set; every write takes the job row's lock, so the
+      key cap and CAS are exact on Postgres and a firing outliving its job or its writer writes nothing
+      (`job_changed`) -- a shared credential's re-save included, by the clear's stamp
+      (`jobs.state_cleared_at`). `state_get` returns the value in a `fence_as_data` region, marked untrusted
+      output. `GET/DELETE /jobs/{name}/state[/{key}]` for the writer or an operator, audited
+      (`job.state`, key counts only); deleted with the job, cleared on a re-save by another writer.
+      *Follow-ups:* a `FelixClient` method for the preferences and state routes; `list_scheduled`
+      saying whether a task has preferences or state; `GET /jobs` showing a `state_keys` count;
+      `POST /jobs/{name}/run` still matches a shared subject as the writer (`shared_ok`), where the
+      preferences and state routes refuse it; the state rows carry the firing's thread, not a run id,
+      since the run record is written after the firing ends; a workflow step cannot keep state for
+      the job that started it, nor a durable manifest (refused beside `spec.state`); four tools still
+      carry their own copy of the refusal-catching wrapper `tools/refusal.py:answered` now holds
+      (`destinations/tool.py`, `push/agent_tool.py`, `jobs/agent_tools.py`, `workflows/agent_tools.py`).
+
+The Unattended automations section is complete: every gap the audit named has shipped. What is left
+is the follow-ups above -- notably `required: true` on `McpServerRef`, the owner's `notify` beside the
+operator's alert, a route to clear a `maybe_posted` edition, and the zoned heartbeat's daily cap.
 
 ### Auth audit (2026-10-12)
 

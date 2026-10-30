@@ -13,10 +13,12 @@ exception's text. Each tool's wrapper catches `ToolRefused` once and returns `re
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from felix.context import AuthContext, RequestContext
+    from felix.tools.types import ToolInvocationCtx, ToolOutput
 
 
 class ToolRefused(Exception):
@@ -68,4 +70,19 @@ def require_person(*, no_caller: str, shared_subject: str) -> tuple[RequestConte
     return ctx, auth
 
 
-__all__ = ["ToolRefused", "require_person"]
+def answered[A](
+    handler: Callable[[A, ToolInvocationCtx | None], Awaitable[ToolOutput]],
+) -> Callable[[A, ToolInvocationCtx | None], Awaitable[ToolOutput]]:
+    """`handler` with a `ToolRefused` it raises returned as the result the model reads -- the one
+    place a tool catches its refusals, so none can escape as an error the loop reports instead."""
+
+    async def run(args: A, ctx: ToolInvocationCtx | None = None) -> ToolOutput:
+        try:
+            return await handler(args, ctx)
+        except ToolRefused as refused:
+            return refused.result()
+
+    return run
+
+
+__all__ = ["ToolRefused", "answered", "require_person"]

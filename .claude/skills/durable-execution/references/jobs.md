@@ -132,6 +132,36 @@ not the text. The watch ignores the skipped runs (`failing_streak`) and a skippi
 schedule, so it is never `overdue` either: visible on `last_status` / `last_error`, never alerted.
 e2e: `tests/e2e/test_job_preferences.py`; contract in `tests/conformance/test_jobs_store.py`.
 
+**Job state** (`jobs/state.py`, `jobs/state_tools.py`, `0053_job_state`). `spec.state` binds
+`state_get` / `state_set` / `state_list` / `state_delete` (`builder.py:_bind_state`). A row per
+`(tenant_id, job_name, key)` in `job_state`, tenant RLS; keys `KEY_PATTERN`, values text capped at
+`max_value_bytes` UTF-8 bytes (empty refused: `state_delete` removes). The job comes from
+`extras[scheduler.FIRING_JOB_EXTRA]` (`FiringJob`: tenant, name, manifest, and `created_by` /
+`state_cleared_at` as the firing read the job), set only by `_invoke_job_manifest` -- every manifest
+job and heartbeat firing -- and the tools also require `ctx.unattended`, the compiled tenant and the
+compiled manifest (a synchronous `task` child shares the context but not the manifest); anything else
+is `not_a_job`. `spec.state` beside `execution.mode: durable` fails validation
+(`Spec._state_runs_in_its_firing`): a resumed fiber's context carries no extra. A workflow job's steps run in
+their own orchestrator context with no extras, so they are refused too (e2e). Every run's write and
+delete (`set_value`, `delete_key_as_run`; a person's is `delete_key`) goes through `state._lock_job`:
+`SELECT jobs.created_by, jobs.state_cleared_at ... FOR NO KEY UPDATE` in the write's transaction,
+refused `job_changed` unless `RunHolder.holds` it -- the job exists with the firing's writer *and*
+clear stamp, which catches a shared subject's re-save that the subject alone cannot. That lock serialises one job's state
+writes, so `max_keys` (counted under it) and compare-and-set (`StateWrite.expected`, `UNSET` for
+none, `""`/None for "must not exist"; the tool tells "absent" from null by `model_fields_set`) are
+exact. The cascade is `store._drop_job_dependents`: `delete_job` calls it after deleting the `jobs`
+row, and `put_job` through `store._reassign_writer` (writer, a strictly increasing `state_cleared_at`
+from `_next_clear_stamp`, flush, then the delete) when `_new_writer` -- both orders pinned by the
+two-session Postgres tests in the contract. Memory arm: `store.memory_job_holder`, synchronous, with
+no await between check and write. Tool failures log `type(exc).__name__`, never `exc_info` (a
+DBAPIError renders the value as a parameter). `state_get` returns
+`fence_as_data(value, STATE_TAG)` stamped `untrusted_output` (content screening reads it,
+`relays_untrusted=True`); `state_list` never returns values. Routes: `GET /jobs/{name}/state`,
+`DELETE /jobs/{name}/state` and `/state/{key}`, via `routes/jobs.py:_writer_or_operator_job`
+(shared with the preferences routes), audited `job.state` (`cleared` / `deleted`, key count only).
+e2e: `tests/e2e/test_job_state.py`; unit `tests/unit/test_job_state.py`; contract
+`tests/conformance/test_job_state_store.py`.
+
 ## Job health watch
 
 `jobs/tick.py`: `run_due_jobs_all_tenants` ends with `record_tick` (Redis key `TICK_KEY`, never moved

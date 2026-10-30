@@ -2193,6 +2193,25 @@ def _bind_destinations(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenan
     resolved.append(make_post_tool(deps.settings, tenant_id=tenant_id, manifest=m, destinations=destinations))
 
 
+def _bind_state(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: str) -> None:
+    """The job state tools for `spec.state`, refused like `_bind_scheduling` when a tool of one of
+    their names is already bound: the first of a name wins. Nothing here depends on who compiles:
+    each call learns its job from the firing's context, and refuses a run that is not one -- or one
+    whose job fired another manifest (a `task` child of the firing)."""
+    if m.spec.state is None or deps.settings is None:
+        return
+    from felix.jobs.state_tools import STATE_TOOL_NAMES, make_state_tools
+
+    for taken in sorted(t.name for t in resolved if t.name in STATE_TOOL_NAMES):
+        raise ValueError(
+            f"spec.state binds a tool named '{taken}', and '{m.metadata.name}' already has one. "
+            f"Remove the other tool or the state block."
+        )
+    resolved.extend(
+        make_state_tools(deps.settings, tenant_id=tenant_id, manifest_id=m.metadata.name, spec=m.spec.state)
+    )
+
+
 def _feature_approval_rules(m: Manifest) -> tuple[list[ApprovalRule], list[ApprovalRule]]:
     """The approval rules `m` compiles: its own `spec.approvals`, then the ones its spec blocks add
     over the tools they bind -- the plan's, the built-in `approval: true` rules, `run_workflow`'s
@@ -2648,6 +2667,8 @@ async def build_agent(
         _bind_notify(resolved, m, deps, tenant_id)
         # `spec.destinations` -> `post`, on the same terms.
         _bind_destinations(resolved, m, deps, tenant_id)
+        # `spec.state` -> the job state tools, on the same terms.
+        _bind_state(resolved, m, deps, tenant_id)
         # `spec.workflow_authoring` -> the workflow authoring tools, on the same terms.
         _bind_workflow_authoring(resolved, m, deps, tenant_id)
 

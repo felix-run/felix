@@ -193,6 +193,10 @@ class Job(Base):
     preferences_updated_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The job writer's: a firing with no preferences runs nothing and is recorded `skipped`.
     preferences_required: Mapped[bool] = mapped_column(Boolean, server_default=false(), default=False)
+    # When a re-save by another writer last cleared the job's state (`felix.jobs.state`,
+    # `0053_job_state`), strictly increasing; a firing's write is refused once it moved past the one
+    # the firing read. Null until the first such clear.
+    state_cleared_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class Approval(Base):
@@ -966,6 +970,23 @@ class ConnectionRow(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class JobStateRow(Base):
+    """One key of a scheduled job's own state (`felix.jobs.state`, `0053_job_state`): what a firing
+    left the next -- a bookmark per source, a ledger of what it did. Keyed by tenant, job and key, so
+    two jobs on one manifest keep their own. Written only by the job's runs (`state_set`), read back
+    fenced; deleted with the job, and cleared when another writer re-saves it."""
+
+    __tablename__ = "job_state"
+
+    tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    job_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # The thread of the firing that last wrote it: `GET /jobs/{name}/state` says which run's thread.
+    updated_by_thread: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+
+
 class DestinationPostRow(Base):
     """One edition an agent posted, or tried to post, to an operator-registered destination
     (`felix.destinations.ledger`): the check that keeps a retry or a second run from posting it twice.
@@ -1013,6 +1034,7 @@ __all__ = [
     "GitHubConnectionRow",
     "Job",
     "JobRun",
+    "JobStateRow",
     "ManifestActive",
     "ManifestRow",
     "MemoryVector",
