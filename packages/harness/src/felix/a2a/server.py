@@ -272,12 +272,20 @@ async def handle_rpc(
                 type(exc).__name__,
                 loggable(redact_text(str(exc), collected_secret_values(settings)), limit=500),
             )
+            from felix.errors import client_safe_message
+            from felix.run_sources import RequiredSourceUnavailable
+
+            # A required source's refusal is written to be read (it names the manifest's own
+            # servers), and is the one failure a caller can act on: the source is down, not the run.
+            shown_failure = (
+                client_safe_message(exc) if isinstance(exc, RequiredSourceUnavailable) else A2A_TASK_FAILED
+            )
             task = {
                 "id": task_id,
                 "status": {
                     "state": "failed",
                     "timestamp": int(time.time() * 1000),
-                    "message": A2A_TASK_FAILED,
+                    "message": shown_failure,
                 },
                 "manifest": name,
                 "artifacts": [],

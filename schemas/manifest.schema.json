@@ -1469,6 +1469,11 @@
           "default": false,
           "title": "Use Instructions",
           "type": "boolean"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
         }
       },
       "required": [

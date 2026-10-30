@@ -37,6 +37,7 @@ def _relayable() -> tuple[type[BaseException], ...]:
     from felix.manifests.pin import ManifestDriftError
     from felix.patterns.model import ModelGatewayError
     from felix.prompts import PromptUnavailable
+    from felix.run_sources import RequiredSourceUnavailable
     from felix.secrets import SecretNotFoundError, SecretNotPermittedError
     from felix.security.egress_credentials import EgressCredentialError
 
@@ -79,6 +80,9 @@ def _relayable() -> tuple[type[BaseException], ...]:
         # Names the destination id the manifest asked for, never a URL, an endpoint id or another
         # tenant's registration; the same words for an id that is unregistered or another tenant's.
         DestinationError,
+        # Names the manifest and its `required: true` MCP servers that could not be used -- the
+        # author's own names, cleaned as the prompt note cleans them -- and nothing a server said.
+        RequiredSourceUnavailable,
     )
     try:
         # Optional package on a lean install, so its absence must not turn a content

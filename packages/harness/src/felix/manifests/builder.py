@@ -57,6 +57,7 @@ from felix.patterns.registry import (
     list_patterns,
 )
 from felix.patterns.types import Agent, InvokeInput, InvokeOutput
+from felix.run_sources import RequiredSourceUnavailable
 from felix.secret_policy import tenant_secrets_provider
 from felix.secrets import SecretNotPermittedError
 from felix.security.host_allowlist import EgressBound, hosts_outside
@@ -165,6 +166,10 @@ class _SelfFork:
         if self._agent is not None:
             return self._agent
         async with self._lock:
+            if isinstance(self._failed, RequiredSourceUnavailable):
+                # Written for the caller, and relayed by type: wrapped, a later fork's run would
+                # answer "internal error" for an outage the first one named.
+                raise self._failed
             if self._failed is not None:
                 raise RuntimeError(f"agent '{self.manifest_id}' could not be compiled") from self._failed
             if self._agent is None:
@@ -2143,26 +2148,48 @@ async def _bind_mcp_servers(
     *,
     allow_http: bool,
     identities: list[str] | None = None,
+    left_out: Sequence[str] = (),
 ) -> str:
     """Bind each MCP server's tools into ``resolved``. Returns the prompt note naming the servers
     that could not be reached (`run_sources.unavailable_sources_note`), or "" when every one
     answered, and records them on the run under this manifest's name, so a child's outage is not
-    read as its parent's."""
+    read as its parent's.
+
+    A `required: true` server that could not be reached, or answered and bound no tools, or is in
+    ``left_out`` -- the `person:<provider>` servers `open_person_refs` withheld from this run --
+    refuses the compile instead (`RequiredSourceUnavailable`), after recording, so the run stops with
+    its sources still named."""
+    from felix.logging_setup import loggable
     from felix.mcp.client import bind_mcp_servers
     from felix.run_sources import record_unavailable_sources, unavailable_sources_note
 
-    try:
-        binding = await bind_mcp_servers(
-            refs, allow_http=allow_http, manifest_id=m.metadata.name, identities=identities
+    unavailable: list[str] = []
+    empty: list[str] = []
+    if refs:
+        try:
+            binding = await bind_mcp_servers(
+                refs, allow_http=allow_http, manifest_id=m.metadata.name, identities=identities
+            )
+            _append_unique_tools(resolved, binding.tools)
+            unavailable, empty = binding.unavailable, binding.empty
+        except Exception:
+            logger.warning("MCP client tool binding failed", exc_info=True)
+            unavailable = [ref.name for ref in refs]
+    # The manifest's own refs: `left_out` names servers `refs` no longer carries.
+    required = {r.name for r in m.spec.mcp if r.required}
+    missing = [n for n in (*left_out, *unavailable, *empty) if n in required]
+    recorded = [*unavailable, *(n for n in missing if n not in unavailable)]
+    if recorded:
+        record_unavailable_sources(m.metadata.name, recorded)
+    if missing:
+        logger.warning(
+            "required MCP sources unavailable manifest=%s sources=%s",
+            loggable(m.metadata.name, limit=100),
+            loggable(", ".join(missing), limit=400),
         )
-        _append_unique_tools(resolved, binding.tools)
-        unavailable = binding.unavailable
-    except Exception:
-        logger.warning("MCP client tool binding failed", exc_info=True)
-        unavailable = [ref.name for ref in refs]
+        raise RequiredSourceUnavailable(m.metadata.name, missing)
     if not unavailable:
         return ""
-    record_unavailable_sources(m.metadata.name, unavailable)
     return unavailable_sources_note(unavailable)
 
 
@@ -2387,11 +2414,16 @@ async def build_agent(
         _check_declared_egress(m, egress)
         _check_tool_egress(m, resolved, egress)
 
-        # Outbound MCP servers → remote tools.
-        if mcp_refs:
-            unavailable_note = await _bind_mcp_servers(
-                resolved, mcp_refs, m, allow_http=allow_http, identities=person.identities
-            )
+        # Outbound MCP servers → remote tools; a `required: true` one missing stops the compile, a
+        # person server left out included.
+        unavailable_note = await _bind_mcp_servers(
+            resolved,
+            mcp_refs,
+            m,
+            allow_http=allow_http,
+            identities=person.identities,
+            left_out=[name for name, _provider, _why in person.left_out],
+        )
 
         # A2A peers → peer__{name} tools.
         if peer_refs:

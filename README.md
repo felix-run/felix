@@ -940,7 +940,7 @@ Outbound integrations, all declared on the manifest:
 
 | Field | Binds to |
 |---|---|
-| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools; `auth: person:<provider>` (`person:github`, `person:google`) calls a remote one with the token of the person the run acts for |
+| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools; `auth: person:<provider>` (`person:github`, `person:google`) calls a remote one with the token of the person the run acts for. A server that cannot be reached is named to the model and on a job's run; `required: true` stops the run instead (a job's run errors, a request answers 503), as does a required server binding no tools; within 60s of a successful discovery the cached tool list still compiles, and an outage then shows as tool errors |
 | `spec.peers` | A2A peers → `peer__name` tools |
 | `spec.browser_tools` | Playwright (via the `browser` extra) |
 | `spec.image_tools` | Pillow resize, crop, rotate, convert, thumbnail, info and list (via the `image` extra) |
