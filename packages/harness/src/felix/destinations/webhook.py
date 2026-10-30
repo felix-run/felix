@@ -5,7 +5,9 @@
 The endpoint is the completion webhooks' own registration -- its URL, signing secret, `tenants`
 and `private` flag -- so a receiver verifies a post exactly as it verifies a run's announcement
 (Standard Webhooks, `security/standard_webhooks.py`). Both registrations must open to the tenant:
-the destination says the tenant may post there, the endpoint that its secret may sign for it.
+the destination says the tenant may post there, the endpoint that its secret may sign for it -- except
+for an operator destination (`"operator": true`), where the harness posts about a tenant and the
+endpoint's `tenants` is not consulted.
 
 The `webhook-id` is the edition's `Post.key`, the same on every attempt at that edition, so a
 receiver can dedupe too. What an answer or a send error proves is the package's shared
@@ -41,7 +43,11 @@ def _endpoint(settings: Any, tenant_id: str, dest: Destination) -> Any:
     if not isinstance(name, str) or not name:
         return None
     endpoint = parse_webhook_endpoints(settings).get(name)
-    return endpoint if endpoint is not None and endpoint.allows(tenant_id) else None
+    if endpoint is None:
+        return None
+    # An operator destination is the harness posting about a tenant, not the tenant posting: the
+    # endpoint's `tenants` (who may name it in `spec.execution.webhooks`) is not the question.
+    return endpoint if dest.operator or endpoint.allows(tenant_id) else None
 
 
 def _body(tenant_id: str, dest: Destination, post: Post) -> bytes:

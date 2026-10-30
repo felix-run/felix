@@ -9,6 +9,8 @@ post is delivered and registered for masking then, since the worker that runs a 
 plugin startup hooks (`__init__._mask_secrets` covers the API only). A Slack app is bound to one
 tenant, so a destination posts through it only for that tenant: the compile is refused for any
 other, with the words an unregistered channel gets, so no tenant learns another's configuration.
+An `"operator": true` destination (FELIX_JOB_ALERT_DESTINATION) is the exception: no manifest may
+name it, and the harness posts there about every tenant through the one app.
 `conversation` is the Slack id of where the post goes -- a channel `C…`, a private channel `G…`, a
 DM `D…`.
 
@@ -38,7 +40,8 @@ CONVERSATION_RE = re.compile(r"[CGD][A-Z0-9]{2,31}\Z")
 
 
 def _channel(settings: Any, tenant_id: str, dest: Destination) -> SlackChannel | None:
-    """The `FELIX_CHANNELS` entry `dest` posts through, when it is registered for `tenant_id`."""
+    """The `FELIX_CHANNELS` entry `dest` posts through, when it is registered for `tenant_id` or
+    `dest` is an operator destination."""
     from felix_channels.config import parse_channels
 
     name = dest.fields.get("channel")
@@ -50,7 +53,11 @@ def _channel(settings: Any, tenant_id: str, dest: Destination) -> SlackChannel |
         # A malformed FELIX_CHANNELS fails the API's boot; here it is simply not a channel.
         logger.warning("destination_channels_unparsed destination=%s", dest.name)
         return None
-    return channel if channel is not None and channel.tenant == tenant_id else None
+    if channel is None:
+        return None
+    # An operator destination is the harness posting about a tenant, not the tenant posting: which
+    # tenant the app answers for is not the question, as for a webhook endpoint's `tenants`.
+    return channel if dest.operator or channel.tenant == tenant_id else None
 
 
 def message_text(post: Post) -> str:

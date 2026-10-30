@@ -166,6 +166,22 @@ def test_another_tenants_slack_app_is_refused_in_the_unregistered_words(slack: F
     assert "acme" not in str(theirs.value)
 
 
+async def test_an_operator_destination_posts_about_any_tenant_through_the_one_app(slack: FakeSlack) -> None:
+    """The ops channel takes the harness's alerts about every tenant (`FELIX_JOB_ALERT_DESTINATION`),
+    so the app's own tenant is not the question -- else every other tenant's alert is unrouted,
+    retried each sweep, and never arrives."""
+    from felix.destinations import resolve_destinations, resolve_harness_destination
+    from felix_channels.destination import SlackDestination
+
+    settings = _settings({"operator": True, "tenants": []})
+    assert resolve_harness_destination(settings, "globex", "team").name == "team"
+    delivery = await SlackDestination().deliver(settings, "globex", _dest(settings), _post())
+    assert delivery.status == "posted" and len(slack.posts) == 1
+    # Still the harness's alone: no manifest of any tenant may name it.
+    with pytest.raises(Exception, match="unknown destination"):
+        resolve_destinations(settings, TENANT, ["team"])
+
+
 def test_a_malformed_channels_registry_is_a_refusal_not_a_crash(slack: FakeSlack) -> None:
     from felix.destinations import DestinationError
     from felix_channels.destination import SlackDestination

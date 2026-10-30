@@ -15167,6 +15167,30 @@
         ]
       }
     },
+    "/health/scheduler": {
+      "get": {
+        "description": "Is `felix-scheduler` sweeping? 503 when its last completed sweep is older than\n`FELIX_SCHEDULER_STALE_SECONDS` (`stale`), none was ever recorded (`never`), or Redis could\nnot be read (`unknown`) -- `felix.jobs.tick`.\n\nFor an external monitor, not a kubelet probe: a stopped scheduler is not this pod's fault,\nand restarting the API, or taking it out of rotation, fixes nothing. Public like `/ready`,\nand carries no tenant data -- one age, one threshold.",
+        "operationId": "scheduler_health_health_scheduler_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scheduler Health Health Scheduler Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Scheduler Health",
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/heartbeats": {
       "get": {
         "description": "The caller's own heartbeats, on every manifest.",

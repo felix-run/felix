@@ -32,6 +32,16 @@ groups:
           summary: "worker task {{ $labels.task }} is failing"
           description: "Retention, flushes and the fiber scheduler all run here; a failing sweep silently stops enforcing."
 
+      # A job that is overdue or keeps failing (`felix.jobs.watch`), counted once per incident. The
+      # watch posts each to FELIX_JOB_ALERT_DESTINATION when one is set; this is the same signal for
+      # a deployment that pages from Prometheus instead. `kind` is `overdue` or `failing`.
+      - alert: FelixJobHealthIncident
+        expr: sum by (kind) (increase(felix_job_health_incident_total[15m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "a scheduled job is {{ $labels.kind }}"
+          description: "GET /jobs lists each job's open incidents under `health`; the audit log has a `job.health` event naming the job."
+
       # The scrape itself. `/ready` takes a replica out of rotation when a dependency is
       # down; a target that is not up at all is the same thing seen from Prometheus.
       - alert: FelixApiDown

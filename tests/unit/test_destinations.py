@@ -913,7 +913,7 @@ def test_a_kind_gets_its_own_fields_without_the_harnesss() -> None:
     )["team"]
     assert dest.fields == {"endpoint": "ops", "extra": 1}
     assert (dest.kind, dest.links, dest.tenants) == ("webhook", "keep", None)
-    assert frozenset({"kind", "tenants", "links", "link_hosts"}) == D.HARNESS_FIELDS
+    assert frozenset({"kind", "tenants", "links", "link_hosts", "operator"}) == D.HARNESS_FIELDS
 
 
 @pytest.mark.parametrize("key", ["Links", "link-hosts", " tenants", "KIND", "Link_Hosts"])

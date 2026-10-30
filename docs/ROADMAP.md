@@ -1138,10 +1138,23 @@ The gaps, in order:
       deletes the row, `deploy/GOVERNANCE.md`); listing a destination kind's `secret:` refs in
       the registries `FELIX_MANIFEST_SECRETS` must not reopen
       (`secret_policy.assert_manifest_secrets_unbound`).
-- [ ] **Job health watch.** A worker sweep that flags a job whose `next_run_at` is long past, or
-      whose last N runs errored, to its owner (`notify`) or an operator webhook. Today a failing
-      operator job, or a stopped `felix-scheduler`, is silent. `report_back` covers only
-      agent-scheduled tasks.
+- [x] **Job health watch.** Every completed scheduler sweep stamps a heartbeat (`jobs/tick.py`,
+      Redis with an in-process copy) that `GET /health/scheduler` serves to an external monitor:
+      503 `stale` past `FELIX_SCHEDULER_STALE_SECONDS`, `never` with none; `felix doctor` notes it.
+      A sweep that failed for every tenant stamps nothing and fails its task; `unknown` when Redis
+      cannot be read. The `job_health_watch` cron (every 5 min, `jobs/watch.py`) opens an `overdue`
+      incident (due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` ago, a `running` mark no exemption,
+      and still due after a scheduler sweep completed two minutes past the watch's first sighting) or
+      a `failing` one (the last
+      `FELIX_JOB_FAILURE_THRESHOLD` runs that ran all errored), recorded on the job (`health_json`,
+      migration `0050`, compare-and-set so overlapping sweeps open it once), counted
+      (`felix_job_health_incident{kind}`, `FelixJobHealthIncident`), audited (`job.health`), and posted
+      once to `FELIX_JOB_ALERT_DESTINATION` (best `"operator": true`, which no manifest may name; an
+      unrouted incident alerts once routing exists) through the destinations ledger (`destinations/publish.py`,
+      now shared with `post`) with fixed text naming the error's class. A success clears `failing`,
+      firing clears `overdue`, disabling clears both. *Follow-up:* the job's owner by `notify` (a push
+      to `created_by`) as a second route beside the operator's destination; a per-job opt-out or
+      threshold in the job's payload.
 - [ ] **Per-job `timezone`.** Cron is evaluated in UTC (`jobs/schedule.py`); `FELIX_TIMEZONE`
       sets only the date in the prompt. "7:32 on weekdays, New York" has to be converted by hand
       and drifts at DST.

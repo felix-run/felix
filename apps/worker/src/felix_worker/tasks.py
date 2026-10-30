@@ -218,6 +218,20 @@ async def run_scheduled_jobs() -> None:
         logger.info("jobs_fired count=%s", fired)
 
 
+@broker.task(schedule=[{"cron": "*/5 * * * *"}])
+@_instrumented("job_health_watch")
+async def job_health_watch() -> None:
+    """Flag jobs that are overdue or keep failing, once per incident (`felix.jobs.watch`).
+
+    It runs on the scheduler it watches, so a stopped scheduler is `GET /health/scheduler`'s to
+    report, not this task's."""
+    from felix.jobs.watch import run_job_health_sweep_all_tenants
+
+    counts = await run_job_health_sweep_all_tenants(_settings)
+    if counts["opened"] or counts["cleared"] or counts["alerted"]:
+        logger.info("job_health_watch %s", counts)
+
+
 @broker.task(schedule=[{"cron": "*/15 * * * *"}])
 @_instrumented("consolidate_memory")
 async def consolidate_memory() -> None:
