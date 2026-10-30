@@ -200,10 +200,30 @@ class _Posts:
         """The ledger's key for this call's edition: built once per call, used for every step."""
         return EditionKey(self.tenant_id, args.destination, self.manifest_id, args.edition)
 
+    async def _register_kind_secrets(self, dest: Destination) -> None:
+        """Mask the values the destination's kind sends with (`DestinationSecrets`) before the text
+        is cleaned, so they are redacted from it on the first post in a process too."""
+        from felix.destinations import destination_secrets
+        from felix.secrets import register_resolved_secret
+
+        adapter = destination_kind(dest.kind)
+        try:
+            values = await destination_secrets(adapter, self.settings, self.tenant_id, dest)
+        except Exception:
+            logger.warning("destination %s (%s) secrets unavailable", dest.name, dest.kind, exc_info=True)
+            raise ToolRefused(
+                "unavailable", "the destination's credentials could not be prepared; nothing was posted"
+            ) from None
+        for value in values:
+            register_resolved_secret(value)
+
     async def clean(self, args: _PostArgs) -> tuple[str, str]:
-        """The title and text as they would be posted: secrets redacted, links as the destination
-        says, screened (`governance/outbound_text.py:prepare_outbound`)."""
+        """The title and text as they would be posted: secrets redacted -- the destination kind's own
+        first registered (`_register_kind_secrets`) -- links as the destination says, screened
+        (`governance/outbound_text.py:prepare_outbound`)."""
         from felix.governance.outbound_text import prepare_outbound
+
+        await self._register_kind_secrets(self.destinations[args.destination])
 
         title, text = await prepare_outbound(
             self.settings,

@@ -24,6 +24,10 @@ plan step, an A2A peer's message -- must not run a skill hidden from the model. 
 may do that the model's may not -- reach such a skill, pass `arguments` -- is granted by call id: the
 preamble mints the ids and registers them (`PersonCalls`), and `activate_skill` honours each once.
 Nothing ambient carries it, so nothing the model does later inherits it.
+
+`/v1` is a person's surface whose caller is as often an agent: a client SDK in someone's loop. There,
+a `/name` naming a skill hidden from the model runs only for a caller holding `skills:invoke`
+(`AGENT_CALLER_EXTRA`); a skill the model may use runs for anyone, as the model could reach it.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from felix.logging_setup import loggable
 from felix.skills.activation import ACTIVATE_TOOL, thread_history
 
 if TYPE_CHECKING:
@@ -44,6 +49,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("felix.skills.invocation")
 
 INVOKE_PREFIX = "invoke_"
+# Set in `RequestContext.extras` by a route whose caller may be an agent (`/v1`): a manual-only skill
+# then needs `skills:invoke` (`SkillPreamble._may_run_manual`).
+AGENT_CALLER_EXTRA = "caller_may_be_agent"
 PRELOAD_PREFIX = "preload_"
 
 
@@ -158,6 +166,13 @@ class SkillPreamble:
             # not run its skills -- a manual-only runbook among them -- through a parent.
             logger.info("skill invocation refused: the caller may not run manifest %s", self.manifest_name)
             invoked = None
+        manual = invoked is not None and self.catalog.get_invocable(invoked[0]) is None
+        if invoked is not None and manual and not self._may_run_manual():
+            logger.info(
+                "skill invocation refused: %s is manual-only; caller lacks skills:invoke",
+                loggable(invoked[0], limit=80),
+            )
+            invoked = None
         calls: list[ToolCall] = []
         if self.preload:
             # One read of the thread, and only for a manifest that preloads.
@@ -210,6 +225,19 @@ class SkillPreamble:
             return False
         return True
 
+    def _may_run_manual(self) -> bool:
+        """Whether this request's caller may run a skill hidden from the model: anyone a person's
+        route admitted, unless the route says its caller may be an agent (`AGENT_CALLER_EXTRA`),
+        where it takes `skills:invoke`. With no request context `_door_open` has already refused
+        a compiled manifest's caller."""
+        from felix.auth.mgmt import SCOPE_SKILLS_INVOKE, holds_mgmt_scopes
+        from felix.context import try_get_context
+
+        req = try_get_context()
+        if req is None or not req.extras.get(AGENT_CALLER_EXTRA):
+            return True
+        return holds_mgmt_scopes(req.settings, req.auth.scopes, SCOPE_SKILLS_INVOKE)
+
     async def _seen(self, thread_id: str | None) -> set[str]:
         if self.session_store is None or not thread_id:
             return set()
@@ -241,6 +269,7 @@ def skill_preamble(
 
 
 __all__ = [
+    "AGENT_CALLER_EXTRA",
     "INVOKE_PREFIX",
     "PRELOAD_PREFIX",
     "PersonCalls",

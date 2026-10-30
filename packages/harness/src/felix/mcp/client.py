@@ -13,7 +13,7 @@ import copy
 import hashlib
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any
@@ -365,15 +365,20 @@ def clear_discovery_cache() -> None:
     _DISCOVERY.clear()
 
 
-def _discovery_key(ref: McpServerRef, allow_http: bool) -> str:
-    raw = f"{ref.model_dump_json()}|{allow_http}".encode()
+def _discovery_key(ref: McpServerRef, allow_http: bool, identity: str = "") -> str:
+    """`identity` (a person's `tenant|person`, for `auth: person:<provider>`) stands in for the
+    token: a person's token changes at each refresh, and their tool list does not."""
+    dumped = ref.model_dump_json(exclude={"auth"}) if identity else ref.model_dump_json()
+    raw = f"{dumped}|{allow_http}|{identity}".encode()
     return hashlib.sha256(raw).hexdigest()
 
 
-async def _discover(ref: McpServerRef, *, allow_http: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+async def _discover(
+    ref: McpServerRef, *, allow_http: bool, identity: str = ""
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """`list_remote_tools` for one server, through the discovery cache. Copies out, so a
     caller's edits never reach the next compile."""
-    key = _discovery_key(ref, allow_http)
+    key = _discovery_key(ref, allow_http, identity)
     hit = _DISCOVERY.get(key)
     if hit is not None:
         return copy.deepcopy(hit)
@@ -396,16 +401,27 @@ class McpBinding:
 
 
 async def tools_from_mcp_servers(
-    refs: list[McpServerRef], *, allow_http: bool = False, manifest_id: str = ""
+    refs: list[McpServerRef],
+    *,
+    allow_http: bool = False,
+    manifest_id: str = "",
+    identities: Sequence[str] | None = None,
 ) -> list[Tool]:
     """`bind_mcp_servers`' tools alone."""
-    return (await bind_mcp_servers(refs, allow_http=allow_http, manifest_id=manifest_id)).tools
+    return (
+        await bind_mcp_servers(refs, allow_http=allow_http, manifest_id=manifest_id, identities=identities)
+    ).tools
 
 
 async def bind_mcp_servers(
-    refs: list[McpServerRef], *, allow_http: bool = False, manifest_id: str = ""
+    refs: list[McpServerRef],
+    *,
+    allow_http: bool = False,
+    manifest_id: str = "",
+    identities: Sequence[str] | None = None,
 ) -> McpBinding:
-    """Discover and bind tools from each MCP server ref.
+    """Discover and bind tools from each MCP server ref. `identities`, by position, names the
+    person whose token a server carries (`person_auth`), so their discovery is cached as theirs.
 
     Servers are asked concurrently: one slow server used to delay every server after it, and
     the compile waits for all of them either way. Binding keeps the manifest's server order.
@@ -416,18 +432,33 @@ async def bind_mcp_servers(
     # or a process spawn.
     gate = asyncio.Semaphore(_DISCOVERY_CONCURRENCY)
 
-    async def discover(ref: McpServerRef) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        async with gate:
-            return await _discover(ref, allow_http=allow_http)
+    who = list(identities) if identities is not None else [""] * len(refs)
 
-    found = await asyncio.gather(*(discover(ref) for ref in refs), return_exceptions=True)
+    async def discover(ref: McpServerRef, identity: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        async with gate:
+            return await _discover(ref, allow_http=allow_http, identity=identity)
+
+    found = await asyncio.gather(
+        *(discover(r, i) for r, i in zip(refs, who, strict=True)), return_exceptions=True
+    )
     out: list[Tool] = []
     unavailable: list[str] = []
-    for ref, result in zip(refs, found, strict=True):
+    for ref, identity, result in zip(refs, who, found, strict=True):
         if isinstance(result, BaseException):
             if not isinstance(result, Exception):
                 raise result
-            logger.warning("failed to list MCP tools from %s", loggable(ref.name, limit=100), exc_info=result)
+            if identity:
+                # A person's token is masked per compile, not in the process-wide list the log
+                # formatter knows; an error that echoed it would reach the log whole.
+                logger.warning(
+                    "failed to list MCP tools from %s error=%s",
+                    loggable(ref.name, limit=100),
+                    type(result).__name__,
+                )
+            else:
+                logger.warning(
+                    "failed to list MCP tools from %s", loggable(ref.name, limit=100), exc_info=result
+                )
             unavailable.append(ref.name)
             continue
         remotes, handshake = result

@@ -288,6 +288,10 @@ zero cloud SDKs.
   any `FELIX_*` name, the provider and sign-in keys, `DATABASE_URL`, `REDIS_URL` — are refused
   whatever it says. `PUT /manifests` answers `422` for an unlisted ref, and compiling refuses it
   before the backend is asked
+- An MCP server's `auth: person:<provider>` sends the caller's own token only to a server
+  `FELIX_MCP_PERSON_AUTH` lists for that provider and tenant (`{"github": [{"url": …, "tenants":
+  […]}]}`; empty allows none). `PUT /manifests` answers `422` for any other, and compiling leaves
+  it out
 - Deploy notes: [`deploy/aws/`](deploy/aws/), [`deploy/gcp/`](deploy/gcp/)
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
@@ -921,7 +925,7 @@ Outbound integrations, all declared on the manifest:
 
 | Field | Binds to |
 |---|---|
-| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools |
+| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools; `auth: person:<provider>` (`person:github`, `person:google`) calls a remote one with the token of the person the run acts for |
 | `spec.peers` | A2A peers → `peer__name` tools |
 | `spec.browser_tools` | Playwright (via the `browser` extra) |
 | `spec.image_tools` | Pillow resize, crop, rotate, convert, thumbnail, info and list (via the `image` extra) |
@@ -1022,10 +1026,11 @@ Storage and execution:
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `spec.destinations: {ids: [ops-brief]}` binds `post`, which publishes to shared places the
   operator registered in `FELIX_DESTINATIONS` (a JSON map of id → `{kind, tenants, links?,
-  link_hosts?, …}`; core's `webhook` kind names a `FELIX_WEBHOOK_ENDPOINTS` endpoint, and a plugin
-  may register more kinds with `register_destination_kind`) — a team channel for a scheduled brief,
-  say. Only unattended runs (jobs, heartbeats, triggers) post; a conversation's call is refused
-  unless `attended: approval` holds it for the person. Each post names an `edition`
+  link_hosts?, …}`; core's `webhook` kind names a `FELIX_WEBHOOK_ENDPOINTS` endpoint, the
+  `felix-channels` plugin adds `slack` (`{channel, conversation}`, through a `FELIX_CHANNELS` app),
+  and a plugin may register more kinds with `register_destination_kind`) — a team channel for a
+  scheduled brief, say. Only unattended runs (jobs, heartbeats, triggers) post; a conversation's
+  call is refused unless `attended: approval` holds it for the person. Each post names an `edition`
   (`brief:2026-10-29`), and the ledger (`destination_posts`) posts one manifest's edition to a
   destination at most once: a retry or the next firing gets `already_posted`, and a delivery whose
   outcome is unknown (a timeout, a 5xx) is `maybe_posted` and never retried. Secrets are redacted,

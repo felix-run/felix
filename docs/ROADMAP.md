@@ -948,10 +948,10 @@ side was already conformant. Four PRs, landed in order:
     `disable-model-invocation` skill is still the person's to run.
   - Only a turn a chat route marks as the person's runs `/name`; a person's privileges (a
     model-hidden skill, `arguments`) go by harness-minted call id, once.
+  - [x] `/name` of a manual-only skill on `/v1` needs `skills:invoke` (`feat/manual-skill-scope`);
+    `/chat` is unchanged, A2A/MCP callers run none, and a manifest's `preload` is not gated.
   - Open: `/v1/models` `commands` lists prompts only; skills with their `argument_hint` are on
-    `GET /skills/{manifest}`. `/v1` counts as a person's surface though its caller may be an
-    agent, and A2A/MCP callers do not: decide whether `disable-model-invocation` needs a scope
-    of its own. The harness's synthetic assistant turn carries no provenance marker in the log.
+    `GET /skills/{manifest}`. The harness's synthetic assistant turn carries no provenance marker in the log.
   - [x] `/name` in every pattern (`fix/skill-runtime-gaps`): a composite carries the person's
     `/name` turn into each child step (`InvokeInput.person_command`), so every `plan_execute`
     subtask, `parallel` specialist and `groupchat` speaker starts with the skill activated. A
@@ -1064,7 +1064,10 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     Open: the CardDAV `addressbook-query` and the CalDAV query are checked against a fake shaped
     like iCloud, not a live account; `pytz` (a `vobject` dependency) locked at 2026.5 until
     2026.6 clears the deps-age hold.
-  - [ ] MCP `auth: person`: a remote MCP server called with the person's token from the vault.
+  - [x] MCP `auth: person:<provider>`: a remote MCP server called with the person's own token --
+    a vault provider, or `github` for a person signed in with GitHub (`felix.mcp.person_auth`) --
+    discovered per person, masked per compile; no person or no connection binds none of it.
+    Open: a token is opened once per compile, so a run outliving it sees the server refuse.
   - Owed by the first consumer (Google): its test goes through the real consent callback and
     then `GET /connections`, never `save_oauth` directly -- nothing in production writes the
     vault until then. Its tools read `ctx.auth.person`, are untrusted (screened), put sends and
@@ -1121,12 +1124,14 @@ The gaps, in order:
       contract) that posts an edition at most once and refuses an edition whose delivery outcome is
       unknown (`maybe_posted`), and the core `webhook` kind over `FELIX_WEBHOOK_ENDPOINTS`. Only
       unattended runs post (`attended: refuse | approval` for a conversation's call); links are
-      stripped unless the registration keeps them (`links`, `link_hosts`). *Next:* a Slack kind in
-      `packages/channels`, which must neutralise broadcast mentions (`<!channel>`, `<!here>`,
-      `<!everyone>`, `@everyone`, `@here`) before posting -- the text is a model's; a route for a
-      person with the right scope to clear a `posting` or `maybe_posted` edition once they have
-      checked (today an operator deletes the row, `deploy/GOVERNANCE.md`); listing a destination
-      kind's `secret:` refs in the registries `FELIX_MANIFEST_SECRETS` must not reopen
+      stripped unless the registration keeps them (`links`, `link_hosts`). The `slack` kind
+      (`packages/channels`, `felix_channels/destination.py`) posts through a `FELIX_CHANNELS` app
+      for that app's tenant only, with broadcast mentions inert (escaped, `parse: none`,
+      `link_names: false`), unfurling off, and Slack's `ok: false` codes classified so only a
+      definite refusal frees the edition. *Next:* a route for a person with the right scope to
+      clear a `posting` or `maybe_posted` edition once they have checked (today an operator
+      deletes the row, `deploy/GOVERNANCE.md`); listing a destination kind's `secret:` refs in
+      the registries `FELIX_MANIFEST_SECRETS` must not reopen
       (`secret_policy.assert_manifest_secrets_unbound`).
 - [ ] **Job health watch.** A worker sweep that flags a job whose `next_run_at` is long past, or
       whose last N runs errored, to its owner (`notify`) or an operator webhook. Today a failing
