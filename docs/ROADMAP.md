@@ -1061,7 +1061,10 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     Open: the CardDAV `addressbook-query` and the CalDAV query are checked against a fake shaped
     like iCloud, not a live account; `pytz` (a `vobject` dependency) locked at 2026.5 until
     2026.6 clears the deps-age hold.
-  - [ ] MCP `auth: person`: a remote MCP server called with the person's token from the vault.
+  - [x] MCP `auth: person:<provider>`: a remote MCP server called with the person's own token --
+    a vault provider, or `github` for a person signed in with GitHub (`felix.mcp.person_auth`) --
+    discovered per person, masked per compile; no person or no connection binds none of it.
+    Open: a token is opened once per compile, so a run outliving it sees the server refuse.
   - Owed by the first consumer (Google): its test goes through the real consent callback and
     then `GET /connections`, never `save_oauth` directly -- nothing in production writes the
     vault until then. Its tools read `ctx.auth.person`, are untrusted (screened), put sends and

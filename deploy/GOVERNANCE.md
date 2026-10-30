@@ -3596,6 +3596,38 @@ it at Apple.
   retry finds the event it made (`If-None-Match: *`, 412). Reminders are not offered: Apple
   stopped serving upgraded Reminders lists over CalDAV.
 
+### MCP servers as the person
+
+`mcp_servers[].auth: person:<provider>` calls a remote (http/sse) MCP server with the token of the
+person the compile is for, never an operator's: `person:google` (or any provider the vault
+registers) from their connection vault, `person:github` from the GitHub connection of a person who
+signed in to Felix with GitHub (issuer `felix-self`, subject `github:<id>`; any other issuer whose
+subject reads the same -- an API key, a remote IdP -- is someone else). stdio servers are refused:
+the token would sit in a child process's environment.
+
+**The destination is the operator's.** A manifest is written by whoever holds `manifests:write`
+in the tenant, not by the people whose tokens it sends, and the token leaves at discovery -- before
+the model runs, before any approval -- so the URL cannot be the author's alone to choose.
+`FELIX_MCP_PERSON_AUTH` lists, per provider, the exact https servers that may receive its tokens
+and the tenants whose manifests may name each (scheme, host and port exact; the path under the
+entry's). Empty, the default, allows none. `PUT /manifests` answers 422 for any other server, and
+a canary or rollback to a stored version doing so is refused; compiling leaves such a server out,
+for rows stored before an entry was withdrawn. List only a server that is the provider's own, or
+one you trust with the full grant: a Google token carries every scope the person connected.
+
+- A compile for no one person (anonymous, a shared key, a trigger), or for someone with no such
+  connection -- or with several accounts of the provider -- binds none of that server's tools and
+  sends it nothing; the rest of the agent serves them. So does a token that cannot be opened.
+  The model is told which such servers are missing and why (`<person_sources>` in its prompt:
+  no person, not connected, or not allowed here), so it does not answer as if there were nothing.
+- The server's tools are discovered with the person's own token, and the discovery cache is keyed
+  by the tenant and person, never the token.
+- Each opened token joins that compile's secret masking (per agent, so per request), and a failed
+  discovery logs only the error's type.
+- `manifests:read` shows `person:<provider>` as written, unredacted: it is what a reviewer must see.
+- A token is opened once per compile. A run that outlives it -- an hour for Google, eight for
+  GitHub -- finds the server refusing it.
+
 ## Management API scopes
 
 When `FELIX_AUTH_MODE` is `jwt` or `api_key`, management routes require scopes

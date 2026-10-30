@@ -288,6 +288,10 @@ zero cloud SDKs.
   any `FELIX_*` name, the provider and sign-in keys, `DATABASE_URL`, `REDIS_URL` — are refused
   whatever it says. `PUT /manifests` answers `422` for an unlisted ref, and compiling refuses it
   before the backend is asked
+- An MCP server's `auth: person:<provider>` sends the caller's own token only to a server
+  `FELIX_MCP_PERSON_AUTH` lists for that provider and tenant (`{"github": [{"url": …, "tenants":
+  […]}]}`; empty allows none). `PUT /manifests` answers `422` for any other, and compiling leaves
+  it out
 - Deploy notes: [`deploy/aws/`](deploy/aws/), [`deploy/gcp/`](deploy/gcp/)
 - Manifest secrets, plus opt-in SOC 2 and EU AI Act mapping: [`deploy/GOVERNANCE.md`](deploy/GOVERNANCE.md)
 - Helm: enable `persistence` when using `fs`, so `/data` survives restarts
@@ -921,7 +925,7 @@ Outbound integrations, all declared on the manifest:
 
 | Field | Binds to |
 |---|---|
-| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools |
+| `spec.mcp_servers` | HTTP or stdio MCP client → `server__tool` tools; `auth: person:<provider>` (`person:github`, `person:google`) calls a remote one with the token of the person the run acts for |
 | `spec.peers` | A2A peers → `peer__name` tools |
 | `spec.browser_tools` | Playwright (via the `browser` extra) |
 | `spec.image_tools` | Pillow resize, crop, rotate, convert, thumbnail, info and list (via the `image` extra) |
