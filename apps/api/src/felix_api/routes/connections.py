@@ -67,17 +67,9 @@ class RevokeConnection(BaseModel):
 
 
 def _person(request: Request) -> tuple[str, str]:
-    """The caller's tenant and person key (`issuer|subject`); 403 for a caller that names no one
-    person -- anonymous, a sub-less API key, a workflow, a machine actor."""
-    from felix.auth.mgmt import auth_from_request
-    from felix.auth.persons import caller_person
+    from felix.auth.mgmt import request_person
 
-    auth = auth_from_request(request)
-    principal = auth.principal
-    person = caller_person(issuer=principal.issuer, subject=principal.subject or "", anonymous=auth.anonymous)
-    if not person:
-        raise HTTPException(status_code=403, detail="not_a_person")
-    return principal.tenant_id, person
+    return request_person(request)
 
 
 # --- Google ---------------------------------------------------------------------------------

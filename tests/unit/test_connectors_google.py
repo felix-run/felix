@@ -336,7 +336,7 @@ async def test_reading_mail_gives_the_plain_text_body() -> None:
 
 
 async def test_a_long_body_is_cut() -> None:
-    from felix_connectors.google_common import MAX_TEXT
+    from felix_connectors.person import MAX_TEXT
 
     fake = FakeGoogleApis()
     long = {**MESSAGE, "payload": {"mimeType": "text/plain", "body": {"data": _b64("x" * (MAX_TEXT + 50))}}}
@@ -419,7 +419,7 @@ async def test_a_google_doc_is_exported_as_text_and_a_binary_file_left_alone() -
 
 @pytest.mark.parametrize("kind", ["text/plain", "application/json"])
 async def test_a_text_file_is_read_as_is(kind: str) -> None:
-    from felix_connectors.google_common import MAX_TEXT
+    from felix_connectors.person import MAX_TEXT
 
     fake = FakeGoogleApis()
     fake.reply("GET", "/drive/v3/files/t1", {"id": "t1", "name": "todo.txt", "mimeType": kind})

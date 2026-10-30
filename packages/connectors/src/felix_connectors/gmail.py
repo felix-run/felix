@@ -17,8 +17,9 @@ from felix.config import Settings
 from felix.tools.types import Tool
 from pydantic import Field
 
-from felix_connectors.google_common import AccountArgs, GoogleApis, Header, Id, answered, capped, is_id
-from felix_connectors.tools import connector_tool, one_line
+from felix_connectors.google_common import AccountArgs, GoogleApis, Id, is_id
+from felix_connectors.person import answered, capped
+from felix_connectors.tools import Header, connector_tool, one_line
 
 SERVICE = "Gmail"
 MAX_MESSAGES = 10

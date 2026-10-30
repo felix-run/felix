@@ -1,5 +1,5 @@
 """Felix connectors: tools an agent calls to reach everyday services: weather, maps, markets, FX,
-and a person's own Google Calendar, Gmail and Drive.
+and a person's own Google Calendar, Gmail and Drive, and iCloud Calendar and Contacts.
 
 Installed, this plugin registers its tools with every tool provider; a manifest still names each
 one in `spec.tools` before an agent holds it:
@@ -14,7 +14,8 @@ screened. The defaults need no key: Open-Meteo for the forecast and a point's ti
 National Weather Service for alerts, OpenStreetMap's Nominatim for places, FOSSGIS's OSRM for
 routes and Frankfurter for exchange rates. Stock quotes need `FELIX_MARKET_API_KEY` (Finnhub or
 Alpha Vantage). The Google tools act as the person the run acts for, with the grant they
-connected (`felix.auth.google_connect`), and need the `google` extra.
+connected (`felix.auth.google_connect`), and need the `google` extra; the iCloud tools, with
+the app-specific password they connected (`icloud_connect`), and need the `icloud` extra.
 
 A family is a module exporting `TOOL_NAMES` and `build_tools(settings)`, listed in `FAMILIES`.
 
@@ -27,9 +28,9 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
-from felix_connectors import fx, gmail, google_calendar, google_drive, maps, markets, weather
+from felix_connectors import fx, gmail, google_calendar, google_drive, icloud, maps, markets, weather
 
-FAMILIES: tuple[ModuleType, ...] = (weather, maps, markets, fx, google_calendar, gmail, google_drive)
+FAMILIES: tuple[ModuleType, ...] = (weather, maps, markets, fx, google_calendar, gmail, google_drive, icloud)
 
 
 def _build(family: ModuleType, name: str) -> Any:
@@ -50,6 +51,12 @@ class ConnectorsPlugin:
         for family in FAMILIES:
             for tool_name in family.TOOL_NAMES:
                 register(tool_name, lambda f=family, n=tool_name: _build(f, n))
+
+    def routes(self, app: Any, *, tools: Any) -> None:
+        from felix_connectors import icloud_connect
+
+        _ = tools
+        icloud_connect.mount(app)
 
 
 def register(registry: Any) -> None:
