@@ -68,6 +68,13 @@ class _Scripted:
         self.delivered: list[Post] = []
         # When set, each delivery waits on it: a kind that never answers.
         self.hold: asyncio.Event | None = None
+        # What `secrets` declares (`DestinationSecrets`); an exception there is raised.
+        self.secret_values: list[str] | BaseException = []
+
+    async def secrets(self, settings: Any, tenant_id: str, dest: Destination) -> list[str]:
+        if isinstance(self.secret_values, BaseException):
+            raise self.secret_values
+        return list(self.secret_values)
 
     def validate(self, settings: Any, tenant_id: str, dest: Destination) -> None:
         if dest.fields.get("refuse"):
@@ -940,3 +947,40 @@ async def test_a_kind_that_outlives_its_budget_is_maybe_posted(
     assert out["error"] == "maybe_posted" and "took too long" in out["detail"]
     assert row is not None and row["status"] == "maybe_posted"
     assert len(scripted.delivered) == 1
+
+
+# --- a kind's own credentials, masked before the text is cleaned ---------------------------
+
+
+async def test_a_kinds_declared_secret_is_redacted_from_the_first_post_in_a_process(
+    scripted: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker has masked nothing yet and runs no plugin startup hook: the value a kind sends with
+    is registered before the text it might appear in is cleaned."""
+    monkeypatch.setattr("felix.secrets._resolved_secret_values", [])
+    scripted.secret_values = [PLANTED]
+    settings = _settings(SCRIPTED)
+    await _call(_tool(settings), _run(settings), text=f"the key is {PLANTED}", title=f"t {PLANTED}")
+    (post,) = scripted.delivered
+    assert PLANTED not in post.text and PLANTED not in post.title
+
+
+async def test_a_kind_whose_secrets_cannot_be_prepared_posts_and_claims_nothing(scripted: Any) -> None:
+    scripted.secret_values = RuntimeError("vault at 10.0.0.9 sealed")
+    settings = _settings(SCRIPTED)
+    out = await _call(_tool(settings), _run(settings))
+    assert out["error"] == "unavailable" and "10.0.0.9" not in out["detail"]
+    assert scripted.delivered == []
+    assert await ledger.get(settings, _key(EDITION)) is None
+
+
+async def test_the_webhook_kind_declares_its_signing_secret() -> None:
+    from felix.destinations import destination_secrets
+
+    endpoints = {"ops": {"url": "https://hooks.example.invalid/h", "secret": SECRET, "tenants": "*"}}
+    settings = _settings({"team": {"kind": "webhook", "endpoint": "ops", "tenants": "*"}}, endpoints)
+    adapter = D.destination_kind("webhook")
+    dest = D.parse_destinations(settings)["team"]
+    assert await destination_secrets(adapter, settings, TENANT, dest) == [SECRET]
+    closed = _settings({"team": {"kind": "webhook", "endpoint": "nope", "tenants": "*"}}, endpoints)
+    assert await destination_secrets(adapter, closed, TENANT, D.parse_destinations(closed)["team"]) == []
