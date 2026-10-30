@@ -8,8 +8,10 @@ hooks, audit/usage sinks, and rate-limit keys via the registry (or the
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -97,10 +99,27 @@ class PluginRegistry:
     _usage_sink_factory: Callable[[Settings], Any] | None = None
     _startup_hooks: list[Callable[..., Awaitable[Any]]] = field(default_factory=list)
     _run_finished_hooks: list[tuple[str, RunFinishedHook]] = field(default_factory=list)
+    _manifest_dirs: list[Path] = field(default_factory=list)
     _loaded: bool = False
 
     def register_plugin(self, plugin: Any) -> None:
         self._plugins.append(plugin)
+
+    def register_manifest_dir(self, path: str | Path) -> None:
+        """A directory of manifests the plugin ships -- example agents built on its tools -- served
+        beside the bundled ones (`manifests.loader`), so installing the plugin is what lists them
+        and an install without it never offers an agent whose tools it lacks."""
+        root = Path(path)
+        if not root.is_absolute():
+            # A relative path would resolve against whichever process looks it up -- for the
+            # CLI, whatever checkout it runs in.
+            raise ValueError(f"a plugin's manifest directory must be an absolute path, not {str(path)!r}")
+        root = root.resolve()
+        if root not in self._manifest_dirs:
+            self._manifest_dirs.append(root)
+
+    def manifest_dirs(self) -> list[Path]:
+        return list(self._manifest_dirs)
 
     def register_authenticator(self, mode: str, builder: AuthenticatorBuilder) -> None:
         self._authenticators[mode] = builder
@@ -244,6 +263,7 @@ class PluginRegistry:
 
 
 _registry = PluginRegistry()
+_load_lock = threading.RLock()
 
 
 def get_registry() -> PluginRegistry:
@@ -258,6 +278,14 @@ def load_optional_plugins(reg: PluginRegistry | None = None) -> bool:
     callable is invoked once at startup.
     """
     registry = reg or _registry
+    # Held while plugins register: the manifest loader loads them lazily, and a second thread
+    # arriving mid-load must not read a half-filled registry. Re-entrant, so a plugin's
+    # `register` reaching back here finds `_loaded` and returns.
+    with _load_lock:
+        return _load(registry)
+
+
+def _load(registry: PluginRegistry) -> bool:
     if registry._loaded:
         return bool(registry.plugins)
     registry._loaded = True

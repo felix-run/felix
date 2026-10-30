@@ -179,6 +179,8 @@ spends real money — it needs a model key and refuses to run without one.
   same tail over the same log and are kept together so they cannot drift).
 - `apps/worker` (`felix-worker`, `felix-scheduler`) — Taskiq broker + cron tasks.
 - `manifests/` — bundled agents (`quick`, `deep`, `router`, `governed`, …); `governed.yaml` is the fullest example of the schema.
+  A plugin ships agents that need its tools beside its code (`register_manifest_dir`), e.g.
+  `packages/connectors/src/felix_connectors/manifests/`.
 - `skills/<name>/SKILL.md` — the bundled Agent Skills every install serves, referenced from a manifest's
   `spec.skills`. The image copies them in. The self-build stack's own skills live beside its manifests in
   `manifests/self/skills/`, served through `FELIX_SKILLS_DIR`.

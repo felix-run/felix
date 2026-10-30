@@ -1,0 +1,128 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+#
+# automator: an agent that builds and runs workflows for the person it is talking to.
+#
+# The primitive on show is `spec.workflow_authoring`. The agent reads the step catalog
+# (`workflow_catalog`), drafts a definition, checks it until it is clean (`check_workflow`),
+# saves it (`save_workflow`) and starts runs of it (`run_workflow`). A saved workflow is an
+# ordinary one -- the console lists, edits and runs it -- owned by the person and marked as this
+# agent's, which sees and runs only those, never an operator's or anyone else's.
+#
+# The approvals come from the block itself, not from `spec.approvals`:
+#   - `approval: true` holds every `save_workflow` until the person has read the definition. No
+#     permission mode waives it: a saved workflow runs later as whoever starts it.
+#   - `run_approval: auto` holds a `run_workflow` only when a value the call supplies can reach a
+#     step that can change something (an `agent_turn`, or a `tool_call` whose tool is not
+#     read-only). A run of steps that only read starts at once.
+# A rule here naming either tool would replace those defaults, so there is none.
+#
+# What the agent cannot do, and the prompt says so: put a workflow on a schedule or behind an
+# inbound event. A job that runs a workflow is written by the person (`PUT /jobs/{name}`, needing
+# `jobs:write` and `workflows:write`); a trigger is operator configuration (`FELIX_TRIGGERS`).
+# Saving and running are refused from a scheduled or triggered run, so this agent is driven in
+# a conversation.
+#
+# Core tools only, so every install compiles it. What an operator configures:
+#   - Callers need `workflows:write` to save and `workflows:read` to list; under
+#     FELIX_AUTH_MODE=none the scope checks are off.
+#   - `felix-worker` running: a workflow run executes in the background.
+#   - `workflow_authoring.manifests` below: the agents a step may name. Each must admit the
+#     person who runs the workflow.
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: automator
+  version: 1.0.0
+  description: >-
+    Builds workflows for you from a description -- steps, branches and approval gates -- checks
+    them, saves them with your approval, and runs them.
+  tags: [react, workflows, automation]
+  greeting:
+    headline: "What should happen automatically?"
+    subtitle: "automator turns a description into a workflow you can read, approve, save and run."
+  starters:
+    - title: "Research then summarize"
+      prompt: "Build a workflow that takes a topic, has researcher look into it, and then has summarizer condense the findings into five bullets."
+    - title: "Gate on approval"
+      prompt: "Build a workflow that drafts a short announcement from a topic, then waits for my approval before it finishes."
+    - title: "What can a workflow do?"
+      prompt: "What step kinds can a workflow you build use, and which agents can its steps call?"
+    - title: "My workflows"
+      prompt: "List the workflows you have saved for me and how each one's last run went."
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+    cache: true
+
+  system_prompt:
+    inline: |
+      You are Felix, an automation builder. You turn what the person describes into a
+      workflow: a graph of steps they can read, approve, save and run.
+
+      Start with workflow_catalog. It lists the step kinds you may use with each one's config
+      schema, the agents a step may name, and the definition's own schema; pass a manifest to
+      see the tools a tool_call step on it can call. Do not invent a kind, an agent or a tool
+      the catalog does not list.
+
+      Draft the definition, then run check_workflow and fix every problem it reports, until it
+      says ok. Before saving, describe the workflow to the person in plain words: its inputs,
+      each step, and what each branch or approval does. save_workflow then pauses for their
+      approval of the exact definition. To change a workflow, save it again with its id.
+
+      run_workflow starts a run in the background, as them, with a value for every input; it
+      returns the run's id and status, not the result. A run that can change something pauses
+      for their approval first. list_my_workflows shows what you have saved and how the last
+      run of each went.
+
+      You cannot schedule a workflow or attach it to an inbound event. If they want one on a
+      schedule, tell them to create a job naming the workflow (in the console, or PUT
+      /jobs/{name}); an event trigger is set up by whoever runs this deployment.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - calculator
+
+  workflow_authoring:
+    max_workflows: 10
+    max_steps: 20
+    # The agents a step may name; set, this replaces the default (this manifest only). The
+    # automator is left out: its tools refuse to save or run from inside a workflow, so a step
+    # on it would be an agent with nothing to do.
+    manifests: [researcher, summarizer]
+    kinds: [agent_turn, tool_call, approval, branch]
+    max_active_runs: 2
+    approval: true
+    run_approval: auto
+
+  session:
+    strategy: compacting
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  # `workflow_catalog` relays other tools' descriptions and schemas -- an MCP server's
+  # included, on a manifest a step may name -- so it counts as untrusted, and is screened.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  limits:
+    max_tool_calls: 40
+    max_wall_clock_seconds: 600
+    max_cost_usd: 0.75
+
+  recursion_limit: 25
+
+  auth:
+    inbound:
+      # A workflow is saved for, and runs as, the person who asked: a caller who names no
+      # person has nobody to save it for, and the tools refuse them.
+      allow_anonymous: false
+
+  observability:
+    trace: true

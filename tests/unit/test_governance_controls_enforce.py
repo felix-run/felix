@@ -731,7 +731,7 @@ def test_an_imported_skill_offered_without_screening_is_named(caplog, spec_extra
         assert "refunds" in caplog.text, "the warning does not name the skill"
 
 
-def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
+def test_no_bundled_manifest_binds_untrusted_tools_without_screening(monkeypatch: pytest.MonkeyPatch) -> None:
     """A warning that fires on the manifests we ship is noise on arrival.
 
     It also found something on its first run: `cowork.yaml` binds `local_shell` and
@@ -745,9 +745,31 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
     offenders = []
     untrusted = set()
     # The self-build manifests too: `self/contributor.yaml` binds MCP, the case this rule is for.
-    for path in sorted([*(ROOT / "manifests").glob("*.yaml"), *(ROOT / "manifests" / "self").glob("*.yaml")]):
+    # And every agent an installed plugin ships (`register_manifest_dir`), found the way the
+    # loader finds them, not by a path written here.
+    from felix.config import get_settings
+    from felix.manifests.builder import _is_untrusted_tool
+    from felix.plugins import get_registry, load_optional_plugins
+    from felix.tools.builtins import default_tool_provider
+
+    # The market tools refuse to build without a key; building is how their transport is read.
+    monkeypatch.setenv("FELIX_MARKET_API_KEY", "test-key")
+    get_settings.cache_clear()
+    load_optional_plugins()
+    plugin_agents = [p for root in get_registry().manifest_dirs() for p in root.glob("*.yaml")]
+    provider = default_tool_provider()
+    known = set(provider.list())
+
+    def untrusted_by_name(names: list[str]) -> bool:
+        # A plugin tool is named in `tools`, not bound by a block; its transport decides, as
+        # governance decides (`_is_untrusted_tool`), never its name.
+        return any(_is_untrusted_tool(provider.get(n)) for n in names if n in known)
+
+    for path in sorted(
+        [*(ROOT / "manifests").glob("*.yaml"), *(ROOT / "manifests" / "self").glob("*.yaml"), *plugin_agents]
+    ):
         spec = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("spec") or {}
-        binds_untrusted = any(
+        binds_untrusted = untrusted_by_name([str(t) for t in spec.get("tools") or []]) or any(
             spec.get(key)
             for key in (
                 "mcp_servers",
@@ -774,6 +796,8 @@ def test_no_bundled_manifest_binds_untrusted_tools_without_screening() -> None:
 
     # A scan that matches nothing passes as though the rule held: these bind fetch, search and MCP.
     assert {"deep.yaml", "support.yaml", "contributor.yaml"} <= untrusted
+    if plugin_agents:
+        assert {"concierge.yaml", "inbox.yaml"} <= untrusted
     assert offenders == [], (
         f"these bundled manifests bind untrusted tools with content_screening off: {offenders}"
     )
