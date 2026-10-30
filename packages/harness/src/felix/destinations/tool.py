@@ -47,7 +47,6 @@ destination, edition, status and ref -- never the text.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -55,16 +54,15 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from felix import destinations as _registry
 from felix.destinations import (
     MAX_DETAIL_CHARS,
-    Delivery,
     Destination,
     EditionKey,
     Post,
     destination_kind,
     ledger,
 )
+from felix.destinations.publish import publish
 from felix.governance.permission_mode import POST_ATTENDED_APPROVAL_RULE_ID, POST_TOOL_NAME
 from felix.logging_setup import loggable
 from felix.tools.refusal import ToolRefused
@@ -273,12 +271,6 @@ class _Posts:
             return self._already(args, existing, ctx)
         title, text = await self.clean(args)
         thread_id = (call.thread_id if call is not None else None) or ctx.thread_id or ""
-        try:
-            claim = await ledger.claim(self.settings, key, thread_id=thread_id)
-        except Exception:
-            raise self._ledger_unavailable(args, "claim") from None
-        if not claim.won:
-            return self._already(args, claim.row, ctx)
         post = Post(
             edition=args.edition,
             text=text,
@@ -287,21 +279,28 @@ class _Posts:
             key=key.post_key,
             unattended=ctx.unattended,
         )
-        delivery = await self._deliver(self.destinations[args.destination], post)
-        await self._settle(args, key, delivery.status, delivery.ref)
-        self._audit(args, "maybe_posted" if delivery.status == "unknown" else delivery.status, delivery.ref)
-        if delivery.status == "posted":
+        # Claim, deliver, settle -- the one path every edition takes (`destinations/publish.py`).
+        try:
+            outcome = await publish(
+                self.settings, key, self.destinations[args.destination], post, thread_id=thread_id
+            )
+        except Exception:
+            raise self._ledger_unavailable(args, "claim") from None
+        if not outcome.delivered:
+            return self._already(args, outcome.row or {}, ctx)
+        self._audit(args, outcome.status, outcome.ref)
+        if outcome.status == "posted":
             return json.dumps(
                 {
                     "status": "posted",
                     "destination": args.destination,
                     "edition": args.edition,
-                    "ref": delivery.ref,
+                    "ref": outcome.ref,
                 }
             )
         # The kind's own words, cut: a plugin's detail is written for the model, but not unbounded.
-        detail = str(delivery.detail or "")[:MAX_DETAIL_CHARS]
-        if delivery.status == "not_posted":
+        detail = outcome.detail[:MAX_DETAIL_CHARS]
+        if outcome.status == "not_posted":
             raise ToolRefused(
                 "not_posted",
                 f"{detail or 'the destination did not take the post'}; nothing was posted, and "
@@ -312,48 +311,6 @@ class _Posts:
             f"{detail or 'the delivery did not finish'}. It may have been posted, so do not post "
             "this edition again, under it or another name; a person must check the destination",
         )
-
-    async def _settle(self, args: _PostArgs, key: EditionKey, status: str, ref: str | None) -> None:
-        """Record the delivery's outcome on the claimed row. A write that fails leaves it `posting`,
-        which every later call reads as `in_flight` and then `maybe_posted` -- the safe side of not
-        knowing."""
-        try:
-            if status == "not_posted":
-                await ledger.release(self.settings, key)
-            else:
-                settled = ledger.POSTED if status == "posted" else ledger.MAYBE_POSTED
-                await ledger.settle(self.settings, key, status=settled, ref=ref)
-        except Exception:
-            logger.warning(
-                "post ledger settle failed destination=%s status=%s",
-                loggable(args.destination, limit=64),
-                status,
-                exc_info=True,
-            )
-
-    async def _deliver(self, dest: Destination, post: Post) -> Delivery:
-        adapter = destination_kind(dest.kind)
-        if adapter is None:
-            # Uninstalled since the compile; nothing was sent.
-            return Delivery("not_posted", detail="the destination's kind is no longer installed")
-        try:
-            # Read at call time, so the bound is the registry's (and a test's) current one.
-            async with asyncio.timeout(_registry.DELIVERY_BUDGET_S):
-                delivery = await adapter.deliver(self.settings, self.tenant_id, dest, post)
-        except TimeoutError:
-            # Past the budget the harness stops waiting; whatever the kind sent may have landed.
-            logger.warning("destination %s (%s) delivery outlived its budget", dest.name, dest.kind)
-            return Delivery(
-                "unknown", detail="the destination's delivery took too long, so it may have been posted"
-            )
-        except Exception:
-            # An adapter that raised may have sent first: unknown, never a guess that it did not.
-            logger.warning("destination %s (%s) delivery raised", dest.name, dest.kind, exc_info=True)
-            return Delivery("unknown", detail="the destination's delivery failed partway")
-        if getattr(delivery, "status", None) not in ("posted", "not_posted", "unknown"):
-            logger.warning("destination %s (%s) answered no delivery status", dest.name, dest.kind)
-            return Delivery("unknown", detail="the destination's delivery gave no outcome")
-        return delivery
 
     def _refusal_for(self, args: _PostArgs, row: dict[str, Any]) -> ToolRefused:
         """The refusal for an edition the ledger holds that is not `posted`."""

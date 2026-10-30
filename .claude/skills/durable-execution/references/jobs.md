@@ -99,3 +99,29 @@ definition of deleting a thread whole, which retention's memory arm also uses; c
 `tests/conformance/test_session_prune.py`), keeping the newest `keep_threads` firing-minted threads
 and never the conversation. An expired enrolment takes `fire_job`'s credential-expired path with
 `hb.CREDENTIAL_EXPIRED`. e2e: `tests/e2e/test_heartbeat.py`.
+
+## Job health watch
+
+`jobs/tick.py`: `run_due_jobs_all_tenants` ends with `record_tick` (Redis key `TICK_KEY`, never moved
+backwards, plus an in-process copy) -- unless every tenant's sweep raised, when it stamps nothing and
+raises. `scheduler_health` (via `read_tick`) serves `GET /health/scheduler` (`apps/api/.../app.py`, in
+`PROBE_PATHS`) and `felix doctor`: `ok` within `FELIX_SCHEDULER_STALE_SECONDS`, else 503 `stale`,
+`never`, or `unknown` (Redis in use and unreadable, no local stamp). `jobs/watch.py` is the
+`job_health_watch` cron (every 5 min): per tenant under `rls_tenant`, with the tick read once.
+`overdue_since` (enabled, not manual, due before `now - FELIX_JOB_OVERDUE_GRACE_SECONDS`; a `running`
+mark is no exemption) is a candidate: `_next_health` keeps `OVERDUE_SEEN_AT` and opens `overdue` only
+once the tick is `SWEEP_CHANCE_MS` past that sighting. `failing_streak` (the newest
+`FELIX_JOB_FAILURE_THRESHOLD` non-skipped runs all `error`) opens `failing`, which stays until a run
+since its `since` succeeded (a new streak in the same sweep opens a new incident; counting is by
+object identity). State is `jobs.health_json` (`store.set_health`, compare-and-set on the whole
+JSONB; `put_job` leaves it); disabling clears everything. A new incident is counted
+(`felix_job_health_incident`), audited (`job.health`, `open`/`cleared`, offline as `cron`), and its
+alert retried while `pending` or `unrouted` through `destinations/publish.py:publish` -- the
+claim/deliver/settle path `post` shares -- under `EditionKey(tenant, FELIX_JOB_ALERT_DESTINATION,
+ALERT_MANIFEST="felix:job-health", edition(job, kind, since))`, the destination from
+`resolve_harness_destination` (an `operator: true` one for any tenant, which `resolve_destinations`
+refuses to every manifest; else one open to the tenant). `not_posted`/`in_flight`/ledger failure stay
+`pending` (at most `MAX_ALERT_ATTEMPTS`); unknown is `maybe_posted`. The text is `alert_text`, title
+and text through `dest.apply_links`: backticked masked names and `error_class`, never `last_error`.
+Tests: `tests/unit/test_job_health_watch.py`, `tests/e2e/test_job_health_watch.py`, the `set_health`
+case in `tests/conformance/test_jobs_store.py`.

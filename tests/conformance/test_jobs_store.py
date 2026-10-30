@@ -695,3 +695,30 @@ async def test_set_schedule_never_brings_back_a_deleted_job(store_settings: Any)
         store_settings, TENANT, JOB, schedule="every:2h", next_run_at=1, expected_schedule="every:60m"
     )
     assert await jobs.get_job(store_settings, TENANT, JOB) is None
+
+
+# --- health incidents (`felix.jobs.watch`) ------------------------------------------------------
+
+
+@parametrized
+async def test_health_is_written_only_over_what_was_seen_and_survives_a_resave(store_settings: Any) -> None:
+    """The watch's compare-and-set: the JSONB compared whole on Postgres, the dict on the twin. A
+    sweep holding a stale read must lose, or two overlapping sweeps each alert the same incident;
+    and `put_job` must leave it, or re-saving a job re-alerts."""
+    created = await _put(store_settings)
+    assert created["health"] == {}
+    opened = {
+        "failing": {"since": 5, "opened_at": 9, "error_class": "run_error", "alert": "pending", "attempts": 0}
+    }
+
+    assert await jobs.set_health(store_settings, TENANT, JOB, seen={}, health=opened)
+    assert not await jobs.set_health(store_settings, TENANT, JOB, seen={}, health={"overdue": {"since": 1}})
+    posted = {"failing": {**opened["failing"], "alert": "posted"}}
+    assert await jobs.set_health(store_settings, TENANT, JOB, seen=opened, health=posted)
+
+    resaved = await _put(store_settings, schedule="*/5 * * * *")
+    assert resaved["health"] == posted
+    fetched = await jobs.get_job(store_settings, TENANT, JOB)
+    assert fetched is not None and fetched["health"] == posted
+    assert not await jobs.set_health(store_settings, TENANT, "gone", seen={}, health=opened)
+    assert not await jobs.set_health(store_settings, OTHER, JOB, seen=posted, health={})

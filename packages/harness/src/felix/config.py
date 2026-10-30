@@ -409,6 +409,21 @@ class Settings(BaseSettings):
     # so one slower than that would hold every other due delivery past its claim.
     webhook_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
 
+    # Job health watch (`felix.jobs.tick`, `felix.jobs.watch`). `GET /health/scheduler` answers 503
+    # once the scheduler's last completed sweep is older than this: it ticks every minute, so the
+    # floor is two missed ticks' worth.
+    scheduler_stale_seconds: int = Field(default=300, ge=120)
+    # How long past its due time an enabled, scheduled job that is not running may sit before the
+    # `job_health_watch` sweep (every 5 minutes) reports it overdue.
+    job_overdue_grace_seconds: int = Field(default=900, ge=60)
+    # How many of a job's most recent runs (skipped ones ignored) must all be errors for it to be
+    # reported failing. At most `job_runs_keep` when that is set, or the streak could never be read.
+    job_failure_threshold: int = Field(default=3, ge=1, le=100)
+    # A `FELIX_DESTINATIONS` id each new job incident is posted to, when that destination is open to
+    # the job's tenant. Empty: incidents are recorded on the job, counted and audited, and posted
+    # nowhere.
+    job_alert_destination: str = ""
+
     # Web Push: wake a browser that subscribed (`/push/subscriptions`) when a run is waiting on
     # a person -- an approval going pending, or an agent's question. Off until both of the
     # first two are set; the `/push` routes answer 503 meanwhile. The private key is the
@@ -917,6 +932,7 @@ class Settings(BaseSettings):
         self._validate_webhook_endpoints()
         self._validate_egress_credentials()
         self._validate_destinations()
+        self._validate_job_watch()
         self._validate_manifest_secrets()
         self._validate_mcp_person_auth()
         self._validate_triggers()
@@ -1051,6 +1067,20 @@ class Settings(BaseSettings):
             parse_destinations(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_DESTINATIONS: {exc}") from exc
+
+    def _validate_job_watch(self) -> None:
+        """A job alert destination nobody registered, or a failure streak longer than the run history
+        kept, fails the boot: either would leave the watch looking on while it could never alert."""
+        from felix.destinations import parse_destinations
+
+        name = self.job_alert_destination.strip()
+        if name and name not in parse_destinations(self):
+            raise RuntimeError(f"FELIX_JOB_ALERT_DESTINATION: {name!r} is not a FELIX_DESTINATIONS id")
+        if 0 < self.job_runs_keep < self.job_failure_threshold:
+            raise RuntimeError(
+                f"FELIX_JOB_FAILURE_THRESHOLD ({self.job_failure_threshold}) exceeds FELIX_JOB_RUNS_KEEP "
+                f"({self.job_runs_keep}): a streak that long is trimmed before it can be read"
+            )
 
     def _validate_manifest_secrets(self) -> None:
         """A malformed `FELIX_MANIFEST_SECRETS` fails the boot rather than reading as an empty allowlist,

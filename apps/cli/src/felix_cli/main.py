@@ -1298,6 +1298,25 @@ def doctor_cmd() -> None:
             )
             check(redis_label, probe.ok, detail)
 
+        # The scheduler's heartbeat, as `GET /health/scheduler` reads it. A note rather than a
+        # failure: doctor is a preflight, often run before felix-scheduler has started.
+        from felix.jobs.tick import scheduler_health
+
+        if not redis_url_in_use(settings):
+            rprint(
+                "  [dim]scheduler[/dim] heartbeat not visible from this process — it crosses through Redis"
+            )
+        else:
+            beat = await scheduler_health(settings)
+            if beat.ok:
+                check("scheduler heartbeat", True, f"last sweep {beat.last_tick_age_s}s ago")
+            else:
+                when = "never" if beat.last_tick_age_s is None else f"{beat.last_tick_age_s}s ago"
+                rprint(
+                    f"  [yellow]note[/yellow]  scheduler heartbeat {beat.status} — last sweep {when}; "
+                    "is felix-scheduler running beside felix-worker?"
+                )
+
         # Object store factory
         try:
             from felix.storage import build_object_store
