@@ -1366,7 +1366,42 @@ deployment's name, so the places are the operator's and the manifest only picks 
   (`Destination`, its own keys in `fields`; a key spelled like one of the harness's — `Links`,
   `link-hosts` — fails the boot), classifies an HTTP answer with the shared
   `delivery_for_status` / `delivery_for_send_error`, and has `DELIVERY_BUDGET_S` (90 s) per
-  delivery, after which the harness stops waiting and records `maybe_posted`.
+  delivery, after which the harness stops waiting and records `maybe_posted`. A kind that sends
+  with a credential declares it (`DestinationSecrets.secrets`: the resolved values): `post`
+  registers them for masking *before* it cleans the text, so a model that writes the token into a
+  post has it redacted on the first post in a process — a worker runs no plugin startup hook, and
+  a value first resolved inside `deliver` would arrive after the text was cleaned. One that cannot
+  be resolved refuses the call (`unavailable`) before anything is claimed. Core's `webhook`
+  declares its signing secret.
+- **The `slack` kind** (the `felix-channels` plugin, `felix_channels/destination.py`):
+  `{"kind": "slack", "channel": "<FELIX_CHANNELS id>", "conversation": "C…|G…|D…"}`. The bot token
+  is the channel's — the destination holds no secret — declared through `secrets` so it is
+  masked before the post is cleaned, and redacted from the text once more when it is sent. A
+  Slack app is bound to one tenant, so the compile is refused for any other tenant (a
+  destination with `"tenants": "*"` posts through it for the channel's tenant only), with the words
+  an unregistered channel gets. The text is escaped and sent with `parse: none` and
+  `link_names: false`, so a model's `<!channel>`, `<!here>`, `<!everyone>`, `<@U…>` or `@here`
+  arrives as text and pings nobody; unfurling is off, so a link a `links: keep` registration
+  leaves in is not fetched by Slack's preview either. Slack's `ok: true` is `posted` (ref
+  `<conversation>:<ts>`); an `ok: false` naming a definite refusal — `channel_not_found`,
+  `not_in_channel`, `is_archived`; `invalid_auth`, `account_inactive`, `token_revoked`,
+  `not_authed`, `not_allowed_token_type`; `no_permission`, `missing_scope`, `restricted_action`,
+  `restricted_action_read_only_channel`, `restricted_action_thread_only_channel`,
+  `restricted_action_non_threadable_channel`, `team_access_not_granted`; `msg_too_long`,
+  `no_text`, `invalid_arguments`; `ratelimited`, `rate_limited` — is `not_posted` with a fixed
+  detail per family, never Slack's text (the code itself is logged for the operator); any other
+  `ok: false` is `unknown`; another status or a send error follows the shared rules (a `429` is
+  `not_posted`, a `5xx` or a read timeout `unknown`). A post's call has its own bounds — 5 s to
+  connect, 10 s per read, 30 s in all — so a dial that stalls ends as a connect timeout, certainly
+  unsent and so `not_posted`, rather than as the overall deadline, which would leave the edition
+  `maybe_posted`.
+- **What a destination opens on the app.** Posting into a conversation does not change who may
+  talk to the agent there, but the two meet: a reply in a conversation the channel's inbound
+  `channels` allowlist lists (or in any conversation, with no allowlist) starts a run of the
+  channel's manifest as the person who replied, so a post that invites replies invites runs. And
+  the app posts for any manifest of its tenant that names the destination in `spec.destinations`:
+  registering a `slack` destination opens that conversation to every such manifest's `post`, not
+  only to the channel's own manifest.
 - **At most once per edition.** Each call names an `edition`, and `destination_posts` (migration
   0049, tenant RLS) holds one row per tenant, destination, manifest and edition — two agents'
   `brief:2026-10-29` are two posts. The call reads the row before it cleans or screens anything (an

@@ -134,7 +134,9 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
   `admits_anonymous`. Order: `admit` (a context, else `no_context`; attended under `attended:
   refuse` is `attended`; id, edition grammar, lengths, per-run cap reserved synchronously) →
   `EditionKey` (tenant, destination, manifest, edition; built once per call) → `ledger.get` (a row
-  answers before any screening) → `governance/outbound_text.py:prepare_outbound` (redact, then the
+  answers before any screening) → the kind's declared credentials registered for masking
+  (`DestinationSecrets.secrets` via `destination_secrets`; a raise is `unavailable`) →
+  `governance/outbound_text.py:prepare_outbound` (redact, then the
   registration's `links` / `link_hosts` via `Destination.apply_links` → `strip_links(keep=)`, then
   `screen_outbound` -- the same step `notify` takes, with `strip_links`) → `ledger.claim`
   (insert-if-absent on `destination_posts`, migration 0049) → adapter `deliver(settings, tenant,

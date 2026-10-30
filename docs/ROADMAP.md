@@ -1118,12 +1118,14 @@ The gaps, in order:
       contract) that posts an edition at most once and refuses an edition whose delivery outcome is
       unknown (`maybe_posted`), and the core `webhook` kind over `FELIX_WEBHOOK_ENDPOINTS`. Only
       unattended runs post (`attended: refuse | approval` for a conversation's call); links are
-      stripped unless the registration keeps them (`links`, `link_hosts`). *Next:* a Slack kind in
-      `packages/channels`, which must neutralise broadcast mentions (`<!channel>`, `<!here>`,
-      `<!everyone>`, `@everyone`, `@here`) before posting -- the text is a model's; a route for a
-      person with the right scope to clear a `posting` or `maybe_posted` edition once they have
-      checked (today an operator deletes the row, `deploy/GOVERNANCE.md`); listing a destination
-      kind's `secret:` refs in the registries `FELIX_MANIFEST_SECRETS` must not reopen
+      stripped unless the registration keeps them (`links`, `link_hosts`). The `slack` kind
+      (`packages/channels`, `felix_channels/destination.py`) posts through a `FELIX_CHANNELS` app
+      for that app's tenant only, with broadcast mentions inert (escaped, `parse: none`,
+      `link_names: false`), unfurling off, and Slack's `ok: false` codes classified so only a
+      definite refusal frees the edition. *Next:* a route for a person with the right scope to
+      clear a `posting` or `maybe_posted` edition once they have checked (today an operator
+      deletes the row, `deploy/GOVERNANCE.md`); listing a destination kind's `secret:` refs in
+      the registries `FELIX_MANIFEST_SECRETS` must not reopen
       (`secret_policy.assert_manifest_secrets_unbound`).
 - [ ] **Job health watch.** A worker sweep that flags a job whose `next_run_at` is long past, or
       whose last N runs errored, to its owner (`notify`) or an operator webhook. Today a failing
