@@ -26,9 +26,7 @@ def _new(workflow_id: str = "triage", **kw: Any) -> runs.NewRun:
         auth={"principal_sub": "alice", "scopes": []},
         pins={"quick": {"pin": {}, "ttl_s": 300}},
         expires_at=1_900_000_000_000,
-        trigger="manual",
-        started_by="alice",
-        **kw,
+        **{"trigger": "manual", "started_by": "alice", **kw},
     )
 
 
@@ -119,6 +117,29 @@ async def test_runs_list_newest_first_per_workflow_and_tenant(
     listed = [r["id"] for r in await runs.list_runs(store_settings, TENANT, "triage")]
     assert listed == sorted(ids, reverse=True), "a tie on created_at ends on the id, on both arms"
     assert [r["id"] for r in await runs.list_runs(store_settings, TENANT, "triage", limit=1)] == listed[:1]
+
+
+@parametrized
+async def test_agent_runs_are_kept_only_for_their_person_before_the_limit(store_settings: Any) -> None:
+    # Older first: the shared run sits past a limit-1 page of agent runs, so a filter applied after
+    # the limit would answer bob nothing.
+    shared = await runs.create_run(store_settings, TENANT, _new(run_id="a" * 32))
+    for run_id, who in (("b" * 32, "alice"), ("c" * 32, "carol")):
+        await runs.create_run(
+            store_settings, TENANT, _new(run_id=run_id, trigger="agent:quick", started_by=who)
+        )
+
+    async def listed(of: str | None, limit: int = 50) -> list[str]:
+        return [
+            r["id"]
+            for r in await runs.list_runs(store_settings, TENANT, "triage", limit=limit, agent_runs_of=of)
+        ]
+
+    assert set(await listed(None)) == {"a" * 32, "b" * 32, "c" * 32}
+    assert set(await listed("alice")) == {"a" * 32, "b" * 32}
+    assert await listed("bob") == [shared["id"]]
+    assert await listed("bob", limit=1) == [shared["id"]]
+    assert await listed("") == [shared["id"]], "a caller who names nobody sees no agent run"
 
 
 @parametrized

@@ -6,6 +6,7 @@ are the production ones.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -402,3 +403,55 @@ async def test_an_agent_authored_workflow_reads_back_as_one() -> None:
         assert (read["created_by"], read["authored_via"]) == ("ada", "agent:quick")
         listed = (await client.get("/workflows")).json()["items"]
         assert [(i["id"], i["authored_via"]) for i in listed] == [("agent-made", "agent:quick")]
+
+
+async def test_a_run_an_agent_started_for_a_person_answers_only_them_or_an_operator() -> None:
+    """Its agent steps ran as that person, with their memory: `workflows:read` over the tenant's
+    workflows does not reach one person's runs of them. A run a person started stays shared."""
+    from felix.thread_ids import workflow_thread_id
+    from felix.workflows import runs as run_store
+
+    keys = {
+        "alice-token": {"tenant_id": "default", "sub": "alice", "scopes": ["workflows:write"]},
+        "bob-token": {"tenant_id": "default", "sub": "bob", "scopes": ["workflows:write"]},
+        "admin-token": {"tenant_id": "default", "sub": "root", "scopes": ["admin"]},
+    }
+    settings = make_settings(auth_mode="api_key", auth_api_keys=json.dumps(keys))
+    alice, bob, admin = ({"Authorization": f"Bearer {k}"} for k in keys)
+
+    async def run(trigger: str, started_by: str) -> str:
+        new = run_store.NewRun(
+            workflow_id="triage",
+            revision="r1",
+            definition=_definition(),
+            inputs={"issue": "x"},
+            steps={"classify": {"status": "completed"}},
+            auth={},
+            pins={},
+            expires_at=0,
+            trigger=trigger,
+            started_by=started_by,
+        )
+        new.steps["classify"]["thread_id"] = workflow_thread_id("default", new.run_id, "classify") or ""
+        return (await run_store.create_run(settings, "default", new))["id"]
+
+    agents = await run("agent:quick", "alice")
+    manual = await run("manual", "alice")
+    base = "/workflows/triage/runs"
+    async with app_client(settings) as client:
+        # Bounded: a stream let through would hold the request open while the run is pending.
+        streamed = await asyncio.wait_for(client.get(f"{base}/{agents}/stream", headers=bob), timeout=5)
+        assert streamed.status_code == 404
+        for path in ("", "/steps/classify/thread"):
+            assert (await client.get(f"{base}/{agents}{path}", headers=bob)).status_code == 404, path
+            assert (await client.get(f"{base}/{agents}{path}", headers=alice)).status_code == 200, path
+            assert (await client.get(f"{base}/{agents}{path}", headers=admin)).status_code == 200, path
+            assert (await client.get(f"{base}/{manual}{path}", headers=bob)).status_code == 200, path
+        assert (await client.post(f"{base}/{agents}/cancel", headers=bob)).status_code == 404
+
+        def listed(response: Any) -> set[str]:
+            return {r["id"] for r in response.json()["items"]}
+
+        assert listed(await client.get(base, headers=bob)) == {manual}
+        assert listed(await client.get(base, headers=alice)) == {agents, manual}
+        assert listed(await client.get(base, headers=admin)) == {agents, manual}

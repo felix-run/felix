@@ -11391,7 +11391,7 @@
     },
     "/chat/runs/{resume_token}": {
       "get": {
-        "description": "Poll a durable chat fiber started with ``spec.execution.mode: durable``.",
+        "description": "Poll a durable chat fiber started with ``spec.execution.mode: durable``.\n\nNot a workflow step's child run: its id is derived from the run and step ids\n(`workflows.executors.child_fiber_id`), so it is no secret, and its answer was produced with\nthe starter's memory. A step's outcome is read under its run (`/workflows/{id}/runs/...`).",
         "operationId": "chat_run_chat_runs__resume_token__get",
         "parameters": [
           {

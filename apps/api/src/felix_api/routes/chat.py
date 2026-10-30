@@ -1102,14 +1102,21 @@ def _safe_filename(thread_id: str) -> str:
 
 @router.get("/runs/{resume_token}")
 async def chat_run(resume_token: str, request: Request) -> dict[str, Any]:
-    """Poll a durable chat fiber started with ``spec.execution.mode: durable``."""
-    from felix.durability.runs import get_durable_run
+    """Poll a durable chat fiber started with ``spec.execution.mode: durable``.
+
+    Not a workflow step's child run: its id is derived from the run and step ids
+    (`workflows.executors.child_fiber_id`), so it is no secret, and its answer was produced with
+    the starter's memory. A step's outcome is read under its run (`/workflows/{id}/runs/...`).
+    """
+    from felix.durability.fibers import get_fiber
+    from felix.durability.runs import run_view
+    from felix.thread_ids import is_workflow_thread
 
     auth = _auth_from_request(request)
-    row = await get_durable_run(request.app.state.settings, auth.tenant_id, resume_token)
-    if row is None:
+    row = await get_fiber(request.app.state.settings, auth.tenant_id, resume_token)
+    if row is None or is_workflow_thread(auth.tenant_id, row.get("thread_id")):
         raise HTTPException(status_code=404, detail="run_not_found")
-    return row
+    return run_view(row)
 
 
 @router.get("/stream/{thread_id}")
