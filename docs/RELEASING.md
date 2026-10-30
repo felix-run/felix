@@ -149,6 +149,10 @@ python scripts/bump-version.py 0.3.0          # sets every location, then `uv lo
 
 - **Deployments pin the tag themselves**, via `FELIX_IMAGE_TAG` in the host `.env` and
   `image.tag` in the chart. The chart's value is one of the locations the bump script sets.
+- **api.felix.run rolls itself** from a private operations repository, which runs
+  `deploy/gcp/roll.sh` once a release is published. If the release needs a host `.env` change or
+  a decision first, mark its `docs/UPGRADING.md` section `<!-- deploy: manual -->` before tagging,
+  and the automated roll stands down for it.
 - Publishing to PyPI is not wired up. `uv publish` exists but no workflow calls it.
 - Watch the scheduled `smoke.yml` run against `api.felix.run` after deploying — it exercises health,
   a sync `/chat`, a durable `202`, and the thinking/lease/search/abort surfaces, and it does not

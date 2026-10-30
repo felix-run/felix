@@ -21,6 +21,11 @@
 # Needs gcloud (with ssh access to the VM), gh, docker and curl locally, and sudo on the VM.
 # The defaults are the reference deployment's; override any of them:
 #   FELIX_GCP_PROJECT, FELIX_VM, FELIX_ZONE, FELIX_REPO_DIR, FELIX_BACKUP_DIR, FELIX_HEALTH_URL, FELIX_IMAGE
+# FELIX_SSH_FLAGS adds flags to every `gcloud compute ssh`; a CI caller reaching the VM through IAP
+# passes `--tunnel-through-iap`.
+#
+# Exit status: 0 rolled (or --check passed), 75 deferred because durable runs are in flight under
+# --yes (nothing changed; try again later), 2 usage, 1 any other stop.
 set -euo pipefail
 
 # Only `confirm` reads the terminal. `gh` pages its output when stdout is a tty and waited at
@@ -38,7 +43,9 @@ ZONE="${FELIX_ZONE:-us-central1-a}"
 REPO_DIR="${FELIX_REPO_DIR:-/opt/felix}"
 BACKUP_DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
 HEALTH_URL="${FELIX_HEALTH_URL:-https://api.felix.run/health}"
+READY_URL="${HEALTH_URL%/health}/ready"
 IMAGE="${FELIX_IMAGE:-ghcr.io/felix-run/felix}"
+read -r -a SSH_FLAGS <<<"${FELIX_SSH_FLAGS:-}"
 
 usage() { echo "usage: $0 <version, e.g. 0.5.0> [--check] [--yes]" >&2; exit 2; }
 [ $# -ge 1 ] || usage
@@ -78,7 +85,10 @@ if [ "$CHECK_ONLY" = 0 ] && [ "$ASSUME_YES" = 0 ] && ! have_tty; then
   exit 2
 fi
 
-remote() { gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --quiet --command "$1" </dev/null; }
+remote() {
+  gcloud compute ssh "$VM" --project "$PROJECT" --zone "$ZONE" --quiet ${SSH_FLAGS[@]+"${SSH_FLAGS[@]}"} \
+    --command "$1" </dev/null
+}
 psql_q() {
   # One query against the deployment's own database, tab-separated, no headers.
   remote "sudo docker exec \$(sudo docker ps --format '{{.Names}}' | grep -m1 postgres) psql -U felix -d felix -tA -F\$'\\t' -c \"$1\""
@@ -141,7 +151,11 @@ fi
 
 bold "Backup"
 if [ -n "$FIBERS" ]; then
-  [ "$ASSUME_YES" = 0 ] || die "durable runs are in flight (above); --yes does not roll over them. Wait for them, or run interactively"
+  if [ "$ASSUME_YES" = 1 ]; then
+    printf '\n\033[33mDEFERRED: durable runs are in flight (above); --yes does not roll over them. Nothing\n' >&2
+    printf 'was changed. Wait for them, or run interactively.\033[0m\n' >&2
+    exit 75
+  fi
   confirm "Durable runs are in flight (above). Continue anyway?"
 fi
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -193,6 +207,18 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 grep -q "\"version\":\"$VERSION\"" <<<"${BODY:-}" || die "health did not report $VERSION within 5 minutes (last: ${BODY:-none})"
+
+# /health is liveness and touches nothing; /ready probes the database, cache, object store and
+# JWKS. A release whose migration left the API unable to reach its own database reports its
+# version on the first and 503 on the second.
+bold "Waiting for $READY_URL"
+for _ in $(seq 1 24); do
+  READY="$(curl -sS -m 5 -o /dev/null -w '%{http_code}' "$READY_URL" </dev/null 2>/dev/null || true)"
+  [ "$READY" = 200 ] && break
+  sleep 5
+done
+[ "${READY:-}" = 200 ] || die "$READY_URL did not answer 200 within 2 minutes (last: ${READY:-none}); the new version is live but not ready"
+note "ready"
 
 bold "After"
 note "alembic: $(psql_q 'table alembic_version')"

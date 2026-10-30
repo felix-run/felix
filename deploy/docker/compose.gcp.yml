@@ -11,16 +11,16 @@
 # The image needs the `gcp` extra for Secret Manager, so this points at the
 # `-gcp` variant. Releases publish both `:X.Y.Z` and `:X.Y.Z-gcp`, each for
 # linux/amd64 and linux/arm64.
-# Usage on GCE (repo root / /opt/felix):
+# Usage on GCE (repo root / /opt/felix); deploy/gcp/roll.sh does this for an upgrade:
 #   make up-gcp
 #   docker compose -f deploy/docker/compose.yml \
 #     -f deploy/docker/compose.gcp.yml -f deploy/docker/compose.lite.yml \
-#     --project-directory . up -d --build
+#     --project-directory . up -d
 #
 # Expects host .env:
 #   FELIX_SECRETS_BACKEND=gcp
 #   FELIX_GCP_PROJECT=<project>
-#   FELIX_DOCKER_EXTRAS=gcp
+#   FELIX_IMAGE_TAG=<release>
 # and Secret Manager secret `felix-anthropic-api-key` (or ANTHROPIC_API_KEY).
 
 name: felix
