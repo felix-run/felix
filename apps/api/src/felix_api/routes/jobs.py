@@ -364,12 +364,17 @@ async def _write_preferences(request: Request, name: str, text: str | None) -> d
     settings = request.app.state.settings
     tenant_id = tenant_id_from_request(request)
     try:
-        row = await jobs_store.set_preferences(settings, tenant_id, name, text, by=who)
+        row = await jobs_store.set_preferences(
+            settings, tenant_id, name, text, by=who, writer=job.get("created_by")
+        )
     except PreferencesTooLong:
         raise HTTPException(
             status_code=422, detail={"error": "preferences_too_long", "max_bytes": PREFERENCES_MAX_BYTES}
         ) from None
     if row is None:
+        if await jobs_store.get_job(settings, tenant_id, name) is not None:
+            # Re-saved by someone else since the check: their job now, and not this caller's to steer.
+            raise HTTPException(status_code=409, detail={"error": "job_changed_hands"})
         raise HTTPException(status_code=404, detail="not_found")
     audit_store.record_event(
         settings,

@@ -852,7 +852,7 @@ async def test_preferences_survive_their_writers_rewrites_and_no_one_elses(store
         True,
     )
     text = "Cover open incidents only.\nSkip <b>staffing</b> -- one paragraph, plain words. é"
-    written = await jobs.set_preferences(store_settings, TENANT, JOB, text, by="carol")
+    written = await jobs.set_preferences(store_settings, TENANT, JOB, text, by="carol", writer="carol")
     assert written is not None
     assert (written["preferences"], written["preferences_updated_by"]) == (text, "carol")
     stamped = written["preferences_updated_at"]
@@ -889,24 +889,52 @@ async def test_preferences_survive_their_writers_rewrites_and_no_one_elses(store
         assert (row["created_by"], row["preferences_required"]) == ("erin", True)
         assert row["health"] == {"overdue": {"since": 1}}, "only the preferences go"
 
-    await jobs.set_preferences(store_settings, TENANT, JOB, text, by="erin")
-    cleared = await jobs.set_preferences(store_settings, TENANT, JOB, None, by="erin")
+    await jobs.set_preferences(store_settings, TENANT, JOB, text, by="erin", writer="erin")
+    cleared = await jobs.set_preferences(store_settings, TENANT, JOB, None, by="erin", writer="erin")
     assert cleared is not None and cleared["preferences"] is None
     assert cleared["preferences_updated_by"] == "erin"
+
+
+@parametrized
+async def test_preferences_land_only_while_the_checked_writer_still_holds_the_job(
+    store_settings: Any,
+) -> None:
+    """The route checks the caller against the job's writer, then writes; a re-save by someone else
+    in between makes it their job, and the write -- checked against the old writer -- must not
+    land on it, where the text would run on the new writer's scopes."""
+    await _put(store_settings, created_by="carol")
+    await _put(store_settings, created_by="erin")
+    assert await jobs.set_preferences(store_settings, TENANT, JOB, "x", by="carol", writer="carol") is None
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["preferences"] is None
+    landed = await jobs.set_preferences(store_settings, TENANT, JOB, "y", by="erin", writer="erin")
+    assert landed is not None and landed["preferences"] == "y"
+
+
+@parametrized
+async def test_a_shared_subjects_resave_clears_the_preferences(store_settings: Any) -> None:
+    """Every holder of a sub-less API key is the subject `api_key`, so its "same writer" re-save
+    may be another holder: the text an operator wrote does not carry onto their scopes."""
+    from felix.auth.recorded import DEFAULT_API_KEY_SUBJECT as shared
+
+    await _put(store_settings, created_by=shared)
+    await jobs.set_preferences(store_settings, TENANT, JOB, "x", by="admin", writer=shared)
+    assert (await jobs.get_job(store_settings, TENANT, JOB))["preferences"] == "x"
+    assert (await _put(store_settings, created_by=shared))["preferences"] is None
 
 
 @parametrized
 async def test_preferences_never_create_a_job_and_are_capped(store_settings: Any) -> None:
     from felix.jobs.preferences import PREFERENCES_MAX_BYTES, PreferencesTooLong
 
-    assert await jobs.set_preferences(store_settings, TENANT, "gone", "x", by="carol") is None
+    assert await jobs.set_preferences(store_settings, TENANT, "gone", "x", by="carol", writer=None) is None
     assert await jobs.get_job(store_settings, TENANT, "gone") is None
     await _put(store_settings)
-    assert await jobs.set_preferences(store_settings, OTHER, JOB, "x", by="carol") is None
+    assert await jobs.set_preferences(store_settings, OTHER, JOB, "x", by="carol", writer=None) is None
     # Bytes, not characters: `é` is two in UTF-8.
     with pytest.raises(PreferencesTooLong):
         await jobs.set_preferences(
-            store_settings, TENANT, JOB, "é" * (PREFERENCES_MAX_BYTES // 2 + 1), by="c"
+            store_settings, TENANT, JOB, "é" * (PREFERENCES_MAX_BYTES // 2 + 1), by="c", writer=None
         )
     full = "é" * (PREFERENCES_MAX_BYTES // 2)
-    assert (await jobs.set_preferences(store_settings, TENANT, JOB, full, by="c"))["preferences"] == full
+    written = await jobs.set_preferences(store_settings, TENANT, JOB, full, by="c", writer=None)
+    assert written is not None and written["preferences"] == full

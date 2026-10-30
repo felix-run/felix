@@ -189,6 +189,15 @@ async def get_job(settings: Settings, tenant_id: str, name: str) -> dict[str, An
 
 
 # A job with no preferences: what a new job holds, and what a rewrite by another writer leaves.
+def _new_writer(before: str | None, after: str | None) -> bool:
+    """Whether a re-save is by someone other than the job's writer -- a different subject, or a
+    shared one (a sub-less API key), whose every holder is the "same" subject -- so the
+    preferences written for the old writer's runs are cleared rather than run on the new one's."""
+    from felix.auth.recorded import is_shared_subject
+
+    return before != after or (after is not None and is_shared_subject(after))
+
+
 _NO_PREFERENCES: dict[str, Any] = {
     "preferences": None,
     "preferences_updated_at": None,
@@ -298,7 +307,7 @@ async def put_job(
                     existing.get("last_status", ""), existing.get("last_error", ""), enabled
                 ),
             )
-            if existing.get("created_by") != created_by:
+            if _new_writer(existing.get("created_by"), created_by):
                 row.update(_NO_PREFERENCES)
         row.update(
             schedule=schedule,
@@ -347,7 +356,7 @@ async def put_job(
             row.last_error = _error_after_write(row.last_status, row.last_error, enabled)
             row.last_status = _status_after_write(row.last_status, enabled)
             row.enabled = enabled
-            if row.created_by != created_by:
+            if _new_writer(row.created_by, created_by):
                 # A new writer: the text was written for the old one's runs, and must not run on
                 # this writer's scopes and memory. Same writer: left as they are (`set_preferences`).
                 for column, value in _NO_PREFERENCES.items():
@@ -360,12 +369,14 @@ async def put_job(
 
 
 async def set_preferences(
-    settings: Settings, tenant_id: str, name: str, text: str | None, *, by: str
+    settings: Settings, tenant_id: str, name: str, text: str | None, *, by: str, writer: str | None
 ) -> dict[str, Any] | None:
     """Write the job's preferences -- `text`, or None to clear them -- as `by`, now. Nothing else
     about the job changes: not its writer, its schedule nor its runs. One `UPDATE ... WHERE`, never
     an upsert, so it cannot re-create a job deleted meanwhile. The job as it is now, or None when it
-    is gone. Raises `PreferencesTooLong` past `PREFERENCES_MAX_BYTES`."""
+    is gone or its writer is no longer `writer` -- the one the caller was checked against: a re-save
+    by someone else between the check and this write must not leave the text on the new writer's
+    scopes. Raises `PreferencesTooLong` past `PREFERENCES_MAX_BYTES`."""
     from felix.jobs.preferences import check_preferences
 
     if text is not None:
@@ -377,7 +388,7 @@ async def set_preferences(
     }
     if _use_memory(settings):
         row = _memory_jobs.get((tenant_id, name))
-        if row is None:
+        if row is None or row.get("created_by") != writer:
             return None
         row.update(values)
         return _job_dict(row)
@@ -387,7 +398,13 @@ async def set_preferences(
     factory = get_session_factory(settings=settings)
     async with factory() as db:
         result = await db.execute(
-            update(Job).where(Job.tenant_id == tenant_id, Job.name == name).values(**values)
+            update(Job)
+            .where(
+                Job.tenant_id == tenant_id,
+                Job.name == name,
+                Job.created_by.is_not_distinct_from(writer),
+            )
+            .values(**values)
         )
         await db.commit()
         if not getattr(result, "rowcount", 0):

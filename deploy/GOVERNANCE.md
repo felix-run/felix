@@ -3429,7 +3429,10 @@ preferences. `GET /jobs` shows whether a job has them (`preferences_set`), not w
 **A new writer starts with none.** Re-saving a job (`PUT /jobs/{name}`, a heartbeat's re-enrolment)
 as its own writer keeps the preferences; a re-save by anyone else -- which moves `created_by` and the
 scopes the job runs on to them -- clears them, so text written for one person's runs never runs on
-another's. A job that requires preferences then waits for its new writer to set them.
+another's. A job that requires preferences then waits for its new writer to set them. A shared
+subject (a sub-less API key, whose every holder is `api_key`) counts as a new writer on every
+re-save. A preferences write lands only while the job's writer is still the one the caller was
+checked against; a re-save by someone else in between answers 409 `job_changed_hands`.
 
 **Every firing reads them whole.** They are appended to the firing's user turn -- never recalled,
 ranked, truncated or summarised -- in a region named anew for the firing,
