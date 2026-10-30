@@ -320,3 +320,118 @@ async def test_a_skill_that_names_its_own_manifest_forks_into_it(boot: Any, tmp_
         assert len(app.spy.prompts) == 3, "the lead, its subagent, the lead"
         after_fork = app.spy.prompts[2]
     assert _result(after_fork) == {"ran": "digest", "agent": "e2e-lead", "result": "summary"}
+
+
+async def test_a_fork_is_one_call_against_max_tool_calls(boot: Any, skills_dir: Path) -> None:
+    """The `task` call a fork makes is the `activate_skill` call's own work: with a cap of two, the
+    fork and one more call both run. Counted as a second call, a fork at the last allowed call was
+    refused by the cap it had just used, and the call after it one early."""
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "research", "task": "How tall?"})
+    listing = ToolCall(id="l1", name="list_skills", args={})
+    script = [
+        ScriptedTurn(tool_calls=[run]),
+        ScriptedTurn(content="330 metres."),  # the researcher
+        ScriptedTurn(tool_calls=[listing]),
+        ScriptedTurn(content="ok"),
+    ]
+    async with boot(
+        script, env={"FELIX_SKILLS_DIR": str(skills_dir)}, manifests=_manifests(limits={"max_tool_calls": 2})
+    ) as app:
+        await _chat(app, "go")
+        _lead, _child, after_fork, after_list = app.spy.prompts
+    assert _result(after_fork)["result"] == "330 metres."
+    [listed] = [m for m in after_list if getattr(m, "role", "") == "tool"][-1:]
+    assert "max_tool_calls" not in str(listed.content), "the fork was counted once"
+
+
+async def test_a_fork_s_task_call_is_audited_as_a_call(boot: Any, skills_dir: Path) -> None:
+    """The fork's `task` runs through a tool runner: the ledger has a `tool_call` row for it, by the
+    id derived from the model's `activate_skill` call."""
+    from felix.audit import store as audit_store
+    from felix.flush import flush_all
+
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "research", "task": "x"})
+    script = [ScriptedTurn(tool_calls=[run]), ScriptedTurn(content="answer"), ScriptedTurn(content="ok")]
+    async with boot(script, env={"FELIX_SKILLS_DIR": str(skills_dir)}, manifests=_manifests()) as app:
+        await _chat(app, "go")
+        await flush_all(app.settings)
+        rows, _ = await audit_store.query(app.settings, "default", limit=200)
+    calls = {
+        (r["payload_json"] or {}).get("tool_call_id"): (r["payload_json"] or {}).get("tool")
+        for r in rows
+        if r["event_type"] == "tool_call" and r.get("status") == "ok"
+    }
+    assert {k: calls.get(k) for k in ("f1", "f1:fork")} == {"f1": "activate_skill", "f1:fork": "task"}
+
+
+async def test_a_pre_tool_use_hook_on_task_holds_a_fork_too(boot: Any, skills_dir: Path) -> None:
+    """A hook the author put on `task` is asked about a fork's `task`, and its block stops the agent."""
+    from tests.support.webhook_receiver import SECRET, hook_receiver
+
+    def answer(req: dict[str, Any]) -> tuple[int, Any]:
+        return 200, {"decision": "block", "reason": "no research today"}
+
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "research", "task": "x"})
+    hooks = [{"id": "h1", "event": "pre_tool_use", "endpoint": "policy", "tools": ["task"]}]
+    async with hook_receiver(answer) as (url, seen):
+        env = {
+            "FELIX_SKILLS_DIR": str(skills_dir),
+            "FELIX_WEBHOOK_ENDPOINTS": json.dumps(
+                {"policy": {"url": url, "secret": SECRET, "tenants": "*", "hooks": True}}
+            ),
+        }
+        script = [ScriptedTurn(tool_calls=[run]), ScriptedTurn(content="no answer")]
+        async with boot(script, env=env, manifests=_manifests(hooks=hooks)) as app:
+            await _chat(app, "go")
+            _lead_first, lead_second = app.spy.prompts  # the researcher never ran
+            from felix.audit import store as audit_store
+            from felix.flush import flush_all
+
+            await flush_all(app.settings)
+            rows, _ = await audit_store.query(app.settings, "default", limit=200)
+    denies = {
+        (r["payload_json"] or {}).get("tool_call_id"): (r["payload_json"] or {}).get("control")
+        for r in rows
+        if r["event_type"] == "policy_deny"
+    }
+    assert denies == {"f1:fork": "manifest_hook", "f1": "manifest_hook"}, (
+        "both calls, by the hook that refused"
+    )
+    [held] = [m for m in lead_second if getattr(m, "role", "") == "tool"][-1:]
+    # Passed on as the deny it is, not wrapped into a `fork_failed` answer that quotes it.
+    assert str(held.content).startswith("[hook denied] h1\n") and "no research today" in str(held.content)
+    [request] = seen
+    assert request["json"]["data"]["tool_name"] == "task"
+    assert request["json"]["data"]["args"]["prompt"].startswith("x\n\n<skill_instructions")
+
+
+async def test_a_post_tool_use_hook_on_task_adds_to_a_fork_s_answer(boot: Any, skills_dir: Path) -> None:
+    """What a `post_tool_use` hook on `task` says joins the fork's answer, fenced, as for the model's
+    own `task` call."""
+    from tests.support.webhook_receiver import SECRET, hook_receiver
+
+    def answer(req: dict[str, Any]) -> tuple[int, Any]:
+        return 200, {"additional_context": "checked by policy"}
+
+    run = ToolCall(id="f1", name="activate_skill", args={"name": "research", "task": "x"})
+    hooks = [{"id": "h2", "event": "post_tool_use", "endpoint": "policy", "tools": ["task"]}]
+    async with hook_receiver(answer) as (url, seen):
+        env = {
+            "FELIX_SKILLS_DIR": str(skills_dir),
+            "FELIX_WEBHOOK_ENDPOINTS": json.dumps(
+                {"policy": {"url": url, "secret": SECRET, "tenants": "*", "hooks": True}}
+            ),
+        }
+        script = [
+            ScriptedTurn(tool_calls=[run]),
+            ScriptedTurn(content="330 metres."),
+            ScriptedTurn(content="ok"),
+        ]
+        async with boot(script, env=env, manifests=_manifests(hooks=hooks)) as app:
+            await _chat(app, "go")
+            _lead, _child, after = app.spy.prompts
+    result = _result(after)["result"]
+    assert result.startswith("330 metres.") and '<hook_context hook="h2">' in result
+    assert "checked by policy" in result
+    [request] = seen
+    assert request["json"]["data"]["tool_name"] == "task"

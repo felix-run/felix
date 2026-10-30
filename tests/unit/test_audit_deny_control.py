@@ -107,15 +107,17 @@ async def test_a_permitted_call_carries_no_control(monkeypatch: pytest.MonkeyPat
 
 
 def test_deny_source_reads_every_shape_a_deny_can_take() -> None:
-    # Every source the Literal admits round-trips; a seventh added to `WrapperSource` shows up
-    # here as a new value rather than as silent drift from the documented list of six.
+    # Every source the Literal admits round-trips; an eighth added to `WrapperSource` shows up
+    # here as a new value rather than as silent drift from the documented list.
     for source in get_args(WrapperSource):
         assert deny_source(deny_output("no", source)) == source
     assert sorted(get_args(WrapperSource)) == [
         "approvals",
         "command",
         "guardrails",
+        "hook",
         "limits",
+        "manifest_hook",
         "policy",
         "screening",
     ]

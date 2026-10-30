@@ -452,7 +452,8 @@ def make_skill_tools(
             f'<skill_instructions name="{xml_escape(skill.name)}">\n{instructions}\n</skill_instructions>'
         )
         if task and not arguments:
-            prompt = f"{prompt}\n\n{task}"
+            # The job first: it is what a person approving `task` decides on, and the body is long.
+            prompt = f"{task}\n\n{prompt}"
         try:
             out = await fork_runner(
                 agent, prompt, skill.fork_model, outer_call_id=getattr(ctx, "tool_call_id", None)
