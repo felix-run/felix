@@ -1138,8 +1138,18 @@ The gaps, in order:
       new" and the run recorded `ok`. The model is now told which servers could not be reached
       (`run_sources.unavailable_sources_note`), and a job's run result lists them by the manifest
       that named each (`unavailable_sources`), failed runs included. A stdio server that cannot start
-      now counts too; it was swallowed as an empty tool list. *Follow-up:* `required: true` on `McpServerRef`, so a firing stops
-      instead of running without a source it cannot do without.
+      now counts too; it was swallowed as an empty tool list. `required: true` on `McpServerRef` (done
+      in this PR) stops the compile instead (`RequiredSourceUnavailable`, relayed): a job's run is an
+      error before any model call, still listing `unavailable_sources`, that counts toward the
+      `failing` streak (`error_class` `required_source_unavailable`); `/chat` and `/v1` answer 503,
+      streams a typed error frame, A2A a failed task, MCP serve a refusal, and a durable or trigger
+      run fails, all with one written message. A required `person:<provider>` server left out
+      counts, and so does a required server that answers with no tools, or none matching its
+      `tools:` allowlist. *Follow-up:* the "compile refusal → status/code" mapping is four ladders
+      (`chat.py:_http_from_invoke_prep`, the `/chat/stream` excepts, `openai_compat.py`'s
+      non-stream and stream excepts); one table in `felix/errors.py` read by all four would stop
+      them drifting -- the `/v1` stream already answers `SecretNotFoundError` and
+      `ProviderConfigError` as `stream_failed`.
 - [x] **Shared destinations, at most once per edition.** `FELIX_DESTINATIONS` (operator registry,
       open `kind` registry with `register_destination_kind` on the plugin seam), `spec.destinations`
       binding `post`, the `destination_posts` ledger (migration `0049`, both arms, conformance

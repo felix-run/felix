@@ -17,6 +17,7 @@ from felix.destinations import Delivery, Destination, DestinationError, Post, le
 from felix.destinations.tool import EDITION_PATTERN
 from felix.jobs import store as jobs_store
 from felix.jobs import watch
+from felix.run_sources import RequiredSourceUnavailable
 from prometheus_client import REGISTRY
 
 from tests.support.factories import app_client, make_settings
@@ -588,6 +589,8 @@ async def test_the_title_goes_through_the_destinations_link_policy_too(kind: Any
         # A schedule the scheduler refuses is why nothing runs, whatever the last error said.
         ("every tuesday-ish", "cancelled", "invalid_schedule"),
         ("", PLANTED, "run_error"),
+        # A `required: true` MCP server that could not be used: the class, never the server's name.
+        ("", str(RequiredSourceUnavailable("brief", ["tracker"])), "required_source_unavailable"),
     ],
 )
 def test_an_error_is_classed_from_the_values_the_harness_writes(

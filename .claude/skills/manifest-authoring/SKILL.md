@@ -67,7 +67,7 @@ Copy `manifests/governed.yaml` when the agent needs governance — it is the ful
 | `system_prompt` / `prompts` | `builder.py`; `prompts` templates in `prompts/templates.py` |
 | `tools` / `tool_guidance` | `ToolProvider.resolve` (`tools/provider.py`, builtins in `tools/builtins.py`); `tool_guidance` joins each tool's own `prompt_guidance` in the prompt section `builder.py:tool_guidance_section` writes |
 | `tools_retrieval` | `tools/retrieval.py` (and `tools/decider_retrieval.py`), applied in `patterns/react.py` |
-| `mcp_servers` | `mcp/client.py:tools_from_mcp_servers` → `server__tool` |
+| `mcp_servers` | `mcp/client.py:tools_from_mcp_servers` → `server__tool`; `builder.py:_bind_mcp_servers` notes an unreachable server (`run_sources.py`), or raises `RequiredSourceUnavailable` for a `required: true` one (unreachable, binding no tools, or a person server left out) |
 | `peers` | `a2a/peers.py:tools_from_peers` → `peer__name` |
 | `delegation` | `tools/delegation.py:make_task_tool` → `task` (+ `task_result` with `background`, a durable run per child); children compiled beside `sub_agents` in `builder.py` (`schema.child_agent_names`), pinned in `manifests/pin.py`; refused alongside `sub_agents` |
 | `permissions` | `governance/permission_mode.py` — `apply_permission_mode` (plan mode refuses non-`read_only` tools), `waives_approval` read by `apply_approvals`, `exit_plan_mode` bound in `builder.py` with the built-in `plan-approval` rule; the mode itself is thread meta set by `POST /chat/mode` |
@@ -157,7 +157,8 @@ unregistered `spec.pattern` fails here, listing the registered names), and — u
 `execution.webhooks`, queues) are checked at dial time, not here.
 
 **What validation does not catch:** that an MCP server or peer actually answers. An unreachable
-one binds zero tools at compile time with only a logged warning. Smoke the manifest against a
+one binds zero tools at compile time, with a logged warning and a note to the model naming it; a
+`required: true` server stops the run instead. Smoke the manifest against a
 running API (`POST /chat` with `"manifest": "<name>"`) before calling it done.
 
 ## Session and memory internals
