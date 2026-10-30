@@ -85,14 +85,16 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    in a delegation child instead of returning its body: `tools/delegation.py:ForkRunner`, built by the
    builder over the same children map `task` gets and bound to the *governed* `task` tool once every
    wrapper has wrapped it, calls that tool -- so approvals, policies, limits, permission mode and
-   `subagent_stop` hold for a fork as for `task` (tool-runner `pre/post_tool_use` hooks fire for
-   `activate_skill` instead; the compile warns). A vetted `model:` (route defined, lead's tree allows
+   `subagent_stop` hold for a fork as for `task`. The call goes through a `ToolRunner.dispatch`
+   (`ForkRunner._dispatch`, hooks from `bind(..., hooks=)`), so `pre/post_tool_use`, plugin tool
+   hooks and a `tool_call` row see it; `ToolInvocationCtx.within` tells `apply_limits` it is the
+   `activate_skill` call's work, not a second `max_tool_calls` call. A vetted `model:` (route defined, lead's tree allows
    it) reaches the `task` handler through `model_overrides` keyed by a minted call id. The child's
-   turn is `<skill_instructions>` plus the model's `task` (or the person's substituted arguments); a
+   turn is the model's `task` then `<skill_instructions>` (or the person's substituted arguments); a
    wrapper deny is passed on, an error is `fork_failed`, an answer is untrusted output; a fork is
    never an activation, so nothing is retained and it is never preloaded. An imported skill nobody
    adopted never forks (`fork_refused`). Where forks run is `manifests/builder.py:_fork_runner`: the
-   delegation agents, or, with none, the react manifest itself for a fork that names no `agent:`
+   delegation agents, or, with none (and no `sub_agents`), the manifest itself for a fork that names no `agent:`
    or names it (`_SelfFork`: compiled on first use against a copy of the build state marked
    `BuildDeps.self_fork_of`, one level deep, quiet, through a governed `task` withheld from the
    model). An `agent:` outside those, or a fork inside that subagent, is `fork_unavailable`

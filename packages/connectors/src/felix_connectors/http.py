@@ -128,6 +128,25 @@ async def get_json(
     guard refuses the destination; `TimeoutError` once `timeout_s` has passed, however the upstream
     paces its bytes; `Busy` when the host is paced (`pace_host`) and has no slot soon enough.
     The wait for a slot is not counted against `timeout_s`."""
+    body = await send(
+        "GET", url, params=params, headers=headers, hosts=hosts, allow_http=allow_http, timeout_s=timeout_s
+    )
+    return json.loads(body)
+
+
+async def send(
+    method: str,
+    url: str,
+    *,
+    headers: Mapping[str, str],
+    hosts: Iterable[str],
+    params: Mapping[str, str] | None = None,
+    content: bytes | None = None,
+    allow_http: bool = False,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> bytes:
+    """One request through the egress guard, its body returned raw: what `get_json` does, for any
+    method and for a body that is not JSON (a file's bytes). The same bound, deadline and cap."""
     from felix.security.host_allowlist import EgressBound, HostAllowlist, normalise_host_pattern
     from felix.security.ssrf import BLOCKED_MESSAGE, EgressBlocked
 
@@ -139,8 +158,15 @@ async def get_json(
         await pacer.wait()
     try:
         async with asyncio.timeout(timeout_s):
-            body = await _fetch(
-                url, params, sent, egress=declared, allow_http=allow_http, timeout_s=timeout_s
+            return await _fetch(
+                method,
+                url,
+                params or {},
+                sent,
+                content=content,
+                egress=declared,
+                allow_http=allow_http,
+                timeout_s=timeout_s,
             )
     except EgressBlocked:
         raise
@@ -149,7 +175,6 @@ async def get_json(
         # naming the address; nothing else in the request does. One fixed refusal, as the fetch
         # tool gives, so a caller cannot tell "loopback" from "private" from "not allowed".
         raise EgressBlocked(BLOCKED_MESSAGE) from None
-    return json.loads(body)
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,10 +209,12 @@ class Upstream:
 
 
 async def _fetch(
+    method: str,
     url: str,
     params: Mapping[str, str],
     headers: dict[str, str],
     *,
+    content: bytes | None,
     egress: Any,
     allow_http: bool,
     timeout_s: float,
@@ -198,7 +225,9 @@ async def _fetch(
     timeout = httpx.Timeout(timeout_s, connect=min(DEFAULT_CONNECT_TIMEOUT_S, timeout_s))
     async with (
         safe_async_client(timeout=timeout, allow_http=allow_http, egress=egress) as client,
-        client.stream("GET", url, params=dict(params), headers=headers) as resp,
+        # No `params` at all when there are none: httpx replaces a URL's own query string with
+        # whatever `params` holds, so an empty mapping would strip the one Google's client built.
+        client.stream(method, url, params=dict(params) or None, headers=headers, content=content) as resp,
     ):
         if resp.status_code >= 400:
             raise UpstreamError(resp.status_code)
@@ -231,5 +260,6 @@ __all__ = [
     "allow_http",
     "get_json",
     "pace_host",
+    "send",
     "user_agent",
 ]

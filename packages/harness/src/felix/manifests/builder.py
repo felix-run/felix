@@ -196,7 +196,6 @@ def _fork_runner(
     provider tool called `task`. `self_fork` is the child map for the `task` tool bound later and
     withheld from the model. What cannot work is said at compile, hidden skills included: a
     person's `/name` reaches a skill the model is never offered."""
-    from fnmatch import fnmatch
 
     from felix.tools.delegation import TASK_TOOL_NAME, ForkRunner
 
@@ -223,18 +222,6 @@ def _fork_runner(
             "manifest %s has skills that run in a subagent (context: fork) but nowhere to run them", name
         )
         return None, None
-    if any(
-        h.event in ("pre_tool_use", "post_tool_use")
-        and (not h.tools or any(fnmatch(TASK_TOOL_NAME, p) for p in h.tools))
-        for h in m.spec.hooks
-    ):
-        # The tool runner fires these around the call the model made -- `activate_skill` for a
-        # fork -- never around the `task` call the fork makes inside it.
-        logger.warning(
-            "manifest %s has pre/post_tool_use hooks on task and skills that run in a subagent; "
-            "a fork fires them for activate_skill, not for task",
-            name,
-        )
     for skill in forks:
         if skill.fork_agent and skill.fork_agent not in runner.agents:
             logger.warning(
@@ -1175,8 +1162,10 @@ def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_i
                 trip(ls, verdict.reason)
                 return deny_output(f"[limits] {verdict.reason}", "limits")
 
+            # A call made inside one the model made is that call's work, not another call.
+            counted = ctx is None or ctx.within is None
             max_calls = tightest(limits, ls, "max_tool_calls")
-            if max_calls is not None and ls.tool_calls >= max_calls:
+            if counted and max_calls is not None and ls.tool_calls >= max_calls:
                 return deny_output(
                     f"[limits] max_tool_calls ({max_calls}) exceeded",
                     "limits",
@@ -1191,7 +1180,8 @@ def apply_limits(tools: list[Tool], limits: Limits | EffectiveLimits, manifest_i
                     f"[limits] max_peer_hops ({max_hops}) exceeded",
                     "limits",
                 )
-            ls.tool_calls += 1
+            if counted:
+                ls.tool_calls += 1
             if tool.is_peer or tool.name.startswith("peer_"):
                 ls.peer_hops += 1
             return await inner.execute(args, ctx)
@@ -2905,7 +2895,7 @@ async def build_agent(
             # control on `task` holds for a fork too.
             from felix.tools.delegation import TASK_TOOL_NAME as _TASK
 
-            fork_runner.bind(next((t for t in resolved if t.name == _TASK), None))
+            fork_runner.bind(next((t for t in resolved if t.name == _TASK), None), hooks=manifest_hooks)
             if self_fork is not None:
                 resolved = [t for t in resolved if t.name != _TASK]
 

@@ -61,7 +61,11 @@ def accepts_positional(fn: Callable[..., Any], count: int) -> bool:
 
 
 type ToolInput = dict[str, Any]
-WrapperSource = Literal["policy", "limits", "guardrails", "approvals", "command", "screening"]
+# `hook` / `manifest_hook`: a plugin `before_tool` hook or a manifest `pre_tool_use` hook refused a
+# call made inside another one (a forked skill's `task`), named as the tool runner names them.
+WrapperSource = Literal[
+    "policy", "limits", "guardrails", "approvals", "command", "screening", "hook", "manifest_hook"
+]
 
 # Module-private marker — never a string key. Only deny_output can stamp it.
 _WRAPPER_DENY_MARKER: object = object()
@@ -88,6 +92,9 @@ class ToolInvocationCtx:
     tool_call_id: str | None = None
     thread_id: str | None = None
     signal: Any | None = None
+    # The id of the model's call this one runs inside -- a forked skill's `task`, inside its
+    # `activate_skill` -- which the limits already counted as the model's one call.
+    within: str | None = None
 
 
 @runtime_checkable

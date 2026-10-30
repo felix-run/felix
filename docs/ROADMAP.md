@@ -935,7 +935,7 @@ side was already conformant. Four PRs, landed in order:
     results). A side question does not get retention, since it renders without a catalog. Two
     `activate_skill` calls in one parallel batch both return the body (both read the log
     before the batch is appended). Retained text is not counted inside a compacting
-    strategy's budget; the 128K cap bounds it instead.
+    strategy's budget; the 128K cap bounds it instead (#729).
 - [x] **`/skill-name <params>`** (`feat/skill-slash-invocation`):
   - The harness runs the governed `activate_skill` before the first model step. The body arrives
     as a screened tool result, never as user-turn text, and a declared prompt of the same name
@@ -954,10 +954,10 @@ side was already conformant. Four PRs, landed in order:
     subtask, `parallel` specialist and `groupchat` speaker starts with the skill activated. A
     router already forwarded the turn, and `reflect` reads it back from the thread. Open: a
     router, `parallel` or `groupchat` still cannot run its own `preload` (no tool loop; its
-    compile warns), and a `plan_execute` planner sees `/name args` as written, without the
-    instructions. A child compiled once and reached twice under `parallel` (two specialists
+    compile warns; #725), and a `plan_execute` planner sees `/name args` as written, without the
+    instructions (#726). A child compiled once and reached twice under `parallel` (two specialists
     naming it) shares one `PersonCalls`: one run's round closing voids the other's id, so that
-    `/name` runs as the model's (fails closed; preload had the same race). Fixed with it: the
+    `/name` runs as the model's (fails closed; preload had the same race; #727). Fixed with it: the
     route's "already screened" mark names the manifest it screened for. As a bare flag, a
     composite with no inbound controls left it to its first child (a router's pick, one
     `parallel` specialist), which then skipped its own screening. And a person's `/name` now
@@ -967,18 +967,18 @@ side was already conformant. Four PRs, landed in order:
     not held to its door -- a composite whose child needs scopes the parent does not is only
     refused at compile when the parent is anonymous (#714).
 - [x] **Forked skills** (`feat/skill-fork`; `context: fork`, `agent:`, `model:`): the skill runs in a
-      delegation child as a call of the governed `task` tool, and only its answer returns. Open:
-      the tool runner's per-call layer (manifest and plugin tool hooks, the `tool_call` audit row)
-      runs for `activate_skill`, not for the fork's inner `task` call -- decide whether a fork
-      should go through the runner; a fork costs two `max_tool_calls`; the approval prompt for a
-      fork shows the skill body before the model's task (no `approval_preview` yet).
+      delegation child as a call of the governed `task` tool, and only its answer returns.
+      Since `feat/fork-through-runner`, that `task` call goes through a tool runner (manifest and
+      plugin tool hooks, a `tool_call` audit row), counts as the `activate_skill` call's own work
+      rather than a second `max_tool_calls` call (a fork at the cap used to be refused), and puts
+      the model's task ahead of the skill body, so an approver reads the job first.
   - [x] General-purpose fork (`feat/skill-fork-self`): a manifest with no `spec.delegation` runs a
         forked skill that names no `agent:` in itself -- compiled lazily on the first fork, through
         a governed `task` withheld from the model; the subagent's own forks run nowhere, and its
         compile reports no warnings or counters the manifest's own compile already did. Open: it
         compiles the manifest a second time per request that forks (MCP discovery included), and
         loads skills, prompt files and MCP tool lists at that point rather than at admission; the
-        subagent's catalog still lists the forked skill it cannot run (one wasted turn).
+        subagent's catalog still lists the forked skill it cannot run (one wasted turn) (#728).
 - [x] **`run_skill_script`** (`feat/skill-scripts`): `spec.skill_scripts` runs a script from an
       active, trusted skill's `scripts/`. It runs where a shell tool would, under an interpreter the
       manifest maps by extension and `FELIX_SKILL_SCRIPT_INTERPRETERS` allows. The bundle is
@@ -987,7 +987,7 @@ side was already conformant. Four PRs, landed in order:
       by its own interpreter list, not the shell allowlist. Open:
       - Scripts run from host skills only unless `FELIX_SKILL_SCRIPT_SOURCES` adds `library` or
         `personal`, since an author's grant becomes code on the shared runner. A per-skill or
-        per-scope grant would be finer.
+        per-scope grant would be finer (#724).
       - The hosted workspace backend's sandbox is refused at write (no gateway write path for the
         bundle yet). An object-store skill cannot run scripts, because the store has no listing.
       - The whole bundle is written every call, up to 8 MiB. A cancellation during the write can
@@ -1046,7 +1046,12 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
     (`DELETE /connections/{provider}/{account}`) and the operator (`connections:admin`).
   - [x] Connecting Google: `/connections/google/start` and `/callback` (`felix.auth.google_connect`),
     the vault's first writer, with Google as its first registered provider (refresh, revoke).
-  - [ ] Google tools in `felix-connectors`: Calendar, Gmail drafts, Drive, reading `ctx.auth.person`.
+  - [x] Google tools in `felix-connectors` (the `google` extra): Calendar list/free/create, Gmail
+    search/read/draft (no send), Drive search/read, each as `ctx.auth.person` through the vault.
+    Requests are built by `google-api-python-client` from its shipped discovery documents and sent
+    by the egress-guarded client, so `allow_hosts` and the SSRF guard hold. Open: per-run masking
+    of the access tokens opened (no answer or error carries one today); Microsoft 365 on the same
+    shape.
   - [ ] MCP `auth: person`: a remote MCP server called with the person's token from the vault.
   - Owed by the first consumer (Google): its test goes through the real consent callback and
     then `GET /connections`, never `save_oauth` directly -- nothing in production writes the
