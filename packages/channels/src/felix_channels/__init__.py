@@ -6,6 +6,12 @@ DM -- starts a durable run of the channel's manifest, as the person who sent it
 (`slack:<team>:<user>`), on a thread for that Slack conversation, so a thread in Slack is a
 conversation in Felix. When the run ends, the worker posts its answer back (`delivery.py`).
 
+It also registers the `slack` destination kind (`destination.py`), so a scheduled agent's `post`
+can publish into a Slack conversation through a registered app -- `FELIX_DESTINATIONS` entry
+`{"kind": "slack", "channel": "<FELIX_CHANNELS id>", "conversation": "C…", "tenants": [...]}`,
+the bot token the channel's own, for the channel's tenant only, sent plain so a model's
+`<!channel>` or `@here` pings nobody and with unfurling off.
+
 Core never names this package; it arrives through the `felix.plugins` entry point.
 """
 
@@ -50,9 +56,13 @@ async def _mask_secrets(app: Any) -> None:
 def register(registry: Any) -> None:
     """Entry point, called once at startup in the API and the worker."""
     from felix_channels.delivery import on_run_finished
+    from felix_channels.destination import KIND, SlackDestination
     from felix_channels.origin import PLUGIN
 
     registry.register_plugin(ChannelsPlugin())
+    # `post` to a Slack conversation, in the API (the compile checks it) and the worker (where a
+    # job's post is delivered).
+    registry.register_destination_kind(KIND, SlackDestination())
     # Core hands this hook only the runs this plugin tagged with PLUGIN.
     registry.register_run_finished(on_run_finished, origin=PLUGIN)
     # The API resolves every channel secret at startup and registers it for masking. The worker --

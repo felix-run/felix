@@ -212,6 +212,27 @@ class DestinationAdapter(Protocol):
         ...
 
 
+class DestinationSecrets(Protocol):
+    """What a kind that sends with a credential adds to `DestinationAdapter`, and should: the
+    resolved values it will send with. `post` registers them for masking *before* it cleans the
+    post's text (`tool.py:_Posts.clean`), so a model that writes the bot token into a post has it
+    redacted on the first call in a process -- a worker runs no plugin startup hook, and a value
+    resolved first inside `deliver` would be registered only after the text it might appear in
+    was already cleaned. Optional: a kind without it is called without it. A raise refuses the
+    post before anything is claimed."""
+
+    async def secrets(self, settings: Any, tenant_id: str, dest: Destination) -> list[str]: ...
+
+
+async def destination_secrets(adapter: Any, settings: Any, tenant_id: str, dest: Destination) -> list[str]:
+    """The values `adapter` will send `dest` with (`DestinationSecrets`), or none for a kind that
+    declares none."""
+    secrets = getattr(adapter, "secrets", None)
+    if secrets is None:
+        return []
+    return [str(v) for v in await secrets(settings, tenant_id, dest) if v]
+
+
 _kinds: dict[str, DestinationAdapter] = {}
 
 
@@ -327,12 +348,14 @@ __all__ = [
     "Destination",
     "DestinationAdapter",
     "DestinationError",
+    "DestinationSecrets",
     "EditionKey",
     "LinkPolicy",
     "Post",
     "delivery_for_send_error",
     "delivery_for_status",
     "destination_kind",
+    "destination_secrets",
     "list_destination_kinds",
     "parse_destinations",
     "post_key",
