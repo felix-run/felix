@@ -361,3 +361,25 @@ async def test_the_compile_hands_the_preamble_its_manifest(monkeypatch: Any, tmp
             person="",
         )
     assert [getattr(m, "metadata", None) and m.metadata.name for m in seen] == ["ops"]
+
+
+def test_every_surface_that_runs_a_person_s_slash_command_is_known() -> None:
+    """A manual-only skill needs `skills:invoke` only where a route says its caller may be an agent
+    (`AGENT_CALLER_EXTRA`), so a new surface marking `person_turn` would run them for anyone. Each
+    one is decided here: `/chat` is a person's, `/v1` must carry the mark."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    marking = {
+        str(p.relative_to(root))
+        for base in ("apps", "packages")
+        for p in (root / base).rglob("*.py")
+        if re.search(r"person_turn\s*=\s*True", p.read_text())
+    }
+    assert marking == {
+        "apps/api/src/felix_api/routes/chat.py",
+        "apps/api/src/felix_api/routes/openai_compat.py",
+    }
+    v1 = (root / "apps/api/src/felix_api/routes/openai_compat.py").read_text()
+    assert "AGENT_CALLER_EXTRA: True" in v1

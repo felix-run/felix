@@ -945,10 +945,10 @@ side was already conformant. Four PRs, landed in order:
     `disable-model-invocation` skill is still the person's to run.
   - Only a turn a chat route marks as the person's runs `/name`; a person's privileges (a
     model-hidden skill, `arguments`) go by harness-minted call id, once.
+  - [x] `/name` of a manual-only skill on `/v1` needs `skills:invoke` (`feat/manual-skill-scope`);
+    `/chat` is unchanged, A2A/MCP callers run none, and a manifest's `preload` is not gated.
   - Open: `/v1/models` `commands` lists prompts only; skills with their `argument_hint` are on
-    `GET /skills/{manifest}`. `/v1` counts as a person's surface though its caller may be an
-    agent, and A2A/MCP callers do not: decide whether `disable-model-invocation` needs a scope
-    of its own. The harness's synthetic assistant turn carries no provenance marker in the log.
+    `GET /skills/{manifest}`. The harness's synthetic assistant turn carries no provenance marker in the log.
   - [x] `/name` in every pattern (`fix/skill-runtime-gaps`): a composite carries the person's
     `/name` turn into each child step (`InvokeInput.person_command`), so every `plan_execute`
     subtask, `parallel` specialist and `groupchat` speaker starts with the skill activated. A
