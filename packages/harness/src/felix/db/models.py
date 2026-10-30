@@ -159,6 +159,9 @@ class Job(Base):
     tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text, primary_key=True)
     schedule: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # The IANA zone `schedule`'s cron is read in (`felix.jobs.schedule`, `0051_job_timezone`).
+    # Null is UTC, which every job written before it keeps.
+    timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
     manifest_id: Mapped[str] = mapped_column(Text, server_default="", default="")
     # A workflow whose run each firing starts, instead of a manifest (`0043_job_workflow`).
     workflow_id: Mapped[str] = mapped_column(Text, server_default="", default="")

@@ -25,6 +25,10 @@ class JobUpsert(BaseModel):
     model_config = {"extra": "forbid"}
 
     schedule: str = ""
+    # The IANA zone a cron `schedule` or `@daily`-style macro is read in, e.g. `America/New_York`;
+    # null is UTC. Refused (422) beside an interval, an `at:` or an empty schedule, which no zone
+    # moves. Replaced like the rest: a PUT that leaves it out puts the job back on UTC.
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
     manifest_id: str = ""
     # A workflow whose run each firing starts, with `payload.inputs` as its inputs. A job names a
     # manifest or a workflow, never both.
@@ -157,6 +161,7 @@ async def upsert_job(name: str, body: JobUpsert, request: Request) -> Any:
             tenant_id,
             name,
             schedule=body.schedule,
+            timezone=body.timezone,
             manifest_id=body.manifest_id,
             workflow_id=body.workflow_id,
             workflow_revision=revision,

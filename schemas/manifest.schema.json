@@ -946,6 +946,20 @@
           "title": "Schedule",
           "type": "string"
         },
+        "timezone": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timezone"
+        },
         "min_interval_minutes": {
           "default": 30,
           "minimum": 15,

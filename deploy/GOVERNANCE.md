@@ -2845,7 +2845,9 @@ default, caps nothing beyond what the schedule fires), counting every firing tha
 fire past it by hand. A firing due past the cap runs nothing: no model call, no tool, no notice. It
 is recorded as a run with status `skipped` (result `{"reason": "daily_cap", "max_firings_per_day":
 N}`), the job's `last_status` reads `skipped`, and the heartbeat stays on and fires again after UTC
-midnight -- whatever `FELIX_TIMEZONE` says, so the day is the same on every install. Skipped runs do
+midnight -- whatever `FELIX_TIMEZONE` or `spec.heartbeat.timezone` says, so the day is the same on
+every install. A zoned schedule can land twice in one UTC day around a daylight-saving change (a
+daily 19:00 in New York does on the spring one), and the write-time warning counts those days. Skipped runs do
 not count toward the cap, so an operator raising it mid-day gives today the difference. A schedule
 that fires more often than the cap is allowed -- the cap binds, and the rest of the day's slots are
 recorded `skipped` -- and `PUT /manifests` and `felix validate-manifest` say so as a warning. A
@@ -2907,6 +2909,18 @@ rule. A task belongs to its writer's subject, so a subject that names no person 
 sub-less API key's `api_key`, an inbound trigger's `trigger:<id>`, a machine actor acting for no
 one. A plugin authenticator that gives many people one subject is not detectable here; avoiding
 that is the operator's responsibility.
+
+**A task's cron is read in a zone, recorded on the job.** `schedule_task` takes a `timezone`; with
+none, a cron or macro task is written in `FELIX_TIMEZONE` -- the zone the model was told the time in
+-- and that name is stored, so changing the setting later does not move tasks already written. An
+interval or `at:` task records no zone, and one given beside either is refused. The task floor
+(`min_interval_minutes`) is checked across the next year's daylight-saving changes, where a zoned
+cron's gaps can be shorter than on any other day (`30 2,3 * * *` in New York is 30 minutes apart on
+the spring one). That floor, and `spec.heartbeat`'s, is checked when the schedule is written, against
+the tzdata rules current then and 400 days ahead; a later rule change is not re-checked, whereas a
+heartbeat's `max_firings_per_day` is enforced at each firing. A zone must be a canonical IANA name
+(`America/New_York`, not `america/new_york`, and never `Factory`, `posixrules` or `localtime`), so a
+name a case-insensitive filesystem would load is not stored to fail on a Linux worker.
 
 **A task's answer goes back to its conversation.** When a task's firing answers, the answer is
 added to the conversation the task was scheduled from (`spec.scheduling.report_back`, on by

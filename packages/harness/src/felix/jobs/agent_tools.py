@@ -49,11 +49,17 @@ MAX_TITLE_CHARS = 200
 MAX_AHEAD_MS = 366 * 86_400_000
 
 _WHEN_DESCRIPTION = (
-    "When the task runs, in UTC. One of: at:<ISO-8601 timestamp with offset> to run once "
+    "When the task runs. One of: at:<ISO-8601 timestamp with offset> to run once "
     "(at:2026-10-21T09:00:00Z, at:2026-10-21T11:00:00+02:00 -- an offset is required); "
     "every:<n><m|h> to repeat at an interval (every:90m, every:6h); @hourly, @daily, @weekly, "
-    "@monthly; or a five-field cron expression evaluated in UTC (0 9 * * 1-5 is 09:00 UTC on "
-    "weekdays)."
+    "@monthly; or a five-field cron expression, read on the clock of `timezone` (0 9 * * 1-5 is "
+    "09:00 there on weekdays, whatever daylight saving does)."
+)
+_TIMEZONE_DESCRIPTION = (
+    "Optional: the IANA zone a cron expression or @hourly/@daily/... macro is read in, e.g. "
+    "America/New_York. Leave it out to use the zone the current date and time you were given are "
+    "in, so 'every morning at 8' is 08:00 as the person sees it. Only for cron and macros: give "
+    "none with at: or every:, which no zone moves."
 )
 
 
@@ -69,6 +75,9 @@ class _ScheduleTaskArgs(BaseModel):
             "everything needed to do it."
         ),
         json_schema_extra={"minLength": 1, "maxLength": MAX_PROMPT_CHARS},
+    )
+    timezone: str | None = Field(
+        default=None, description=_TIMEZONE_DESCRIPTION, json_schema_extra={"minLength": 1, "maxLength": 64}
     )
     title: str = Field(
         default="",
@@ -157,12 +166,19 @@ class _AgentTasks:
             and job.get("created_by") == writer
         ]
 
-    def check_when(self, when: str, now: int) -> Schedule:
+    def check_when(self, when: str, timezone: str | None, now: int) -> Schedule:
+        """`when` parsed in its zone: `timezone` as given, else -- for a cron or macro only -- the
+        install's (`FELIX_TIMEZONE`), the zone the model was told the time in. An interval or `at:`
+        records none, and one given beside either is refused."""
         from felix.errors import client_safe_message
-        from felix.jobs.schedule import ScheduleError, parse_schedule, shortest_gap_ms
+        from felix.jobs.schedule import ScheduleError, parse_schedule, shortest_gap_ms, stored_zone
 
         try:
+            # Twice: the default zone depends on the kind of schedule, which only a parse tells.
             parsed = parse_schedule(when)
+            given = stored_zone(timezone)
+            zone = given if given is not None else (self.settings.timezone if parsed.cron else None)
+            parsed = parse_schedule(when, zone)
         except ScheduleError as exc:
             raise ToolRefused(
                 "invalid_schedule", client_safe_message(exc, authored_for_clients=True)
@@ -195,7 +211,7 @@ class _AgentTasks:
         run by the call itself and, first, by its approval preview."""
         auth = self.caller(SCOPE_JOBS_WRITE, scheduling=True)
         _check_text(args)
-        parsed = self.check_when(args.when, now)
+        parsed = self.check_when(args.when, args.timezone, now)
         expires_at = token_expiry_ms(auth)
         if parsed.at_ms is not None and expires_at is not None and parsed.at_ms > expires_at:
             raise ToolRefused(
@@ -224,6 +240,7 @@ class _AgentTasks:
                 self.tenant_id,
                 f"task-{uuid.uuid4().hex[:12]}",
                 schedule=args.when,
+                timezone=parsed.timezone,
                 manifest_id=self.manifest_id,
                 payload=self.payload(args, ctx),
                 created_by=auth.acting_for,
@@ -246,6 +263,7 @@ class _AgentTasks:
                 "status": "scheduled",
                 "name": row["name"],
                 "schedule": row["schedule"],
+                "timezone": row.get("timezone"),
                 "next_run_at": _iso(row.get("next_run_at")),
                 "title": args.title or None,
             }
@@ -281,6 +299,8 @@ class _AgentTasks:
                 "name": j["name"],
                 "title": (j.get("payload") or {}).get("title"),
                 "schedule": j["schedule"],
+                # The zone a cron schedule is read in; None for UTC, and for any other kind.
+                "timezone": j.get("timezone"),
                 "next_run_at": _iso(j.get("next_run_at")),
                 "last_run_at": _iso(j.get("last_run_at")),
                 "last_status": j.get("last_status") or None,
@@ -318,8 +338,9 @@ class _AgentTasks:
             raise ToolRefused(
                 "invalid_arguments", "the arguments do not match schedule_task's schema"
             ) from None
-        await self.admit(parsed, _now_ms())
-        lines = [f"schedule_task on {self.manifest_id}: {parsed.when}"]
+        _auth, schedule = await self.admit(parsed, _now_ms())
+        when = f"{parsed.when} ({schedule.timezone})" if schedule.timezone else parsed.when
+        lines = [f"schedule_task on {self.manifest_id}: {when}"]
         if parsed.title:
             lines.append(f"Title: {parsed.title}")
         if parsed.fresh_thread:
@@ -352,13 +373,13 @@ def is_fired_task(job: dict[str, Any]) -> bool:
 def _is_live(job: dict[str, Any]) -> bool:
     """Whether a task still holds a place: a one-shot that has fired does not, though it is listed
     (and can be cancelled) until someone removes it."""
-    from felix.jobs.schedule import ScheduleError, parse_schedule
+    from felix.jobs.schedule import ScheduleError, job_schedule
 
     if not job.get("enabled"):
         # Disabled when its writer's credential expired (`scheduler.fire_job`): it will not run.
         return False
     try:
-        one_shot = parse_schedule(str(job.get("schedule") or "")).one_shot
+        one_shot = job_schedule(job).one_shot
     except ScheduleError:
         return True
     return not (one_shot and job.get("next_run_at") is None)
@@ -396,8 +417,10 @@ def make_scheduling_tools(
             "repeating schedule, on behalf of the person you are talking to. Use it for a "
             "reminder, a check to repeat, or work that should happen at a set time. A repeating "
             f"task may fire at most once every {floor} minutes; a one-off may be set up to 366 "
-            f"days ahead; one person may hold {spec.max_tasks} tasks here. Returns the task's name "
-            "and when it next runs."
+            f"days ahead; one person may hold {spec.max_tasks} tasks here. A cron expression or "
+            f"macro is read in `timezone`, by default {settings.timezone} -- the zone the current "
+            "time you were given is in -- so 0 8 * * * runs at 08:00 there. Returns the task's "
+            "name, its zone, and when it next runs (UTC)."
         ),
         args=_ScheduleTaskArgs,
         handler=_schedule,
@@ -407,7 +430,8 @@ def make_scheduling_tools(
         name="list_scheduled",
         description=(
             "List the tasks the person you are talking to has scheduled with this agent: name, "
-            "title, schedule, and when each last and next runs (UTC)."
+            "title, schedule and the zone a cron schedule is read in, and when each last and next "
+            "runs (UTC)."
         ),
         args=_ListScheduledArgs,
         handler=_list,

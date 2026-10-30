@@ -63,6 +63,7 @@ def _manifest(
     checklist: str | None = CHECKLIST,
     schedule: str = "every:60m",
     cap: int | None = None,
+    timezone: str | None = None,
     **spec: Any,
 ) -> Any:
     body: dict[str, Any] = {
@@ -81,6 +82,8 @@ def _manifest(
         }
         if cap is not None:
             body["heartbeat"]["max_firings_per_day"] = cap
+        if timezone is not None:
+            body["heartbeat"]["timezone"] = timezone
     return parse_manifest(
         {"apiVersion": "felix/v1", "kind": "Agent", "metadata": {"name": name}, "spec": body}
     )
@@ -611,3 +614,26 @@ async def test_a_quiet_firing_without_its_source_says_so_on_the_run(
     assert quiet["result"]["unavailable_sources"] == {"e2e-hb": ["tracker"]}
     assert failed["status"] == "error", failed
     assert failed["result"]["unavailable_sources"] == {"e2e-hb": ["tracker"]}
+
+
+async def test_a_heartbeat_waits_for_its_schedule_in_the_operator_s_zone(boot: Any, clock: list[int]) -> None:
+    """`spec.heartbeat.timezone`: enrolling on a weekday-morning heartbeat in New York is first due at
+    the next 08:00 there, and the job and the person's view both carry the zone."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from felix.jobs.schedule import parse_schedule
+
+    manifest = _manifest(schedule="0 8 * * *", timezone="America/New_York")
+    async with boot([], env=_env(), manifests={"e2e-hb": manifest}) as app:
+        enrolled = await _enrol(app, ALICE)
+        assert enrolled.status_code == 200, enrolled.text
+        job = await _job(app, enrolled.json()["name"])
+
+    new_york = ZoneInfo("America/New_York")
+    local = datetime.fromtimestamp(clock[0] / 1000, tz=new_york)
+    eight = datetime(local.year, local.month, local.day, 8, tzinfo=new_york)
+    expected = eight if eight > local else datetime.combine(local.date() + timedelta(days=1), eight.timetz())
+    assert enrolled.json()["timezone"] == job["timezone"] == "America/New_York"
+    assert job["next_run_at"] == int(expected.timestamp() * 1000)
+    assert job["next_run_at"] != parse_schedule("0 8 * * *").next_after(clock[0]), "never read in UTC"
