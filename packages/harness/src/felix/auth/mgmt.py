@@ -178,6 +178,10 @@ SCOPE_SKILLS_WRITE = "skills:write"
 # principal, and a shared service credential is one principal for everyone holding it -- so who
 # may author instructions their turns will follow is an operator's decision per credential.
 SCOPE_SKILLS_PERSONAL = "skills:personal"
+# Running a `disable-model-invocation` skill as `/name` on `/v1`, whose caller is as often an agent
+# as a person (`skills/invocation.py`). Implied by nothing but `admin` / `*`: a manual-only skill is
+# one its author kept from the model, and an agent on the other end of `/v1` is a model.
+SCOPE_SKILLS_INVOKE = "skills:invoke"
 # `GET /metrics`. Its label values span every tenant (manifest ids, remote MCP tool names), so
 # reading it is an operator grant, never something any valid credential carries by default.
 SCOPE_METRICS_READ = "metrics:read"
@@ -205,6 +209,7 @@ __all__ = [
     "SCOPE_METRICS_READ",
     "SCOPE_PLANS_READ",
     "SCOPE_PLANS_WRITE",
+    "SCOPE_SKILLS_INVOKE",
     "SCOPE_SKILLS_PERSONAL",
     "SCOPE_SKILLS_READ",
     "SCOPE_SKILLS_WRITE",
