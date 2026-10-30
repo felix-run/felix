@@ -294,7 +294,7 @@ async def test_an_approval_rule_can_gate_on_an_argument() -> None:
 
     tool = define_tool(name="remember", description="d", handler=handler, source="test")
     rule = ApprovalRule(id="r", tools=["remember"], when_args=["topic_key"])
-    gated = apply_approvals([tool], [rule], "m")[0]
+    gated = apply_approvals([tool], [rule], "m", unwaivable_tools=frozenset())[0]
 
     # No topic_key: straight through, no approval machinery involved.
     assert await gated.executor.execute({"content": "a fact"}) == "stored"
@@ -359,7 +359,9 @@ async def test_when_args_separates_presence_from_truthiness(value: object, shoul
         return "ran"
 
     tool = define_tool(name="t", description="d", handler=handler, source="test")
-    gated = apply_approvals([tool], [ApprovalRule(id="r", tools=["t"], when_args=["k"])], "m")[0]
+    gated = apply_approvals(
+        [tool], [ApprovalRule(id="r", tools=["t"], when_args=["k"])], "m", unwaivable_tools=frozenset()
+    )[0]
 
     args: dict = {} if value is _UNSET else {"k": value}
     await gated.executor.execute(args)

@@ -77,9 +77,14 @@ def test_the_unwaivable_sets_are_the_table_and_the_plan() -> None:
     # bound it (`bound_unwaivable_tools`), not by name in every manifest.
     assert {b.tool for b in BUILTIN_APPROVALS if b.unwaivable_tool} == UNWAIVABLE_TOOLS
     assert "post" not in UNWAIVABLE_TOOLS
-    assert {PLAN_APPROVAL_RULE_ID, POST_ATTENDED_APPROVAL_RULE_ID} | {
-        b.rule_id for b in BUILTIN_APPROVALS
+    # Every rule id a row names -- its `approval: true` rule and the block's others -- and the plan's.
+    assert {PLAN_APPROVAL_RULE_ID} | {
+        rid for b in BUILTIN_APPROVALS for rid in (b.rule_id, *b.extra_rule_ids)
     } == UNWAIVABLE_RULE_IDS
+    assert (
+        POST_ATTENDED_APPROVAL_RULE_ID
+        in next(b for b in BUILTIN_APPROVALS if b.tool == "post").extra_rule_ids
+    )
     assert len({b.tool for b in BUILTIN_APPROVALS}) == len(BUILTIN_APPROVALS), "one row per tool"
 
 

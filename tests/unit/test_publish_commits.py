@@ -561,7 +561,7 @@ def _gated(tool: Tool, ttl: int = 5, *, one_shot: bool = False) -> Tool:
     """Gate `tool` with one rule whose flags each test states. Not contributor.yaml's `publish`
     rule (one-shot, principal-bound): the tests that need a reusable grant say so."""
     rule = ApprovalRule(id="publish", tools=[gp.TOOL_NAME, "probe"], ttl_seconds=ttl, one_shot=one_shot)
-    return apply_approvals([tool], [rule], "contributor")[0]
+    return apply_approvals([tool], [rule], "contributor", unwaivable_tools=frozenset())[0]
 
 
 def _sig(args: dict[str, Any]) -> str:

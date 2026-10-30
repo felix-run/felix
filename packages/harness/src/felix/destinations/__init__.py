@@ -21,7 +21,13 @@ An adapter answers each delivery with a `Delivery` whose `status` is one of thre
 (`destinations/ledger.py`) depends on it being honest: `posted` only on the provider's own
 confirmation, `not_posted` only when it certainly did not deliver (refused before sending, a 4xx),
 and `unknown` for everything in between -- a timeout, a 5xx, a connection lost after the request
-went. An `unknown` is never retried by the harness: a person checks.
+went. An `unknown` is never retried by the harness: a person checks. An HTTP kind does not derive
+that mapping itself: `delivery_for_status` and `delivery_for_send_error` are it, shared with the
+core `webhook` kind.
+
+A kind receives the destination typed (`Destination`): the harness's own keys (`HARNESS_FIELDS`)
+parsed into their fields, and the rest of the registration -- the kind's own fields -- in
+`Destination.fields`.
 
 `Delivery.detail` and `DestinationError`'s message reach the model and the manifest's author
 verbatim (the detail cut to `MAX_DETAIL_CHARS`), so a plugin kind writes them for those readers:
@@ -38,15 +44,24 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from felix.settings_registry import parse_registry, parse_tenants, tenant_allowed
+
+if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
 
 DeliveryStatus = Literal["posted", "not_posted", "unknown"]
 LinkPolicy = Literal["strip", "keep"]
 #: The most of an adapter's `Delivery.detail` the model is shown.
 MAX_DETAIL_CHARS = 300
+#: The registration keys the harness reads; everything else is the kind's (`Destination.fields`).
+HARNESS_FIELDS = frozenset({"kind", "tenants", "links", "link_hosts"})
+#: The longest one delivery may take before the harness stops waiting and records the post as
+#: `maybe_posted` (`tool.py`): well inside `ledger.IN_FLIGHT_MS`, so a `posting` row past that is
+#: always one whose process stopped, never a delivery still under way.
+DELIVERY_BUDGET_S = 90.0
 
 
 class DestinationError(ValueError):
@@ -56,15 +71,51 @@ class DestinationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class EditionKey:
+    """One manifest's edition at one destination in one tenant: the ledger's key (`ledger.py`) and,
+    hashed, the id a provider may dedupe on (`post_key`). An edition is one agent's name for its
+    post, so two agents' `brief:2026-10-29` at one destination are two keys."""
+
+    tenant_id: str
+    destination: str
+    manifest_id: str
+    edition: str
+
+    @property
+    def post_key(self) -> str:
+        return post_key(self)
+
+    def where(self) -> tuple[ColumnElement[bool], ...]:
+        """The `destination_posts` row this key names, as SQL conditions."""
+        from felix.db.models import DestinationPostRow as Row
+
+        return (
+            Row.tenant_id == self.tenant_id,
+            Row.destination == self.destination,
+            Row.manifest_id == self.manifest_id,
+            Row.edition == self.edition,
+        )
+
+
+def post_key(key: EditionKey) -> str:
+    """The stable id of one manifest's edition at one destination, hashed over an unambiguous
+    encoding so it is safe in a header and no tenant, manifest or edition containing a separator
+    lands on another's."""
+    encoded = json.dumps([key.tenant_id, key.destination, key.manifest_id, key.edition]).encode()
+    return f"post_{hashlib.sha256(encoded).hexdigest()[:40]}"
+
+
+@dataclass(frozen=True, slots=True)
 class Post:
-    """What the agent posts, as it leaves: secrets redacted and screened (`tool.py`)."""
+    """What the agent posts, as it leaves: secrets redacted, links as the destination says, and
+    screened (`tool.py`)."""
 
     edition: str
     text: str
     title: str
     manifest_id: str
-    #: Stable for one tenant, destination, manifest and edition (`post_key`): an adapter whose
-    #: provider dedupes on a caller-chosen id (a webhook's `webhook-id`) sends this.
+    #: Stable for one tenant, destination, manifest and edition (`EditionKey.post_key`): an adapter
+    #: whose provider dedupes on a caller-chosen id (a webhook's `webhook-id`) sends this.
     key: str
     #: Whether the run that posted had nobody watching (a job, a heartbeat, a trigger). Never who.
     unattended: bool = True
@@ -79,33 +130,50 @@ class Delivery:
     detail: str = ""
 
 
-class DestinationAdapter(Protocol):
-    """One kind of destination. Both methods take the destination's registered fields (`spec`,
-    the `FELIX_DESTINATIONS` object, `kind` and `tenants` included)."""
+# 4xx answers that do not prove the post was not taken: a 408 can come from a proxy after the
+# receiver read the body, and a 409 is what a receiver deduping on a caller-chosen id answers for an
+# id it already took -- which is the very case of a post that landed.
+_UNCERTAIN_4XX = frozenset({408, 409})
 
-    def validate(self, settings: Any, tenant_id: str, destination_id: str, spec: dict[str, Any]) -> None:
-        """Raise `DestinationError` when `spec` cannot be posted to from `tenant_id`. Called when a
-        manifest naming it compiles, so a bad registration fails the compile, not the first post."""
-        ...
 
-    async def deliver(
-        self, settings: Any, tenant_id: str, destination_id: str, spec: dict[str, Any], post: Post
-    ) -> Delivery:
-        """Deliver `post`. Never raises for a delivery that failed: answer `not_posted` or
-        `unknown` (see the module docstring for which)."""
-        ...
+def delivery_for_status(status: int, *, ref: str | None) -> Delivery:
+    """What an HTTP answer proves: any 2xx is `posted` (with ``ref``, the provider's id for it); a
+    4xx other than 408 and 409 is `not_posted`; anything else -- a 3xx (redirects are not
+    followed), a 408, a 409, a 5xx -- is `unknown`."""
+    if 200 <= status < 300:
+        return Delivery("posted", ref=ref)
+    if 400 <= status < 500 and status not in _UNCERTAIN_4XX:
+        return Delivery("not_posted", detail=f"the destination refused the post (HTTP {status})")
+    return Delivery("unknown", detail=f"the destination answered HTTP {status}, so it may have been posted")
+
+
+def delivery_for_send_error(exc: BaseException) -> Delivery:
+    """What an exception from sending proves: one raised before a byte of the request left -- the
+    egress guard's refusal, a connection that was never made -- is `not_posted`; anything else (a
+    read timeout, a connection lost or a protocol error once the request may have gone) is
+    `unknown`."""
+    import httpx
+
+    from felix.security.ssrf import EgressBlocked
+
+    if isinstance(exc, EgressBlocked | httpx.ConnectError | httpx.ConnectTimeout):
+        return Delivery("not_posted", detail="the destination could not be reached")
+    return Delivery("unknown", detail="the destination did not answer, so it may have been posted")
 
 
 @dataclass(frozen=True, slots=True)
 class Destination:
+    """One `FELIX_DESTINATIONS` registration, as a kind receives it."""
+
     name: str
     kind: str
     # `None` is `"tenants": "*"`.
     tenants: frozenset[str] | None
-    spec: dict[str, Any]
     links: LinkPolicy = "strip"
     # Under `strip`, the hosts whose links are kept; `None` keeps none.
     link_hosts: tuple[str, ...] | None = None
+    #: The registration minus `HARNESS_FIELDS`: the kind's own fields (a webhook's `endpoint`).
+    fields: dict[str, Any] = field(default_factory=dict)
 
     def allows(self, tenant_id: str) -> bool:
         return tenant_allowed(self.tenants, tenant_id)
@@ -114,7 +182,7 @@ class Destination:
         """`text` as this destination's link policy leaves it."""
         if self.links == "keep":
             return text
-        from felix.push.agent_tool import strip_links
+        from felix.governance.outbound_text import strip_links
 
         if self.link_hosts is None:
             return strip_links(text)
@@ -122,6 +190,26 @@ class Destination:
 
         allowed = HostAllowlist(self.link_hosts)
         return strip_links(text, keep=lambda host: bool(host) and allowed.allows(host))
+
+
+class DestinationAdapter(Protocol):
+    """One kind of destination, given each destination typed (`Destination`; its own fields in
+    `dest.fields`).
+
+    `deliver` has `DELIVERY_BUDGET_S` (90 s) in all, and is cancelled past it -- the post is then
+    recorded `maybe_posted`, so a kind bounds its own calls well inside that and answers for
+    itself. It must not raise for a delivery that failed: answer `not_posted` only when nothing
+    was delivered, else `unknown` (an exception is taken for `unknown`). `detail`, and the message
+    of a `DestinationError` from `validate`, reach the model and the manifest's author as written."""
+
+    def validate(self, settings: Any, tenant_id: str, dest: Destination) -> None:
+        """Raise `DestinationError` when `dest` cannot be posted to from `tenant_id`. Called when a
+        manifest naming it compiles, so a bad registration fails the compile, not the first post."""
+        ...
+
+    async def deliver(self, settings: Any, tenant_id: str, dest: Destination, post: Post) -> Delivery:
+        """Deliver `post` to `dest`, within `DELIVERY_BUDGET_S`."""
+        ...
 
 
 _kinds: dict[str, DestinationAdapter] = {}
@@ -154,10 +242,16 @@ def _ensure_core_kinds() -> None:
         _kinds.setdefault("webhook", WebhookDestination())
 
 
+def _harness_spelling(key: str) -> str:
+    return key.strip().lower().replace("-", "_")
+
+
 def parse_destinations(settings: Any) -> dict[str, Destination]:
-    """`FELIX_DESTINATIONS`, its shape validated: ids, `tenants`, and `kind` a non-empty string.
-    `ValueError` naming what is wrong. A kind's own fields are its adapter's to check
-    (`resolve_destinations`)."""
+    """`FELIX_DESTINATIONS`, the harness's part validated: ids, `tenants`, `kind` a non-empty
+    string, the link policy -- and no kind field spelled like one of `HARNESS_FIELDS` (`Links`,
+    `link-hosts`), which would otherwise be handed to the kind while the operator believed the
+    harness read it. `ValueError` naming what is wrong. The kind's own fields are its adapter's to
+    check (`resolve_destinations`)."""
     parsed = parse_registry(
         str(getattr(settings, "destinations", "") or ""), kind="destination", shape="{kind, tenants, ...}"
     )
@@ -170,13 +264,20 @@ def parse_destinations(settings: Any) -> dict[str, Destination]:
         links = spec.get("links", "strip")
         if links not in ("strip", "keep"):
             raise ValueError(f'destination {name!r} `links` must be "strip" or "keep"')
+        fields = {k: v for k, v in spec.items() if k not in HARNESS_FIELDS}
+        for key in fields:
+            if _harness_spelling(str(key)) in HARNESS_FIELDS:
+                raise ValueError(
+                    f"destination {name!r} field {key!r} is spelled like the harness's "
+                    f"`{_harness_spelling(str(key))}`; write it exactly so"
+                )
         out[name] = Destination(
             name=name,
             kind=kind,
             tenants=tenants,
-            spec=dict(spec),
             links=links,
             link_hosts=_link_hosts(name, spec, links),
+            fields=fields,
         )
     return out
 
@@ -212,30 +313,25 @@ def resolve_destinations(settings: Any, tenant_id: str, names: list[str]) -> dic
         adapter = destination_kind(dest.kind)
         if adapter is None:
             raise DestinationError(f"destination {name} is of kind {dest.kind!r}, which is not installed")
-        adapter.validate(settings, tenant_id, name, dest.spec)
+        adapter.validate(settings, tenant_id, dest)
         out[name] = dest
     return out
 
 
-def post_key(tenant_id: str, destination_id: str, manifest_id: str, edition: str) -> str:
-    """The stable id of one manifest's edition at one destination, hashed over an unambiguous
-    encoding so it is safe in a header and no tenant, manifest or edition containing a separator
-    lands on another's."""
-    digest = hashlib.sha256(
-        json.dumps([tenant_id, destination_id, manifest_id, edition]).encode()
-    ).hexdigest()
-    return f"post_{digest[:40]}"
-
-
 __all__ = [
+    "DELIVERY_BUDGET_S",
+    "HARNESS_FIELDS",
     "MAX_DETAIL_CHARS",
     "Delivery",
     "DeliveryStatus",
     "Destination",
     "DestinationAdapter",
     "DestinationError",
+    "EditionKey",
     "LinkPolicy",
     "Post",
+    "delivery_for_send_error",
+    "delivery_for_status",
     "destination_kind",
     "list_destination_kinds",
     "parse_destinations",

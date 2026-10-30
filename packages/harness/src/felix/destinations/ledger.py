@@ -25,6 +25,7 @@ from typing import Any, Literal, cast
 from felix.config import Settings
 from felix.db.models import DestinationPostRow
 from felix.db.session import _use_memory, tenant_session
+from felix.destinations import EditionKey
 
 now_ms = lambda: int(time.time() * 1000)
 
@@ -38,7 +39,7 @@ MAYBE_POSTED: PostStatus = "maybe_posted"
 # is one whose process stopped mid-delivery.
 IN_FLIGHT_MS = 120_000
 
-_memory_posts: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+_memory_posts: dict[EditionKey, dict[str, Any]] = {}
 # How often a claim retries when the row it lost to was released before it could be read.
 _CLAIM_ATTEMPTS = 3
 
@@ -62,38 +63,26 @@ def in_flight(row: dict[str, Any], *, now: int | None = None) -> bool:
     return row.get("status") == POSTING and ts - int(row.get("updated_at") or 0) < IN_FLIGHT_MS
 
 
-def _where(tenant_id: str, destination: str, manifest_id: str, edition: str) -> tuple[Any, ...]:
-    return (
-        DestinationPostRow.tenant_id == tenant_id,
-        DestinationPostRow.destination == destination,
-        DestinationPostRow.manifest_id == manifest_id,
-        DestinationPostRow.edition == edition,
-    )
-
-
 def _row_dict(row: DestinationPostRow | dict[str, Any]) -> dict[str, Any]:
     if isinstance(row, dict):
         return dict(row)
     return {c.key: getattr(row, c.key) for c in DestinationPostRow.__table__.columns}
 
 
-async def claim(
-    settings: Settings, tenant_id: str, destination: str, manifest_id: str, edition: str, *, thread_id: str
-) -> Claim:
+async def claim(settings: Settings, key: EditionKey, *, thread_id: str) -> Claim:
     """Take the edition for this call (a new `posting` row), or the row another call already holds."""
     ts = now_ms()
     values: dict[str, Any] = {
-        "tenant_id": tenant_id,
-        "destination": destination,
-        "edition": edition,
-        "manifest_id": manifest_id,
+        "tenant_id": key.tenant_id,
+        "destination": key.destination,
+        "edition": key.edition,
+        "manifest_id": key.manifest_id,
         "status": POSTING,
         "ref": None,
         "thread_id": thread_id,
         "created_at": ts,
         "updated_at": ts,
     }
-    key = (tenant_id, destination, manifest_id, edition)
     if _use_memory(settings):
         # No await between the check and the insert: the event loop makes this the atomic step.
         existing = _memory_posts.get(key)
@@ -107,7 +96,7 @@ async def claim(
 
     table = cast(Any, DestinationPostRow.__table__)
     for _ in range(_CLAIM_ATTEMPTS):
-        async with tenant_session(settings, tenant_id) as db:
+        async with tenant_session(settings, key.tenant_id) as db:
             inserted = await db.execute(
                 pg_insert(table)
                 .values(values)
@@ -118,9 +107,7 @@ async def claim(
             if won is not None:
                 await db.commit()
                 return Claim(True, dict(won))
-            existing = await db.scalar(
-                select(DestinationPostRow).where(*_where(tenant_id, destination, manifest_id, edition))
-            )
+            existing = await db.scalar(select(DestinationPostRow).where(*key.where()))
             await db.commit()
             if existing is not None:
                 return Claim(False, _row_dict(existing))
@@ -128,55 +115,39 @@ async def claim(
     raise RuntimeError("destination post claim did not settle")
 
 
-async def get(
-    settings: Settings, tenant_id: str, destination: str, manifest_id: str, edition: str
-) -> dict[str, Any] | None:
+async def get(settings: Settings, key: EditionKey) -> dict[str, Any] | None:
     if _use_memory(settings):
-        row = _memory_posts.get((tenant_id, destination, manifest_id, edition))
+        row = _memory_posts.get(key)
         return dict(row) if row is not None else None
-    async with tenant_session(settings, tenant_id) as db:
-        row = await db.get(DestinationPostRow, (tenant_id, destination, manifest_id, edition))
+    async with tenant_session(settings, key.tenant_id) as db:
+        row = await db.get(DestinationPostRow, (key.tenant_id, key.destination, key.manifest_id, key.edition))
         return _row_dict(row) if row is not None else None
 
 
-async def settle(
-    settings: Settings,
-    tenant_id: str,
-    destination: str,
-    manifest_id: str,
-    edition: str,
-    *,
-    status: PostStatus,
-    ref: str | None = None,
-) -> None:
+async def settle(settings: Settings, key: EditionKey, *, status: PostStatus, ref: str | None = None) -> None:
     """Record what a claimed delivery answered: `posted` (with the provider's `ref`) or
     `maybe_posted`. Only a `posting` row moves: a settled one is history."""
     ts = now_ms()
     if _use_memory(settings):
-        row = _memory_posts.get((tenant_id, destination, manifest_id, edition))
+        row = _memory_posts.get(key)
         if row is not None and row["status"] == POSTING:
             row.update(status=status, ref=ref, updated_at=ts)
         return
     from sqlalchemy import update
 
-    async with tenant_session(settings, tenant_id) as db:
+    async with tenant_session(settings, key.tenant_id) as db:
         await db.execute(
             update(DestinationPostRow)
-            .where(
-                *_where(tenant_id, destination, manifest_id, edition), DestinationPostRow.status == POSTING
-            )
+            .where(*key.where(), DestinationPostRow.status == POSTING)
             .values(status=status, ref=ref, updated_at=ts)
         )
         await db.commit()
 
 
-async def release(
-    settings: Settings, tenant_id: str, destination: str, manifest_id: str, edition: str
-) -> bool:
+async def release(settings: Settings, key: EditionKey) -> bool:
     """Drop a `posting` claim whose delivery certainly did not land, so the edition may be tried
     again. True when there was such a row. A settled row is never released."""
     if _use_memory(settings):
-        key = (tenant_id, destination, manifest_id, edition)
         row = _memory_posts.get(key)
         if row is None or row["status"] != POSTING:
             return False
@@ -184,11 +155,9 @@ async def release(
         return True
     from sqlalchemy import delete
 
-    async with tenant_session(settings, tenant_id) as db:
+    async with tenant_session(settings, key.tenant_id) as db:
         result = await db.execute(
-            delete(DestinationPostRow).where(
-                *_where(tenant_id, destination, manifest_id, edition), DestinationPostRow.status == POSTING
-            )
+            delete(DestinationPostRow).where(*key.where(), DestinationPostRow.status == POSTING)
         )
         await db.commit()
         return bool(getattr(result, "rowcount", 0))

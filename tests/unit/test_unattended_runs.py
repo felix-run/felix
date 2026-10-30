@@ -81,6 +81,7 @@ def _gated(ran: list[dict[str, Any]], **rule: Any) -> Tool:
         [define_tool(name="calculator", description="c", handler=_calc)],
         [ApprovalRule(id="calc-gate", tools=["calculator"], **rule)],
         MANIFEST,
+        unwaivable_tools=frozenset(),
     )
     return tool
 

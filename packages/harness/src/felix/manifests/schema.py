@@ -1010,7 +1010,7 @@ class DestinationsSpec(_Strict):
     destinations open to its tenant. An id that is not, or whose kind is not installed, fails the
     compile. Each post names an `edition`, and an edition already posted to a destination is not
     posted again, by a retry or by the next run. The text has known secrets redacted and is screened
-    (the marker scan always, `content_screening` when on) before it leaves; links are kept. Works
+    (the marker scan always, `content_screening` when on) before it leaves. Works
     from a scheduled job or a heartbeat's firing, which is what it is for -- and only from an
     unattended run unless `attended` says otherwise. A manifest that admits anonymous callers is
     refused. Whether links survive is the destination's registration, not the manifest's. Unset binds

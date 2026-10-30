@@ -1351,7 +1351,11 @@ deployment's name, so the places are the operator's and the manifest only picks 
   `webhook-id` is stable for one tenant, destination, manifest and edition, so a receiver can
   dedupe as well. A kind's `Delivery.detail` (cut to 300 characters) and its `DestinationError`
   messages reach the model and the manifest author as written: a plugin writes them for those
-  readers, never an exception's text, a URL or a credential.
+  readers, never an exception's text, a URL or a credential. A kind receives the registration typed
+  (`Destination`, its own keys in `fields`; a key spelled like one of the harness's — `Links`,
+  `link-hosts` — fails the boot), classifies an HTTP answer with the shared
+  `delivery_for_status` / `delivery_for_send_error`, and has `DELIVERY_BUDGET_S` (90 s) per
+  delivery, after which the harness stops waiting and records `maybe_posted`.
 - **At most once per edition.** Each call names an `edition`, and `destination_posts` (migration
   0049, tenant RLS) holds one row per tenant, destination, manifest and edition — two agents'
   `brief:2026-10-29` are two posts. The call reads the row before it cleans or screens anything (an

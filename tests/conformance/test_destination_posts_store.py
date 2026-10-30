@@ -13,12 +13,13 @@ import asyncio
 from typing import Any
 
 import pytest
-from felix.destinations import ledger
+from felix.destinations import EditionKey, ledger
 
 BACKENDS = ["memory", "postgres"]
 parametrized = pytest.mark.parametrize("store_settings", BACKENDS, indirect=True)
 
 EDITION = "brief:2026-10-29"
+KEY = EditionKey("acme", "team", "brief", EDITION)
 
 
 async def _claim(
@@ -29,7 +30,7 @@ async def _claim(
     edition: str = EDITION,
     thread: str = "acme:t",
 ) -> Any:
-    return await ledger.claim(settings, tenant, destination, manifest, edition, thread_id=thread)
+    return await ledger.claim(settings, EditionKey(tenant, destination, manifest, edition), thread_id=thread)
 
 
 @parametrized
@@ -58,10 +59,10 @@ async def test_racing_claims_have_exactly_one_winner_and_the_losers_read_its_row
 @parametrized
 async def test_a_settled_post_is_read_back_and_never_released_or_resettled(store_settings: Any) -> None:
     await _claim(store_settings)
-    await ledger.settle(store_settings, "acme", "team", "brief", EDITION, status=ledger.POSTED, ref="msg-1")
-    await ledger.settle(store_settings, "acme", "team", "brief", EDITION, status=ledger.MAYBE_POSTED)
+    await ledger.settle(store_settings, KEY, status=ledger.POSTED, ref="msg-1")
+    await ledger.settle(store_settings, KEY, status=ledger.MAYBE_POSTED)
 
-    assert not await ledger.release(store_settings, "acme", "team", "brief", EDITION)
+    assert not await ledger.release(store_settings, KEY)
     again = await _claim(store_settings)
     assert not again.won
     assert (again.row["status"], again.row["ref"]) == ("posted", "msg-1")
@@ -70,13 +71,13 @@ async def test_a_settled_post_is_read_back_and_never_released_or_resettled(store
 @parametrized
 async def test_a_released_claim_frees_the_edition_and_maybe_posted_holds_it(store_settings: Any) -> None:
     await _claim(store_settings)
-    assert await ledger.release(store_settings, "acme", "team", "brief", EDITION)
-    assert await ledger.get(store_settings, "acme", "team", "brief", EDITION) is None
+    assert await ledger.release(store_settings, KEY)
+    assert await ledger.get(store_settings, KEY) is None
     assert (await _claim(store_settings)).won
 
-    await ledger.settle(store_settings, "acme", "team", "brief", EDITION, status=ledger.MAYBE_POSTED)
-    assert not await ledger.release(store_settings, "acme", "team", "brief", EDITION)
-    row = await ledger.get(store_settings, "acme", "team", "brief", EDITION)
+    await ledger.settle(store_settings, KEY, status=ledger.MAYBE_POSTED)
+    assert not await ledger.release(store_settings, KEY)
+    row = await ledger.get(store_settings, KEY)
     assert row is not None and (row["status"], row["ref"]) == ("maybe_posted", None)
 
 
@@ -85,17 +86,17 @@ async def test_an_edition_is_its_own_per_tenant_and_per_destination(store_settin
     assert (await _claim(store_settings)).won
     assert (await _claim(store_settings, tenant="globex")).won
     assert (await _claim(store_settings, destination="other")).won
-    assert await ledger.get(store_settings, "globex", "other", "brief", EDITION) is None
+    assert await ledger.get(store_settings, EditionKey("globex", "other", "brief", EDITION)) is None
 
 
 @parametrized
 async def test_two_manifests_posting_one_edition_to_one_destination_both_post(store_settings: Any) -> None:
     assert (await _claim(store_settings, manifest="brief")).won
     assert (await _claim(store_settings, manifest="digest")).won
-    await ledger.settle(store_settings, "acme", "team", "brief", EDITION, status=ledger.POSTED, ref="m1")
+    await ledger.settle(store_settings, KEY, status=ledger.POSTED, ref="m1")
 
-    digest = await ledger.get(store_settings, "acme", "team", "digest", EDITION)
+    digest = await ledger.get(store_settings, EditionKey("acme", "team", "digest", EDITION))
     assert digest is not None and (digest["status"], digest["ref"]) == ("posting", None)
-    assert await ledger.release(store_settings, "acme", "team", "digest", EDITION)
-    brief = await ledger.get(store_settings, "acme", "team", "brief", EDITION)
+    assert await ledger.release(store_settings, EditionKey("acme", "team", "digest", EDITION))
+    brief = await ledger.get(store_settings, KEY)
     assert brief is not None and brief["status"] == "posted"

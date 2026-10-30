@@ -21,7 +21,7 @@ import pytest
 from felix import destinations as D
 from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
-from felix.destinations import Delivery, DestinationError, Post, ledger
+from felix.destinations import Delivery, Destination, DestinationError, EditionKey, Post, ledger
 from felix.destinations.tool import (
     EDITION_PATTERN,
     POSTED_THIS_RUN_EXTRA,
@@ -39,6 +39,10 @@ TENANT = "acme"
 MANIFEST = "brief"
 EDITION = "brief:2026-10-29"
 PLANTED = "sk-planted-dest-not-real-9b1e"
+
+
+def _key(edition: str, manifest: str = "brief") -> EditionKey:
+    return EditionKey(TENANT, "team", manifest, edition)
 
 
 def _settings(destinations: dict[str, Any], endpoints: dict[str, Any] | None = None, **kw: Any) -> Settings:
@@ -62,15 +66,17 @@ class _Scripted:
     def __init__(self) -> None:
         self.outcomes: list[Delivery | BaseException] = []
         self.delivered: list[Post] = []
+        # When set, each delivery waits on it: a kind that never answers.
+        self.hold: asyncio.Event | None = None
 
-    def validate(self, settings: Any, tenant_id: str, destination_id: str, spec: dict[str, Any]) -> None:
-        if spec.get("refuse"):
-            raise DestinationError(f"destination {destination_id} is refused by its kind")
+    def validate(self, settings: Any, tenant_id: str, dest: Destination) -> None:
+        if dest.fields.get("refuse"):
+            raise DestinationError(f"destination {dest.name} is refused by its kind")
 
-    async def deliver(
-        self, settings: Any, tenant_id: str, destination_id: str, spec: dict[str, Any], post: Post
-    ) -> Delivery:
+    async def deliver(self, settings: Any, tenant_id: str, dest: Destination, post: Post) -> Delivery:
         self.delivered.append(post)
+        if self.hold is not None:
+            await self.hold.wait()
         outcome = (
             self.outcomes.pop(0) if self.outcomes else Delivery("posted", ref=f"msg-{len(self.delivered)}")
         )
@@ -321,20 +327,20 @@ def test_the_tool_advertises_only_the_manifests_destinations_and_the_edition_gra
 
 async def test_the_first_claim_wins_and_the_second_finds_its_row() -> None:
     settings = make_settings()
-    first = await ledger.claim(settings, TENANT, "team", MANIFEST, "e1", thread_id="t")
-    second = await ledger.claim(settings, TENANT, "team", MANIFEST, "e1", thread_id="t")
+    first = await ledger.claim(settings, _key("e1"), thread_id="t")
+    second = await ledger.claim(settings, _key("e1"), thread_id="t")
     assert first.won and not second.won
     assert second.row["status"] == ledger.POSTING
 
 
 async def test_a_released_claim_may_be_claimed_again_and_a_settled_one_is_not_released() -> None:
     settings = make_settings()
-    await ledger.claim(settings, TENANT, "team", MANIFEST, "e1", thread_id="t")
-    assert await ledger.release(settings, TENANT, "team", MANIFEST, "e1")
-    assert (await ledger.claim(settings, TENANT, "team", MANIFEST, "e1", thread_id="t")).won
-    await ledger.settle(settings, TENANT, "team", MANIFEST, "e1", status=ledger.POSTED, ref="r1")
-    assert not await ledger.release(settings, TENANT, "team", MANIFEST, "e1")
-    row = await ledger.get(settings, TENANT, "team", MANIFEST, "e1")
+    await ledger.claim(settings, _key("e1"), thread_id="t")
+    assert await ledger.release(settings, _key("e1"))
+    assert (await ledger.claim(settings, _key("e1"), thread_id="t")).won
+    await ledger.settle(settings, _key("e1"), status=ledger.POSTED, ref="r1")
+    assert not await ledger.release(settings, _key("e1"))
+    row = await ledger.get(settings, _key("e1"))
     assert row is not None and (row["status"], row["ref"]) == ("posted", "r1")
 
 
@@ -346,7 +352,7 @@ async def test_a_post_from_a_conversation_is_refused_by_default(scripted: Any) -
     out = await _call(_tool(settings), _run(settings, unattended=False))
     assert out["error"] == "attended"
     assert scripted.delivered == []
-    assert await ledger.get(settings, TENANT, "team", MANIFEST, EDITION) is None
+    assert await ledger.get(settings, _key(EDITION)) is None
 
 
 async def test_a_call_with_no_run_context_is_refused(scripted: Any) -> None:
@@ -377,7 +383,7 @@ async def test_a_post_is_delivered_once_and_the_same_edition_is_already_posted(s
     assert len(scripted.delivered) == 1
     (post,) = scripted.delivered
     assert "x.example" not in post.text and "[link removed]" in post.text, "links stripped by default"
-    assert post.key == D.post_key(TENANT, "team", MANIFEST, EDITION)
+    assert post.key == _key(EDITION).post_key
 
 
 async def test_a_destination_that_keeps_links_gets_them(scripted: Any) -> None:
@@ -433,7 +439,7 @@ async def test_an_unknown_outcome_is_maybe_posted_and_never_retried(scripted: An
     tool = _tool(settings)
     first = await _call(tool, _run(settings))
     later = await _call(tool, _run(settings))
-    row = await ledger.get(settings, TENANT, "team", MANIFEST, EDITION)
+    row = await ledger.get(settings, _key(EDITION))
 
     assert first["error"] == "maybe_posted" and "a person must check" in first["detail"]
     assert "socket reset" not in first["detail"], "never an exception's text"
@@ -452,9 +458,9 @@ async def test_a_kinds_detail_reaches_the_model_cut_to_its_bound(scripted: Any) 
 
 async def test_a_recent_claim_is_in_flight_and_an_old_one_maybe_posted(scripted: Any) -> None:
     settings = _settings(SCRIPTED)
-    await ledger.claim(settings, TENANT, "team", MANIFEST, EDITION, thread_id="t")
+    await ledger.claim(settings, _key(EDITION), thread_id="t")
     recent = await _call(_tool(settings), _run(settings))
-    ledger._memory_posts[(TENANT, "team", MANIFEST, EDITION)]["updated_at"] -= ledger.IN_FLIGHT_MS + 1
+    ledger._memory_posts[_key(EDITION)]["updated_at"] -= ledger.IN_FLIGHT_MS + 1
     old = await _call(_tool(settings), _run(settings))
 
     assert recent["error"] == "in_flight" and "right now" in recent["detail"]
@@ -510,7 +516,7 @@ async def test_a_call_outside_its_bounds_is_refused_before_anything_is_claimed(
     out = await _call(_tool(settings), _run(settings), **args)
     assert out["error"] == code
     assert scripted.delivered == []
-    assert await ledger.get(settings, TENANT, "team", MANIFEST, EDITION) is None
+    assert await ledger.get(settings, _key(EDITION)) is None
 
 
 async def test_a_ledger_that_cannot_be_claimed_posts_nothing(
@@ -544,9 +550,7 @@ async def test_known_secrets_are_redacted_and_an_injection_is_refused(
     assert PLANTED not in post.text and PLANTED not in post.title
     assert "[REDACTED]" in post.text
     assert screened["error"] == "screened"
-    assert await ledger.get(settings, TENANT, "team", MANIFEST, "e2") is None, (
-        "a screened post claims nothing"
-    )
+    assert await ledger.get(settings, _key("e2")) is None, "a screened post claims nothing"
 
 
 @pytest.mark.parametrize(("model_tools", "screened"), [(["notify"], False), (["post"], True), ([], True)])
@@ -615,8 +619,8 @@ async def test_the_preview_refuses_a_call_the_tool_would(scripted: Any) -> None:
     async with async_run_with_context(_run(settings)):
         with pytest.raises(ToolRefused) as bad:
             await tool.approval_preview(_args(edition="no spaces allowed"))
-        await ledger.claim(settings, TENANT, "team", MANIFEST, EDITION, thread_id="t")
-        await ledger.settle(settings, TENANT, "team", MANIFEST, EDITION, status=ledger.POSTED, ref="r1")
+        await ledger.claim(settings, _key(EDITION), thread_id="t")
+        await ledger.settle(settings, _key(EDITION), status=ledger.POSTED, ref="r1")
         with pytest.raises(ToolRefused) as posted:
             await tool.approval_preview(_args())
     assert bad.value.code == "invalid_edition"
@@ -654,7 +658,9 @@ async def test_the_built_in_rules_over_post_are_unwaivable_by_their_id(
     from felix.manifests.schema import PermissionsSpec
 
     req = _run(make_settings(), unattended=False)
-    mode = await waives_approval("post", PermissionsSpec(), req, rule_id=rule_id)
+    mode = await waives_approval(
+        "post", PermissionsSpec(), req, rule_id=rule_id, unwaivable_tools=frozenset()
+    )
     assert mode == ("bypass" if waived else None)
 
 
@@ -740,17 +746,17 @@ def _post(edition: str = "brief:1") -> Post:
         text="hello",
         title="",
         manifest_id=MANIFEST,
-        key=D.post_key(TENANT, "team", MANIFEST, edition),
+        key=_key(edition).post_key,
         unattended=True,
     )
 
 
 async def _deliver_to(url: str, **kw: Any) -> Delivery:
     endpoints = {"ops": {"url": url, "secret": SECRET, "tenants": "*"}}
-    spec = {"kind": "webhook", "endpoint": "ops", "tenants": "*"}
+    settings = _settings({"team": {"kind": "webhook", "endpoint": "ops", "tenants": "*"}}, endpoints, **kw)
     adapter = D.destination_kind("webhook")
     assert adapter is not None
-    return await adapter.deliver(_settings({}, endpoints, **kw), TENANT, "team", spec, _post())
+    return await adapter.deliver(settings, TENANT, D.parse_destinations(settings)["team"], _post())
 
 
 async def _deliver(status: int) -> tuple[Delivery, list[dict[str, Any]]]:
@@ -772,7 +778,7 @@ async def test_a_webhook_post_is_signed_with_a_stable_id_and_posted_on_2xx() -> 
         ).digest()
     ).decode()
     assert headers["webhook-signature"] == f"v1,{expected}"
-    assert headers["webhook-id"] == D.post_key(TENANT, "team", MANIFEST, "brief:1")
+    assert headers["webhook-id"] == _key("brief:1").post_key
     assert json.loads(body) == {
         "type": "post.created",
         "tenant_id": TENANT,
@@ -823,3 +829,114 @@ async def test_a_receiver_that_reads_the_request_and_hangs_up_is_unknown() -> No
         delivery = await _deliver_to(url)
     assert len(seen) == 1, "the request reached the receiver"
     assert delivery.status == "unknown"
+
+
+# --- the shared delivery classification ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [
+        (200, "posted"),
+        (201, "posted"),
+        (204, "posted"),
+        (299, "posted"),
+        (301, "unknown"),
+        (302, "unknown"),
+        (400, "not_posted"),
+        (401, "not_posted"),
+        (404, "not_posted"),
+        (422, "not_posted"),
+        (429, "not_posted"),
+        (408, "unknown"),
+        (409, "unknown"),
+        (500, "unknown"),
+        (502, "unknown"),
+        (503, "unknown"),
+    ],
+)
+def test_an_http_status_proves_what_it_proves(status: int, outcome: str) -> None:
+    delivery = D.delivery_for_status(status, ref="msg-1")
+    assert delivery.status == outcome
+    assert delivery.ref == ("msg-1" if outcome == "posted" else None)
+
+
+def _send_errors() -> list[Any]:
+    import httpx
+    from felix.security.ssrf import EgressBlocked
+
+    request = httpx.Request("POST", "https://hooks.example.invalid/h")
+    return [
+        (EgressBlocked("blocked"), "not_posted"),
+        (httpx.ConnectError("refused", request=request), "not_posted"),
+        (httpx.ConnectTimeout("slow dial", request=request), "not_posted"),
+        (httpx.ReadTimeout("no answer", request=request), "unknown"),
+        (httpx.WriteTimeout("stalled", request=request), "unknown"),
+        (httpx.RemoteProtocolError("hung up", request=request), "unknown"),
+        (httpx.ReadError("reset", request=request), "unknown"),
+        (TimeoutError(), "unknown"),
+        (RuntimeError("anything else"), "unknown"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("exc", "outcome"), _send_errors(), ids=lambda v: type(v).__name__ if isinstance(v, BaseException) else v
+)
+def test_a_send_error_is_not_posted_only_when_nothing_left(exc: BaseException, outcome: str) -> None:
+    delivery = D.delivery_for_send_error(exc)
+    assert delivery.status == outcome
+    # Written here, never the exception's text.
+    assert (
+        delivery.detail
+        == {
+            "not_posted": "the destination could not be reached",
+            "unknown": "the destination did not answer, so it may have been posted",
+        }[outcome]
+    )
+
+
+# --- the typed destination a kind receives -------------------------------------------------
+
+
+def test_a_kind_gets_its_own_fields_without_the_harnesss() -> None:
+    dest = D.parse_destinations(
+        _settings(
+            {"team": {"kind": "webhook", "endpoint": "ops", "tenants": "*", "links": "keep", "extra": 1}}
+        )
+    )["team"]
+    assert dest.fields == {"endpoint": "ops", "extra": 1}
+    assert (dest.kind, dest.links, dest.tenants) == ("webhook", "keep", None)
+    assert frozenset({"kind", "tenants", "links", "link_hosts"}) == D.HARNESS_FIELDS
+
+
+@pytest.mark.parametrize("key", ["Links", "link-hosts", " tenants", "KIND", "Link_Hosts"])
+def test_a_kind_field_spelled_like_a_harness_field_fails_the_boot(key: str) -> None:
+    raw = json.dumps({"team": {"kind": "webhook", "tenants": "*", key: "keep"}})
+    with pytest.raises(RuntimeError, match="FELIX_DESTINATIONS") as raised:
+        make_settings(destinations=raw).validate_runtime()
+    assert "spelled like the harness's" in str(raised.value)
+
+
+# --- the delivery budget -------------------------------------------------------------------
+
+
+def test_the_delivery_budget_sits_well_inside_the_in_flight_window() -> None:
+    from felix.config import Settings
+
+    webhook_ceiling = Settings.model_fields["webhook_timeout_seconds"].metadata
+    assert D.DELIVERY_BUDGET_S * 1000 <= 0.8 * ledger.IN_FLIGHT_MS
+    assert any(getattr(m, "le", None) is not None and m.le < D.DELIVERY_BUDGET_S for m in webhook_ceiling)
+
+
+async def test_a_kind_that_outlives_its_budget_is_maybe_posted(
+    scripted: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(D, "DELIVERY_BUDGET_S", 0.2)
+    scripted.hold = asyncio.Event()
+    settings = _settings(SCRIPTED)
+    out = await asyncio.wait_for(_call(_tool(settings), _run(settings)), timeout=10)
+    row = await ledger.get(settings, _key(EDITION))
+
+    assert out["error"] == "maybe_posted" and "took too long" in out["detail"]
+    assert row is not None and row["status"] == "maybe_posted"
+    assert len(scripted.delivered) == 1

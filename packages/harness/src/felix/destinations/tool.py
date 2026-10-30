@@ -17,7 +17,8 @@ model wrote, possibly under a prompt injection, so before anything leaves: known
 redacted (the governance stack masks a tool's *output*; a post is its *arguments*), links are
 handled as the destination's registration says (`Destination.apply_links`: removed by default,
 kept only when the operator chose to), and the result is screened as a notice is
-(`governance/outbound_screening.py`), a hit refusing the call.
+(`governance/outbound_text.py:prepare_outbound`, the step `notify` takes too), a hit refusing the
+call.
 
 Each post names an `edition` -- one stable name per logical post, `brief:2026-10-29` -- and the
 ledger (`destinations/ledger.py`) holds one row per tenant, destination, manifest and edition. The
@@ -46,6 +47,7 @@ destination, edition, status and ref -- never the text.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -53,7 +55,16 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from felix.destinations import MAX_DETAIL_CHARS, Destination, Post, destination_kind, ledger, post_key
+from felix import destinations as _registry
+from felix.destinations import (
+    MAX_DETAIL_CHARS,
+    Delivery,
+    Destination,
+    EditionKey,
+    Post,
+    destination_kind,
+    ledger,
+)
 from felix.governance.permission_mode import POST_ATTENDED_APPROVAL_RULE_ID, POST_TOOL_NAME
 from felix.logging_setup import loggable
 from felix.tools.refusal import ToolRefused
@@ -185,21 +196,21 @@ class _Posts:
     def _give_back(ctx: RequestContext) -> None:
         ctx.extras[POSTED_THIS_RUN_EXTRA] = max(int(ctx.extras.get(POSTED_THIS_RUN_EXTRA) or 0) - 1, 0)
 
+    def key(self, args: _PostArgs) -> EditionKey:
+        """The ledger's key for this call's edition: built once per call, used for every step."""
+        return EditionKey(self.tenant_id, args.destination, self.manifest_id, args.edition)
+
     async def clean(self, args: _PostArgs) -> tuple[str, str]:
         """The title and text as they would be posted: secrets redacted, links as the destination
-        says, screened."""
-        from felix.governance.outbound_screening import screen_outbound
-        from felix.secrets import collected_secret_values, redact_text
+        says, screened (`governance/outbound_text.py:prepare_outbound`)."""
+        from felix.governance.outbound_text import prepare_outbound
 
-        dest = self.destinations[args.destination]
-        secrets = collected_secret_values(self.settings)
-        title = dest.apply_links(redact_text(args.title, secrets))
-        text = dest.apply_links(redact_text(args.text, secrets))
-        await screen_outbound(
+        title, text = await prepare_outbound(
             self.settings,
             self.manifest,
             POST,
-            f"{title}\n{text}" if title else text,
+            [args.title, args.text],
+            links=self.destinations[args.destination].apply_links,
             flagged="the post was flagged by content screening and was not posted; nothing was posted",
             unavailable="the post could not be screened, so it was not posted; nothing was posted",
         )
@@ -224,11 +235,9 @@ class _Posts:
             "unavailable", "whether this edition was already posted could not be checked; nothing was posted"
         )
 
-    async def _existing(self, args: _PostArgs) -> dict[str, Any] | None:
+    async def _existing(self, args: _PostArgs, key: EditionKey) -> dict[str, Any] | None:
         try:
-            return await ledger.get(
-                self.settings, self.tenant_id, args.destination, self.manifest_id, args.edition
-            )
+            return await ledger.get(self.settings, key)
         except Exception:
             raise self._ledger_unavailable(args, "read") from None
 
@@ -238,20 +247,14 @@ class _Posts:
         # still spent its turn -- except for an edition already posted, which posted nothing.
         # The ledger first, so an edition already there is answered before any screening is paid
         # for. The claim below is still what decides: this read only saves work.
-        existing = await self._existing(args)
+        key = self.key(args)
+        existing = await self._existing(args, key)
         if existing is not None:
             return self._already(args, existing, ctx)
         title, text = await self.clean(args)
         thread_id = (call.thread_id if call is not None else None) or ctx.thread_id or ""
         try:
-            claim = await ledger.claim(
-                self.settings,
-                self.tenant_id,
-                args.destination,
-                self.manifest_id,
-                args.edition,
-                thread_id=thread_id,
-            )
+            claim = await ledger.claim(self.settings, key, thread_id=thread_id)
         except Exception:
             raise self._ledger_unavailable(args, "claim") from None
         if not claim.won:
@@ -261,11 +264,11 @@ class _Posts:
             text=text,
             title=title,
             manifest_id=self.manifest_id,
-            key=post_key(self.tenant_id, args.destination, self.manifest_id, args.edition),
+            key=key.post_key,
             unattended=ctx.unattended,
         )
         delivery = await self._deliver(self.destinations[args.destination], post)
-        await self._settle(args, delivery.status, delivery.ref)
+        await self._settle(args, key, delivery.status, delivery.ref)
         self._audit(args, "maybe_posted" if delivery.status == "unknown" else delivery.status, delivery.ref)
         if delivery.status == "posted":
             return json.dumps(
@@ -290,26 +293,16 @@ class _Posts:
             "this edition again, under it or another name; a person must check the destination",
         )
 
-    async def _settle(self, args: _PostArgs, status: str, ref: str | None) -> None:
+    async def _settle(self, args: _PostArgs, key: EditionKey, status: str, ref: str | None) -> None:
         """Record the delivery's outcome on the claimed row. A write that fails leaves it `posting`,
         which every later call reads as `in_flight` and then `maybe_posted` -- the safe side of not
         knowing."""
         try:
             if status == "not_posted":
-                await ledger.release(
-                    self.settings, self.tenant_id, args.destination, self.manifest_id, args.edition
-                )
+                await ledger.release(self.settings, key)
             else:
                 settled = ledger.POSTED if status == "posted" else ledger.MAYBE_POSTED
-                await ledger.settle(
-                    self.settings,
-                    self.tenant_id,
-                    args.destination,
-                    self.manifest_id,
-                    args.edition,
-                    status=settled,
-                    ref=ref,
-                )
+                await ledger.settle(self.settings, key, status=settled, ref=ref)
         except Exception:
             logger.warning(
                 "post ledger settle failed destination=%s status=%s",
@@ -318,15 +311,21 @@ class _Posts:
                 exc_info=True,
             )
 
-    async def _deliver(self, dest: Destination, post: Post) -> Any:
-        from felix.destinations import Delivery
-
+    async def _deliver(self, dest: Destination, post: Post) -> Delivery:
         adapter = destination_kind(dest.kind)
         if adapter is None:
             # Uninstalled since the compile; nothing was sent.
             return Delivery("not_posted", detail="the destination's kind is no longer installed")
         try:
-            delivery = await adapter.deliver(self.settings, self.tenant_id, dest.name, dest.spec, post)
+            # Read at call time, so the bound is the registry's (and a test's) current one.
+            async with asyncio.timeout(_registry.DELIVERY_BUDGET_S):
+                delivery = await adapter.deliver(self.settings, self.tenant_id, dest, post)
+        except TimeoutError:
+            # Past the budget the harness stops waiting; whatever the kind sent may have landed.
+            logger.warning("destination %s (%s) delivery outlived its budget", dest.name, dest.kind)
+            return Delivery(
+                "unknown", detail="the destination's delivery took too long, so it may have been posted"
+            )
         except Exception:
             # An adapter that raised may have sent first: unknown, never a guess that it did not.
             logger.warning("destination %s (%s) delivery raised", dest.name, dest.kind, exc_info=True)
@@ -377,7 +376,7 @@ class _Posts:
         except ValidationError:
             raise ToolRefused("invalid_arguments", "the arguments do not match post's schema") from None
         self.admit(parsed, reserve=False)
-        existing = await self._existing(parsed)
+        existing = await self._existing(parsed, self.key(parsed))
         if existing is not None:
             if existing.get("status") == ledger.POSTED:
                 raise ToolRefused(

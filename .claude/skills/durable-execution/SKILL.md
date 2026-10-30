@@ -133,21 +133,25 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
   binds `destinations/tool.py:make_post_tool` beside `_bind_notify`, refusing a manifest that
   `admits_anonymous`. Order: `admit` (a context, else `no_context`; attended under `attended:
   refuse` is `attended`; id, edition grammar, lengths, per-run cap reserved synchronously) →
-  `ledger.get` (a row answers before any screening) → `redact_text` → `Destination.apply_links`
-  (the registration's `links` / `link_hosts`, via `push/agent_tool.strip_links(keep=)`) → screen
-  (`governance/outbound_screening.py:screen_outbound`, shared with `notify`) → `ledger.claim`
-  (insert-if-absent on `destination_posts`, keyed tenant/destination/manifest/edition, migration
-  0049) → adapter `deliver` → `posted` settles with `ref`, `not_posted` releases, `unknown` (or a
-  raise) settles `maybe_posted`. A row found `posted` answers `already_posted` (and gives the run
-  slot back); `posting` under `ledger.IN_FLIGHT_MS` refuses `in_flight`; otherwise `maybe_posted`.
-  The approval preview runs `admit` and the ledger read too. Core kind `webhook`
-  (`destinations/webhook.py`) signs as a completion webhook with `webhook-id = post_key(tenant,
-  destination, manifest, edition)` and `unattended` in the body; 2xx posted, 4xx but 408/409 /
-  connect failure / egress refusal not_posted, anything else unknown. A kind's detail is cut to
-  `MAX_DETAIL_CHARS`. `post.sent` audits destination, edition, status, ref, never the text. `post`
-  is not in `UNWAIVABLE_TOOLS` (`unwaivable_tool=False`): its rules are unwaivable by id
-  (`destinations.post`, `destinations.post.attended`) and, where the block bound it, every rule
-  over it (`permission_mode.bound_unwaivable_tools` → `apply_approvals(unwaivable_tools=)`).
+  `EditionKey` (tenant, destination, manifest, edition; built once per call) → `ledger.get` (a row
+  answers before any screening) → `governance/outbound_text.py:prepare_outbound` (redact, then the
+  registration's `links` / `link_hosts` via `Destination.apply_links` → `strip_links(keep=)`, then
+  `screen_outbound` -- the same step `notify` takes, with `strip_links`) → `ledger.claim`
+  (insert-if-absent on `destination_posts`, migration 0049) → adapter `deliver(settings, tenant,
+  dest, post)` with the typed `Destination` (kind fields in `dest.fields`, minus `HARNESS_FIELDS`),
+  cancelled past `DELIVERY_BUDGET_S` (90 s, inside `ledger.IN_FLIGHT_MS`) → `posted` settles with
+  `ref`, `not_posted` releases, `unknown` (a raise or the budget too) settles `maybe_posted`. A row
+  found `posted` answers `already_posted` (and gives the run slot back); `posting` under
+  `IN_FLIGHT_MS` refuses `in_flight`; otherwise `maybe_posted`. The approval preview runs `admit`
+  and the ledger read too. Core kind `webhook` (`destinations/webhook.py`) signs as a completion
+  webhook with `webhook-id = EditionKey.post_key` and `unattended` in the body, and classifies with
+  the package's `delivery_for_status` (2xx posted; 4xx but 408/409 not_posted; else unknown) and
+  `delivery_for_send_error` (egress refusal, connect error or connect timeout not_posted; else
+  unknown) -- what an HTTP kind reuses. A kind's detail is cut to `MAX_DETAIL_CHARS`. `post.sent`
+  audits destination, edition, status, ref, never the text. `post` is not in `UNWAIVABLE_TOOLS`
+  (`unwaivable_tool=False`): its rules are unwaivable by id (`destinations.post` and the row's
+  `extra_rule_ids`, `destinations.post.attended`) and, where the block bound it, every rule over it
+  (`permission_mode.bound_unwaivable_tools` → the required `apply_approvals(unwaivable_tools=)`).
 
 ## Idempotency-Key
 

@@ -93,6 +93,7 @@ async def test_apply_approvals_waits_for_decide(tmp_path) -> None:
         [tool],
         [ApprovalRule(id="w", tools=["write_file"], ttl_seconds=5)],
         "cowork",
+        unwaivable_tools=frozenset(),
     )[0]
 
     settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
@@ -157,6 +158,7 @@ async def test_approval_frame_names_the_rule_and_says_why() -> None:
             )
         ],
         "cowork",
+        unwaivable_tools=frozenset(),
     )[0]
 
     settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
@@ -220,6 +222,7 @@ async def test_the_pending_row_names_the_thread_that_is_blocked() -> None:
         [define_tool(name="write_file", description="w", handler=_echo)],
         [ApprovalRule(id="workspace-write", tools=["write_file"], ttl_seconds=5)],
         "cowork",
+        unwaivable_tools=frozenset(),
     )[0]
 
     settings = Settings(allow_insecure=True, auth_mode="none", environment="development")
@@ -289,6 +292,7 @@ async def test_the_row_says_why_the_gate_fired_and_what_it_blocks() -> None:
             )
         ],
         "cowork",
+        unwaivable_tools=frozenset(),
     )[0]
 
     settings = Settings(allow_insecure=True, auth_mode="none", environment="development")

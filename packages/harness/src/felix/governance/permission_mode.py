@@ -62,11 +62,14 @@ WORKFLOW_RUN_AUTO_APPROVAL_RULE_ID = "workflow_authoring.run_workflow.auto"
 
 @dataclass(frozen=True, slots=True)
 class BuiltinApproval:
-    """An approval a spec block adds over the tool it binds, and that no permission mode waives.
+    """The approvals a spec block adds over the tool it binds, none of which a permission mode waives.
 
-    One row per such tool, in `BUILTIN_APPROVALS`, from which `UNWAIVABLE_RULE_IDS`,
-    `UNWAIVABLE_TOOLS` and the rules the builder adds (`builtin_approval_rules`) are all derived:
-    a tool cannot be gated without being unwaivable, or listed as unwaivable with no rule to add.
+    One row per such tool, in `BUILTIN_APPROVALS`, from which `UNWAIVABLE_RULE_IDS` (every row's
+    `rule_id` and `extra_rule_ids`, plus the plan's), `UNWAIVABLE_TOOLS` (the rows whose
+    `unwaivable_tool` holds), `bound_unwaivable_tools` and the rule `builtin_approval_rules` adds for
+    `approval: true` are all derived. A row's other rules -- `extra_rule_ids` -- are added by the
+    block's own code (`destinations/tool.py:attended_approval_rule`), not by `builtin_approval_rules`,
+    since their switch is not `approval`; listing them here is what makes them unwaivable.
     """
 
     #: The `spec` field whose block binds the tool; the block's `approval` turns the rule on.
@@ -79,6 +82,8 @@ class BuiltinApproval:
     #: (`post`): its unwaivable rules are then the built-in ones, plus any rule over the tool in a
     #: manifest whose block bound it (`apply_approvals(unwaivable_tools=)`).
     unwaivable_tool: bool = True
+    #: The ids of the block's other rules over the tool, beside `rule_id`; unwaivable like it.
+    extra_rule_ids: tuple[str, ...] = ()
 
 
 # A scheduled task's prompt runs later on its writer's authority with nobody watching, so a thread
@@ -89,15 +94,19 @@ SCHEDULING_APPROVAL = BuiltinApproval(
 # A notice's approval is an author asking that a person read every message before it reaches a lock
 # screen; a mode chosen for the thread does not answer for that either (`push/agent_tool.py`).
 NOTIFY_APPROVAL = BuiltinApproval("notify", NOTIFY_TOOL_NAME, "notify.notify", "Approve sending this notice")
+# `spec.destinations.attended: approval`: the rule over `post` that holds a call only when someone is
+# watching the run (`Tool.approval_condition`), added by `destinations/tool.py`. No mode waives it.
+POST_ATTENDED_APPROVAL_RULE_ID = "destinations.post.attended"
 # A post's approval is an author asking that a person read every post before it reaches a shared
 # place; a mode chosen for the thread does not answer for that (`destinations/tool.py`).
 POST_APPROVAL = BuiltinApproval(
-    "destinations", POST_TOOL_NAME, "destinations.post", "Approve this post", unwaivable_tool=False
+    "destinations",
+    POST_TOOL_NAME,
+    "destinations.post",
+    "Approve this post",
+    unwaivable_tool=False,
+    extra_rule_ids=(POST_ATTENDED_APPROVAL_RULE_ID,),
 )
-# `spec.destinations.attended: approval`: the rule over `post` that holds a call only when someone is
-# watching the run (`Tool.approval_condition`). Not a `BUILTIN_APPROVALS` row -- its switch is not
-# `approval` -- but no mode waives it either.
-POST_ATTENDED_APPROVAL_RULE_ID = "destinations.post.attended"
 # A saved workflow runs later -- by its author's agent, a job or a trigger -- as whoever starts it,
 # so a person reads it first (`workflows/agent_tools.py`).
 WORKFLOW_SAVE_APPROVAL = BuiltinApproval(
@@ -120,7 +129,7 @@ WORKFLOW_SAVE_APPROVAL_RULE_ID = WORKFLOW_SAVE_APPROVAL.rule_id
 # Approvals no permission mode waives, by the id of the rule that asks for them. The plan's is how
 # plan mode ends.
 UNWAIVABLE_RULE_IDS = frozenset(
-    {PLAN_APPROVAL_RULE_ID, POST_ATTENDED_APPROVAL_RULE_ID, *(b.rule_id for b in BUILTIN_APPROVALS)}
+    {PLAN_APPROVAL_RULE_ID, *(rid for b in BUILTIN_APPROVALS for rid in (b.rule_id, *b.extra_rule_ids))}
 )
 # Tools whose approval no permission mode waives, whichever rule asked for it -- the built-in one or
 # a manifest's own, a glob included.
@@ -298,14 +307,15 @@ async def waives_approval(
     req: RequestContext | None,
     *,
     rule_id: str,
-    unwaivable_tools: frozenset[str] = frozenset(),
+    unwaivable_tools: frozenset[str],
 ) -> str | None:
     """The mode that waives the approval `rule_id` would otherwise ask for on `tool_name`, or None.
 
     Never for a rule in `UNWAIVABLE_RULE_IDS` (the plan's id is reserved,
     `schema.RESERVED_PLAN_RULE_ID`), and never for a tool in `UNWAIVABLE_TOOLS` or the compile's
-    own `unwaivable_tools`, whichever rule selected it: a manifest's own rule over `schedule_task`
-    would otherwise be waivable."""
+    own `unwaivable_tools` (`bound_unwaivable_tools`), whichever rule selected it: a manifest's own
+    rule over `schedule_task` would otherwise be waivable. Required, so no caller can leave the
+    compile's set out by accident."""
     if (
         spec is None
         or req is None
