@@ -33,6 +33,9 @@ parsed into their fields, and the rest of the registration -- the kind's own fie
 verbatim (the detail cut to `MAX_DETAIL_CHARS`), so a plugin kind writes them for those readers:
 never an exception's text, a URL, a token or anything of the operator's.
 
+`"operator": true` makes a destination the harness's own (`FELIX_JOB_ALERT_DESTINATION`): no
+manifest may name it, `tenants` is not read, and the harness posts there about any tenant.
+
 Links are the operator's call, per destination: `"links": "strip"` (the default) removes every
 link as `notify` does; `"keep"` leaves them; `"link_hosts": [...]` with `strip` keeps only links
 to those hosts (`allow_hosts` patterns, `*.` allowed). A manifest cannot loosen it. `keep` is a
@@ -57,7 +60,7 @@ LinkPolicy = Literal["strip", "keep"]
 #: The most of an adapter's `Delivery.detail` the model is shown.
 MAX_DETAIL_CHARS = 300
 #: The registration keys the harness reads; everything else is the kind's (`Destination.fields`).
-HARNESS_FIELDS = frozenset({"kind", "tenants", "links", "link_hosts"})
+HARNESS_FIELDS = frozenset({"kind", "tenants", "links", "link_hosts", "operator"})
 #: The longest one delivery may take before the harness stops waiting and records the post as
 #: `maybe_posted` (`tool.py`): well inside `ledger.IN_FLIGHT_MS`, so a `posting` row past that is
 #: always one whose process stopped, never a delivery still under way.
@@ -174,9 +177,12 @@ class Destination:
     link_hosts: tuple[str, ...] | None = None
     #: The registration minus `HARNESS_FIELDS`: the kind's own fields (a webhook's `endpoint`).
     fields: dict[str, Any] = field(default_factory=dict)
+    #: `"operator": true`: the harness's own channel (`FELIX_JOB_ALERT_DESTINATION`), which no
+    #: manifest may name (`resolve_destinations`) and no tenant's `post` reaches.
+    operator: bool = False
 
     def allows(self, tenant_id: str) -> bool:
-        return tenant_allowed(self.tenants, tenant_id)
+        return not self.operator and tenant_allowed(self.tenants, tenant_id)
 
     def apply_links(self, text: str) -> str:
         """`text` as this destination's link policy leaves it."""
@@ -281,7 +287,11 @@ def parse_destinations(settings: Any) -> dict[str, Destination]:
         kind = spec.get("kind")
         if not isinstance(kind, str) or not kind.strip():
             raise ValueError(f"destination {name!r} needs a `kind`")
-        tenants = parse_tenants(spec, kind="destination", name=name)
+        operator = spec.get("operator", False)
+        if not isinstance(operator, bool):
+            raise ValueError(f"destination {name!r} `operator` must be true or false")
+        # An operator destination is open to no tenant's manifests, so its `tenants` is not read.
+        tenants = frozenset() if operator else parse_tenants(spec, kind="destination", name=name)
         links = spec.get("links", "strip")
         if links not in ("strip", "keep"):
             raise ValueError(f'destination {name!r} `links` must be "strip" or "keep"')
@@ -299,6 +309,7 @@ def parse_destinations(settings: Any) -> dict[str, Destination]:
             links=links,
             link_hosts=_link_hosts(name, spec, links),
             fields=fields,
+            operator=operator,
         )
     return out
 
@@ -323,20 +334,34 @@ def _link_hosts(name: str, spec: dict[str, Any], links: str) -> tuple[str, ...] 
 
 def resolve_destinations(settings: Any, tenant_id: str, names: list[str]) -> dict[str, Destination]:
     """The destinations `names` are for `tenant_id`, each checked by its kind's adapter, or
-    `DestinationError`. One message for an id that is unregistered and one that is another
-    tenant's: which ids exist is not this tenant's to learn."""
+    `DestinationError`. One message for an id that is unregistered, one that is another
+    tenant's, and an operator destination: which ids exist is not this tenant's to learn."""
     registry = parse_destinations(settings)
     out: dict[str, Destination] = {}
     for name in names:
         dest = registry.get(name)
         if dest is None or not dest.allows(tenant_id):
             raise DestinationError(f"unknown destination: {name}")
-        adapter = destination_kind(dest.kind)
-        if adapter is None:
-            raise DestinationError(f"destination {name} is of kind {dest.kind!r}, which is not installed")
-        adapter.validate(settings, tenant_id, dest)
-        out[name] = dest
+        out[name] = _checked(settings, tenant_id, dest)
     return out
+
+
+def resolve_harness_destination(settings: Any, tenant_id: str, name: str) -> Destination:
+    """The destination the harness itself posts to about `tenant_id` (a job health alert), or
+    `DestinationError`: an operator destination whatever the tenant, else one open to the tenant --
+    which is then also a `post` grant to that tenant's manifests."""
+    dest = parse_destinations(settings).get(name)
+    if dest is None or not (dest.operator or dest.allows(tenant_id)):
+        raise DestinationError(f"unknown destination: {name}")
+    return _checked(settings, tenant_id, dest)
+
+
+def _checked(settings: Any, tenant_id: str, dest: Destination) -> Destination:
+    adapter = destination_kind(dest.kind)
+    if adapter is None:
+        raise DestinationError(f"destination {dest.name} is of kind {dest.kind!r}, which is not installed")
+    adapter.validate(settings, tenant_id, dest)
+    return dest
 
 
 __all__ = [
@@ -361,4 +386,5 @@ __all__ = [
     "post_key",
     "register_destination_kind",
     "resolve_destinations",
+    "resolve_harness_destination",
 ]

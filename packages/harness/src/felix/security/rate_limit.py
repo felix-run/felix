@@ -131,7 +131,11 @@ class RedisRateLimiter:
 # /ready and /live while only /health was public, and no pod ever became Ready.
 # `tests/unit/test_operability.py` reads the probe paths out of the chart, the Dockerfile
 # and the Compose files and asserts each is in this set.
-PROBE_PATHS = frozenset({"/health", "/live", "/ready"})
+#
+# `/health/scheduler` is not a kubelet probe -- a stale scheduler must not restart or unready the API
+# -- but the uptime monitor it is for has the same two needs: no credential, and no 429 when it
+# polls. It reads one Redis key, so it is no more to amplify than `/ready`.
+PROBE_PATHS = frozenset({"/health", "/live", "/ready", "/health/scheduler"})
 
 # /metrics is deliberately NOT skipped: it is a scrape target with unbounded label
 # cardinality, so an unauthenticated caller polling it is a real amplification path.

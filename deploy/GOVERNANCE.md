@@ -548,9 +548,16 @@ after every window and compaction (`skills/activation.py`); the thread's checkli
 `tools/todos.py`) -- so a write-back under the real name was an activation or a checklist the model
 never made. The model still sees it answer its `tool_call_id`; the OpenAI wire leaves out a message
 `name` the API would refuse, as `queue:<name>` is. Rows written before this rule keep the names they
-were written with. A write-back still chooses its result's `tool_call_id`, and an `assistant` event's
-`tool_calls` keep their names (a wire tool name cannot hold `:`): every reader of a skill tool's or
-`todo_write`'s result also parses its content, so neither is read back as the harness's.
+were written with. Its call ids are its own the same way: a result's `tool_call_id` and the ids in an
+`assistant` event's `tool_calls` are stored as `queue_<id>` (`_`, a separator Anthropic takes in an
+id), always, even when the writer sent the prefix, and a number as well as a string; one that would
+pass OpenAI's 40 characters is stored as `queue_` and a digest of it instead. A call is paired with its result by id alone, so
+a write-back answering a real call the run never finished stood in for the harness's "may have
+already taken effect; do not call it again" result. A writer's own call and result still pair, as
+long as both are written after this rule: rows written before it keep their ids. An
+`assistant` event's `tool_calls` keep their names (a wire tool name cannot hold `:`): every reader of
+a skill tool's or `todo_write`'s result also parses its content, so neither is read back as the
+harness's.
 
 A person's `/skill-name args` and a manifest's `preload` are activated by the harness, not
 written into the person's turn: before the model's first step it calls `activate_skill` through the
@@ -3348,6 +3355,45 @@ down, and nothing more: the exception text goes to the log, its report is cached
 seconds, and concurrent callers share one probe, so the route can be hammered and the
 database cannot. If even up/down per dependency is too much for your perimeter, restrict
 those paths at the ingress — the chart's default rule forwards `/`.
+
+`/health/scheduler` shares that allowlist and tells an anonymous caller one thing: how many seconds
+ago the scheduler last completed a sweep (`ok` / `stale` / `never` / `unknown`, 503 for all but
+`ok`; `unknown` is a Redis the API cannot read). A sweep that failed for every tenant stamps nothing. No tenant,
+job or host is in it. It is an external monitor's target, not a probe: a stale scheduler must page
+someone, not restart the API (`docs/OBSERVABILITY.md`).
+
+### Job health watch
+
+A failing or overdue job is a detection control here, so it is said out loud once. The worker's
+`job_health_watch` sweep (every 5 minutes, every tenant, the tenant bound for RLS) opens an incident
+on a job that is **overdue** -- enabled, scheduled, due longer than
+`FELIX_JOB_OVERDUE_GRACE_SECONDS` (900) ago (a `running` mark does not exempt it: a run killed with its
+worker holds that mark for six hours), and still due after a scheduler sweep completed two minutes past
+when the watch first saw it so, which keeps a re-enabled job, a first schedule and a scheduler outage's
+backlog from alerting before the scheduler had its chance -- or **failing** -- its last `FELIX_JOB_FAILURE_THRESHOLD`
+(3) runs that ran all errored, skipped runs ignored. Each incident is recorded on the job (`health`
+on `GET /jobs/{name}`), counted (`felix_job_health_incident{kind}`), audited (`job.health`, `open` and
+`cleared`), and, when `FELIX_JOB_ALERT_DESTINATION` names a `FELIX_DESTINATIONS` id open to the job's
+tenant, posted there once: edition `job-health:<job>:<kind>:<since-ms>` under the reserved manifest id
+`felix:job-health`, through the same ledger as `post`, so a sweep that dies mid-delivery does not
+alert twice and an unknown outcome is not retried. The text is fixed: job and tenant (characters
+outside a plain set masked), kind, since when, and the last error's *class* (`run_error`,
+`internal_error`, `cancelled`, `credential_expired`, …) -- never the run's error text. A failing
+incident clears when the job next succeeds; an overdue one when it fires; disabling a job clears both.
+A destination not open to the tenant, or none set, posts nothing and the incident is still recorded,
+counted and audited; it is tried again each sweep, so it alerts once routing exists.
+
+**Make the alert destination an operator destination.** `"operator": true` on a `FELIX_DESTINATIONS`
+entry makes it the harness's own: no manifest may name it (`spec.destinations` answers it as an
+unknown id), `tenants` is not read, and the watch posts there about every tenant -- for the `webhook`
+kind, the endpoint's own `tenants` is not consulted either, so list there only tenants whose manifests
+may announce runs to it; for the `slack` kind, the app's own tenant is not consulted, so the one app
+posts about every tenant -- make it the operator's own Slack app and workspace, never a tenant's, or
+that tenant's workspace reads every tenant's job names. A non-operator alert destination reaches only the tenants in its `tenants`
+list, and that list is also a `post` grant: every manifest in those tenants may post to the ops
+channel. A `tenants` list holding `"*"` fails the boot in every registry -- it named a tenant called
+`*`; the string `"*"` is what opens an entry to all. The watch runs on the scheduler it watches; `/health/scheduler` is the watch
+for that.
 
 ## JWT verification
 

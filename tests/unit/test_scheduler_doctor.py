@@ -41,3 +41,40 @@ def test_plugin_cron_register_helper() -> None:
 
     # Should not raise when no plugins are installed.
     worker_tasks._register_plugin_cron_tasks()
+
+
+def _doctor(tmp_path: Path, monkeypatch, redis_url: str) -> str:
+    for key, value in {
+        "FELIX_DATABASE_URL": "memory://doctor",
+        "FELIX_OBJECT_STORE": "memory",
+        "FELIX_AUTH_MODE": "none",
+        "FELIX_ALLOW_INSECURE": "true",
+        "FELIX_DATA_DIR": str(tmp_path),
+        "FELIX_WAREHOUSE": "none",
+        "FELIX_REDIS_URL": redis_url,
+    }.items():
+        monkeypatch.setenv(key, value)
+    from felix.config import get_settings
+
+    get_settings.cache_clear()
+    from felix_cli.main import app
+
+    try:
+        return CliRunner().invoke(app, ["doctor"]).output
+    finally:
+        get_settings.cache_clear()
+
+
+def test_doctor_says_the_heartbeat_is_not_visible_without_redis(tmp_path: Path, monkeypatch) -> None:
+    assert "heartbeat not visible from this process" in _doctor(tmp_path, monkeypatch, "")
+
+
+def test_doctor_notes_a_stale_scheduler_heartbeat(tmp_path: Path, monkeypatch) -> None:
+    from felix.jobs import tick
+
+    async def stale(_settings) -> tick.SchedulerHealth:
+        return tick.SchedulerHealth("stale", 901, 300)
+
+    monkeypatch.setattr(tick, "scheduler_health", stale)
+    output = _doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0")
+    assert "scheduler heartbeat stale — last sweep 901s ago" in output

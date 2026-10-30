@@ -31,6 +31,9 @@ EXPECTED_SCHEDULES = {
     "flush_audit": "*/1 * * * *",
     "flush_usage": "*/1 * * * *",
     "run_scheduled_jobs": "* * * * *",
+    # Every five minutes: an overdue or failing job is reported within one sweep of crossing its
+    # grace or threshold, and the grace (15 minutes by default) is three sweeps (`felix.jobs.watch`).
+    "job_health_watch": "*/5 * * * *",
     "consolidate_memory": "*/15 * * * *",
     "retention_sweep": "0 3 * * *",
     # Removes threads' repository checkouts unused for FELIX_REPO_CHECKOUT_TTL_DAYS (#470).
@@ -124,7 +127,7 @@ def test_the_set_of_scheduled_tasks_does_not_change_silently() -> None:
     """
     declared = _declared_schedules()
 
-    assert len(declared) == 13, declared
+    assert len(declared) == 14, declared
     for name in EXPECTED_SCHEDULES:
         assert callable(getattr(worker_tasks, name, None)), f"{name} is not exported"
 
@@ -192,6 +195,35 @@ async def test_run_scheduled_jobs_leaves_a_disabled_job_alone() -> None:
     await worker_tasks.run_scheduled_jobs.original_func()
 
     assert await jobs_store.list_runs(_settings(), TENANT, "paused", limit=10) == []
+
+
+async def test_run_scheduled_jobs_stamps_the_scheduler_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`GET /health/scheduler` reads the stamp the task's sweep leaves; a task that stopped
+    stamping would look exactly like a scheduler that stopped."""
+    from felix.jobs import scheduler
+    from felix.jobs.tick import last_tick
+
+    monkeypatch.setattr(scheduler, "now_ms", lambda: 1_800_000_123_456)
+    assert await last_tick() is None
+
+    await worker_tasks.run_scheduled_jobs.original_func()
+
+    assert await last_tick() == 1_800_000_123_456
+
+
+async def test_job_health_watch_opens_an_incident_for_a_failing_job() -> None:
+    """The task body reaches every tenant's jobs: a job whose last runs all failed is flagged."""
+    from felix.jobs import store as jobs_store
+
+    await jobs_store.put_job(_settings(), TENANT, "flaky", schedule="", manifest_id="quick", enabled=True)
+    for at in range(_settings().job_failure_threshold):
+        await jobs_store.record_run(_settings(), TENANT, "flaky", status="error", started_at=1_000 + at)
+
+    await worker_tasks.job_health_watch.original_func()
+
+    job = await jobs_store.get_job(_settings(), TENANT, "flaky")
+    assert job is not None
+    assert set(job["health"]) == {"failing"}, job["health"]
 
 
 async def test_retention_sweep_prunes_what_is_past_its_ttl() -> None:

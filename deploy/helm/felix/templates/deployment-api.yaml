@@ -46,7 +46,9 @@ spec:
           # are down; liveness does no I/O and only restarts a wedged process. Both
           # paths are public in the API's auth allowlist, because kubelet sends no
           # credential; `tests/unit/test_helm_topology.py` pins the paths and
-          # `tests/unit/test_operability.py` pins the allowlist.
+          # `tests/unit/test_operability.py` pins the allowlist. `/health/scheduler` is
+          # deliberately not a probe here: a stopped felix-scheduler is not this pod's fault,
+          # so point an uptime monitor outside the cluster at it instead.
           readinessProbe:
             httpGet:
               path: /ready

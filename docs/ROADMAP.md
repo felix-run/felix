@@ -933,8 +933,13 @@ side was already conformant. Four PRs, landed in order:
   - [x] A write-back writes no `tool_result` under a harness tool's name
     (`fix/tool-result-provenance`): every one it writes is stored under `queue:<name>`, which
     also closed a forged `todo_write` checklist. Chosen over a marker on every real result,
-    which would have dropped every existing thread's activations and checklists at deploy. Open:
-    a write-back still picks its result's `tool_call_id` (#739).
+    which would have dropped every existing thread's activations and checklists at deploy.
+  - [x] A write-back cannot answer a call the harness made (#739, `fix/write-back-call-id`): its
+    call ids, on a result and in an `assistant` event's `tool_calls`, are stored as `queue_<id>`,
+    so a real interrupted call still gets its interrupted result. Open: a result no call matches
+    is still sent to the model, which Anthropic refuses for the thread. The write-back rules
+    (`_payload_to_appendable` and its helpers) belong in their own `session/write_back.py`, out of
+    the 970-line store module.
   - Open: a side question does not get retention, since it renders without a catalog. Two
     `activate_skill` calls in one parallel batch both return the body (both read the log
     before the batch is appended). Retained text is not counted inside a compacting
@@ -1085,6 +1090,12 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
       by the connectors plugin through `register_manifest_dir`, so an install without it never
       lists them. Open: no eval fixture scores them yet (concierge's needs mocked connector
       tools); `travel` and `researcher` search only where an operator runs SearXNG.
+- [ ] **More tools** (the plan's list, in order):
+  - [x] Time, in core: `time_now`, `time_convert` and `date_math` (`felix.tools.time_tools`),
+    local and read-only. A daylight-saving gap or repeated hour is named, not guessed through;
+    calendar units move the wall clock and hours are elapsed time. `concierge` and `travel` bind them.
+  - [ ] ICS: read a subscribed `.ics` feed (Outlook and shared calendars without OAuth).
+  - [ ] Microsoft 365 (Graph) on the vault; Wikipedia/Wikidata; news/RSS.
 - Found, not fixed:
   - **No per-manifest session retention.** `governance.retention_days` shortens only the audit
     TTL, so `kids` keeps children's transcripts for as long as `FELIX_SESSION_RETENTION_DAYS`
@@ -1133,10 +1144,23 @@ The gaps, in order:
       deletes the row, `deploy/GOVERNANCE.md`); listing a destination kind's `secret:` refs in
       the registries `FELIX_MANIFEST_SECRETS` must not reopen
       (`secret_policy.assert_manifest_secrets_unbound`).
-- [ ] **Job health watch.** A worker sweep that flags a job whose `next_run_at` is long past, or
-      whose last N runs errored, to its owner (`notify`) or an operator webhook. Today a failing
-      operator job, or a stopped `felix-scheduler`, is silent. `report_back` covers only
-      agent-scheduled tasks.
+- [x] **Job health watch.** Every completed scheduler sweep stamps a heartbeat (`jobs/tick.py`,
+      Redis with an in-process copy) that `GET /health/scheduler` serves to an external monitor:
+      503 `stale` past `FELIX_SCHEDULER_STALE_SECONDS`, `never` with none; `felix doctor` notes it.
+      A sweep that failed for every tenant stamps nothing and fails its task; `unknown` when Redis
+      cannot be read. The `job_health_watch` cron (every 5 min, `jobs/watch.py`) opens an `overdue`
+      incident (due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` ago, a `running` mark no exemption,
+      and still due after a scheduler sweep completed two minutes past the watch's first sighting) or
+      a `failing` one (the last
+      `FELIX_JOB_FAILURE_THRESHOLD` runs that ran all errored), recorded on the job (`health_json`,
+      migration `0050`, compare-and-set so overlapping sweeps open it once), counted
+      (`felix_job_health_incident{kind}`, `FelixJobHealthIncident`), audited (`job.health`), and posted
+      once to `FELIX_JOB_ALERT_DESTINATION` (best `"operator": true`, which no manifest may name; an
+      unrouted incident alerts once routing exists) through the destinations ledger (`destinations/publish.py`,
+      now shared with `post`) with fixed text naming the error's class. A success clears `failing`,
+      firing clears `overdue`, disabling clears both. *Follow-up:* the job's owner by `notify` (a push
+      to `created_by`) as a second route beside the operator's destination; a per-job opt-out or
+      threshold in the job's payload.
 - [ ] **Per-job `timezone`.** Cron is evaluated in UTC (`jobs/schedule.py`); `FELIX_TIMEZONE`
       sets only the date in the prompt. "7:32 on weekdays, New York" has to be converted by hand
       and drifts at DST.

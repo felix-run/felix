@@ -61,6 +61,17 @@ key set never fetched or past its TTL, a shared issuer with no audience, a local
 does not import) and stays ok but logs a warning when only some are, because a stale set is
 not served and every token from that issuer would 401 while everything else stayed green.
 
+`/health/scheduler` is public and unthrottled too, but it is for an **external monitor**, not
+a kubelet probe: it answers `200 {"status": "ok", "last_tick_age_s": n, "stale_after_s": s}`
+while the scheduler's last completed sweep (`run_scheduled_jobs`, every minute) is within
+`FELIX_SCHEDULER_STALE_SECONDS` (300), and `503` with `"status": "stale"` past it, `"never"`
+when no sweep was ever recorded, or `"unknown"` when Redis could not be read. A sweep that failed
+for every tenant (a schema the image is ahead of, say) stamps nothing and fails its task. The stamp crosses from the worker to the API through Redis
+(`felix/jobs/tick.py`). Do not wire it to a liveness or readiness probe: a stopped scheduler is
+not the API pod's fault, and restarting or unreadying the API fixes nothing. Point an uptime
+checker at it instead, from outside the deployment -- a stopped scheduler stops every in-cluster
+sweep too, including any that would notice.
+
 ## Metrics
 
 ### Model and cost
@@ -140,6 +151,7 @@ worth having at all — each one means a control did not do what the manifest im
 | `felix_context_overflow_recovered` | `manifest_id`, `reason` | The context window overflowed and the loop recovered. |
 | `felix_worker_task` | `task`, `status` | One per periodic sweep. A `task` whose rate drops to zero has stopped firing — which otherwise looks identical to one that runs and finds nothing. |
 | `felix_worker_task_seconds` | `task` | Sweep duration. |
+| `felix_job_health_incident` | `kind` | A job health incident opened (`felix.jobs.watch`): `overdue` (enabled, scheduled, due longer than `FELIX_JOB_OVERDUE_GRACE_SECONDS` ago, and a scheduler sweep completed since the watch saw it so) or `failing` (its last `FELIX_JOB_FAILURE_THRESHOLD` runs all errors). Once per incident, however many sweeps see it. |
 | `felix_buffer_dropped` | `buffer` | **Watch this.** Audit or usage rows were dropped because a buffer hit `DEFAULT_MAX_PENDING`. Silent data loss otherwise. |
 | `felix_buffer_quarantined` | `buffer` | **Watch this.** Audit or usage rows Postgres refused as data (SQLSTATE 22/23) were set aside so the rest of the batch could land; the log line names each event id. Before this, one such row blocked every later one. |
 
@@ -151,7 +163,7 @@ observability overlay mounts it into Prometheus (`rule_files` in
 when `prometheusRule.enabled` is set. It alerts on the rows above marked **watch this**
 (`felix_buffer_dropped`, `felix_buffer_quarantined`, `felix_model_unmetered`, `felix_model_unpriced`,
 `felix_control_unavailable`), on a worker task that stops firing or keeps failing
-(`felix_worker_task`), on an unscrapable API or worker, on repeated provider timeouts, and
+(`felix_worker_task`), on a job health incident (`felix_job_health_incident`), on an unscrapable API or worker, on repeated provider timeouts, and
 on Postgres connections nearing `max_connections` (from postgres-exporter).
 `tests/unit/test_prometheus_rules.py` re-derives every Felix metric a rule names from the
 source, so a rule cannot quietly watch a metric that no longer exists.

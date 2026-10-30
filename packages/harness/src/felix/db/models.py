@@ -177,6 +177,11 @@ class Job(Base):
     # a job written before `0042_job_creator`, which runs as a principal with no scopes.
     created_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_auth: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # The job's open health incidents (`felix.jobs.watch`), by kind -- `overdue`, `failing` -- each
+    # with when it began and what became of its alert. Written only by the watch (`0050_job_health`).
+    health_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"), default=dict
+    )
 
 
 class Approval(Base):

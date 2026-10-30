@@ -25,6 +25,7 @@ SCHEDULED_TASKS = {
     "flush_audit",
     "flush_usage",
     "run_scheduled_jobs",
+    "job_health_watch",
     "consolidate_memory",
     "retention_sweep",
     "repo_checkout_sweep",
