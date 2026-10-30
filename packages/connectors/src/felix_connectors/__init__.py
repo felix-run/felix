@@ -1,4 +1,5 @@
-"""Felix connectors: tools an agent calls to reach everyday services: weather, maps, markets, FX.
+"""Felix connectors: tools an agent calls to reach everyday services: weather, maps, markets, FX,
+and a person's own Google Calendar, Gmail and Drive.
 
 Installed, this plugin registers its tools with every tool provider; a manifest still names each
 one in `spec.tools` before an agent holds it:
@@ -12,7 +13,8 @@ governance does not trust, so a manifest that enables content screening has what
 screened. The defaults need no key: Open-Meteo for the forecast and a point's time zone, the US
 National Weather Service for alerts, OpenStreetMap's Nominatim for places, FOSSGIS's OSRM for
 routes and Frankfurter for exchange rates. Stock quotes need `FELIX_MARKET_API_KEY` (Finnhub or
-Alpha Vantage).
+Alpha Vantage). The Google tools act as the person the run acts for, with the grant they
+connected (`felix.auth.google_connect`), and need the `google` extra.
 
 A family is a module exporting `TOOL_NAMES` and `build_tools(settings)`, listed in `FAMILIES`.
 
@@ -25,9 +27,9 @@ from collections.abc import Callable
 from types import ModuleType
 from typing import Any
 
-from felix_connectors import fx, maps, markets, weather
+from felix_connectors import fx, gmail, google_calendar, google_drive, maps, markets, weather
 
-FAMILIES: tuple[ModuleType, ...] = (weather, maps, markets, fx)
+FAMILIES: tuple[ModuleType, ...] = (weather, maps, markets, fx, google_calendar, gmail, google_drive)
 
 
 def _build(family: ModuleType, name: str) -> Any:

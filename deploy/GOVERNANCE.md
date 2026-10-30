@@ -3456,6 +3456,20 @@ email, with the scopes Google says it carries (granular consent may grant fewer 
   the worker, so it holds `FELIX_CONNECTION_TOKEN_KEY` and Google's client id and secret. None of
   them mints a Felix token. Set the vault's own key: the fallback to `FELIX_GITHUB_TOKEN_KEY` works
   only where that key is, which under Compose is the api alone.
+- **The tools** (`felix-connectors`, the `google` extra) act as `AuthContext.person` -- the person
+  the run acts for, a scheduled job's writer or a resumed run's starter included -- and nobody
+  else: a run acting for no one person gets no Google account. Each checks the connection granted
+  a scope it needs before asking Google. Google's own client builds the request; Felix's
+  egress-guarded client sends it, so `network.allow_hosts` and the SSRF guard hold
+  (`www.googleapis.com`, `gmail.googleapis.com`). Every answer is untrusted text (mail and shared
+  files are anyone's): enable content screening. `connectors__calendar_create_event` and
+  `connectors__gmail_draft` change things, so they are not read-only (plan mode holds them, a
+  resumed run does not repeat them) and belong behind approvals. Nothing sends: there is no mail
+  send, and an event is created with no guests and no notification -- an invitation is mail from
+  the person's account, and an instruction hidden in a message or a shared Doc could otherwise
+  address one, with what else the agent read in its description, to anyone. An event's id is
+  derived from the person, title and time, so a call repeated after a timeout finds the event it
+  made. A draft can still stage text for the person to send: approve drafts with care.
 - Removal revokes the refresh token at Google, best effort (a refusal is logged as
   `connection_revoke_failed`). At Google that ends the whole grant between that Google account and
   the OAuth client -- so the same Google account connected by another person, or in another

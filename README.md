@@ -1038,6 +1038,12 @@ Storage and execution:
   `connectors__symbol_search` (Finnhub or Alpha Vantage, `FELIX_MARKET_BACKEND`, keyed by
   `FELIX_MARKET_API_KEY`), and keyless `connectors__fx_rate` (ECB reference rates via Frankfurter,
   `FELIX_FX_BACKEND`). Every price carries its source and the time it is from.
+- A person's own Google, from the same plugin (`uv sync --extra google-connectors`): Calendar
+  (`connectors__calendar_list_events`, `_find_free_time`, `_create_event`), Gmail
+  (`connectors__gmail_search`, `_read`, `_draft` -- never sent) and Drive (`connectors__drive_search`,
+  `_read`), each acting as the person the run acts for with the Google account they connected
+  (`/connections/google/start`). Requests are built by Google's own client and sent through
+  Felix's egress guard.
 - Web Push wakes a subscribed browser — an installed phone app, a backgrounded tab — when a new
   approval or an agent's question is waiting on a person (`/push/*`, `approvals:read`). Off until
   `FELIX_PUSH_VAPID_PRIVATE_KEY` and `FELIX_PUSH_VAPID_SUBJECT` are set; endpoints are limited to

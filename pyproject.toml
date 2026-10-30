@@ -43,6 +43,8 @@ channels = ["felix-channels"]
 # Tools that reach everyday services (`packages/connectors`): weather today. A plugin, like
 # `channels`: installing it registers the tools, and a manifest still names each one.
 connectors = ["felix-connectors"]
+# Its Google tools, which act as a person through their connection vault.
+google-connectors = ["felix-connectors[google]"]
 full = [
     "felix-harness[aws,gcp,otel]",
 ]
