@@ -1090,6 +1090,12 @@ Apple connectors, then example agents built on them. One PR at a time, in order:
       by the connectors plugin through `register_manifest_dir`, so an install without it never
       lists them. Open: no eval fixture scores them yet (concierge's needs mocked connector
       tools); `travel` and `researcher` search only where an operator runs SearXNG.
+- [ ] **More tools** (the plan's list, in order):
+  - [x] Time, in core: `time_now`, `time_convert` and `date_math` (`felix.tools.time_tools`),
+    local and read-only. A daylight-saving gap or repeated hour is named, not guessed through;
+    calendar units move the wall clock and hours are elapsed time. `concierge` and `travel` bind them.
+  - [ ] ICS: read a subscribed `.ics` feed (Outlook and shared calendars without OAuth).
+  - [ ] Microsoft 365 (Graph) on the vault; Wikipedia/Wikidata; news/RSS.
 - Found, not fixed:
   - **No per-manifest session retention.** `governance.retention_days` shortens only the audit
     TTL, so `kids` keeps children's transcripts for as long as `FELIX_SESSION_RETENTION_DAYS`

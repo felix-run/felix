@@ -25,7 +25,8 @@ must not break.
   `tools/types.py:accepts_positional`; see the plugin-seam skill on `functools.wraps`.
 - **Where binding happens.** Names in `spec.tools` resolve through the `ToolProvider`
   (`tools/provider.py:InMemoryToolProvider`), filled by `tools/builtins.py:register_builtin_tools`
-  (calculator, the five workspace tools, `ask_user`, skill stubs) and plugin tools. The API builds
+  (calculator, the time tools in `tools/time_tools.py`, the five workspace tools, `ask_user`, skill
+  stubs) and plugin tools. The API builds
   it in `composition.py:compose`; fibers, cron, eval and the CLI use
   `tools/builtins.py:default_tool_provider`, which must stay equivalent. Every other family is
   bound inside `manifests/builder.py:build_agent` from its `spec.*` list via a `tools_from_*`

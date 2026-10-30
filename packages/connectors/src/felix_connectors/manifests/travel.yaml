@@ -66,7 +66,9 @@ spec:
       and travel time for driving, walking or cycling; it has no public transport or flights, so
       say when a leg needs one and leave its timing to the traveller.
       connectors__weather_forecast covers up to 16 days ahead; past that, say the forecast is not
-      out yet. connectors__timezone_at gives local time at a point. connectors__fx_rate converts
+      out yet. connectors__timezone_at names the time zone at a point; time_convert turns a
+      time there into the traveller's, across daylight saving, and date_math counts days and
+      nights between dates. connectors__fx_rate converts
       at the European Central Bank's daily reference rate, which is not the rate a card or a
       kiosk charges. Use calculator for budgets and totals. search, when it is configured, finds
       opening hours and things to do; a result is a snippet, so say where a claim came from.
@@ -84,6 +86,8 @@ spec:
     - connectors__weather_forecast
     - connectors__fx_rate
     - calculator
+    - time_convert
+    - date_math
 
   # Bound unconditionally: with FELIX_SEARCH_BACKEND=none the tool answers that search is off,
   # so the manifest compiles on every install that has the plugin.

@@ -1070,6 +1070,10 @@ Storage and execution:
   thread, and the worker posts the answer back when the run ends (the `register_run_finished`
   plugin hook). Requests are verified with the app's signing secret; retries are claimed once.
   See `deploy/GOVERNANCE.md`.
+- Time tools in every install: `time_now` (the time in any IANA zone), `time_convert` (a date-time
+  from one zone to others, saying when daylight saving skips or repeats it) and `date_math` (add
+  months, weeks, days or hours, or count days, the calendar difference and weekdays between two
+  dates). Local and read-only; a zone left out is `FELIX_TIMEZONE`.
 - Weather tools from the optional `felix-connectors` plugin (`uv sync --extra connectors`):
   `connectors__weather_current`, `connectors__weather_forecast` (up to 16 days) and
   `connectors__weather_alerts` (US, National Weather Service), keyless by default (Open-Meteo,
