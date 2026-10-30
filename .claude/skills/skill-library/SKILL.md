@@ -74,7 +74,9 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    `SkillRef.preload` not already shown in the thread into `activate_skill` calls through the tool
    runner, logged as an assistant turn. The person's turn stays as typed; a declared prompt of the
    same name was already expanded by the route. Only `InvokeInput.person_turn` runs (`/chat`, `/v1`,
-   a durable `/chat` run -- never a `task` prompt). `invocation.PersonCalls` mints the batch's call
+   a durable `/chat` run -- never a `task` prompt); on `/v1` (`AGENT_CALLER_EXTRA` in the request
+   context) a model-hidden skill also needs `skills:invoke` (`SkillPreamble._may_run_manual`).
+   `invocation.PersonCalls` mints the batch's call
    ids, and `activate_skill` honours a person's privileges -- a model-hidden skill, `arguments` --
    only for such an id, once; the model's own `arguments` are ignored. `$ARGUMENTS`,
    `$ARGUMENTS[N]` and `$N` are substituted (`arguments.with_arguments`, bounded); a body that never

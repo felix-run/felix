@@ -514,3 +514,46 @@ async def test_a_threadless_reflect_on_v1_keeps_the_person_s_skill_in_every_draf
     assert any("Previous answer scored" in str(m.content) for m in second), "the prompt is the second draft"
     [activated] = _activations(second)
     assert activated["activated"] == "triage" and activated["arguments"] == "ACME 900"
+
+
+async def test_a_manual_only_skill_on_v1_needs_skills_invoke(boot: Any, skills_dir: Path) -> None:
+    """`/v1`'s caller is as often an agent: a skill kept from the model runs there only for a caller
+    holding `skills:invoke`. A skill the model may use still runs for anyone, and `/chat` is
+    unchanged -- each half is what tells the gate from an outage of `/name` on `/v1`."""
+    from tests.support.mgmt_keys import READER, WRITER, bearer, scoped_keys
+
+    declared = _manifest(skills=[{"name": "triage"}, {"name": "secret-ops"}])
+
+    async def v1(app: Any, token: str, text: str, *, stream: bool = False) -> None:
+        response = await app.client.post(
+            "/v1/chat/completions",
+            json={"model": "e2e-invoke", "stream": stream, "messages": [{"role": "user", "content": text}]},
+            headers=bearer(token),
+        )
+        assert response.status_code == 200, response.text
+
+    async with boot(
+        [ScriptedTurn(content=str(n)) for n in range(5)],
+        env={"FELIX_SKILLS_DIR": str(skills_dir), **scoped_keys(reader=[], writer=["skills:invoke"])},
+        manifests={"e2e-invoke": declared},
+    ) as app:
+        await v1(app, READER, "/secret-ops now")
+        await v1(app, WRITER, "/secret-ops now")
+        await v1(app, READER, "/triage ACME 900")
+        await v1(app, READER, "/secret-ops now", stream=True)
+        response = await app.client.post(
+            "/chat",
+            json={"manifest": "e2e-invoke", "messages": [{"role": "user", "content": "/secret-ops now"}]},
+            headers=bearer(READER),
+        )
+        assert response.status_code == 200, response.text
+        prompts = app.spy.prompts
+
+    assert len(prompts) == 5
+    assert _activations(prompts[0]) == [], "a caller without skills:invoke runs no manual-only skill on /v1"
+    turns = [str(m.content) for m in prompts[0] if getattr(m, "role", "") == "user"]
+    assert "/secret-ops now" in turns, "the refused turn is sent as written"
+    assert [a.get("activated") for a in _activations(prompts[1])] == ["secret-ops"]
+    assert [a.get("activated") for a in _activations(prompts[2])] == ["triage"]
+    assert _activations(prompts[3]) == [], "the streamed /v1 path is held to it too"
+    assert [a.get("activated") for a in _activations(prompts[4])] == ["secret-ops"], "/chat is a person's"

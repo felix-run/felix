@@ -76,6 +76,16 @@ class WebhookDestination:
                 f"destination {dest.name} names a webhook endpoint not registered for this tenant"
             )
 
+    async def secrets(self, settings: Any, tenant_id: str, dest: Destination) -> list[str]:
+        """The signing secret, resolved before `post` cleans the text (`DestinationSecrets`), so a
+        post that quotes it has it redacted. None for an endpoint not open to the tenant."""
+        from felix.secrets import build_secrets, resolve_secret_value
+
+        endpoint = _endpoint(settings, tenant_id, dest)
+        if endpoint is None:
+            return []
+        return [await resolve_secret_value(build_secrets(settings), endpoint.secret)]
+
     async def deliver(self, settings: Any, tenant_id: str, dest: Destination, post: Post) -> Delivery:
         from felix.durability.webhooks import endpoint_client, sign
         from felix.secrets import build_secrets, register_resolved_secret, resolve_secret_value

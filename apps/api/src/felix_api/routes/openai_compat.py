@@ -398,6 +398,7 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         InboundScreeningError,
         apply_inbound_screening,
     )
+    from felix.skills.invocation import AGENT_CALLER_EXTRA
 
     try:
         messages = await apply_inbound_screening(resolved.manifest, messages, settings)
@@ -409,7 +410,8 @@ async def chat_completions(body: ChatCompletionsRequest, request: Request) -> An
         manifest_id=body.model,
         thread_id=thread,
         # Screened above, so the 422 could be answered before a stream opened.
-        extras={INBOUND_SCREENED_EXTRA: resolved.manifest.metadata.name},
+        # A `/v1` caller is as often an agent as a person: a manual-only skill takes `skills:invoke`.
+        extras={INBOUND_SCREENED_EXTRA: resolved.manifest.metadata.name, AGENT_CALLER_EXTRA: True},
     )
     completion = _Completion.new(body.model)
     try:

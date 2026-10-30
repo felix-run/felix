@@ -1026,10 +1026,11 @@ Storage and execution:
   A manifest names ids, never URLs; an id not registered for the caller's tenant is `422`
 - `spec.destinations: {ids: [ops-brief]}` binds `post`, which publishes to shared places the
   operator registered in `FELIX_DESTINATIONS` (a JSON map of id → `{kind, tenants, links?,
-  link_hosts?, …}`; core's `webhook` kind names a `FELIX_WEBHOOK_ENDPOINTS` endpoint, and a plugin
-  may register more kinds with `register_destination_kind`) — a team channel for a scheduled brief,
-  say. Only unattended runs (jobs, heartbeats, triggers) post; a conversation's call is refused
-  unless `attended: approval` holds it for the person. Each post names an `edition`
+  link_hosts?, …}`; core's `webhook` kind names a `FELIX_WEBHOOK_ENDPOINTS` endpoint, the
+  `felix-channels` plugin adds `slack` (`{channel, conversation}`, through a `FELIX_CHANNELS` app),
+  and a plugin may register more kinds with `register_destination_kind`) — a team channel for a
+  scheduled brief, say. Only unattended runs (jobs, heartbeats, triggers) post; a conversation's
+  call is refused unless `attended: approval` holds it for the person. Each post names an `edition`
   (`brief:2026-10-29`), and the ledger (`destination_posts`) posts one manifest's edition to a
   destination at most once: a retry or the next firing gets `already_posted`, and a delivery whose
   outcome is unknown (a timeout, a 5xx) is `maybe_posted` and never retried. Secrets are redacted,
