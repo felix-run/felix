@@ -259,7 +259,10 @@ def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
         item: dict[str, Any] = {"role": m.role, "content": content}
         if m.tool_call_id:
             item["tool_call_id"] = m.tool_call_id
-        if m.name:
+        if m.name and tool_label(m.name) == m.name:
+            # Only a name the API accepts: a queue write-back's result is stored as `queue:<name>`
+            # (`felix.session.store`), and a backend that validates `name` would refuse every
+            # later turn of the thread for it.
             item["name"] = m.name
         if m.tool_calls:
             item["tool_calls"] = [

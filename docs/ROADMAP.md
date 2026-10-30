@@ -930,9 +930,12 @@ side was already conformant. Four PRs, landed in order:
   - Retention re-shows only what the compile's catalog still offers, fenced, labelled when
     imported, ahead of the history (not transient), within 128K characters a render. A queue
     write-back under a skill tool's name is stored as `queue:<name>`.
-  - Open: whether a write-back may write a `tool_result` under *any* harness tool's name (the
-    skill tools are now refused; the general case is a harness-only provenance marker on real
-    results). A side question does not get retention, since it renders without a catalog. Two
+  - [x] A write-back writes no `tool_result` under a harness tool's name
+    (`fix/tool-result-provenance`): every one it writes is stored under `queue:<name>`, which
+    also closed a forged `todo_write` checklist. Chosen over a marker on every real result,
+    which would have dropped every existing thread's activations and checklists at deploy. Open:
+    a write-back still picks its result's `tool_call_id` (#739).
+  - Open: a side question does not get retention, since it renders without a catalog. Two
     `activate_skill` calls in one parallel batch both return the body (both read the log
     before the batch is appended). Retained text is not counted inside a compacting
     strategy's budget; the 128K cap bounds it instead (#729).

@@ -877,6 +877,10 @@ def screenable_text(event_type: str, payload: dict[str, Any]) -> str:
     return "\n".join(found)
 
 
+# The namespace a write-back's names land in: its entries' `context_key`, its tool results' `name`.
+WRITE_BACK_PREFIX = "queue:"
+
+
 def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> AppendableEvent:
     # What a write-back adds: a message, a tool's result, or an entry. Never a kind the harness writes
     # for itself -- a `compaction` or a `session_summary` audit is read as the thread's summary, and
@@ -893,15 +897,19 @@ def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> Appendab
         # (`/chat/sessions/custom`): never one the harness writes, where it could drop the
         # harness's entry -- a task's report -- from the model's context.
         key = metadata[CONTEXT_KEY]
-        metadata = {**metadata, CONTEXT_KEY: f"queue:{key}" if isinstance(key, str) and key else None}
+        scoped = f"{WRITE_BACK_PREFIX}{key}" if isinstance(key, str) and key else None
+        metadata = {**metadata, CONTEXT_KEY: scoped}
     name = payload.get("name")
     from felix.skills.activation import SKILL_TOOL_NAMES
 
-    if name in SKILL_TOOL_NAMES:
-        # A skill tool's result is read back as the thread's activation and kept in front of the
-        # model for the rest of it (`skills.activation`). One from outside is the writer's text,
-        # under its own name: never a harness tool's.
-        name = f"queue:{name}"
+    if isinstance(name, str) and name and not name.startswith(WRITE_BACK_PREFIX):
+        if kind in ("tool_result", "tool") or payload.get("role") == "tool" or name in SKILL_TOOL_NAMES:
+            # A tool's result is read back by its name as what the harness ran: a skill's activation,
+            # kept in front of the model (`skills.activation`), the thread's checklist
+            # (`tools.todos`). One from outside is the writer's text, under its own name: never a
+            # harness tool's, whichever it names. The model still sees it as the answer to its
+            # `tool_call_id`; the OpenAI wire leaves out a name the API would refuse.
+            name = f"{WRITE_BACK_PREFIX}{name}"
     return AppendableEvent(
         kind=kind,  # type: ignore[arg-type]
         role=payload.get("role"),

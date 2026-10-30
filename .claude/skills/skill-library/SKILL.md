@@ -66,7 +66,7 @@ party wrote enters a catalog until a person, or a gate no setting can open, lets
    loaded) re-shows an active skill's logged result when compaction or a window dropped its turn:
    only skills the catalog still offers, fenced, ahead of the history, within `MAX_RETAINED_CHARS`
    (`activation.retained_view` decides, and `already_active` asks the same function). A queue
-   write-back under a skill tool's name is stored as `queue:<name>` (`session/store.py`).
+   write-back's tool result, under any name, is stored as `queue:<name>` (`session/store.py`).
 7. **`/name` and `preload`.** `skills/invocation.py:SkillPreamble` (built by the builder, run by
    `patterns/react.py:_run_skill_preamble` before the first model step) turns a run whose last
    message is `/name args` -- `name` a skill the person may run (`SkillCatalog.get_for_user`:
