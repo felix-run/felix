@@ -54,6 +54,12 @@ def _strip_userinfo(value: str) -> str:
     return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
 
 
+def _is_person_auth(auth: str) -> bool:
+    from felix.manifests.schema import MCP_PERSON_AUTH, PERSON_PROVIDER
+
+    return auth.startswith(MCP_PERSON_AUTH) and bool(PERSON_PROVIDER.match(auth[len(MCP_PERSON_AUTH) :]))
+
+
 def redact_manifest_secrets(doc: dict[str, Any]) -> dict[str, Any]:
     """A manifest document safe to return to a reader.
 
@@ -78,7 +84,9 @@ def redact_manifest_secrets(doc: dict[str, Any]) -> dict[str, Any]:
                 continue
             ref = dict(ref)
             auth = ref.get("auth")
-            if isinstance(auth, str) and auth and not is_secret_ref(auth):
+            # `person:<provider>` names no credential, and is what a reviewer must be able to see:
+            # this server is sent the token of everyone who uses the agent.
+            if isinstance(auth, str) and auth and not is_secret_ref(auth) and not _is_person_auth(auth):
                 ref["auth"] = REDACTED
             env = ref.get("env")
             if isinstance(env, dict):
@@ -144,6 +152,10 @@ def assert_manifest_secrets_permitted(manifest: Manifest, tenant_id: str, settin
     compiling checks again (`resolve_outbound_secrets`), for rows stored before this existed."""
     for name in manifest_secret_names(manifest):
         assert_manifest_secret_permitted(name, tenant_id, settings)
+    from felix.mcp.person_policy import assert_person_auth_permitted
+
+    # Where a person's token may be sent is the operator's, as a secret's destination is.
+    assert_person_auth_permitted(manifest, tenant_id, settings)
 
 
 async def resolve_mcp_ref(ref: McpServerRef, provider: SecretsProvider) -> McpServerRef:

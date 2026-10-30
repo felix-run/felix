@@ -2137,7 +2137,12 @@ def _bind_notify(resolved: list[Tool], m: Manifest, deps: BuildDeps, tenant_id: 
 
 
 async def _bind_mcp_servers(
-    resolved: list[Tool], refs: list[McpServerRef], m: Manifest, *, allow_http: bool
+    resolved: list[Tool],
+    refs: list[McpServerRef],
+    m: Manifest,
+    *,
+    allow_http: bool,
+    identities: list[str] | None = None,
 ) -> str:
     """Bind each MCP server's tools into ``resolved``. Returns the prompt note naming the servers
     that could not be reached (`run_sources.unavailable_sources_note`), or "" when every one
@@ -2147,7 +2152,9 @@ async def _bind_mcp_servers(
     from felix.run_sources import record_unavailable_sources, unavailable_sources_note
 
     try:
-        binding = await bind_mcp_servers(refs, allow_http=allow_http, manifest_id=m.metadata.name)
+        binding = await bind_mcp_servers(
+            refs, allow_http=allow_http, manifest_id=m.metadata.name, identities=identities
+        )
         _append_unique_tools(resolved, binding.tools)
         unavailable = binding.unavailable
     except Exception:
@@ -2353,12 +2360,19 @@ async def build_agent(
         mcp_refs, peer_refs, container_refs = await resolve_outbound_secrets(
             m, deps.settings, tenant_id=tenant_id
         )
+        # `auth: person:<provider>`: each such server gets this run's person's token, or is left out.
+        from felix.mcp.person_auth import open_person_refs
+
+        person = await open_person_refs(mcp_refs, deps.settings, tenant_id, deps.memory_person)
+        mcp_refs = person.refs
         _check_declared_egress(m, egress)
         _check_tool_egress(m, resolved, egress)
 
         # Outbound MCP servers → remote tools.
         if mcp_refs:
-            unavailable_note = await _bind_mcp_servers(resolved, mcp_refs, m, allow_http=allow_http)
+            unavailable_note = await _bind_mcp_servers(
+                resolved, mcp_refs, m, allow_http=allow_http, identities=person.identities
+            )
 
         # A2A peers → peer__{name} tools.
         if peer_refs:
@@ -2887,7 +2901,8 @@ async def build_agent(
         # last of the controls: not a control, but the directory every control and preview runs
         # over. Only the subagent trace is outside it, and it reports rather than governs.
         # Permission mode sits just outside approvals: see `governance/permission_mode.py`.
-        resolved = apply_secret_masking(resolved, _collect_secrets(deps), m.metadata.name)
+        # The person's tokens opened above are this agent's alone, as the agent is this request's.
+        resolved = apply_secret_masking(resolved, [*_collect_secrets(deps), *person.tokens], m.metadata.name)
         if m.spec.policies:
             resolved = apply_policies(resolved, m.spec.policies, m.metadata.name)
         if m.spec.command_screening.enabled:
@@ -2961,6 +2976,10 @@ async def build_agent(
                 final_prompt = f"{final_prompt}\n\n{guidance}"
         if unavailable_note:
             final_prompt = f"{final_prompt}\n\n{unavailable_note}"
+        from felix.mcp.person_auth import left_out_note
+
+        if person_note := left_out_note(person.left_out):
+            final_prompt = f"{final_prompt}\n\n{person_note}"
         now = _wall_clock(m, deps)
         if now is not None:
             final_prompt = f"{final_prompt}\n\n{date_block(now())}"

@@ -214,6 +214,12 @@ class SkillRef(_Strict):
     preload: bool = False
 
 
+#: `mcp_servers[].auth` naming a provider instead of a credential: call the server with the
+#: token of the person the run acts for, from their connection (`felix.mcp.person_auth`).
+MCP_PERSON_AUTH = "person:"
+PERSON_PROVIDER = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
 class McpServerRef(_Strict):
     name: str
     url: str = ""
@@ -221,7 +227,10 @@ class McpServerRef(_Strict):
     args: list[str] = Field(default_factory=list)
     cwd: str = ""
     env: dict[str, str] = Field(default_factory=dict)
-    # Literal token or ``secret:NAME`` / ``{"secret": "NAME"}`` (resolved at compile).
+    # Literal token or ``secret:NAME`` / ``{"secret": "NAME"}`` (resolved at compile), or
+    # ``person:<provider>`` -- `person:github`, `person:google` -- for the token of the person the
+    # run acts for, from the connection they made (`felix.mcp.person_auth`). A run that acts for
+    # no one person, or for one with no such connection, binds none of this server's tools.
     auth: str = ""
     transport: Literal["http", "sse", "stdio"] = "sse"
     # Per-request timeout, defaulting to 30s. ContainerRef and SandboxRef already carry one;
@@ -276,8 +285,22 @@ class McpServerRef(_Strict):
         assert_safe_outbound_url(v, resolve=False)
         return v
 
+    @property
+    def person_provider(self) -> str:
+        """The provider `auth: person:<provider>` names, or `""`."""
+        return self.auth[len(MCP_PERSON_AUTH) :] if self.auth.startswith(MCP_PERSON_AUTH) else ""
+
     @model_validator(mode="after")
     def _transport_fields(self) -> McpServerRef:
+        if self.auth.startswith(MCP_PERSON_AUTH):
+            if not PERSON_PROVIDER.match(self.person_provider):
+                raise ValueError(
+                    "auth: person:<provider> names a provider: lowercase letters, digits, - and _"
+                )
+            if self.transport == "stdio":
+                # A person's token is sent as a header; a stdio server has none, and putting it in
+                # a child process's environment is a credential on someone else's disk.
+                raise ValueError("auth: person:<provider> is for http/sse MCP servers, not stdio")
         if self.transport == "stdio":
             if not self.command.strip():
                 raise ValueError("stdio MCP servers require command")

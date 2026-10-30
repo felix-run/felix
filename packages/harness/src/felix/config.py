@@ -290,6 +290,12 @@ class Settings(BaseSettings):
     # the value is sent. Felix's own (`FELIX_*`, the hydrated keys, infrastructure URLs) are
     # refused whatever this says.
     manifest_secrets: str = Field(default="", repr=False)
+    # Which MCP servers a manifest's `auth: person:<provider>` may send the caller's own token to,
+    # per provider and tenant (`felix.mcp.person_policy`). JSON:
+    # {"github": [{"url": "https://api.githubcopilot.com/mcp/", "tenants": ["acme"]}]}. Empty allows
+    # none: a manifest is written by whoever holds `manifests:write`, not by the people whose tokens
+    # it would send.
+    mcp_person_auth: str = ""
     aws_region: str = "us-east-1"
     gcp_project: str = ""
     # Deploy target hint (docs/helm only — runtime stays agnostic)
@@ -912,6 +918,7 @@ class Settings(BaseSettings):
         self._validate_egress_credentials()
         self._validate_destinations()
         self._validate_manifest_secrets()
+        self._validate_mcp_person_auth()
         self._validate_triggers()
         self._validate_skill_update_webhooks()
         self._validate_push()
@@ -1055,6 +1062,15 @@ class Settings(BaseSettings):
             assert_manifest_secrets_unbound(self)
         except ValueError as exc:
             raise RuntimeError(f"FELIX_MANIFEST_SECRETS: {exc}") from exc
+
+    def _validate_mcp_person_auth(self) -> None:
+        """A malformed `FELIX_MCP_PERSON_AUTH` fails the boot rather than reading as allowing none."""
+        from felix.mcp.person_policy import parse_person_auth
+
+        try:
+            parse_person_auth(self)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(f"FELIX_MCP_PERSON_AUTH: {exc}") from exc
 
     def _validate_triggers(self) -> None:
         """A malformed `FELIX_TRIGGERS` fails the boot, not the first event it would receive."""
