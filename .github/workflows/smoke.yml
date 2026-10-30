@@ -46,6 +46,32 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke key expiry
+        # The key is a JWT minted by hand (above) and nothing else watches its `exp`: the day it
+        # lapses, every run fails 401 and reads like an outage. Only the payload's `exp` is read,
+        # and nothing of the token is printed.
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, sys, time
+          parts = os.environ["API_KEY"].split(".")
+          if len(parts) != 3:
+              sys.exit(0)  # not a JWT; nothing to check
+          payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+          exp = payload.get("exp")
+          if not isinstance(exp, (int, float)):
+              print("::warning::FELIX_SMOKE_API_KEY has no exp claim")
+              sys.exit(0)
+          days = (exp - time.time()) / 86400
+          when = time.strftime("%Y-%m-%d", time.gmtime(exp))
+          if days <= 0:
+              print(f"::error::FELIX_SMOKE_API_KEY expired on {when}; mint a new one (see this file's header)")
+              sys.exit(1)
+          if days < 30:
+              print(f"::warning::FELIX_SMOKE_API_KEY expires on {when}, in {days:.0f} days; mint a new one (see this file's header)")
+          else:
+              print(f"smoke key valid until {when}")
+          PY
+
       - name: Health
         run: |
           set -euo pipefail
