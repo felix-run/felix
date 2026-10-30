@@ -143,28 +143,50 @@ def _names_in(root: Path) -> set[str]:
 
 
 def shadowed_names(bundled_dir: str | Path | None = None) -> list[str]:
-    """Names both the bundled `manifests/` and `FELIX_MANIFESTS_DIR` hold.
+    """Names more than one manifest root holds: the bundled `manifests/`, `FELIX_MANIFESTS_DIR`,
+    a plugin's directory.
 
     Refused rather than resolved by order. `contributor` lives in the extra directory and is
     protected there; were a same-named file under `manifests/` to win, a change adding one would
-    replace the manifest that governs the agent without touching the protected file.
+    replace the manifest that governs the agent without touching the protected file. A plugin
+    that installs an agent named like a bundled one would do the same from outside the repo.
     """
-    roots = _roots(bundled_dir)
-    if len(roots) < 2:
-        return []
-    return sorted(_names_in(roots[0]) & _names_in(roots[1]))
+    seen: set[str] = set()
+    twice: set[str] = set()
+    for root in _roots(bundled_dir):
+        names = _names_in(root)
+        twice |= seen & names
+        seen |= names
+    return sorted(twice)
+
+
+def _plugin_manifest_dirs(core: list[Path]) -> list[Path]:
+    """The directories installed plugins ship manifests in (`register_manifest_dir`), less any
+    that is, or lies inside, a `core` root: holding every bundled name twice, it would make the
+    shadow check refuse them all."""
+    from felix.plugins import get_registry, load_optional_plugins
+
+    load_optional_plugins()
+    held = [c.expanduser().resolve() for c in core]
+    out = []
+    for root in get_registry().manifest_dirs():
+        if any(root == c or root.is_relative_to(c) for c in held):
+            logger.warning("ignoring plugin manifest directory %s: it is inside a bundled one", root)
+            continue
+        out.append(root)
+    return out
 
 
 def _roots(bundled_dir: str | Path | None) -> list[Path]:
     """Where a bundled manifest may come from, in order. An explicit `bundled_dir` is the whole set;
-    otherwise the bundled `manifests/`, then `FELIX_MANIFESTS_DIR`."""
+    otherwise the bundled `manifests/`, then `FELIX_MANIFESTS_DIR`, then each plugin's directory."""
     if bundled_dir:
         return [Path(bundled_dir)]
     roots = [_default_bundled_dir()]
     extra = _configured_manifests_dir()
     if extra is not None:
         roots.append(extra)
-    return roots
+    return roots + _plugin_manifest_dirs(roots)
 
 
 def load_bundled(
@@ -172,13 +194,14 @@ def load_bundled(
     *,
     bundled_dir: str | Path | None = None,
 ) -> Manifest:
-    """Load a bundled manifest by name: `manifests/`, then `FELIX_MANIFESTS_DIR`."""
+    """Load a bundled manifest by name: `manifests/`, then `FELIX_MANIFESTS_DIR`, then plugins'."""
     assert_valid_manifest_name(name)
     if name in _bundled_cache:
         return _bundled_cache[name]
     if name in shadowed_names(bundled_dir):
+        holders = ", ".join(str(r) for r in _roots(bundled_dir) if name in _names_in(r))
         raise ValueError(
-            f"Manifest {name!r} is in both manifests/ and FELIX_MANIFESTS_DIR; refusing to pick one"
+            f"Manifest {name!r} is in more than one manifest directory ({holders}); refusing to pick one"
         )
     for root in _roots(bundled_dir):
         root_resolved = root.expanduser().resolve()

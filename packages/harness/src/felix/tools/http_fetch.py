@@ -531,7 +531,21 @@ def tools_from_http_fetch_refs(
             extractor = _Extractor(
                 settings, ref.extract_model, int(ref.extract_max_tokens or DEFAULT_EXTRACT_MAX_TOKENS)
             )
-        if ref.allow_any_host:
+        wildcards = sorted({p for lst in egress.lists for p in lst.patterns if p.startswith("*.")})
+        if ref.allow_any_host and egress.restricted and not wildcards:
+            # Held to the agent's exact `network.allow_hosts` (and its parents'): not "any
+            # address". Said as what it is, so the warning below keeps meaning what it says.
+            logger.info("http tool %r takes any path on the hosts network.allow_hosts lists", ref.name)
+        elif ref.allow_any_host and egress.restricted:
+            # A wildcard can cover names anyone registers (`*.github.io`, `*.co.uk`): still a
+            # review question, so still a warning, naming what to review.
+            logger.warning(
+                "http tool %r is bound with allow_any_host, held to network.allow_hosts; review its "
+                "wildcards (%s): one over a shared or public suffix reaches hosts anyone can register",
+                ref.name,
+                ", ".join(wildcards),
+            )
+        elif ref.allow_any_host:
             # The schema makes this deliberate; this makes it *visible*. An operator reading
             # logs should be able to see that an agent can reach anywhere the egress guard
             # permits, in the same way `_warn_untrusted_tools_are_unscreened` surfaces a

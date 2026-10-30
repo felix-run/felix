@@ -72,7 +72,7 @@ def test_a_name_in_both_directories_is_refused_not_picked(manifests_dir, tmp_pat
     (tmp_path / "quick.yaml").write_text((SELF / "triage.yaml").read_text(encoding="utf-8"), encoding="utf-8")
     manifests_dir(tmp_path)
 
-    with pytest.raises(ValueError, match="both"):
+    with pytest.raises(ValueError, match="more than one"):
         load_bundled("quick")
 
 

@@ -1,0 +1,126 @@
+# yaml-language-server: $schema=../../../../../schemas/manifest.schema.json
+#
+# travel: a trip planner on the `plan_execute` pattern.
+#
+# The primitive on show is the plan/execute split. A trip is several independent lookups --
+# where each place is, how long between them, what the weather will be, what the money is
+# worth, what time it is there -- so the planner writes the steps once, an executor runs each
+# with the tools, and the answer is synthesised from the notes. `planner_model` and
+# `executor_model` are the levers: leave them empty to use the manifest's model, or point the
+# executor at a cheaper route; a replan recovers a step that ended early.
+#
+# Every tool here reads; nothing books, buys or writes, so there is nothing to approve. The plan
+# is advice the person acts on themselves.
+#
+# What an operator configures:
+#   - The felix-connectors plugin. Geocoding, places, routing, time zones, the forecast and
+#     exchange rates all need no key (Nominatim, OSRM, Open-Meteo, Frankfurter).
+#   - FELIX_CONNECTORS_CONTACT: Nominatim's usage policy asks for a contact address.
+#   - Optional web search: FELIX_SEARCH_BACKEND=searxng with FELIX_SEARCH_URL pointing at a
+#     SearXNG you run. Unset, `search` answers that search is off and the plan does without it.
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: travel
+  version: 1.0.0
+  description: >-
+    Trip planning: plans the lookups a trip needs, then runs them -- places, routes and drive
+    times, the forecast, local time and exchange rates -- into one itinerary.
+  tags: [plan_execute, connectors, travel]
+  greeting:
+    headline: "Where are you headed?"
+    subtitle: "travel plans the lookups a trip needs, runs each one, and puts the answers into one itinerary."
+  starters:
+    - title: "Weekend road trip"
+      prompt: "Plan a weekend road trip from Phoenix to Flagstaff and the Grand Canyon: drive times, where to stop, and the weather for Saturday and Sunday."
+    - title: "Budget in two currencies"
+      prompt: "I have 1500 USD for four days in Lisbon. What is that in euros, and what does it come to per day?"
+    - title: "Day in a new city"
+      prompt: "I land in Tokyo at 9am local time. Plan a first day near Shinjuku: coffee, a museum, dinner, and the walking time between them."
+    - title: "Call home"
+      prompt: "I'll be in Sydney next week. When is 6pm in Sydney back in Chicago, and what will the weather be in Sydney?"
+
+spec:
+  pattern: plan_execute
+
+  model:
+    temperature: 0
+    cache: true
+
+  plan_execute:
+    # Empty: plan and execute on the manifest's model. Set either to a FELIX_MODEL_ROUTES id.
+    planner_model: ""
+    executor_model: ""
+    max_subtasks: 8
+    replan_on_failure: true
+    max_replans: 2
+    executor_recursion_limit: 6
+
+  system_prompt:
+    inline: |
+      You are Felix, a travel planner. Plan trips from facts you look up, not from memory.
+
+      Places come first: connectors__geocode turns a name or address into coordinates, and the
+      weather, route, time zone and places tools all take coordinates. connectors__places_search
+      finds what is near a point (coffee, a pharmacy, a museum). connectors__route gives distance
+      and travel time for driving, walking or cycling; it has no public transport or flights, so
+      say when a leg needs one and leave its timing to the traveller.
+      connectors__weather_forecast covers up to 16 days ahead; past that, say the forecast is not
+      out yet. connectors__timezone_at gives local time at a point. connectors__fx_rate converts
+      at the European Central Bank's daily reference rate, which is not the rate a card or a
+      kiosk charges. Use calculator for budgets and totals. search, when it is configured, finds
+      opening hours and things to do; a result is a snippet, so say where a claim came from.
+
+      Keep each step to one lookup or one calculation. In the answer, lay the trip out day by
+      day, give each travel time and figure with the tool it came from, and list what you could
+      not find. You plan; you do not book anything.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - connectors__geocode
+    - connectors__places_search
+    - connectors__route
+    - connectors__timezone_at
+    - connectors__weather_forecast
+    - connectors__fx_rate
+    - calculator
+
+  # Bound unconditionally: with FELIX_SEARCH_BACKEND=none the tool answers that search is off,
+  # so the manifest compiles on every install that has the plugin.
+  search_tools:
+    - name: search
+      description: >-
+        Search the web for opening hours, things to do and travel advice. Returns titles, URLs
+        and snippets; a snippet is not the page.
+      max_results: 5
+
+  session:
+    strategy: compacting
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+
+  # Connector results and search snippets are third-party text (a place's name and an address
+  # are whatever someone wrote into OpenStreetMap), so they are screened before the model reads
+  # them. Marker-only, so it costs nothing per call.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  # A plan is up to eight steps, each its own short tool loop, plus a replan or two and the
+  # synthesis: more calls than a react turn, still bounded well inside the install's defaults.
+  limits:
+    max_tool_calls: 60
+    max_wall_clock_seconds: 600
+    max_cost_usd: 1.00
+
+  auth:
+    inbound:
+      # Every request is a plan, several model calls and a dozen upstream lookups: a spend an
+      # anonymous caller should not be able to start.
+      allow_anonymous: false
+
+  observability:
+    trace: true

@@ -79,9 +79,17 @@ Those registries scope their secret by tenant, host or endpoint; a manifest ref 
 the manifest says, so sharing one would undo that scoping. Give a manifest its own credential. The
 registries themselves are not checked against this map, since their refs are the operator's.
 
+A plugin may ship agents of its own (`registry.register_manifest_dir`, an absolute directory), served
+as bundled manifests after `manifests/` and `FELIX_MANIFESTS_DIR`, and listed only where the
+plugin is installed. A name two of those directories hold is refused, naming both, rather than
+resolved by order, so a plugin can disable a bundled name but never replace it; a plugin
+directory that is, or lies inside, a bundled one is ignored with a warning. A tenant's stored
+version still wins over any of them.
+
 A plugin reading `spec.extensions` is reading tenant input. It resolves a `secret:NAME` found there
 through `PatternBuildContext["manifest_secrets"]`, the same tenant-scoped backend, never
-`build_secrets`. `felix doctor` notes each bundled manifest (including `FELIX_MANIFESTS_DIR`) that
+`build_secrets`. `felix doctor` notes each bundled manifest (including `FELIX_MANIFESTS_DIR` and
+plugins' agents) that
 names a secret not permitted for a tenant the configuration pins (or `default` when none is pinned).
 
 PII: `spec.guardrails.providers: [pii]` uses **Presidio** when
@@ -1105,7 +1113,10 @@ could otherwise append rules of its own.
 chooses the destination, so a manifest that says nothing must not get the whole public
 internet: an entry needs either a `path_prefix` confining it, or an explicit
 `allow_any_host: true`, and validation fails otherwise. `allow_any_host` is logged at bind
-time — a review question, not a silent default. What to check when reviewing one:
+time — a review question, not a silent default: a warning when nothing bounds it, or when the
+`network.allow_hosts` that does holds a wildcard (named in the line: `*.github.io` or `*.co.uk`
+covers hosts anyone can register); an info line when that list is exact hosts only. What to
+check when reviewing one:
 
 - **Is `path_prefix` set, and to a whole origin you meant?** It is validated as an absolute
   http(s) URL and normalised to end in `/`. That slash is load-bearing: without it

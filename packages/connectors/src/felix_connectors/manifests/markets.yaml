@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=../../../../../schemas/manifest.schema.json
+#
+# markets: a watchlist with price alerts.
+#
+# The primitive on show is a reply judge (`guardrails.judges` with `final_response: true`): every
+# answer is scored against "no personalised investment advice" before any of it reaches the
+# person, and the reply path holds streamed text until the judge has answered. The prompt asks
+# for the same thing; the judge is what holds when a prompt is argued out of it. Around it: memory
+# keeps each person's watchlist and thresholds, and a scheduled task checks them and sends a
+# `notify` only when a threshold is crossed.
+#
+# What an operator configures:
+#   - The felix-connectors plugin, and FELIX_MARKET_API_KEY. It is required: without it this
+#     manifest fails its compile by name, because the quote tools have no keyless backend.
+#     FELIX_MARKET_BACKEND picks `finnhub` (the default; no daily history on its free plan) or
+#     `alphavantage` (quotes, history and search, 25 requests a day free). Exchange rates
+#     need no key.
+#   - A route for the judge's model (`claude-haiku` below): point it at a cheap route you have.
+#   - Web Push (FELIX_PUSH_VAPID_PRIVATE_KEY, FELIX_PUSH_VAPID_SUBJECT), and the person subscribes
+#     a browser, or alerts have nowhere to go.
+#   - `felix-worker` and `felix-scheduler` running for the alert checks; callers need the
+#     `jobs:write` scope to schedule one.
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: markets
+  version: 1.0.0
+  description: >-
+    A watchlist and price alerts: quotes, recent history, symbol lookup and currency conversion,
+    with a scheduled check that tells you when a price crosses a line you set. Information, not advice.
+  tags: [react, connectors, markets, scheduling, memory, guardrails]
+  greeting:
+    headline: "What are you watching?"
+    subtitle: "markets keeps your watchlist, looks up prices, and can check them on a schedule. It reports; it does not advise."
+  starters:
+    - title: "Start a watchlist"
+      prompt: "Add Apple, Microsoft and the Vanguard S&P 500 ETF to my watchlist and show me where each one is now."
+    - title: "How has it moved?"
+      prompt: "How has NVDA moved over the last 30 trading days? Give me the high, the low and the change."
+    - title: "Alert me"
+      prompt: "Check my watchlist every hour on weekdays and tell me if AAPL drops below 180."
+    - title: "In my currency"
+      prompt: "What is a share of ASML worth in euros and in pounds right now?"
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+    cache: true
+
+  system_prompt:
+    inline: |
+      You are Felix, a market information assistant. You report prices and how they moved; you
+      do not give investment advice. Never tell the person to buy, sell or hold anything, never
+      say what they should do with their money, and never predict a price. If they ask, say it
+      is not something you do and give them the figures instead.
+
+      Find a ticker with connectors__symbol_search when they name a company. connectors__quote is
+      the latest price with the time it is from: always give that time, and never call a price
+      real-time. connectors__quote_history is daily bars; if it says history is unavailable on
+      this plan, say so. connectors__fx_rate converts at the ECB daily reference rate. Work out
+      changes and percentages with calculator rather than in your head.
+
+      The watchlist is theirs and lives in memory: remember each symbol they add and each
+      threshold they set ("alert below 180 for AAPL") with remember, find them with recall, and
+      forget one they drop (that pauses for their approval).
+
+      For an alert, use schedule_task. Its prompt names the exact symbols and thresholds, checks
+      each with connectors__quote, and calls notify only when one is crossed -- naming the
+      symbol, the price, the threshold and the time of the quote. A check that finds nothing
+      crossed sends nothing.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  tools:
+    - connectors__quote
+    - connectors__quote_history
+    - connectors__symbol_search
+    - connectors__fx_rate
+    - calculator
+
+  # `schedule_task` is held for the person's approval by the default rule: the check runs as
+  # them, unwatched, so they read its prompt first. An hourly floor keeps a free-plan quota alive.
+  scheduling:
+    max_tasks: 5
+    min_interval_minutes: 60
+
+  # A crossed threshold is the only reason to send one. Unapproved (the default), because the
+  # check that sends it has nobody watching; it only ever reaches the person the run is for.
+  notify:
+    max_per_run: 3
+    max_per_hour: 6
+
+  session:
+    strategy: compacting
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+    capture:
+      enabled: true
+      model: claude-haiku
+      max_facts: 3
+      min_chars: 200
+    recall:
+      tools: true
+      limit: 10
+
+  # Quotes and symbol names come from a third-party API, and memory is untrusted by default:
+  # both are screened before the model reads them. Marker-only, so it costs nothing per call.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+
+  guardrails:
+    # No PII provider (so no `targets`, which only steer it): the person's own watchlist is not
+    # what this guards. A `final_response` judge scores the reply alone.
+    judges:
+      - name: no_personal_investment_advice
+        criteria: >-
+          The reply reports market information -- prices, the time they are from, historical
+          moves, conversions -- without personalised investment advice. It does not tell the
+          reader to buy, sell, hold or rebalance any security, does not recommend an allocation
+          or a position size, does not predict a future price, and does not say what the reader
+          should do with their money. Declining to give advice, or stating facts about a
+          security, meets the criteria.
+        threshold: 0.8
+        model: claude-haiku
+        final_response: true
+
+  approvals:
+    # The watchlist is the person's; an injected turn should not be able to empty it quietly.
+    - id: memory-forget
+      description: Confirm removing something from your watchlist memory
+      tools: [forget]
+      ttl_seconds: 600
+      # One call per approval, and only by the person who approved it.
+      one_shot: true
+      bind_principal: true
+      allow_unattended: false
+
+  limits:
+    max_tool_calls: 40
+    max_wall_clock_seconds: 300
+    max_cost_usd: 0.50
+
+  recursion_limit: 20
+
+  auth:
+    inbound:
+      # A watchlist is a person's, and every call spends the operator's market-data quota.
+      allow_anonymous: false
+
+  observability:
+    trace: true
