@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import weakref
@@ -878,7 +879,40 @@ def screenable_text(event_type: str, payload: dict[str, Any]) -> str:
 
 
 # The namespace a write-back's names land in: its entries' `context_key`, its tool results' `name`.
+# A key and a call id are prefixed even when the writer sent the prefix, so none it writes is one it
+# chose; a name already `queue:` is kept, since a harness tool's name never starts with it.
 WRITE_BACK_PREFIX = "queue:"
+# And its call ids: `_` rather than `:`, because Anthropic takes only `[A-Za-z0-9_-]` in an id.
+WRITE_BACK_CALL_PREFIX = "queue_"
+# OpenAI refuses a call id longer than this, so a long one is shortened to a digest of itself.
+_MAX_CALL_ID = 40
+
+
+def _write_back_call_id(call_id: Any) -> Any:
+    """A writer's call id in its own namespace, so it never pairs with a call the harness made.
+
+    A call is paired with its result by id alone (`analyze_wake`, a resumed run's interrupted calls),
+    so a write-back answering a call the run never finished stood in for the harness's "may have
+    already taken effect" result, and the model could repeat it. The same id maps to the same stored
+    id, so a writer's own call and its result still pair. A number is an id as much as a string is:
+    Postgres stores it as text, where it would match a backend's all-digit id.
+    """
+    if call_id is None or call_id == "":
+        return call_id
+    scoped = f"{WRITE_BACK_CALL_PREFIX}{call_id}"
+    if len(scoped) <= _MAX_CALL_ID:
+        return scoped
+    digest = hashlib.sha256(scoped.encode()).hexdigest()
+    return f"{WRITE_BACK_CALL_PREFIX}{digest[: _MAX_CALL_ID - len(WRITE_BACK_CALL_PREFIX)]}"
+
+
+def _write_back_calls(tool_calls: Any) -> Any:
+    if not isinstance(tool_calls, list):
+        return tool_calls
+    return [
+        {**call, "id": _write_back_call_id(call["id"])} if isinstance(call, dict) and "id" in call else call
+        for call in tool_calls
+    ]
 
 
 def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> AppendableEvent:
@@ -914,9 +948,9 @@ def _payload_to_appendable(event_type: str, payload: dict[str, Any]) -> Appendab
         kind=kind,  # type: ignore[arg-type]
         role=payload.get("role"),
         content=payload.get("content"),
-        tool_call_id=payload.get("tool_call_id"),
+        tool_call_id=_write_back_call_id(payload.get("tool_call_id")),
         name=name,
-        tool_calls=payload.get("tool_calls"),
+        tool_calls=_write_back_calls(payload.get("tool_calls")),
         metadata=metadata,
         ts=payload.get("ts"),
     )
