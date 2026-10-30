@@ -1685,6 +1685,11 @@
             "title": "Payload",
             "type": "object"
           },
+          "preferences_required": {
+            "default": false,
+            "title": "Preferences Required",
+            "type": "boolean"
+          },
           "schedule": {
             "default": "",
             "title": "Schedule",
@@ -3034,6 +3039,72 @@
           "y"
         ],
         "title": "Position",
+        "type": "object"
+      },
+      "PreferencesOut": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "preferences": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferences"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PreferencesOut",
+        "type": "object"
+      },
+      "PreferencesPut": {
+        "additionalProperties": false,
+        "properties": {
+          "preferences": {
+            "minLength": 1,
+            "title": "Preferences",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preferences"
+        ],
+        "title": "PreferencesPut",
         "type": "object"
       },
       "ProblemOut": {
@@ -15621,7 +15692,7 @@
         ]
       },
       "put": {
-        "description": "Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their\nscopes: the manifest's inbound auth is checked against them on every firing, so writing a job\nreaches no manifest the writer could not run by asking.\n\nA job naming a workflow starts a run of it on each firing, and writing one needs\n`workflows:write` beside `jobs:write`, as starting a run does. The job keeps the workflow's\nrevision -- `workflow_revision` if the writer names the one they reviewed (412 if it is no\nlonger current), else the current one -- and runs only that: after anyone saves the workflow\nagain, the job refuses to fire until it is re-saved, so a later edit never runs on the writer's\nscopes unless the writer saves the job over it.\n\n`payload.scheduled_by` in the body is ignored, not refused. It is the record `schedule_task`\nalone writes -- what marks a job as an agent's task, and the conversation it was scheduled\nfrom, which a firing's `notify` links to and writes into -- so a caller never supplies one.\nThe stored one is carried forward when the task's own writer re-saves it (pausing and resuming\nit re-sends the whole job), so it stays a task. Anyone else re-saving it makes it an ordinary\njob, since carrying the record would let them write into its writer's conversation.",
+        "description": "Create or replace a job. It runs as `cron` on behalf of whoever wrote it last, with their\nscopes: the manifest's inbound auth is checked against them on every firing, so writing a job\nreaches no manifest the writer could not run by asking.\n\nA job naming a workflow starts a run of it on each firing, and writing one needs\n`workflows:write` beside `jobs:write`, as starting a run does. The job keeps the workflow's\nrevision -- `workflow_revision` if the writer names the one they reviewed (412 if it is no\nlonger current), else the current one -- and runs only that: after anyone saves the workflow\nagain, the job refuses to fire until it is re-saved, so a later edit never runs on the writer's\nscopes unless the writer saves the job over it.\n\nThe job's reader's preferences (`/jobs/{name}/preferences`) are not part of the body: a\nre-save by the job's writer carries them over, and one by anyone else clears them -- they were\nwritten for the earlier writer's runs, and must not run on the new writer's scopes.\n\n`payload.scheduled_by` in the body is ignored, not refused. It is the record `schedule_task`\nalone writes -- what marks a job as an agent's task, and the conversation it was scheduled\nfrom, which a firing's `notify` links to and writes into -- so a caller never supplies one.\nThe stored one is carried forward when the task's own writer re-saves it (pausing and resuming\nit re-sends the whole job), so it stays a task. Anyone else re-saving it makes it an ordinary\njob, since carrying the record would let them write into its writer's conversation.",
         "operationId": "upsert_job_jobs__name__put",
         "parameters": [
           {
@@ -15667,6 +15738,141 @@
           }
         },
         "summary": "Upsert Job",
+        "tags": [
+          "Jobs"
+        ]
+      }
+    },
+    "/jobs/{name}/preferences": {
+      "delete": {
+        "description": "Clear the job's preferences. A job that requires them then skips its firings until they are\nwritten again. Who may: as for `PUT`.",
+        "operationId": "delete_job_preferences_jobs__name__preferences_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Job Preferences",
+        "tags": [
+          "Jobs"
+        ]
+      },
+      "get": {
+        "description": "The job's reader's preferences: what every firing of it reads, in full. The job's writer or an\noperator only -- the text may be personal; `GET /jobs` says only whether there is any.",
+        "operationId": "get_job_preferences_jobs__name__preferences_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Preferences",
+        "tags": [
+          "Jobs"
+        ]
+      },
+      "put": {
+        "description": "Write the preferences the job's reader holds for its output: what to cover, skip, its tone\nand length. Every firing carries them whole in its prompt, fenced as the reader's, and they can\ngrant no tool nor change where the output goes. The job's writer or an operator only -- never\nthe agent. Re-saving the job (`PUT /jobs/{name}`) keeps them for the same writer and clears them\nfor a new one, whose scopes they would otherwise run on.",
+        "operationId": "put_job_preferences_jobs__name__preferences_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreferencesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Job Preferences",
         "tags": [
           "Jobs"
         ]

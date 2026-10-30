@@ -295,6 +295,8 @@ async def enrol(
         created_auth=recorded,
         # Waits for its schedule: turning it on is not a request to run it now.
         first_run_at=parse_schedule(heartbeat.schedule, heartbeat.timezone).next_after(now),
+        # Set by a `PUT /jobs` writer, never by enrolment: re-enrolling keeps what it was.
+        preferences_required=bool(existing.get("preferences_required")) if existing is not None else False,
     )
 
 

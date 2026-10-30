@@ -255,8 +255,14 @@ async def _invoke_job_manifest(
     if not manifest_id:
         return {"status": "skipped", "reason": "no_manifest"}
 
+    from felix.jobs.preferences import missing_preferences
     from felix.tools.builtins import default_tool_provider
 
+    # Before anything is resolved or compiled: a job that requires its reader's preferences and has
+    # none runs nothing -- no model call -- and its run says what it is waiting for.
+    waiting = missing_preferences(job)
+    if waiting is not None:
+        return waiting
     payload = job.get("payload") or {}
     prompt = str(payload.get("prompt") or payload.get("message") or "ping")
     provider = default_tool_provider()
@@ -316,6 +322,10 @@ async def _run_job_turn(
         if firing.refusal is not None:
             return firing.refusal
         prompt = firing.prompt
+    from felix.jobs.preferences import with_preferences
+
+    # The reader's preferences, whole, on a heartbeat's checklist as on a job's own prompt.
+    prompt = with_preferences(prompt, job)
     try:
         # The manifest's inbound auth -- `required_scopes`, `schemes`, `allow_anonymous`, a
         # credential's manifest pin -- and the thread's compile pin, as every other way into a
