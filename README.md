@@ -1099,6 +1099,9 @@ Storage and execution:
   `connectors__symbol_search` (Finnhub or Alpha Vantage, `FELIX_MARKET_BACKEND`, keyed by
   `FELIX_MARKET_API_KEY`), and keyless `connectors__fx_rate` (ECB reference rates via Frankfurter,
   `FELIX_FX_BACKEND`). Every price carries its source and the time it is from.
+- Wikipedia tools from the same plugin, keyless: `connectors__wikipedia_search` and
+  `connectors__wikipedia_article` (an article's lead, its URL to cite and when it last changed,
+  following a redirected title), in any language edition (`*.wikipedia.org`).
 - A person's own Google, from the same plugin (`uv sync --extra google-connectors`): Calendar
   (`connectors__calendar_list_events`, `_find_free_time`, `_create_event`), Gmail
   (`connectors__gmail_search`, `_read`, `_draft` -- never sent) and Drive (`connectors__drive_search`,
