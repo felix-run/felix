@@ -13,7 +13,7 @@ from felix.config import Settings
 from felix.context import AuthContext, RequestContext, async_run_with_context
 from felix.jobs import heartbeat as hb
 from felix.jobs import store as jobs_store
-from felix.jobs.schedule import ScheduleError, parse_schedule
+from felix.jobs.schedule import ScheduleError, job_schedule, parse_schedule
 from felix.logging_setup import loggable
 from felix.patterns.types import ChatMessage, InvokeInput
 
@@ -43,14 +43,15 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def next_run_at_ms(schedule: str, from_ms: int | None = None) -> int | None:
-    """When `schedule` next fires after `from_ms` (default: now). The grammar is `felix.jobs.schedule`.
+def next_run_at_ms(schedule: str, from_ms: int | None = None, timezone: str | None = None) -> int | None:
+    """When `schedule`, read in `timezone` (None: UTC), next fires after `from_ms` (default: now).
+    The grammar is `felix.jobs.schedule`.
 
     None for an empty schedule, which is manual only. Raises `ScheduleError` for a schedule
     outside the grammar -- never a guessed interval.
     """
     base = from_ms if from_ms is not None else now_ms()
-    return parse_schedule(schedule).next_after(base)
+    return parse_schedule(schedule, timezone).next_after(base)
 
 
 def creator_auth(auth: AuthContext) -> dict[str, Any]:
@@ -665,7 +666,7 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
         if next_run is not None and next_run > ts:
             continue
         try:
-            parsed = parse_schedule(str(job.get("schedule") or ""))
+            parsed = job_schedule(job)
         except ScheduleError as exc:
             # Stored before the schedule was validated on write. It used to fire every minute
             # whatever it said; now it does not fire, and says why where the operator looks.

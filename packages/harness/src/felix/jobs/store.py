@@ -13,6 +13,7 @@ from sqlalchemy import collate, delete, select
 from felix.config import Settings
 from felix.db.models import Job, JobRun
 from felix.db.session import _use_memory, get_session_factory
+from felix.jobs.schedule import stored_zone
 
 logger = logging.getLogger("felix.jobs.store")
 
@@ -63,6 +64,7 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
             "tenant_id": row["tenant_id"],
             "name": row["name"],
             "schedule": row.get("schedule", ""),
+            "timezone": stored_zone(row.get("timezone")),
             "manifest_id": row.get("manifest_id", ""),
             "workflow_id": row.get("workflow_id", ""),
             "workflow_revision": row.get("workflow_revision", ""),
@@ -84,6 +86,7 @@ def _job_dict(row: Job | dict[str, Any]) -> dict[str, Any]:
         "tenant_id": row.tenant_id,
         "name": row.name,
         "schedule": row.schedule,
+        "timezone": stored_zone(row.timezone),
         "manifest_id": row.manifest_id,
         "workflow_id": row.workflow_id,
         "workflow_revision": row.workflow_revision,
@@ -183,6 +186,7 @@ async def put_job(
     name: str,
     *,
     schedule: str = "",
+    timezone: str | None = None,
     manifest_id: str = "",
     workflow_id: str = "",
     workflow_revision: str = "",
@@ -192,8 +196,12 @@ async def put_job(
     created_auth: dict[str, Any] | None = None,
     first_run_at: int | None = None,
 ) -> dict[str, Any]:
-    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar, and
+    """Create or replace a job. Raises `ScheduleError` when `schedule` is outside the grammar, or
+    `timezone` is not a zone or is given with a schedule it cannot move (`parse_schedule`), and
     `BothTargets` for a job naming a manifest and a workflow.
+
+    `timezone` is the IANA zone the job's cron is read in; None is UTC. Replaced like every other
+    field: a rewrite that leaves it out puts the job back on UTC.
 
     `created_by` and `created_auth` are whoever wrote it this time and the authority its runs
     carry (`felix.jobs.scheduler.creator_auth`) -- replaced on every write, because whoever
@@ -212,7 +220,8 @@ async def put_job(
 
     if manifest_id and workflow_id:
         raise BothTargets()
-    parsed = parse_schedule(schedule)
+    timezone = stored_zone(timezone)
+    parsed = parse_schedule(schedule, timezone)
     ts = now_ms()
 
     def _due_on_new_schedule() -> int | None:
@@ -224,14 +233,16 @@ async def put_job(
             raise ScheduleError("schedule: at: is in the past")
         return parsed.at_ms
 
-    def _next_run_at(existing_schedule: str | None, existing_next: int | None) -> int | None:
+    def _next_run_at(existing: tuple[str, str | None] | None, existing_next: int | None) -> int | None:
+        # A new zone is a new schedule: `0 8 * * *` in New York and in London are different slots.
+        same = existing == (schedule, timezone)
         if parsed.at_ms is not None:
-            return existing_next if existing_schedule == schedule else _due_on_new_schedule()
+            return existing_next if same else _due_on_new_schedule()
         # A changed schedule fires at whichever comes first: the due time already held, or
         # the new schedule's next slot. Keeping only the old one left a job moved from
         # `@daily` to `*/5` waiting until tomorrow; taking only the new one would hide a run
         # that is already overdue (`test_republishing_a_job_keeps_its_run_state`).
-        if existing_schedule is None or existing_schedule == schedule or existing_next is None:
+        if existing is None or same or existing_next is None:
             return existing_next
         following = parsed.next_after(ts)
         # Made manual only: it holds no due time, so nothing reads one as overdue.
@@ -243,11 +254,14 @@ async def put_job(
             "tenant_id": tenant_id,
             "name": name,
             "schedule": schedule,
+            "timezone": timezone,
             "manifest_id": manifest_id,
             "workflow_id": workflow_id,
             "workflow_revision": workflow_revision,
             "last_run_at": existing.get("last_run_at") if existing else None,
-            "next_run_at": _next_run_at(existing["schedule"], existing.get("next_run_at"))
+            "next_run_at": _next_run_at(
+                (existing["schedule"], existing.get("timezone")), existing.get("next_run_at")
+            )
             if existing
             else _due_on_new_schedule(),
             "last_status": _status_after_write(existing.get("last_status", ""), enabled) if existing else "",
@@ -275,6 +289,7 @@ async def put_job(
                 tenant_id=tenant_id,
                 name=name,
                 schedule=schedule,
+                timezone=timezone,
                 next_run_at=_due_on_new_schedule(),
                 manifest_id=manifest_id,
                 workflow_id=workflow_id,
@@ -287,8 +302,9 @@ async def put_job(
             )
             db.add(row)
         else:
-            row.next_run_at = _next_run_at(row.schedule, row.next_run_at)
+            row.next_run_at = _next_run_at((row.schedule, row.timezone), row.next_run_at)
             row.schedule = schedule
+            row.timezone = timezone
             row.manifest_id = manifest_id
             row.workflow_id = workflow_id
             row.workflow_revision = workflow_revision
@@ -501,20 +517,25 @@ async def set_schedule(
     name: str,
     *,
     schedule: str,
+    timezone: str | None,
     next_run_at: int | None,
     expected_schedule: str,
+    expected_timezone: str | None,
 ) -> bool:
-    """Move an existing job to `schedule`, due at `next_run_at` -- only if it still holds
-    `expected_schedule`. Nothing else about it changes: not `enabled`, not its writer.
+    """Move an existing job to `schedule` in `timezone`, due at `next_run_at` -- only if it still
+    holds `expected_schedule` in `expected_timezone`. Nothing else about it changes: not `enabled`,
+    not its writer.
 
     One `UPDATE ... WHERE`, never an upsert: a firing refreshing its own schedule must not
     re-create a job deleted meanwhile, nor overwrite one someone re-saved since it was read.
     False when the job is gone or its schedule moved. The caller validates `schedule`."""
+    timezone, expected_timezone = stored_zone(timezone), stored_zone(expected_timezone)
     if _use_memory(settings):
         row = _memory_jobs.get((tenant_id, name))
-        if row is None or row.get("schedule") != expected_schedule:
+        held = (row.get("schedule"), row.get("timezone")) if row is not None else None
+        if row is None or held != (expected_schedule, expected_timezone):
             return False
-        row.update(schedule=schedule, next_run_at=next_run_at)
+        row.update(schedule=schedule, timezone=timezone, next_run_at=next_run_at)
         return True
 
     from sqlalchemy import update
@@ -523,8 +544,13 @@ async def set_schedule(
     async with factory() as db:
         result = await db.execute(
             update(Job)
-            .where(Job.tenant_id == tenant_id, Job.name == name, Job.schedule == expected_schedule)
-            .values(schedule=schedule, next_run_at=next_run_at)
+            .where(
+                Job.tenant_id == tenant_id,
+                Job.name == name,
+                Job.schedule == expected_schedule,
+                Job.timezone.is_not_distinct_from(expected_timezone),
+            )
+            .values(schedule=schedule, timezone=timezone, next_run_at=next_run_at)
         )
         await db.commit()
         return bool(getattr(result, "rowcount", 0))

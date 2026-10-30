@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     log_format: Literal["auto", "json", "text"] = "auto"
     # IANA zone the model is told today's date and time in (`felix/clock.py`). An install-wide
     # "today": set it to where the people using the install are, or a late evening reads as tomorrow.
+    # Also what a cron `schedule_task` defaults to (`jobs/agent_tools.py`), recorded on the job.
     timezone: str = "UTC"
     allow_insecure: bool = False  # required if auth_mode=none and host binds public
 

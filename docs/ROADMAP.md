@@ -1150,9 +1150,17 @@ The gaps, in order:
       firing clears `overdue`, disabling clears both. *Follow-up:* the job's owner by `notify` (a push
       to `created_by`) as a second route beside the operator's destination; a per-job opt-out or
       threshold in the job's payload.
-- [ ] **Per-job `timezone`.** Cron is evaluated in UTC (`jobs/schedule.py`); `FELIX_TIMEZONE`
-      sets only the date in the prompt. "7:32 on weekdays, New York" has to be converted by hand
-      and drifts at DST.
+- [x] **Per-job `timezone`.** A job's cron and macros are read on the wall clock of the IANA
+      zone it names (`jobs/schedule.py`, migration `0051`, both arms, conformance contract); NULL
+      is UTC, so no existing job moves. A skipped local time fires at the first instant after the
+      gap and a repeated one once, at its first occurrence, so a daily job fires once every local
+      day. Carried by `PUT /jobs`, `spec.heartbeat.timezone` and `schedule_task` (default
+      `FELIX_TIMEZONE`, recorded on the job); refused beside an interval or `at:`. The task floor,
+      the heartbeat floor and its cap warning sample the next year's DST changes. *Follow-up:* the
+      heartbeat's `max_firings_per_day` still counts UTC days; a zoned heartbeat may want its own
+      local day. A job's zone must be a canonical `available_timezones()` key, but `FELIX_TIMEZONE`'s
+      validator still takes any name `ZoneInfo` loads (`america/new_york` on macOS, `Factory`), and
+      lets an overlong one raise `OSError` at boot.
 - [ ] **Reader-owned preferences and agent state.** A preferences document on the job that its
       reader writes, the agent cannot, and every firing reads in full (failing closed when it is
       missing). Beside it, a small store for the agent's own bookmarks and ledger. Today state lives

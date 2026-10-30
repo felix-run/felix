@@ -39,8 +39,15 @@ makes `kinds.render_prompt(fenced=)` wrap every value an agent step is given in 
 so boot fails without it) and passed to `start_run`, so no save -- a person's or an agent's -- changes
 what a trigger starts.
 `jobs/schedule.py:parse_schedule` reads the grammar — seconds, `every:30s` / `@every 5m`, the
-`@daily`-style macros, five-field cron in UTC, and a one-shot `at:<ISO-8601 with offset>` — and a
-schedule outside it is refused, never guessed. An empty schedule is manual only: the sweep skips it and
+`@daily`-style macros, five-field cron, and a one-shot `at:<ISO-8601 with offset>` — and a
+schedule outside it is refused, never guessed. Cron and macros are read in UTC, or in the job's
+`timezone` (`0051_job_timezone`, NULL = UTC) on that zone's wall clock: a skipped local time fires at
+the first instant after the gap, a repeated one at its first occurrence (fold=0). A zone is refused
+beside an interval, `at:` or empty schedule. Every reader of a stored job parses it through
+`schedule.job_schedule(job)`, never `parse_schedule(job["schedule"])`, so none reads a zoned job in
+UTC; `put_job` treats a changed zone as a changed schedule. `shortest_gap_ms` and
+`most_firings_per_utc_day` also sample the days around each offset change in the next year
+(`_offset_change_days`), where the gap is shortest and a UTC day can hold an extra firing. An empty schedule is manual only: the sweep skips it and
 only `POST /jobs/{name}/run` fires it. A one-shot's `next_run_at` is set by the write that sets its
 schedule (`put_job`, refused if past) and its claim clears it, so it fires once; one with no due time
 is never swept.

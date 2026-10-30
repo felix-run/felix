@@ -48,6 +48,8 @@ class HeartbeatOut(BaseModel):
     name: str
     enabled: bool
     schedule: str
+    # The IANA zone a cron `schedule` is read in (`spec.heartbeat.timezone`); null is UTC.
+    timezone: str | None = None
     # The caller's heartbeat conversation, where each notice is left: a chat thread id.
     thread_id: str | None = None
     next_run_at: int | None = None
