@@ -10,6 +10,16 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-10-30
+
+### Fixed
+
+- The worker starts again when the deployment has Google sign-in configured. 0.19.0 gave it the Google OAuth client for connector refreshes, and its startup check then demanded `FELIX_GOOGLE_ACCOUNTS`, which only the API receives. So no durable run or scheduled job ran. (#759)
+
+### Security
+
+- Lock pyasn1 0.6.5, past CVE-2026-119194, CVE-2026-119195, CVE-2026-119196 and CVE-2026-119197 (reached through `google-auth`). (#759)
+
 ## [0.19.0] — 2026-10-30
 
 ### Added
@@ -5490,3 +5500,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.17.0]: https://github.com/felix-run/felix/releases/tag/v0.17.0
 [0.18.0]: https://github.com/felix-run/felix/releases/tag/v0.18.0
 [0.19.0]: https://github.com/felix-run/felix/releases/tag/v0.19.0
+[0.19.1]: https://github.com/felix-run/felix/releases/tag/v0.19.1
