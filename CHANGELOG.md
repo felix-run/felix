@@ -10,6 +10,12 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.19.2] — 2026-10-30
+
+### Added
+
+- `GET /health/worker` reports whether a `felix-worker` has finished starting and is still running. The response gives its version, a per-start boot id and the age of its last heartbeat, and the route answers 503 (`stale`, `never` or `unknown`) once that age passes `FELIX_WORKER_STALE_SECONDS` (60). `deploy/gcp/roll.sh` now waits for a live worker of the rolled version, and `felix doctor` reports the heartbeat. (#761)
+
 ## [0.19.1] — 2026-10-30
 
 ### Fixed
@@ -5501,3 +5507,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.18.0]: https://github.com/felix-run/felix/releases/tag/v0.18.0
 [0.19.0]: https://github.com/felix-run/felix/releases/tag/v0.19.0
 [0.19.1]: https://github.com/felix-run/felix/releases/tag/v0.19.1
+[0.19.2]: https://github.com/felix-run/felix/releases/tag/v0.19.2
