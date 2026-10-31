@@ -3399,6 +3399,10 @@ ago the scheduler last completed a sweep (`ok` / `stale` / `never` / `unknown`, 
 job or host is in it. It is an external monitor's target, not a probe: a stale scheduler must page
 someone, not restart the API (`docs/OBSERVABILITY.md`).
 
+`/health/worker` shares it too, and tells an anonymous caller how many seconds ago a worker last
+beat and the version it runs (`ok` / `stale` / `never` / `unknown`, 503 for all but `ok`) -- the
+version `/health` already publishes. No tenant or host is in it.
+
 ### Job health watch
 
 A failing or overdue job is a detection control here, so it is said out loud once. The worker's

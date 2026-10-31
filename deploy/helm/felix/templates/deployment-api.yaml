@@ -48,7 +48,8 @@ spec:
           # credential; `tests/unit/test_helm_topology.py` pins the paths and
           # `tests/unit/test_operability.py` pins the allowlist. `/health/scheduler` is
           # deliberately not a probe here: a stopped felix-scheduler is not this pod's fault,
-          # so point an uptime monitor outside the cluster at it instead.
+          # so point an uptime monitor outside the cluster at it instead. `/health/worker`
+          # is not one either, for the same reason: it is what a deploy waits on.
           readinessProbe:
             httpGet:
               path: /ready

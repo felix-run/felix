@@ -66,7 +66,7 @@ def _doctor(tmp_path: Path, monkeypatch, redis_url: str) -> str:
 
 
 def test_doctor_says_the_heartbeat_is_not_visible_without_redis(tmp_path: Path, monkeypatch) -> None:
-    assert "heartbeat not visible from this process" in _doctor(tmp_path, monkeypatch, "")
+    assert "and worker heartbeats not visible from this process" in _doctor(tmp_path, monkeypatch, "")
 
 
 def test_doctor_notes_a_stale_scheduler_heartbeat(tmp_path: Path, monkeypatch) -> None:
@@ -78,3 +78,23 @@ def test_doctor_notes_a_stale_scheduler_heartbeat(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr(tick, "scheduler_health", stale)
     output = _doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0")
     assert "scheduler heartbeat stale — last sweep 901s ago" in output
+
+
+def test_doctor_reports_the_worker_heartbeat(tmp_path: Path, monkeypatch) -> None:
+    from felix import worker_beat
+
+    answers = iter(
+        [
+            worker_beat.WorkerHealth("ok", 4, 60, "1.2.3", 1),
+            worker_beat.WorkerHealth("never", None, 60, None, None),
+        ]
+    )
+
+    async def health(_settings) -> worker_beat.WorkerHealth:
+        return next(answers)
+
+    monkeypatch.setattr(worker_beat, "worker_health", health)
+    beating = _doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0")
+    never = _doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0")
+    assert "worker heartbeat" in beating and "1.2.3, last beat 4s ago" in beating
+    assert "worker heartbeat never — last beat never" in never

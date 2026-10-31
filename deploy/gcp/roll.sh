@@ -44,6 +44,7 @@ REPO_DIR="${FELIX_REPO_DIR:-/opt/felix}"
 BACKUP_DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
 HEALTH_URL="${FELIX_HEALTH_URL:-https://api.felix.run/health}"
 READY_URL="${HEALTH_URL%/health}/ready"
+WORKER_URL="${HEALTH_URL}/worker"
 IMAGE="${FELIX_IMAGE:-ghcr.io/felix-run/felix}"
 read -r -a SSH_FLAGS <<<"${FELIX_SSH_FLAGS:-}"
 
@@ -195,6 +196,10 @@ remote "$COMPOSE pull --quiet" \
   || die "pull failed; nothing was restarted, but the checkout and pin are already on $TAG"
 
 confirm "Roll now? migrate runs first, then api/worker/scheduler restart (expect ~1 min of 502s)"
+# The VM's own clock, which stamps the beats: a worker that started after this is a new one.
+ROLLED_AT="$(remote "date +%s")"
+[[ "$ROLLED_AT" =~ ^[0-9]+$ ]] || die "could not read the VM's clock (got: ${ROLLED_AT:-nothing}); nothing was restarted,
+      but the checkout and pin are already on $TAG"
 remote "$COMPOSE up -d" \
   || die "\`up -d\` failed part-way; check \`docker compose ps\` and the migrate logs on the VM"
 
@@ -219,6 +224,35 @@ for _ in $(seq 1 24); do
 done
 [ "${READY:-}" = 200 ] || die "$READY_URL did not answer 200 within 2 minutes (last: ${READY:-none}); the new version is live but not ready"
 note "ready"
+
+# /health and /ready are the API's own answers; 0.19.0 passed both with a worker that died at
+# startup. A worker beats only once its startup passed, with its version and when it started, so
+# wait for one of this version started after the restart: re-rolling the same version, the old
+# worker's last beat reads ok, with that version, for a minute after it is gone. Only a release
+# older than the route (0.19.1 and before) may answer 401 (auth runs before routing) or 404.
+fresh_worker() {
+  local started
+  grep -q "\"version\":\"$VERSION\"" <<<"$1" || return 1
+  started="$(grep -o '"started_at":[0-9]*' <<<"$1" | cut -d: -f2)"
+  [ -n "$started" ] && [ "$started" -ge "$((ROLLED_AT * 1000))" ]
+}
+older_than_the_beat() { [ "$(printf '%s\n' "$VERSION" 0.19.1 | sort -V | tail -1)" = 0.19.1 ]; }
+bold "Waiting for $WORKER_URL to report a $VERSION worker started by this roll"
+for _ in $(seq 1 24); do
+  WORKER="$(curl -sS -m 5 -w '\n%{http_code}' "$WORKER_URL" </dev/null 2>/dev/null || true)"
+  WORKER_CODE="${WORKER##*$'\n'}"
+  case "$WORKER_CODE" in 401 | 404) older_than_the_beat && break ;; esac
+  if [ "$WORKER_CODE" = 200 ] && fresh_worker "$WORKER"; then break; fi
+  sleep 5
+done
+WORKER_LAST="${WORKER_CODE:-none} ${WORKER%$'\n'*}"
+if [ "${WORKER_CODE:-}" = 200 ] && fresh_worker "$WORKER"; then
+  note "worker $VERSION beating"
+elif { [ "${WORKER_CODE:-}" = 401 ] || [ "${WORKER_CODE:-}" = 404 ]; } && older_than_the_beat; then
+  note "$VERSION has no /health/worker; check the worker's logs by hand"
+else
+  die "no $VERSION worker started by this roll beat within 2 minutes (last: $WORKER_LAST); check: sudo docker logs \$(sudo docker ps -a --format '{{.Names}}' | grep -m1 worker)"
+fi
 
 bold "After"
 note "alembic: $(psql_q 'table alembic_version')"
