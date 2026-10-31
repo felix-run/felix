@@ -1,6 +1,6 @@
 [project]
 name = "felix-connectors"
-version = "0.19.1"
+version = "0.19.2"
 description = "Tools that reach everyday services for Felix agents: weather, maps, markets, Google, iCloud, calendar feeds. An optional plugin."
 requires-python = ">=3.14"
 license = "Apache-2.0"

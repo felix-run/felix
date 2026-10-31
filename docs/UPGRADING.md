@@ -37,6 +37,15 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.19.2: `GET /health/worker`, and the roll waits for a live worker
+
+Nothing to do but roll. The worker now sends a heartbeat once its startup has passed, and
+`GET /health/worker` reports it (public, like `/health/scheduler`; `FELIX_WORKER_STALE_SECONDS`,
+default 60). `deploy/gcp/roll.sh` from this release on waits for a live 0.19.2 worker after `/ready`
+and stops if none beats within two minutes. Point an uptime monitor at the route if you have one on
+`/health/scheduler`; do not make it a probe. Rolling back to 0.19.1 or earlier, the route answers
+401 or 404 and the roll notes it instead of stopping.
+
 ## 0.19.1: the worker starts again with Google sign-in configured
 
 Nothing to do but roll. On 0.19.0 a deployment with `FELIX_GOOGLE_CLIENT_ID` set had a worker that
