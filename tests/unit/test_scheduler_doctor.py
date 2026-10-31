@@ -82,10 +82,12 @@ def test_doctor_notes_a_stale_scheduler_heartbeat(tmp_path: Path, monkeypatch) -
 
 def test_doctor_reports_the_worker_heartbeat(tmp_path: Path, monkeypatch) -> None:
     from felix import worker_beat
+    from felix.jobs import tick
 
     answers = iter(
         [
-            worker_beat.WorkerHealth("ok", 4, 60, "1.2.3", 1),
+            worker_beat.WorkerHealth("ok", 4, 60, "1.2.3", "b0"),
+            worker_beat.WorkerHealth("stale", 75, 60, "1.2.3", "b0"),
             worker_beat.WorkerHealth("never", None, 60, None, None),
         ]
     )
@@ -93,8 +95,12 @@ def test_doctor_reports_the_worker_heartbeat(tmp_path: Path, monkeypatch) -> Non
     async def health(_settings) -> worker_beat.WorkerHealth:
         return next(answers)
 
+    async def scheduler_ok(_settings) -> tick.SchedulerHealth:
+        return tick.SchedulerHealth("ok", 1, 300)
+
     monkeypatch.setattr(worker_beat, "worker_health", health)
-    beating = _doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0")
-    never = _doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0")
-    assert "worker heartbeat" in beating and "1.2.3, last beat 4s ago" in beating
+    monkeypatch.setattr(tick, "scheduler_health", scheduler_ok)
+    beating, stale, never = (_doctor(tmp_path, monkeypatch, "redis://127.0.0.1:9/0") for _ in range(3))
+    assert "1.2.3, last beat 4s ago" in beating
+    assert "worker heartbeat stale — last beat 75s ago" in stale
     assert "worker heartbeat never — last beat never" in never

@@ -3400,8 +3400,10 @@ job or host is in it. It is an external monitor's target, not a probe: a stale s
 someone, not restart the API (`docs/OBSERVABILITY.md`).
 
 `/health/worker` shares it too, and tells an anonymous caller how many seconds ago a worker last
-beat and the version it runs (`ok` / `stale` / `never` / `unknown`, 503 for all but `ok`) -- the
-version `/health` already publishes. No tenant or host is in it.
+beat, the version it runs -- which `/health` already publishes -- and a random id drawn once per
+worker start (`ok` / `stale` / `never` / `unknown`, 503 for all but `ok`). A caller polling it sees
+that a worker restarted and when it is down, much as `/health/scheduler` already shows; it carries
+no start time, tenant or host.
 
 ### Job health watch
 

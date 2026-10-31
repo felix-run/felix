@@ -1303,7 +1303,9 @@ per-principal thread ownership above. Dependencies: `pip-audit` clean on the loc
       version once startup passes (`felix/worker_beat.py`), `GET /health/worker` reports it, and
       `roll.sh` waits for the version it rolled. Kept out of `/ready` for `/health/scheduler`'s
       reason: a dead worker is not the API's fault. Left open: one dead replica among live ones
-      does not show, since the freshest beat is reported.
+      does not show, since the freshest beat is reported; and `worker_beat.worker_health` and
+      `jobs/tick.scheduler_health` each carry the same never/unknown/stale rule (503, never `ok`,
+      on a Redis outage), so a third heartbeat should share one `classify_stamp` instead of a third copy.
 - [ ] **Small items.** The workspace-gateway Dockerfile's base image is unpinned; the GitHub
       sign-in handoff cookie is single-use only on the client; `jobs:read` sees a run's `result`
       where preferences and state are writer-only.

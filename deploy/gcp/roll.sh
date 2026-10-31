@@ -196,12 +196,13 @@ remote "$COMPOSE pull --quiet" \
   || die "pull failed; nothing was restarted, but the checkout and pin are already on $TAG"
 
 confirm "Roll now? migrate runs first, then api/worker/scheduler restart (expect ~1 min of 502s)"
-# The VM's own clock, which stamps the beats: a worker that started after this is a new one.
-ROLLED_AT="$(remote "date +%s")"
-[[ "$ROLLED_AT" =~ ^[0-9]+$ ]] || die "could not read the VM's clock (got: ${ROLLED_AT:-nothing}); nothing was restarted,
-      but the checkout and pin are already on $TAG"
+# The running worker's boot id (empty when it has none to give), so the wait below can tell a
+# worker this roll started from the one it replaced.
+beat_boot() { grep -o '"boot":"[0-9a-f]*"' <<<"$1" | cut -d'"' -f4 || true; }
+PRE_BOOT="$(beat_boot "$(curl -sS -m 5 "$WORKER_URL" </dev/null 2>/dev/null || true)")"
 remote "$COMPOSE up -d" \
   || die "\`up -d\` failed part-way; check \`docker compose ps\` and the migrate logs on the VM"
+ROLLED_SECONDS=$SECONDS
 
 # --- verify ---------------------------------------------------------------------------------
 
@@ -226,33 +227,43 @@ done
 note "ready"
 
 # /health and /ready are the API's own answers; 0.19.0 passed both with a worker that died at
-# startup. A worker beats only once its startup passed, with its version and when it started, so
-# wait for one of this version started after the restart: re-rolling the same version, the old
-# worker's last beat reads ok, with that version, for a minute after it is gone. Only a release
-# older than the route (0.19.1 and before) may answer 401 (auth runs before routing) or 404.
-fresh_worker() {
-  local started
-  grep -q "\"version\":\"$VERSION\"" <<<"$1" || return 1
-  started="$(grep -o '"started_at":[0-9]*' <<<"$1" | cut -d: -f2)"
-  [ -n "$started" ] && [ "$started" -ge "$((ROLLED_AT * 1000))" ]
+# startup. A worker beats only once its startup passed, with its version and a boot id, so wait for
+# a beat of this version from a worker that is alive after the restart: either a new boot, or the
+# same boot beating since (`up -d` leaves a worker whose config did not change running). The old
+# worker's last beat is not enough -- it reads ok, with the version a re-roll names, for a minute
+# after the worker is gone; but it is older than the restart, and a live worker's is at most 15 s
+# old. Ages are the API's clock and elapsed time is this shell's, so no two clocks are compared;
+# the 2 s is whole-second rounding on both sides.
+worker_verdict() {
+  local body="${1%$'\n'*}" code="${1##*$'\n'}" age
+  case "$code" in
+    200)
+      grep -q "\"version\":\"$VERSION\"" <<<"$body" || return
+      [ "$(beat_boot "$body")" != "$PRE_BOOT" ] && { echo fresh; return; }
+      age="$(grep -o '"last_beat_age_s":[0-9]*' <<<"$body" | cut -d: -f2 || true)"
+      [ -n "$age" ] && [ $((age + 2)) -lt $((SECONDS - ROLLED_SECONDS)) ] && echo alive
+      ;;
+    # Auth runs before routing, so under jwt a release without the route answers 401. 0.19.1 is the
+    # last such release; drop this arm once nothing rolls back that far.
+    401 | 404) [ "$(printf '%s\n' "$VERSION" 0.19.1 | sort -V | tail -1)" = 0.19.1 ] && echo legacy ;;
+  esac
 }
-older_than_the_beat() { [ "$(printf '%s\n' "$VERSION" 0.19.1 | sort -V | tail -1)" = 0.19.1 ]; }
-bold "Waiting for $WORKER_URL to report a $VERSION worker started by this roll"
+bold "Waiting for $WORKER_URL to report a live $VERSION worker"
 for _ in $(seq 1 24); do
   WORKER="$(curl -sS -m 5 -w '\n%{http_code}' "$WORKER_URL" </dev/null 2>/dev/null || true)"
-  WORKER_CODE="${WORKER##*$'\n'}"
-  case "$WORKER_CODE" in 401 | 404) older_than_the_beat && break ;; esac
-  if [ "$WORKER_CODE" = 200 ] && fresh_worker "$WORKER"; then break; fi
+  OUTCOME="$(worker_verdict "$WORKER" || true)"
+  [ -n "$OUTCOME" ] && break
   sleep 5
 done
-WORKER_LAST="${WORKER_CODE:-none} ${WORKER%$'\n'*}"
-if [ "${WORKER_CODE:-}" = 200 ] && fresh_worker "$WORKER"; then
-  note "worker $VERSION beating"
-elif { [ "${WORKER_CODE:-}" = 401 ] || [ "${WORKER_CODE:-}" = 404 ]; } && older_than_the_beat; then
-  note "$VERSION has no /health/worker; check the worker's logs by hand"
-else
-  die "no $VERSION worker started by this roll beat within 2 minutes (last: $WORKER_LAST); check: sudo docker logs \$(sudo docker ps -a --format '{{.Names}}' | grep -m1 worker)"
-fi
+case "$OUTCOME" in
+  fresh) note "worker $VERSION beating (new boot)" ;;
+  alive) note "worker $VERSION beating (not restarted: its config did not change)" ;;
+  legacy) note "$VERSION has no /health/worker; check the worker's logs by hand" ;;
+  *)
+    # The body is a Redis value relayed by the API: printable characters only on this terminal.
+    die "no live $VERSION worker beat within 2 minutes (last: $(tr -cd '[:print:]' <<<"${WORKER//$'\n'/ }")); check: sudo docker logs \$(sudo docker ps -a --format '{{.Names}}' | grep -m1 worker)"
+    ;;
+esac
 
 bold "After"
 note "alembic: $(psql_q 'table alembic_version')"
