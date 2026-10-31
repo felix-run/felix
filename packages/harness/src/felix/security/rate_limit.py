@@ -134,8 +134,9 @@ class RedisRateLimiter:
 #
 # `/health/scheduler` is not a kubelet probe -- a stale scheduler must not restart or unready the API
 # -- but the uptime monitor it is for has the same two needs: no credential, and no 429 when it
-# polls. It reads one Redis key, so it is no more to amplify than `/ready`.
-PROBE_PATHS = frozenset({"/health", "/live", "/ready", "/health/scheduler"})
+# polls. It reads one Redis key, so it is no more to amplify than `/ready`. `/health/worker` is the
+# same, for the worker's heartbeat, and is what a deploy waits on.
+PROBE_PATHS = frozenset({"/health", "/live", "/ready", "/health/scheduler", "/health/worker"})
 
 # /metrics is deliberately NOT skipped: it is a scrape target with unbounded label
 # cardinality, so an unauthenticated caller polling it is a real amplification path.

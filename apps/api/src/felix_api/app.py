@@ -340,6 +340,23 @@ def create_app(
             response.status_code = 503
         return health.as_dict()
 
+    @app.get("/health/worker", tags=["System"])
+    async def worker_health(response: Response) -> dict[str, Any]:
+        """Is a `felix-worker` up, and which version? 503 when the newest heartbeat is older than
+        `FELIX_WORKER_STALE_SECONDS` (`stale`), none was ever recorded (`never`), or Redis could not
+        be read (`unknown`) -- `felix.worker_beat`. A worker beats only once its startup has passed
+        every check that can refuse it, so a worker that crashes on boot never reads `ok`.
+
+        What a deploy waits on after `/ready`, and an external monitor's target; not a kubelet
+        probe, for the reason `/health/scheduler` is not. Public, and carries no tenant data.
+        """
+        from felix.worker_beat import worker_health as read_health
+
+        health = await read_health(cfg)
+        if not health.ok:
+            response.status_code = 503
+        return health.as_dict()
+
     @app.get("/metrics", tags=["System"])
     async def metrics(request: Request) -> Response:
         """Prometheus exposition. Needs `metrics:read`: the label values span every tenant."""

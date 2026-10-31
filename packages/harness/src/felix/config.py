@@ -418,6 +418,9 @@ class Settings(BaseSettings):
     # once the scheduler's last completed sweep is older than this: it ticks every minute, so the
     # floor is two missed ticks' worth.
     scheduler_stale_seconds: int = Field(default=300, ge=120)
+    # `GET /health/worker` answers 503 once the newest worker heartbeat (`felix.worker_beat`) is
+    # older than this. A worker beats every 15 seconds, so the floor is two missed beats.
+    worker_stale_seconds: int = Field(default=60, ge=30)
     # How long past its due time an enabled, scheduled job that is not running may sit before the
     # `job_health_watch` sweep (every 5 minutes) reports it overdue.
     job_overdue_grace_seconds: int = Field(default=900, ge=60)

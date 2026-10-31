@@ -44,6 +44,9 @@ scheduler = TaskiqScheduler(broker=broker, sources=[LabelScheduleSource(broker)]
 # and stopped with it. `fiber_scheduler` below stays as the once-a-minute backstop.
 _fiber_loop: asyncio.Task[None] | None = None
 _fiber_loop_stop: asyncio.Event | None = None
+# `GET /health/worker` reads this beat; it starts last, so a startup that raised never sends one.
+_beat: asyncio.Task[None] | None = None
+_beat_stop: asyncio.Event | None = None
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
@@ -70,6 +73,7 @@ async def _on_worker_startup(_state: object) -> None:
     await hydrate_secrets(_settings)
     _register_plugin_cron_tasks()
     _start_fiber_loop()
+    _start_beat()
     logger.info(
         "worker_startup secrets_backend=%s plugins=%s",
         _settings.secrets_backend,
@@ -98,8 +102,33 @@ async def _stop_fiber_loop() -> None:
     _fiber_loop, _fiber_loop_stop = None, None
 
 
+def _start_beat() -> None:
+    global _beat, _beat_stop
+    if _beat is not None:
+        return
+    from felix import __version__
+    from felix.worker_beat import beat_until
+
+    _beat_stop = asyncio.Event()
+    _beat = asyncio.create_task(beat_until(__version__, _beat_stop))
+
+
+async def _stop_beat() -> None:
+    global _beat, _beat_stop
+    if _beat is None or _beat_stop is None:
+        return
+    _beat_stop.set()
+    try:
+        await _beat
+    except Exception:
+        # Never in the way of the fiber drain and the last span batch behind it.
+        logger.warning("worker beat ended with an error", exc_info=True)
+    _beat, _beat_stop = None, None
+
+
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def _on_worker_shutdown(_state: object) -> None:
+    await _stop_beat()
     await _stop_fiber_loop()
     from felix_ai.wire.transport import aclose_shared_transports
 

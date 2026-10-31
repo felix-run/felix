@@ -44,6 +44,7 @@ REPO_DIR="${FELIX_REPO_DIR:-/opt/felix}"
 BACKUP_DIR="${FELIX_BACKUP_DIR:-/opt/felix-backups}"
 HEALTH_URL="${FELIX_HEALTH_URL:-https://api.felix.run/health}"
 READY_URL="${HEALTH_URL%/health}/ready"
+WORKER_URL="${HEALTH_URL}/worker"
 IMAGE="${FELIX_IMAGE:-ghcr.io/felix-run/felix}"
 read -r -a SSH_FLAGS <<<"${FELIX_SSH_FLAGS:-}"
 
@@ -195,8 +196,13 @@ remote "$COMPOSE pull --quiet" \
   || die "pull failed; nothing was restarted, but the checkout and pin are already on $TAG"
 
 confirm "Roll now? migrate runs first, then api/worker/scheduler restart (expect ~1 min of 502s)"
+# The running worker's boot id (empty when it has none to give), so the wait below can tell a
+# worker this roll started from the one it replaced.
+beat_boot() { grep -o '"boot":"[0-9a-f]*"' <<<"$1" | cut -d'"' -f4 || true; }
+PRE_BOOT="$(beat_boot "$(curl -sS -m 5 "$WORKER_URL" </dev/null 2>/dev/null || true)")"
 remote "$COMPOSE up -d" \
   || die "\`up -d\` failed part-way; check \`docker compose ps\` and the migrate logs on the VM"
+ROLLED_SECONDS=$SECONDS
 
 # --- verify ---------------------------------------------------------------------------------
 
@@ -219,6 +225,45 @@ for _ in $(seq 1 24); do
 done
 [ "${READY:-}" = 200 ] || die "$READY_URL did not answer 200 within 2 minutes (last: ${READY:-none}); the new version is live but not ready"
 note "ready"
+
+# /health and /ready are the API's own answers; 0.19.0 passed both with a worker that died at
+# startup. A worker beats only once its startup passed, with its version and a boot id, so wait for
+# a beat of this version from a worker that is alive after the restart: either a new boot, or the
+# same boot beating since (`up -d` leaves a worker whose config did not change running). The old
+# worker's last beat is not enough -- it reads ok, with the version a re-roll names, for a minute
+# after the worker is gone; but it is older than the restart, and a live worker's is at most 15 s
+# old. Ages are the API's clock and elapsed time is this shell's, so no two clocks are compared;
+# the 2 s is whole-second rounding on both sides.
+worker_verdict() {
+  local body="${1%$'\n'*}" code="${1##*$'\n'}" age
+  case "$code" in
+    200)
+      grep -q "\"version\":\"$VERSION\"" <<<"$body" || return
+      [ "$(beat_boot "$body")" != "$PRE_BOOT" ] && { echo fresh; return; }
+      age="$(grep -o '"last_beat_age_s":[0-9]*' <<<"$body" | cut -d: -f2 || true)"
+      [ -n "$age" ] && [ $((age + 2)) -lt $((SECONDS - ROLLED_SECONDS)) ] && echo alive
+      ;;
+    # Auth runs before routing, so under jwt a release without the route answers 401. 0.19.1 is the
+    # last such release; drop this arm once nothing rolls back that far.
+    401 | 404) [ "$(printf '%s\n' "$VERSION" 0.19.1 | sort -V | tail -1)" = 0.19.1 ] && echo legacy ;;
+  esac
+}
+bold "Waiting for $WORKER_URL to report a live $VERSION worker"
+for _ in $(seq 1 24); do
+  WORKER="$(curl -sS -m 5 -w '\n%{http_code}' "$WORKER_URL" </dev/null 2>/dev/null || true)"
+  OUTCOME="$(worker_verdict "$WORKER" || true)"
+  [ -n "$OUTCOME" ] && break
+  sleep 5
+done
+case "$OUTCOME" in
+  fresh) note "worker $VERSION beating (new boot)" ;;
+  alive) note "worker $VERSION beating (not restarted: its config did not change)" ;;
+  legacy) note "$VERSION has no /health/worker; check the worker's logs by hand" ;;
+  *)
+    # The body is a Redis value relayed by the API: printable characters only on this terminal.
+    die "no live $VERSION worker beat within 2 minutes (last: $(tr -cd '[:print:]' <<<"${WORKER//$'\n'/ }")); check: sudo docker logs \$(sudo docker ps -a --format '{{.Names}}' | grep -m1 worker)"
+    ;;
+esac
 
 bold "After"
 note "alembic: $(psql_q 'table alembic_version')"

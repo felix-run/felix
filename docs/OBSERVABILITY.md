@@ -75,6 +75,19 @@ not the API pod's fault, and restarting or unreadying the API fixes nothing. Poi
 checker at it instead, from outside the deployment -- a stopped scheduler stops every in-cluster
 sweep too, including any that would notice.
 
+`/health/worker` is the same kind of route for `felix-worker`: `200 {"status": "ok",
+"last_beat_age_s": n, "stale_after_s": s, "version": "x.y.z", "boot": "<16 hex>"}` while the newest worker heartbeat is
+within `FELIX_WORKER_STALE_SECONDS` (60), `503` with `stale`, `never` or `unknown` otherwise. A worker
+beats every 15 seconds, and only after its startup has passed every check that can refuse it, so a
+worker that dies on boot never reads `ok` -- 0.19.0 rolled with exactly that worker while `/health`
+and `/ready`, which only the API answers, stayed green. `deploy/gcp/roll.sh` waits for a beat of
+the version it rolled from a worker alive after the restart: a new `boot` (a random id drawn once per
+worker start), or the same one still beating since -- `up -d` leaves a worker whose config did not
+change running. The version alone would pass a re-roll of the same version on the old worker's last
+beat. An id rather than a start time, because the route is public. The beat says the process is up, not that the queue drains; a stale
+`/health/scheduler` says that. With several workers the freshest beat is reported, so one dead
+replica among live ones does not show here (`felix/worker_beat.py`).
+
 ## Metrics
 
 ### Model and cost

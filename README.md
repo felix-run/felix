@@ -485,6 +485,7 @@ recorded in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | Agent card | `GET /.well-known/agent-card.json` |
 | Liveness / readiness | `GET /live` (also `/health`), `GET /ready` |
 | Scheduler heartbeat | `GET /health/scheduler` — 503 when `felix-scheduler` stopped sweeping; for an external monitor, not a probe |
+| Worker heartbeat | `GET /health/worker` — the running worker's version, 503 when none has beaten within `FELIX_WORKER_STALE_SECONDS` (60); what a deploy waits on, not a probe |
 | Metrics | `GET /metrics` — **authenticated**, see below |
 
 `/mcp` is the official `mcp` Python SDK's stateless Streamable HTTP transport, serving a manifest's

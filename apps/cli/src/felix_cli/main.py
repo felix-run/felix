@@ -1304,7 +1304,8 @@ def doctor_cmd() -> None:
 
         if not redis_url_in_use(settings):
             rprint(
-                "  [dim]scheduler[/dim] heartbeat not visible from this process — it crosses through Redis"
+                "  [dim]scheduler[/dim] and worker heartbeats not visible from this process"
+                " — they cross through Redis"
             )
         else:
             beat = await scheduler_health(settings)
@@ -1315,6 +1316,18 @@ def doctor_cmd() -> None:
                 rprint(
                     f"  [yellow]note[/yellow]  scheduler heartbeat {beat.status} — last sweep {when}; "
                     "is felix-scheduler running beside felix-worker?"
+                )
+            # The worker's, as `GET /health/worker` reads it: a worker beats once its startup passed.
+            from felix.worker_beat import worker_health
+
+            worker = await worker_health(settings)
+            if worker.ok:
+                check("worker heartbeat", True, f"{worker.version}, last beat {worker.last_beat_age_s}s ago")
+            else:
+                when = "never" if worker.last_beat_age_s is None else f"{worker.last_beat_age_s}s ago"
+                rprint(
+                    f"  [yellow]note[/yellow]  worker heartbeat {worker.status} — last beat {when}; "
+                    "is felix-worker running, and did its startup log an error?"
                 )
 
         # Object store factory

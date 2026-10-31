@@ -158,6 +158,6 @@ async def test_the_worker_starts_with_the_google_client_and_no_sign_in_accounts(
 
     monkeypatch.setattr(tasks, "_settings", worker_env)
     monkeypatch.setattr(felix.secrets, "hydrate_secrets", _no_secrets)
-    for name in ("_start_fiber_loop", "_register_plugin_cron_tasks", "_start_metrics_server"):
+    for name in ("_start_fiber_loop", "_register_plugin_cron_tasks", "_start_metrics_server", "_start_beat"):
         monkeypatch.setattr(tasks, name, lambda: None)
     await tasks._on_worker_startup(None)

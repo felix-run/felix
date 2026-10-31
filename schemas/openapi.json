@@ -15413,6 +15413,30 @@
         ]
       }
     },
+    "/health/worker": {
+      "get": {
+        "description": "Is a `felix-worker` up, and which version? 503 when the newest heartbeat is older than\n`FELIX_WORKER_STALE_SECONDS` (`stale`), none was ever recorded (`never`), or Redis could not\nbe read (`unknown`) -- `felix.worker_beat`. A worker beats only once its startup has passed\nevery check that can refuse it, so a worker that crashes on boot never reads `ok`.\n\nWhat a deploy waits on after `/ready`, and an external monitor's target; not a kubelet\nprobe, for the reason `/health/scheduler` is not. Public, and carries no tenant data.",
+        "operationId": "worker_health_health_worker_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Worker Health Health Worker Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Worker Health",
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/heartbeats": {
       "get": {
         "description": "The caller's own heartbeats, on every manifest.",
