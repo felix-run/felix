@@ -1296,6 +1296,11 @@ per-principal thread ownership above. Dependencies: `pip-audit` clean on the loc
 - [ ] **Masking coverage.** Felix's own credentials (API keys, `jwks_private`, VAPID, S3, DB and
       Redis URL passwords, the GitHub App key) are not in `collected_secret_values`; masking matches
       exact text only, not base64 or percent-encoded copies.
+- [ ] **Order-dependent connector test.** `test_connectors_google.py::test_an_expired_token_is_refreshed_before_the_call`
+      fails run alone and passes in its file: it leans on state an earlier test leaves behind.
+- [ ] **`/ready` does not cover the worker.** 0.19.0 rolled green with a worker that never started;
+      the smoke run's durable `/chat` was the first thing to notice. A worker heartbeat the roll
+      waits on would have stopped it.
 - [ ] **Small items.** The workspace-gateway Dockerfile's base image is unpinned; the GitHub
       sign-in handoff cookie is single-use only on the client; `jobs:read` sees a run's `result`
       where preferences and state are writer-only.

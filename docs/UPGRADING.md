@@ -37,6 +37,13 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.19.1: the worker starts again with Google sign-in configured
+
+Nothing to do but roll. On 0.19.0 a deployment with `FELIX_GOOGLE_CLIENT_ID` set had a worker that
+refused to start (`FELIX_GOOGLE_ACCOUNTS must list at least one account`): `/health` and `/ready`
+answer from the API and stayed green, but no durable run or scheduled job ran. Check the worker's
+logs after rolling to 0.19.0 if you are still on it.
+
 ## 0.19.0: an anonymous router may not name an agent that refuses anonymous callers, and the `-gcp` image carries `otel`
 
 <!-- deploy: manual -->
