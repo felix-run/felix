@@ -60,6 +60,21 @@ class TenantConnectionList(BaseModel):
     items: list[TenantConnectionOut]
 
 
+class ConnectProviderOut(BaseModel):
+    """Something a person can connect here. `method` says how: `oauth` is `POST
+    /connections/{provider}/start`, `app_password` and `feed_link` are a `POST` to the provider's
+    own route. A client skips a method it does not know."""
+
+    provider: str
+    label: str
+    method: str
+    scopes: list[str]
+
+
+class ConnectProviderList(BaseModel):
+    items: list[ConnectProviderOut]
+
+
 class RevokeConnection(BaseModel):
     person: str = Field(min_length=1, description="`issuer|subject`, as the tenant listing shows it.")
     provider: str = Field(min_length=1)
@@ -317,6 +332,31 @@ async def my_connections(request: Request) -> ConnectionList:
     tenant, person = _person(request)
     rows = await connections.list_for_person(request.app.state.settings, tenant, person)
     return ConnectionList(items=[ConnectionOut.model_validate(r) for r in rows])
+
+
+@router.get("/providers", response_model=ConnectProviderList)
+async def connect_providers(request: Request) -> ConnectProviderList:
+    """What you can connect on this deployment, which is its settings and its plugins: a client has
+    no other way to know short of asking each connect route and reading a 404. Empty without a
+    vault key, since nothing can be kept."""
+    from felix.auth import connections, google_connect
+
+    _person(request)
+    settings = request.app.state.settings
+    if not connections.store_enabled(settings):
+        return ConnectProviderList(items=[])
+    offers = dict(getattr(request.app.state, "connect_offers", None) or {})
+    if google_connect.connect_enabled(settings):
+        # Asked per request rather than added at mount: its secrets may be hydrated after startup.
+        offers["google"] = connections.ConnectOffer(
+            provider="google", label="Google", method="oauth", scopes=tuple(google_connect.SCOPES)
+        )
+    return ConnectProviderList(
+        items=[
+            ConnectProviderOut(provider=o.provider, label=o.label, method=o.method, scopes=list(o.scopes))
+            for o in sorted(offers.values(), key=lambda o: o.provider)
+        ]
+    )
 
 
 @router.get("/tenant", response_model=TenantConnectionList)

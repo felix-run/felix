@@ -122,6 +122,7 @@ def build_router() -> APIRouter:
 
 def mount(app: Any) -> None:
     """The route, when the `icloud` extra is installed: without it there are no tools to use it."""
+    from felix.auth import connections
     from felix.security.rate_limit import build_rate_limiter_backend
 
     from felix_connectors.icloud_dav import require_parsers
@@ -136,6 +137,9 @@ def mount(app: Any) -> None:
     # Its own store, as the channels plugin's: one window length per store (`rate_limit`).
     app.state.icloud_limiter = build_rate_limiter_backend(settings)
     app.include_router(build_router(), prefix=MOUNT)
+    connections.add_connect_offer(
+        app, connections.ConnectOffer(provider=PROVIDER, label="iCloud", method="app_password")
+    )
 
 
 __all__ = ["ATTEMPTS", "MOUNT", "ICloudConnect", "build_router", "mount"]

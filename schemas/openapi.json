@@ -649,6 +649,54 @@
         "title": "CompactRequest",
         "type": "object"
       },
+      "ConnectProviderList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectProviderOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ConnectProviderList",
+        "type": "object"
+      },
+      "ConnectProviderOut": {
+        "description": "Something a person can connect here. `method` says how: `oauth` is `POST\n/connections/{provider}/start`, `app_password` and `feed_link` are a `POST` to the provider's\nown route. A client skips a method it does not know.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider",
+          "label",
+          "method",
+          "scopes"
+        ],
+        "title": "ConnectProviderOut",
+        "type": "object"
+      },
       "ConnectionList": {
         "properties": {
           "items": {
@@ -14096,6 +14144,28 @@
           }
         },
         "summary": "Connect Ics",
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
+    "/connections/providers": {
+      "get": {
+        "description": "What you can connect on this deployment, which is its settings and its plugins: a client has\nno other way to know short of asking each connect route and reading a 404. Empty without a\nvault key, since nothing can be kept.",
+        "operationId": "connect_providers_connections_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectProviderList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Connect Providers",
         "tags": [
           "Connections"
         ]

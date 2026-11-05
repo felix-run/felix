@@ -6,12 +6,16 @@ The behaviour end to end -- enrolment, the sweep, quiet and eventful firings, re
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
 from felix.jobs import heartbeat as hb
 from felix.manifests.loader import parse_manifest
+from felix.usage.catalog import catalog_from_manifest
 from pydantic import ValidationError
+
+from tests.support.factories import make_settings
 
 
 def _manifest(heartbeat: dict[str, Any] | None, *, notify: bool = True, **spec: Any) -> Any:
@@ -359,3 +363,12 @@ async def test_a_schedule_refresh_moves_the_zone_when_only_the_zone_changed(
     job = await jobs_store.get_job(settings, "default", "hb-m-1")
     assert (job["schedule"], job["timezone"]) == ("0 8 * * *", "Asia/Tokyo")
     assert job["next_run_at"] == 1_793_401_200_000, "2026-10-30T23:00Z: 08:00 on the 31st in Tokyo"
+
+
+def test_the_listing_says_who_offers_one_and_when_but_not_the_checklist() -> None:
+    settings = make_settings()
+    offered = _manifest({"checklist": "Check the build.", "schedule": "0 9 * * *", "timezone": "Asia/Tokyo"})
+    felix = catalog_from_manifest("hb", offered, settings)["felix"]
+    assert felix["heartbeat"] == {"schedule": "0 9 * * *", "timezone": "Asia/Tokyo"}
+    assert "Check the build." not in json.dumps(felix)
+    assert catalog_from_manifest("hb", _manifest(None), settings)["felix"]["heartbeat"] is None
