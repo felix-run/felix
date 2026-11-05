@@ -82,7 +82,7 @@ async def _refuse_unpermitted_version(request: Request, name: str, version: int)
 
 
 @router.get("")
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_manifests(request: Request) -> dict[str, Any]:
     from felix.manifests import store as manifest_store
 

@@ -180,3 +180,23 @@ def test_interpolated_values_cannot_break_out_of_their_tags() -> None:
     titled = scalar_html(openapi_url="/openapi.json", title="</title><script>alert(1)</script>", nonce="t")
     assert "<script>alert(1)</script>" not in titled
     assert "&lt;/title&gt;" in titled
+
+
+async def test_a_route_is_documented_once_not_once_per_slash() -> None:
+    """A collection route answers with and without its trailing slash; the schema names one.
+
+    Both spellings stay served, so an existing caller keeps working, but a `/` twin left in
+    the schema is a second entry for the same operation in every reference built from it.
+    """
+    spec = create_app(settings=_settings("docs-slash-twins"), plugins=[]).openapi()
+    assert [path for path in spec["paths"] if path != "/" and path.endswith("/")] == []
+
+
+async def test_a_slash_twin_left_out_of_the_schema_is_still_served() -> None:
+    app = create_app(settings=_settings("docs-slash-served"), plugins=[])
+    async with _client(app) as client:
+        bare = await client.get("/approvals")
+        slashed = await client.get("/approvals/")
+
+    assert bare.status_code == 200
+    assert slashed.status_code == 200

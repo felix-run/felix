@@ -20,7 +20,7 @@ class JsonRpcRequest(BaseModel):
 
 
 @router.post("")
-@router.post("/")
+@router.post("/", include_in_schema=False)
 async def a2a_rpc(body: JsonRpcRequest, request: Request) -> dict[str, Any]:
     from felix.context import AuthContext
 

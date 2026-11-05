@@ -882,7 +882,7 @@ IDEMPOTENCY_HEADER = "idempotency-key"
 
 
 @router.post("", responses=CHAT_REFUSALS)
-@router.post("/", responses=CHAT_REFUSALS)
+@router.post("/", responses=CHAT_REFUSALS, include_in_schema=False)
 async def chat(body: ChatRequest, request: Request, lease_token: LeaseToken = None) -> Any:
     """Run a turn. With an `Idempotency-Key`, run it once per key per principal.
 

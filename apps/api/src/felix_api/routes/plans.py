@@ -45,7 +45,7 @@ class PlanUpsert(BaseModel):
 
 
 @router.get("")
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_plans(
     request: Request,
     limit: int = Query(default=50, ge=1, le=200),

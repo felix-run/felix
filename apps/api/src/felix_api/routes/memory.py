@@ -63,7 +63,7 @@ _PRINCIPAL_FILTER = Query(
 
 
 @router.get("")
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_memories(
     request: Request,
     manifest_id: str = "",
@@ -231,7 +231,7 @@ async def memories_as_of(
 
 
 @router.post("")
-@router.post("/")
+@router.post("/", include_in_schema=False)
 async def write_memory(request: Request, body: MemoryWriteRequest) -> dict[str, Any]:
     """Store a memory directly.
 

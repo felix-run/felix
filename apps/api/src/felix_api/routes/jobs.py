@@ -80,7 +80,7 @@ def _public(job: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("")
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_jobs(request: Request) -> dict[str, Any]:
     from felix.jobs import store as jobs_store
 

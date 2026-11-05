@@ -130,7 +130,7 @@ def _embedder(request: Request) -> Any:
 
 
 @router.get("")
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_documents(
     request: Request,
     limit: int = Query(default=100, ge=1, le=500),
@@ -171,7 +171,7 @@ async def search_documents(
 
 
 @router.post("")
-@router.post("/")
+@router.post("/", include_in_schema=False)
 async def ingest_document(request: Request, body: DocumentIngestRequest) -> dict[str, Any]:
     """Ingest or replace one document. Idempotent on `(source, title)`."""
     from felix.documents import store as doc_store
