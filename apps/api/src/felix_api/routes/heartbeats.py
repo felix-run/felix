@@ -108,9 +108,10 @@ async def put_heartbeat(manifest: str, body: HeartbeatUpsert, request: Request) 
 
     The manifest must define `spec.heartbeat` (422 `no_heartbeat`), and the caller must pass its
     inbound rules as each firing will run them -- `cron` on their behalf, with their scopes -- so a
-    heartbeat that could never run is refused here, with the same written message. The first
-    firing waits for the schedule. The caller's heartbeat conversation is created on first enrol
-    and kept across later ones while it exists.
+    heartbeat that could never run is refused here, with the same written message. Neither applies
+    to turning off one the caller already has, which always works. Turning one on, the first time
+    or again, waits for the next scheduled slot. The caller's heartbeat conversation is created on
+    first enrol and kept across later ones while it exists.
     """
     from felix.jobs import heartbeat as hb
     from felix.manifests.inbound_auth import InboundAuthError

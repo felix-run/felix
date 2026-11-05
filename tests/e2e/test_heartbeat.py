@@ -452,6 +452,89 @@ async def test_a_conversation_that_is_gone_is_replaced_on_the_next_enrolment(boo
         assert await thread_exists(store.open(second), settings=app.settings, tenant_id="default")
 
 
+async def test_a_person_can_always_turn_off_a_heartbeat_they_have(boot: Any) -> None:
+    """Whatever became of the manifest since: dropped the heartbeat, closed to them, or gone. Turning
+    on again is still refused, and nothing is created for someone who has no heartbeat there."""
+    closed = _manifest(auth={"inbound": {"required_scopes": ["ops:special"]}})
+    async with boot([], env=_env(), manifests={"e2e-hb": _manifest()}) as app:
+        enrolled = (await _enrol(app, ALICE)).json()
+        recorded = (await _job(app, enrolled["name"]))["created_auth"]
+
+        await _publish(app, _manifest(checklist=None))
+        off = await _enrol(app, ALICE, enabled=False)
+        assert off.status_code == 200, off.text
+        assert (off.json()["enabled"], off.json()["thread_id"]) == (False, enrolled["thread_id"])
+        job = await _job(app, enrolled["name"])
+        assert job["enabled"] is False and job["created_auth"] == recorded
+        back_on = await _enrol(app, ALICE)
+        assert (back_on.status_code, back_on.json()["detail"]["error"]) == (422, "no_heartbeat")
+        stranger = await _enrol(app, BOB, enabled=False)
+        assert (stranger.status_code, stranger.json()["detail"]["error"]) == (422, "no_heartbeat")
+
+        await _publish(app, _manifest())
+        assert (await _enrol(app, ALICE)).json()["enabled"] is True
+        await _publish(app, closed)
+        off = await _enrol(app, ALICE, enabled=False)
+        assert (off.status_code, off.json()["enabled"]) == (200, False), off.text
+        assert (await _enrol(app, ALICE)).status_code == 403
+
+        await _publish(app, _manifest())
+        assert (await _enrol(app, ALICE)).json()["enabled"] is True
+        _unpublish("e2e-hb")
+        off = await _enrol(app, ALICE, enabled=False)
+        assert (off.status_code, off.json()["enabled"]) == (200, False), off.text
+        assert (await _enrol(app, ALICE)).status_code == 404
+
+
+async def test_turning_a_heartbeat_off_closes_a_run_still_marked_running(boot: Any) -> None:
+    from felix.jobs import store as jobs_store
+    from felix.jobs.scheduler import now_ms
+
+    async with boot([], env=_env(), manifests={"e2e-hb": _manifest()}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        assert await jobs_store.claim_manual_run(app.settings, "default", name, last_run_at=now_ms())
+        assert (await _enrol(app, ALICE, enabled=False)).status_code == 200
+        job = await _job(app, name)
+        assert (job["last_status"], job["last_error"]) == ("error", jobs_store.DISABLED_WHILE_RUNNING)
+
+
+async def test_turning_a_heartbeat_off_keeps_its_zone_and_its_slot(boot: Any) -> None:
+    zoned = _manifest(schedule="0 8 * * *", timezone="America/New_York")
+    async with boot([], env=_env(), manifests={"e2e-hb": zoned}) as app:
+        on = (await _enrol(app, ALICE)).json()
+        off = (await _enrol(app, ALICE, enabled=False)).json()
+        assert (off["timezone"], off["next_run_at"]) == ("America/New_York", on["next_run_at"])
+
+
+async def test_a_schedule_that_no_longer_parses_does_not_stop_turning_off(boot: Any) -> None:
+    """A stored zone this host's tzdata lacks, say: `put_job` would refuse to write it back."""
+    from felix.jobs import store as jobs_store
+
+    async with boot([], env=_env(), manifests={"e2e-hb": _manifest()}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        jobs_store._memory_jobs[("default", name)]["schedule"] = "not a schedule"
+        off = await _enrol(app, ALICE, enabled=False)
+        assert (off.status_code, off.json()["enabled"]) == (200, False), off.text
+        assert (await _job(app, name))["enabled"] is False
+
+
+async def test_turning_a_heartbeat_back_on_waits_for_its_next_slot(boot: Any, clock: list[int]) -> None:
+    script = [ScriptedTurn(content="HEARTBEAT_OK")]
+    async with boot(script, env=_env(), manifests={"e2e-hb": _manifest()}) as app:
+        name = (await _enrol(app, ALICE)).json()["name"]
+        assert (await _enrol(app, ALICE, enabled=False)).status_code == 200
+        assert await _sweep(app, clock, after_ms=3 * HOUR_MS) == 0, "off, it does not fire"
+
+        back_on = (await _enrol(app, ALICE)).json()
+        assert back_on["next_run_at"] == clock[0] + HOUR_MS, "not the due time it stopped with"
+        assert await _sweep(app, clock, after_ms=60_000) == 0, "turning it on is not a request to run it"
+
+        due = (await _job(app, name))["next_run_at"]
+        clock[0] += 60_000
+        assert (await _enrol(app, ALICE)).json()["next_run_at"] == due, "already on, it keeps its slot"
+        assert await _sweep(app, clock) == 1, "and fires when that slot comes"
+
+
 def _start_of_a_utc_day(clock: list[int], hour: int) -> None:
     """Move the clock to `hour`:00 UTC of the next UTC day."""
     clock[0] = clock[0] - clock[0] % DAY_MS + DAY_MS + hour * HOUR_MS

@@ -15576,7 +15576,7 @@
         ]
       },
       "put": {
-        "description": "Turn the caller's heartbeat on `manifest` on (or off, keeping it and its conversation).\n\nThe manifest must define `spec.heartbeat` (422 `no_heartbeat`), and the caller must pass its\ninbound rules as each firing will run them -- `cron` on their behalf, with their scopes -- so a\nheartbeat that could never run is refused here, with the same written message. The first\nfiring waits for the schedule. The caller's heartbeat conversation is created on first enrol\nand kept across later ones while it exists.",
+        "description": "Turn the caller's heartbeat on `manifest` on (or off, keeping it and its conversation).\n\nThe manifest must define `spec.heartbeat` (422 `no_heartbeat`), and the caller must pass its\ninbound rules as each firing will run them -- `cron` on their behalf, with their scopes -- so a\nheartbeat that could never run is refused here, with the same written message. Neither applies\nto turning off one the caller already has, which always works. Turning one on, the first time\nor again, waits for the next scheduled slot. The caller's heartbeat conversation is created on\nfirst enrol and kept across later ones while it exists.",
         "operationId": "put_heartbeat_heartbeats__manifest__put",
         "parameters": [
           {
