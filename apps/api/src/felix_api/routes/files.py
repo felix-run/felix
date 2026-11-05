@@ -41,7 +41,7 @@ class UploadRequest(BaseModel):
 
 
 @router.post("")
-@router.post("/")
+@router.post("/", include_in_schema=False)
 async def upload_file(body: UploadRequest, request: Request) -> dict[str, Any]:
     """Store bytes and return the id a later message can reference."""
     from felix.attachments import AttachmentError, QuotaExceeded, decode_upload, put_attachment

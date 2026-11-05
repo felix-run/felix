@@ -38,7 +38,7 @@ def _jsonl_line(obj: Any) -> str:
 
 
 @router.get("")
-@router.get("/")
+@router.get("/", include_in_schema=False)
 async def list_audit(
     request: Request,
     limit: int = Query(default=50, ge=1, le=500),
