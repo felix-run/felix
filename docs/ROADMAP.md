@@ -729,7 +729,8 @@ registry entry, a plugin or a skill, not as a fixed workflow.
       is a write warning. A cancelled or scheduler-failed firing is now recorded before its mark
       clears, so it counts. `FELIX_JOB_RUNS_KEEP` (200) trims every job's `job_runs` to its newest N
       after each run, both arms, never a non-skipped run of the current UTC day (the cap's count).
-      *Next for heartbeats:* the chat-ui toggle and a heartbeat-aware rendering of the conversation
+      A person can always turn off a heartbeat they have, whatever became of the manifest, and
+      turning one back on waits for its next slot. *Next for heartbeats:* the chat-ui toggle and a heartbeat-aware rendering of the conversation
       (felix-web), including a muted `skipped` run. *Landed (feat/memory-person-scope):* memory
       scoped per person — `spec.memory.scope: person` (the default), `FELIX_PRINCIPAL_ALIASES`,
       `felix memory assign` (see Harness). *Next:* an agent-editable `USER.md` and `SOUL.md`.

@@ -232,16 +232,47 @@ async def get_mine(
     return job
 
 
+async def _stopped(settings: Settings, tenant_id: str, job: dict[str, Any]) -> dict[str, Any]:
+    """`job` written back as it stands, but off. A write rather than `disable_job`, so a run still
+    marked running is closed as `put_job` closes one for any job turned off. A stored schedule that
+    no longer parses (a zone this host's tzdata lacks) must not stop it being turned off."""
+    from felix.jobs import store as jobs_store
+    from felix.jobs.schedule import ScheduleError
+
+    try:
+        return await jobs_store.put_job(
+            settings,
+            tenant_id,
+            str(job["name"]),
+            schedule=str(job.get("schedule") or ""),
+            timezone=job.get("timezone"),
+            manifest_id=str(job.get("manifest_id") or ""),
+            payload=job.get("payload"),
+            enabled=False,
+            created_by=job.get("created_by"),
+            created_auth=job.get("created_auth"),
+            preferences_required=bool(job.get("preferences_required")),
+        )
+    except ScheduleError:
+        await jobs_store.disable_job(settings, tenant_id, str(job["name"]))
+        return {**job, "enabled": False}
+
+
 async def enrol(
     settings: Settings, *, tenant_id: str, auth: AuthContext, manifest_id: str, enabled: bool
 ) -> dict[str, Any]:
     """Turn `auth`'s person's heartbeat on `manifest_id` on (or off, keeping it), and return the job.
 
-    Refused (`HeartbeatRefused`) for a manifest that does not exist (404), for a person the
-    manifest's inbound rules would refuse at the firing -- checked as the firing's own caller
-    (`cron` for them, with their recorded scopes), raising `InboundAuthError` -- and only then for a
-    manifest that defines no heartbeat (422). In that order, so a caller the manifest refuses learns
-    nothing of whether it offers one.
+    Turning off a heartbeat the person already has asks nothing of the manifest: it stops something
+    of theirs, so it works on a manifest that has since dropped its heartbeat, gone, or closed to
+    them. Anything else is refused (`HeartbeatRefused`) for a manifest that does not exist (404), for
+    a person the manifest's inbound rules would refuse at the firing -- checked as the firing's own
+    caller (`cron` for them, with their recorded scopes), raising `InboundAuthError` -- and only then
+    for a manifest that defines no heartbeat (422). In that order, so a caller the manifest refuses
+    learns nothing of whether it offers one.
+
+    Turning a stopped heartbeat back on waits for its next slot from now, as turning it on the first
+    time does: the due time it stopped with has passed, and would fire on the next sweep.
     """
     from felix.auth.recorded import token_expiry_ms
     from felix.jobs import store as jobs_store
@@ -250,6 +281,8 @@ async def enrol(
     from felix.runtime import prepare_tenant_invoke, resolve_tenant_manifest
 
     person = auth.acting_for
+    if not enabled and (held := await get_mine(settings, tenant_id, manifest_id, person)) is not None:
+        return await _stopped(settings, tenant_id, held)
     try:
         name = job_name(manifest_id, person)
     except ValueError:
@@ -278,7 +311,20 @@ async def enrol(
     if existing is not None and existing.get("created_by") == person:
         kept = (origin(existing) or {}).get("thread_id")
     thread_id = await _conversation(settings, tenant_id, manifest_id, kept if isinstance(kept, str) else None)
-    now = now_ms()
+    first_due = parse_schedule(heartbeat.schedule, heartbeat.timezone).next_after(now_ms())
+    if enabled and existing is not None and not existing.get("enabled"):
+        # Before the write that enables it, so no sweep sees it on and overdue. A rewrite keeps the
+        # due time it finds, and ignores `first_run_at`.
+        await jobs_store.set_schedule(
+            settings,
+            tenant_id,
+            name,
+            schedule=str(existing.get("schedule") or ""),
+            timezone=existing.get("timezone"),
+            next_run_at=first_due,
+            expected_schedule=str(existing.get("schedule") or ""),
+            expected_timezone=existing.get("timezone"),
+        )
     return await jobs_store.put_job(
         settings,
         tenant_id,
@@ -294,7 +340,7 @@ async def enrol(
         created_by=person,
         created_auth=recorded,
         # Waits for its schedule: turning it on is not a request to run it now.
-        first_run_at=parse_schedule(heartbeat.schedule, heartbeat.timezone).next_after(now),
+        first_run_at=first_due,
         # Set by a `PUT /jobs` writer, never by enrolment: re-enrolling keeps what it was.
         preferences_required=bool(existing.get("preferences_required")) if existing is not None else False,
     )
