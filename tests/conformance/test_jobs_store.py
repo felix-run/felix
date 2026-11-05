@@ -611,6 +611,25 @@ async def test_disabling_a_running_job_clears_its_mark(store_settings: Any) -> N
 
 
 @parametrized
+async def test_stopping_a_job_closes_its_mark_and_writes_nothing_else(store_settings: Any) -> None:
+    await _put(store_settings, schedule="0 8 * * *", timezone="America/New_York", created_by="alice")
+    await jobs.touch_run(store_settings, TENANT, JOB, last_run_at=0, next_run_at=1_000)
+    assert await jobs.claim_run(
+        store_settings, TENANT, JOB, seen_next_run_at=1_000, last_run_at=5_000, next_run_at=2_000
+    )
+    before = await jobs.get_job(store_settings, TENANT, JOB)
+    stopped = await jobs.stop_job(store_settings, TENANT, JOB)
+    assert stopped == await jobs.get_job(store_settings, TENANT, JOB)
+    assert stopped == {
+        **before,
+        "enabled": False,
+        "last_status": "error",
+        "last_error": jobs.DISABLED_WHILE_RUNNING,
+    }
+    assert await jobs.stop_job(store_settings, TENANT, "no-such-job") is None
+
+
+@parametrized
 async def test_a_job_with_no_due_time_is_claimed_once_too(store_settings: Any) -> None:
     """A scheduled job that has never run has a NULL `next_run_at`, which the scheduler treats as
     due, and it must still be claimable -- on both arms. The second claim loses because the first

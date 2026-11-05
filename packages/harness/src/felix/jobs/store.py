@@ -718,6 +718,35 @@ async def disable_job(settings: Settings, tenant_id: str, name: str) -> None:
         await db.commit()
 
 
+async def stop_job(settings: Settings, tenant_id: str, name: str) -> dict[str, Any] | None:
+    """Turn a job off for whoever asked, as `put_job` does and writing nothing else: a run still
+    marked running is closed, where `disable_job`, called from inside a run, leaves the mark to that
+    run. The stored schedule is not re-read, so one that no longer parses can still be stopped.
+    The job, or None for one that is gone."""
+    if _use_memory(settings):
+        row = _memory_jobs.get((tenant_id, name))
+        if row is None:
+            return None
+        status, error = row.get("last_status", ""), row.get("last_error", "")
+        row.update(
+            enabled=False,
+            last_status=_status_after_write(status, False),
+            last_error=_error_after_write(status, error, False),
+        )
+        return _job_dict(row)
+
+    factory = get_session_factory(settings=settings)
+    async with factory() as db:
+        row = await db.get(Job, (tenant_id, name))
+        if row is None:
+            return None
+        row.last_error = _error_after_write(row.last_status, row.last_error, False)
+        row.last_status = _status_after_write(row.last_status, False)
+        row.enabled = False
+        await db.commit()
+        return _job_dict(row)
+
+
 async def set_health(
     settings: Settings, tenant_id: str, name: str, *, seen: dict[str, Any], health: dict[str, Any]
 ) -> bool:
@@ -1006,6 +1035,7 @@ __all__ = [
     "set_health",
     "set_preferences",
     "set_schedule",
+    "stop_job",
     "touch_run",
     "trim_runs",
     "utc_day_start",
