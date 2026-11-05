@@ -41,6 +41,7 @@ SOURCE = "Calendar feed"
 MAX_FEEDS = 5
 MAX_EVENTS = 25
 MAX_LABEL = 64
+LABEL_RULE = f"a feed's name is 1 to {MAX_LABEL} printable characters, with no slash and not only dots"
 MAX_URL = 2048
 #: A published calendar is the whole calendar, years of it: more than any JSON answer here, and
 #: parsing it is CPU on every call (about three seconds for three megabytes), so held at that.
@@ -71,10 +72,16 @@ def require_parsers() -> None:
 def check_label(label: str) -> str:
     """The name a person gives a feed ("Work", "Family"), trimmed, or `ValueError`. It is what the
     model names the feed by, so it is one short printable line, and its `account_of` is a path
-    segment of `DELETE /connections/ics/{account}`, so it holds no slash."""
+    segment of `DELETE /connections/ics/{account}`, so it holds no slash and is not only dots: a
+    client resolves `.` and `..` out of a URL before sending it, and the DELETE lands elsewhere."""
     value = " ".join(label.split())
-    if not value or len(value) > MAX_LABEL or not value.isprintable() or any(ch in value for ch in "/\\"):
-        raise ValueError(f"a feed's name is 1 to {MAX_LABEL} printable characters, with no slash")
+    if (
+        not value.strip(".")
+        or len(value) > MAX_LABEL
+        or not value.isprintable()
+        or any(ch in value for ch in "/\\")
+    ):
+        raise ValueError(LABEL_RULE)
     return value
 
 
@@ -271,6 +278,7 @@ def ics_tools(feeds: Feeds) -> list[Tool]:
 
 
 __all__ = [
+    "LABEL_RULE",
     "MAX_FEEDS",
     "MAX_FEED_BYTES",
     "MAX_LABEL",

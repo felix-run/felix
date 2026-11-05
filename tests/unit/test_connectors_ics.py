@@ -423,6 +423,23 @@ def test_a_feed_name_with_a_slash_is_refused(label: str) -> None:
         check_label(label)
 
 
+@pytest.mark.parametrize("label", [".", "..", "...", " .. "])
+def test_a_feed_name_of_only_dots_is_refused(label: str) -> None:
+    """A client resolves `.` and `..` out of a URL, so `DELETE /connections/ics/..` would land on
+    another route and the feed could never be disconnected."""
+    from felix_connectors.ics import check_label
+
+    with pytest.raises(ValueError, match="only dots"):
+        check_label(label)
+
+
+@pytest.mark.parametrize("label", ["St. Mary's", ".ics", "v1.2", "..x"])
+def test_a_feed_name_may_hold_dots_among_other_characters(label: str) -> None:
+    from felix_connectors.ics import check_label
+
+    assert check_label(label) == label
+
+
 def test_a_feed_is_kept_under_its_name_case_folded() -> None:
     from felix_connectors.ics import account_of
 
