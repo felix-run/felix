@@ -3862,7 +3862,7 @@ FastAPI, whose 422 would echo it.
   every read checks a kept link again, so narrowing the list stops a link already connected.
 - The link is fetched once and kept only if it serves an iCalendar calendar, sealed in the person's
   vault as `https://` (provider `ics`, kind `secret`, account the name case folded, so "Work" and
-  "work" are one feed; a name holds no slash). Connecting a name again replaces its link; a person
+  "work" are one feed; a name holds no slash and is not only dots). Connecting a name again replaces its link; a person
   keeps at most five. Refusals are written codes (`invalid_body`, `label_invalid`, `url_invalid`,
   `host_not_allowed`, `too_many_feeds`, `feed_refused`, `feed_unavailable`, `feed_too_large`,
   `not_a_calendar`, `connect_failed`); ten tries a person an hour, 404 without a vault key, 403 to

@@ -30,8 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 from felix_connectors.connect import ConnectionView, refused
 from felix_connectors.http import ResponseTooLarge, UpstreamError
 from felix_connectors.ics import (
+    LABEL_RULE,
     MAX_FEEDS,
-    MAX_LABEL,
     MAX_URL,
     PROVIDER,
     SOURCE,
@@ -72,9 +72,7 @@ def _body(raw: bytes) -> tuple[str, str] | JSONResponse:
     try:
         return check_label(body.label), body.url.get_secret_value()
     except ValueError:
-        return refused(
-            "label_invalid", f"a feed's name is 1 to {MAX_LABEL} printable characters, with no slash"
-        )
+        return refused("label_invalid", LABEL_RULE)
 
 
 async def _checked(feeds: Feeds, url: str) -> str | JSONResponse:

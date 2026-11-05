@@ -272,6 +272,16 @@ async def test_a_name_that_is_not_one_line_is_refused(boot: Any, service: tuple[
     assert svc.seen == []
 
 
+async def test_a_name_of_only_dots_is_refused(boot: Any, service: tuple[Service, str]) -> None:
+    """A browser resolves `..` out of the address, so its DELETE could never reach this feed."""
+    svc, url = service
+    async with boot([], env=_env()) as app:
+        refused = await _connect(app, url, label="..")
+    assert (refused.status_code, refused.json()["error"]) == (400, "label_invalid")
+    assert "only dots" in refused.json()["message"]
+    assert svc.seen == []
+
+
 async def test_a_person_may_try_a_few_times_an_hour(boot: Any, service: tuple[Service, str]) -> None:
     from felix_connectors.ics_connect import ATTEMPTS
 
