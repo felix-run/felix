@@ -335,3 +335,11 @@ async def test_a_deployment_that_lists_no_hosts_reads_no_feeds(
         "message": "this deployment reads no calendar feeds",
     }
     assert svc.seen == []
+
+
+async def test_a_feed_is_offered_where_its_route_is_mounted(boot: Any) -> None:
+    async with boot([], env=_env()) as app:
+        listed = await app.client.get("/connections/providers", headers=_bearer(app.settings))
+    assert {"provider": "ics", "label": "Calendar feed", "method": "feed_link", "scopes": []} in (
+        listed.json()["items"]
+    )

@@ -151,6 +151,29 @@ def unregister_connection_provider(name: str) -> None:
     _PROVIDERS.pop(name, None)
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectOffer:
+    """What a person can connect here, for `GET /connections/providers`. Apart from
+    `ConnectionProvider`, which is how a stored grant is refreshed and revoked: a provider of app
+    passwords or feed links has neither, and is offered all the same."""
+
+    provider: str
+    label: str
+    #: How a client connects it: `oauth` is a redirect, the others a form of their own.
+    method: str
+    #: What can be asked for, by the name the connect route takes. Empty when it asks for nothing.
+    scopes: tuple[str, ...] = ()
+
+
+def add_connect_offer(app: Any, offer: ConnectOffer) -> None:
+    """Offer `offer` on `app`, by whoever mounts its connect route, so it is listed exactly where
+    the route is served. On the app rather than in a registry here: a plugin mounts per app."""
+    offers = getattr(app.state, "connect_offers", None)
+    if offers is None:
+        offers = app.state.connect_offers = {}
+    offers[offer.provider] = offer
+
+
 #: Providers that ship with the harness, imported on first use so nothing has to remember to:
 #: a worker resuming a run refreshes through the same provider the API stored the grant with.
 _BUILTIN_PROVIDERS = {"google": "felix.auth.google_connect"}

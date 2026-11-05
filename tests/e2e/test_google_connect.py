@@ -597,3 +597,26 @@ async def test_a_store_that_fails_answers_in_its_own_words_and_clears_the_handof
     assert (failed.status_code, failed.json()["error"]) == (500, "connect_failed")
     assert "db-7" not in failed.text
     assert cleared
+
+
+async def test_google_is_offered_where_it_can_be_connected(boot: Any, fake_google: FakeGoogle) -> None:
+    async with boot([], env=_env()) as app:
+        auth = await _signed_in(app.client, fake_google)
+        listed = await app.client.get("/connections/providers", headers=auth)
+    assert listed.status_code == 200, listed.text
+    (google_offer,) = [p for p in listed.json()["items"] if p["provider"] == "google"]
+    assert google_offer["method"] == "oauth"
+    assert "calendar_read" in google_offer["scopes"]
+
+
+async def test_nothing_is_offered_without_a_vault_key(boot: Any, fake_google: FakeGoogle) -> None:
+    async with boot([], env=_env(FELIX_CONNECTION_TOKEN_KEY="")) as app:
+        auth = await _signed_in(app.client, fake_google)
+        listed = await app.client.get("/connections/providers", headers=auth)
+    assert listed.json() == {"items": []}
+
+
+async def test_the_offers_need_a_person(boot: Any, fake_google: FakeGoogle) -> None:
+    async with boot([], env=_env()) as app:
+        listed = await app.client.get("/connections/providers")
+    assert listed.status_code == 401

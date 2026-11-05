@@ -174,6 +174,12 @@ def catalog_from_manifest(
         {"headline": declared.headline, "subtitle": declared.subtitle} if declared is not None else None
     )
     entry["felix"]["workspace"] = workspace_summary(manifest)
+    # What a person turning on a heartbeat is agreeing to, and that they can: `GET /heartbeats` lists
+    # only their own. `null` when nobody can enrol. Never the checklist, the operator's instructions.
+    heartbeat = getattr(getattr(manifest, "spec", None), "heartbeat", None)
+    entry["felix"]["heartbeat"] = (
+        {"schedule": heartbeat.schedule, "timezone": heartbeat.timezone} if heartbeat is not None else None
+    )
     return entry
 
 

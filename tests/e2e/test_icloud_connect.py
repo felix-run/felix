@@ -229,3 +229,11 @@ async def test_a_vault_that_cannot_keep_it_says_so(
         failed = await _connect(app)
     assert (failed.status_code, failed.json()["error"]) == (503, "connect_failed")
     assert APP_PASSWORD not in failed.text
+
+
+async def test_icloud_is_offered_where_its_route_is_mounted(boot: Any) -> None:
+    async with boot([], env=_env()) as app:
+        listed = await app.client.get("/connections/providers", headers=_bearer(app.settings))
+    assert {"provider": "icloud", "label": "iCloud", "method": "app_password", "scopes": []} in (
+        listed.json()["items"]
+    )
