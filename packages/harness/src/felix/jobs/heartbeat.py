@@ -232,32 +232,6 @@ async def get_mine(
     return job
 
 
-async def _stopped(settings: Settings, tenant_id: str, job: dict[str, Any]) -> dict[str, Any]:
-    """`job` written back as it stands, but off. A write rather than `disable_job`, so a run still
-    marked running is closed as `put_job` closes one for any job turned off. A stored schedule that
-    no longer parses (a zone this host's tzdata lacks) must not stop it being turned off."""
-    from felix.jobs import store as jobs_store
-    from felix.jobs.schedule import ScheduleError
-
-    try:
-        return await jobs_store.put_job(
-            settings,
-            tenant_id,
-            str(job["name"]),
-            schedule=str(job.get("schedule") or ""),
-            timezone=job.get("timezone"),
-            manifest_id=str(job.get("manifest_id") or ""),
-            payload=job.get("payload"),
-            enabled=False,
-            created_by=job.get("created_by"),
-            created_auth=job.get("created_auth"),
-            preferences_required=bool(job.get("preferences_required")),
-        )
-    except ScheduleError:
-        await jobs_store.disable_job(settings, tenant_id, str(job["name"]))
-        return {**job, "enabled": False}
-
-
 async def enrol(
     settings: Settings, *, tenant_id: str, auth: AuthContext, manifest_id: str, enabled: bool
 ) -> dict[str, Any]:
@@ -265,11 +239,12 @@ async def enrol(
 
     Turning off a heartbeat the person already has asks nothing of the manifest: it stops something
     of theirs, so it works on a manifest that has since dropped its heartbeat, gone, or closed to
-    them. Anything else is refused (`HeartbeatRefused`) for a manifest that does not exist (404), for
-    a person the manifest's inbound rules would refuse at the firing -- checked as the firing's own
-    caller (`cron` for them, with their recorded scopes), raising `InboundAuthError` -- and only then
-    for a manifest that defines no heartbeat (422). In that order, so a caller the manifest refuses
-    learns nothing of whether it offers one.
+    them. Any other call writes the job, off for a person who has none yet, and is refused
+    (`HeartbeatRefused`) for a manifest that does not exist (404), for a person the manifest's
+    inbound rules would refuse at the firing -- checked as the firing's own caller (`cron` for them,
+    with their recorded scopes), raising `InboundAuthError` -- and only then for a manifest that
+    defines no heartbeat (422). In that order, so a caller the manifest refuses learns nothing of
+    whether it offers one.
 
     Turning a stopped heartbeat back on waits for its next slot from now, as turning it on the first
     time does: the due time it stopped with has passed, and would fire on the next sweep.
@@ -282,7 +257,8 @@ async def enrol(
 
     person = auth.acting_for
     if not enabled and (held := await get_mine(settings, tenant_id, manifest_id, person)) is not None:
-        return await _stopped(settings, tenant_id, held)
+        stopped = await jobs_store.stop_job(settings, tenant_id, str(held["name"]))
+        return stopped or {**held, "enabled": False}
     try:
         name = job_name(manifest_id, person)
     except ValueError:
@@ -311,20 +287,10 @@ async def enrol(
     if existing is not None and existing.get("created_by") == person:
         kept = (origin(existing) or {}).get("thread_id")
     thread_id = await _conversation(settings, tenant_id, manifest_id, kept if isinstance(kept, str) else None)
-    first_due = parse_schedule(heartbeat.schedule, heartbeat.timezone).next_after(now_ms())
     if enabled and existing is not None and not existing.get("enabled"):
         # Before the write that enables it, so no sweep sees it on and overdue. A rewrite keeps the
         # due time it finds, and ignores `first_run_at`.
-        await jobs_store.set_schedule(
-            settings,
-            tenant_id,
-            name,
-            schedule=str(existing.get("schedule") or ""),
-            timezone=existing.get("timezone"),
-            next_run_at=first_due,
-            expected_schedule=str(existing.get("schedule") or ""),
-            expected_timezone=existing.get("timezone"),
-        )
+        await _move_to_next_slot(settings, tenant_id, existing, heartbeat.schedule, heartbeat.timezone)
     return await jobs_store.put_job(
         settings,
         tenant_id,
@@ -340,7 +306,7 @@ async def enrol(
         created_by=person,
         created_auth=recorded,
         # Waits for its schedule: turning it on is not a request to run it now.
-        first_run_at=first_due,
+        first_run_at=parse_schedule(heartbeat.schedule, heartbeat.timezone).next_after(now_ms()),
         # Set by a `PUT /jobs` writer, never by enrolment: re-enrolling keeps what it was.
         preferences_required=bool(existing.get("preferences_required")) if existing is not None else False,
     )
@@ -352,27 +318,35 @@ async def keep_schedule_current(
     """Move the job to the manifest's schedule and zone when either differs, due at its next slot
     from now: an operator's edit applies from the next firing, and a schedule someone re-saved over
     `PUT /jobs` lasts one firing. Conditional on the schedule and zone this firing read
-    (`jobs_store.set_schedule`), so a heartbeat deleted, disabled or re-saved meanwhile is left
-    exactly as it now is."""
+    (`jobs_store.set_schedule`), so a heartbeat deleted or re-saved meanwhile is left exactly as it
+    now is, and one turned off stays off."""
+    if (job.get("schedule"), job.get("timezone")) == (schedule, timezone):
+        return
+    try:
+        await _move_to_next_slot(settings, tenant_id, job, schedule, timezone)
+    except Exception:
+        logger.warning("heartbeat schedule refresh failed", exc_info=True)
+
+
+async def _move_to_next_slot(
+    settings: Settings, tenant_id: str, job: dict[str, Any], schedule: str, timezone: str | None
+) -> None:
+    """Put `job` on `schedule` in `timezone`, due at its next slot from now -- unless its schedule has
+    moved since `job` was read (`jobs_store.set_schedule`)."""
     from felix.jobs import store as jobs_store
     from felix.jobs.schedule import parse_schedule
     from felix.jobs.scheduler import now_ms
 
-    if (job.get("schedule"), job.get("timezone")) == (schedule, timezone):
-        return
-    try:
-        await jobs_store.set_schedule(
-            settings,
-            tenant_id,
-            str(job["name"]),
-            schedule=schedule,
-            timezone=timezone,
-            next_run_at=parse_schedule(schedule, timezone).next_after(now_ms()),
-            expected_schedule=str(job.get("schedule") or ""),
-            expected_timezone=job.get("timezone"),
-        )
-    except Exception:
-        logger.warning("heartbeat schedule refresh failed", exc_info=True)
+    await jobs_store.set_schedule(
+        settings,
+        tenant_id,
+        str(job["name"]),
+        schedule=schedule,
+        timezone=timezone,
+        next_run_at=parse_schedule(schedule, timezone).next_after(now_ms()),
+        expected_schedule=str(job.get("schedule") or ""),
+        expected_timezone=job.get("timezone"),
+    )
 
 
 @dataclass(slots=True)
