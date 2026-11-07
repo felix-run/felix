@@ -10,6 +10,24 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.19.3] — 2026-11-06
+
+### Added
+
+- **`GET /connections/providers`** lists what a person can connect on this deployment: each provider's `label`, its `method` (`oauth`, `app_password` or `feed_link`) and the `scopes` it can ask for. It follows the deployment's settings and plugins, and is empty without `FELIX_CONNECTION_TOKEN_KEY`. A plugin offers a provider with `connections.add_connect_offer`. (#763)
+
+- **`felix.heartbeat` on `GET /v1/models`** is the `schedule` and `timezone` of a manifest's `spec.heartbeat`, or `null` when nobody can enrol. The checklist is not included. (#763)
+
+### Fixed
+
+- **A calendar feed can no longer be named only with dots.** `POST /connections/ics` refuses such a name with `label_invalid`. A client resolves `.` and `..` out of a URL, so a feed with that name could not be disconnected. (#764)
+
+- A person can always turn off a heartbeat they have, even after its manifest dropped the heartbeat, closed to them, or was removed. (#765)
+
+- Turning a heartbeat back on waits for its next scheduled slot instead of firing on the next sweep. (#765)
+
+- **The API reference lists each collection route once.** The OpenAPI document no longer carries a second entry for the trailing-slash spelling of `/a2a`, `/approvals`, `/audit`, `/chat`, `/documents`, `/files`, `/jobs`, `/manifests`, `/memory` and `/plans`. Both spellings are still served. (#766)
+
 ## [0.19.2] — 2026-10-30
 
 ### Added
@@ -5508,3 +5526,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.19.0]: https://github.com/felix-run/felix/releases/tag/v0.19.0
 [0.19.1]: https://github.com/felix-run/felix/releases/tag/v0.19.1
 [0.19.2]: https://github.com/felix-run/felix/releases/tag/v0.19.2
+[0.19.3]: https://github.com/felix-run/felix/releases/tag/v0.19.3

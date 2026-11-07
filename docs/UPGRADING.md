@@ -37,6 +37,14 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.19.3: discovery for chat-ui's Heartbeats and Connections pages
+
+Nothing to do but roll: no migration and no new setting. `GET /connections/providers` and
+`felix.heartbeat` on `GET /v1/models` are what those two pages read, so they stay empty or say the
+harness is too old until this release is live. `POST /connections/ics` now refuses a feed named only
+with dots (`label_invalid`). A feed already stored under such a name stays, and still cannot be
+disconnected from a client.
+
 ## 0.19.2: `GET /health/worker`, and the roll waits for a live worker
 
 Nothing to do but roll. The worker now sends a heartbeat once its startup has passed, and
