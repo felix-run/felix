@@ -25,12 +25,13 @@ concurrency:
 # but that lives in Settings, is invisible to anyone reading this workflow, and flipping
 # it would silently grant write to every job below. `security.yml` already declares this;
 # CodeQL's `actions/missing-workflow-permissions` flagged the workflows that did not.
-# A job needing more overrides it locally, as `changes` and the review job already do.
+# A job needing more overrides it locally, as `review-changes` and the review job already do.
 permissions:
   contents: read
 
 jobs:
-  changes:
+  # Not `changes`: that name is a required check on main, and it belongs to ci.yml's job.
+  review-changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -53,11 +54,11 @@ jobs:
               - 'tests/**'
 
   review:
-    needs: changes
+    needs: review-changes
     # Skip when no Python changed, on drafts, and on fork PRs — GitHub withholds
     # secrets from fork runs on public repositories, so the job could only fail.
     if: >-
-      needs.changes.outputs.python == 'true' &&
+      needs.review-changes.outputs.python == 'true' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -99,7 +100,7 @@ jobs:
             1. Use the `felix-quality-reviewer` subagent on the production code in
                `git diff origin/main...HEAD`. Its rubric and output format are defined in
                `.claude/agents/felix-quality-reviewer.md`; follow them exactly.
-            2. ${{ needs.changes.outputs.tests == 'true'
+            2. ${{ needs.review-changes.outputs.tests == 'true'
                    && 'Tests changed in this PR, so also use the `felix-test-quality-reviewer` subagent on the changed files under `tests/`.'
                    || 'No tests changed in this PR, so skip felix-test-quality-reviewer.' }}
 
