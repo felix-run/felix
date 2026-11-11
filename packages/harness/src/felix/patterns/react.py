@@ -177,6 +177,29 @@ def _interrupted_tool_results(messages: list[ChatMessage], tool_map: dict[str, T
     return results
 
 
+def _place_interrupted(messages: list[ChatMessage], interrupted: list[ChatMessage]) -> None:
+    """Put each closing result under the assistant message that made its call, in place.
+
+    After the results that message already has, and ahead of whatever came next. Appended at
+    the end they followed the new user turn -- `assistant(call)`, `user`, `tool(result)` --
+    which a provider rejects; the log, written in the right order, only fixed the retry.
+    """
+    closing = {m.tool_call_id: m for m in interrupted}
+    placed: list[ChatMessage] = []
+    i = 0
+    while i < len(messages):
+        message = messages[i]
+        placed.append(message)
+        i += 1
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        while i < len(messages) and messages[i].role == "tool":
+            placed.append(messages[i])
+            i += 1
+        placed.extend(closing.pop(call.id) for call in message.tool_calls if call.id in closing)
+    messages[:] = placed
+
+
 def _clamp(value: int, ceiling: int) -> int:
     return min(max(value, 1), ceiling)
 
@@ -1411,7 +1434,7 @@ class _ReactAgent:
                     "felix_interrupted_tool_calls",
                     {"manifest_id": self.manifest_id},
                 )
-                messages.extend(interrupted)
+                _place_interrupted(messages, interrupted)
                 await self._append_produced(input.thread_id, interrupted)
                 await self._close_interrupted_gates(input.thread_id, tenant_id, interrupted)
 

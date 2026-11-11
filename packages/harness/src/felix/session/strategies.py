@@ -24,6 +24,43 @@ def is_pinned(event: SessionEvent) -> bool:
     return bool((event.metadata or {}).get("pinned"))
 
 
+def repair_pairing(selected: list[SessionEvent], all_events: list[SessionEvent]) -> list[SessionEvent]:
+    """`selected`, with every tool call and its results kept or dropped together, in `seq` order.
+
+    A strategy that picks events one at a time -- the last N, the N most relevant -- can open
+    on a tool result or keep a call without its results, and a provider rejects either
+    history. Compaction's `_find_cut` avoids it by never cutting on a tool result; a selection
+    with gaps cannot, so it is repaired from `all_events`, the branch it was picked from:
+
+    - a kept tool result brings the assistant event that made its call;
+    - a kept assistant event brings every result of its calls that the branch holds;
+    - a tool result whose call is not in the branch is dropped.
+
+    A call whose result was never logged stays as it is: the run closes it as interrupted.
+    """
+    owners: dict[str, SessionEvent] = {}
+    results: dict[str, list[SessionEvent]] = {}
+    for e in all_events:
+        if e.role == "assistant":
+            for call in e.tool_calls or []:
+                owners[str(call.get("id") or "")] = e
+        elif e.role == "tool" and e.tool_call_id:
+            results.setdefault(e.tool_call_id, []).append(e)
+
+    kept: dict[int, SessionEvent] = {}
+    for e in selected:
+        if e.role == "tool":
+            owner = owners.get(e.tool_call_id or "")
+            if owner is None:
+                continue
+            e = owner
+        kept[e.seq] = e
+        for call in (e.tool_calls or []) if e.role == "assistant" else []:
+            for result in results.get(str(call.get("id") or ""), []):
+                kept[result.seq] = result
+    return [kept[seq] for seq in sorted(kept)]
+
+
 class FullReplaySessionStrategy:
     async def render(
         self,
@@ -63,7 +100,7 @@ class WindowedSessionStrategy:
         pinned = [e for e in filtered if is_pinned(e)]
         unpinned = [e for e in filtered if not is_pinned(e)]
         windowed = unpinned[-self.max_turns :] if self.max_turns > 0 else []
-        merged = sorted([*pinned, *windowed], key=lambda e: e.seq)
+        merged = repair_pairing([*pinned, *windowed], filtered)
         return [
             ChatMessage(role="system", content=system_prompt),
             *[event_to_chat_message(e) for e in merged],
@@ -258,7 +295,7 @@ class SemanticSessionStrategy:
                 return len(tokens & words)
 
             ranked = sorted(unpinned, key=score, reverse=True)[: self.top_n]
-        merged = sorted([*pinned, *ranked], key=lambda e: e.seq)
+        merged = repair_pairing([*pinned, *ranked], candidates)
         kind = "embeddings" if used_embeddings else "keyword overlap, not embeddings"
         note = ChatMessage(
             role="system",
@@ -401,4 +438,5 @@ __all__ = [
     "is_pinned",
     "list_session_strategies",
     "register_session_strategy",
+    "repair_pairing",
 ]
