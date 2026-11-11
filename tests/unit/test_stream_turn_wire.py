@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from felix.patterns.model import ModelChatResult, StreamDelta
 from felix.patterns.types import ChatMessage
 from felix_ai.wire.base import _repair_json
@@ -169,7 +170,6 @@ async def test_openai_stream_asks_for_usage(monkeypatch: Any) -> None:
 
 async def _fails(client) -> tuple[list[StreamDelta], Any]:
     """Drain `stream_turn`, expecting it to raise: (the deltas shown, the error)."""
-    import pytest
     from felix_ai import ModelGatewayError
 
     items: list[Any] = []
@@ -291,3 +291,23 @@ def test_non_object_arguments_are_rejected() -> None:
 
 def test_repair_leaves_structure_outside_strings_alone() -> None:
     assert _repair_json('{"a": 1,\n "b": 2}') == '{"a": 1,\n "b": 2}'
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        ({"type": "overloaded_error"}, 529),
+        ({"type": "rate_limit_error"}, 429),
+        # A request wrong for every model: as a 500 it read as this provider's fault, and a
+        # fallback chain advanced past it.
+        ({"type": "invalid_request_error"}, 400),
+        ({"type": "authentication_error"}, 401),
+        ({"code": 503, "message": "upstream"}, 503),
+        ({"code": "rate_limited"}, 500),
+        (None, 500),
+    ],
+)
+def test_an_in_band_error_takes_the_status_the_provider_gives_it_up_front(error: Any, status: int) -> None:
+    from felix_ai.wire.base import stream_error
+
+    assert stream_error("p", error).status == status

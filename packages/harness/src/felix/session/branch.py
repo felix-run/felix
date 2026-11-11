@@ -124,9 +124,10 @@ async def summarize_abandoned_branch(
                 [],
                 ModelChatOptions(isolate_cache=True),
             )
-            # The usage kept on the summary event below is a note; this is the metering.
-            record_model_usage(result, model, meta={"kind": "branch_summary"})
             summary_text = result.message.content
+            # The usage kept on the summary event below is a note; this is the metering. After
+            # the answer is taken, so a result it cannot read costs the row and not the summary.
+            record_model_usage(result, model, meta={"kind": "branch_summary"})
             if getattr(result, "usage", None):
                 u = result.usage
                 usage = {

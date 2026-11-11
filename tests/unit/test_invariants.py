@@ -1153,8 +1153,8 @@ _UNMETERED_BY_DESIGN = {"model.py", "model_composites.py"}
 _METERED_BY_THE_CALLER = {
     # `model.chat` with the model hooks around it; every caller of it is scanned as reaching a model.
     "hooks.py": {"chat_with_model_hooks"},
-    # A summariser client: `session/compaction.py` meters what it returns (`meter_summarizer`).
-    "governance/summary_screening.py": {"chat"},
+    # Yields the turn's result to `_run`, which meters it.
+    "patterns/react.py": {"_stream_one_turn"},
 }
 # What counts as recording: `record_usage`, its client-shaped spelling the loops call, and the
 # summarisers' helper, which is `record_model_usage` with the compaction reason attached.
@@ -1184,6 +1184,7 @@ def test_a_function_that_reaches_a_model_records_the_usage() -> None:
     assert patterns.is_dir(), "packages/harness/src/felix/patterns is missing"
     reaching_model = 0
     offenders: list[str] = []
+    excused: set[tuple[str, str]] = set()
 
     for path in sorted(HARNESS.rglob("*.py")):
         relative = path.relative_to(HARNESS).as_posix()
@@ -1193,28 +1194,36 @@ def test_a_function_that_reaches_a_model_records_the_usage() -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
-            if node.name in _METERED_BY_THE_CALLER.get(relative, ()):
-                continue
             # `chat_with_model_hooks` is `model.chat` with the model hooks around it, and does
             # not meter — so a call through it counts as reaching the model, here as anywhere.
+            # Any mention of `.chat` / `.stream_turn`, not only a call on it: the loops bind
+            # `stream_turn = model.stream_turn` and call the name, which a call-only match missed.
             reaches_model = any(
-                isinstance(call, ast.Call)
-                and (
-                    (isinstance(call.func, ast.Attribute) and call.func.attr in {"chat", "stream_turn"})
-                    or (isinstance(call.func, ast.Name) and call.func.id == "chat_with_model_hooks")
+                (isinstance(n, ast.Attribute) and n.attr in {"chat", "stream_turn"})
+                or (
+                    isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name)
+                    and n.func.id == "chat_with_model_hooks"
                 )
-                for call in ast.walk(node)
+                for n in ast.walk(node)
             )
             if not reaches_model:
                 continue
             reaching_model += 1
+            if node.name in _METERED_BY_THE_CALLER.get(relative, ()):
+                excused.add((relative, node.name))
+                continue
             names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
             # `record_model_usage` is the client-shaped spelling of `record_usage` and
             # is what the pattern loops call; either one feeds `limit_state`.
             if not names & _METERING_NAMES:
                 offenders.append(f"{relative}:{node.lineno} {node.name}")
 
-    assert reaching_model >= 10, (
+    listed = {(module, name) for module, names in _METERED_BY_THE_CALLER.items() for name in names}
+    assert excused == listed, f"stale exemptions, naming no function that reaches a model: {listed - excused}"
+    # The measured count when this was written, before exemptions: a match that silently
+    # narrows shows up as a drop.
+    assert reaching_model >= 21, (
         f"only {reaching_model} functions appear to reach a model — the `chat` / "
         "`stream_turn` match has broken, and an unmetered pattern would pass unnoticed"
     )

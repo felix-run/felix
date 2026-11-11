@@ -34,30 +34,36 @@ def repair_pairing(selected: list[SessionEvent], all_events: list[SessionEvent])
 
     - a kept tool result brings the assistant event that made its call;
     - a kept assistant event brings every result of its calls that the branch holds;
-    - a tool result whose call is not in the branch is dropped.
+    - a tool result with no call ahead of it in the branch is dropped.
 
     A call whose result was never logged stays as it is: the run closes it as interrupted.
     """
-    owners: dict[str, SessionEvent] = {}
-    results: dict[str, list[SessionEvent]] = {}
-    for e in all_events:
+    # Paired by position, not by id alone: ids repeat. Some compatible servers number calls per
+    # response (`call_0` every turn), and matching on the id across the branch tied a result
+    # to the last call that reused it -- and every earlier result to that call.
+    open_calls: dict[str, SessionEvent] = {}
+    owner_of: dict[int, SessionEvent] = {}
+    results_of: dict[int, list[SessionEvent]] = {}
+    for e in sorted(all_events, key=lambda e: e.seq):
         if e.role == "assistant":
             for call in e.tool_calls or []:
-                owners[str(call.get("id") or "")] = e
-        elif e.role == "tool" and e.tool_call_id:
-            results.setdefault(e.tool_call_id, []).append(e)
+                if call.get("id"):
+                    open_calls[str(call["id"])] = e
+        elif e.role == "tool" and e.tool_call_id and e.tool_call_id in open_calls:
+            owner = open_calls[e.tool_call_id]
+            owner_of[e.seq] = owner
+            results_of.setdefault(owner.seq, []).append(e)
 
     kept: dict[int, SessionEvent] = {}
     for e in selected:
         if e.role == "tool":
-            owner = owners.get(e.tool_call_id or "")
+            owner = owner_of.get(e.seq)
             if owner is None:
                 continue
             e = owner
         kept[e.seq] = e
-        for call in (e.tool_calls or []) if e.role == "assistant" else []:
-            for result in results.get(str(call.get("id") or ""), []):
-                kept[result.seq] = result
+        for result in results_of.get(e.seq, []):
+            kept[result.seq] = result
     return [kept[seq] for seq in sorted(kept)]
 
 

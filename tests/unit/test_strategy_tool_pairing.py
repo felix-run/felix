@@ -89,6 +89,26 @@ async def test_a_window_that_opens_between_a_call_and_its_results_is_whole() -> 
     _assert_paired(seen)
 
 
+async def test_a_call_id_reused_in_a_later_turn_pairs_with_its_own_turn() -> None:
+    """Some compatible servers number calls per response, so `call_0` is in every turn. Paired
+    by id across the thread, the first turn's result came along with the second turn's call
+    and led the history with no call ahead of it."""
+    turn = [
+        ChatMessage(role="assistant", content="", tool_calls=[_call("call_0")]),
+        ChatMessage(role="tool", tool_call_id="call_0", name="lookup", content="found"),
+        ChatMessage(role="assistant", content="Done."),
+    ]
+    thread = [
+        ChatMessage(role="user", content="first"),
+        *turn,
+        ChatMessage(role="user", content="second"),
+        *turn,
+    ]
+    seen = await _render(WindowedSessionStrategy(2), await _session("t:window-reused-id", thread))
+    assert [m.role for m in seen[:-1]] == ["assistant", "tool", "assistant"]
+    _assert_paired(seen)
+
+
 async def test_a_window_clear_of_tool_calls_is_unchanged() -> None:
     seen = await _render(WindowedSessionStrategy(3), await _session("t:window-clear"))
     assert [m.content for m in seen[:-1]] == ["It is 4471.", "thanks", "Any time."]

@@ -177,6 +177,13 @@ def _interrupted_tool_results(messages: list[ChatMessage], tool_map: dict[str, T
     return results
 
 
+class _StreamAborted:
+    """What `_stream_one_turn` yields last when Stop ended the stream, so the loop knows the
+    missing result is an abort and not a provider that only implements `stream()`. Told, not
+    inferred from a second read of the flag: that read can miss a Stop raised on another
+    replica when the shared store hiccups, and the loop would then ask the model again."""
+
+
 def _place_interrupted(messages: list[ChatMessage], interrupted: list[ChatMessage]) -> None:
     """Put each closing result under the assistant message that made its call, in place.
 
@@ -609,8 +616,9 @@ class _ReactAgent:
         thread_id: str | None,
         tenant_id: str,
         opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[Event | ModelChatResult]:
-        """Run one streamed turn, yielding display events and then the result.
+    ) -> AsyncIterator[Event | ModelChatResult | _StreamAborted]:
+        """Run one streamed turn, yielding display events and then the result, or a
+        `_StreamAborted` in its place when Stop ended the stream first.
 
         Extracted so the caller can retry the whole turn after compacting, which it can
         only do while nothing has been emitted.
@@ -625,6 +633,7 @@ class _ReactAgent:
                     yield item
                     continue
                 if poll is not None and await poll.aborted():
+                    yield _StreamAborted()
                     return
                 if item.kind == "text":
                     yield Event(
@@ -662,6 +671,7 @@ class _ReactAgent:
         # Plugin-supplied clients land here.
         async for delta in model.stream(messages, active_tools, opts):
             if poll is not None and await poll.aborted():
+                yield _StreamAborted()
                 return
             yield Event(event="text_delta", data={"chunk": {"content": delta}, "delta": delta})
             yield Event(
@@ -1520,6 +1530,7 @@ class _ReactAgent:
             raise
         try:
             stop_continuations = 0
+            stopped_mid_reply = False
             for _step in range(self.recursion_limit):
                 if fatal is not None or preamble.all_terminate:
                     break
@@ -1574,6 +1585,7 @@ class _ReactAgent:
                 for attempt in (0, 1):
                     chunks = []
                     emitted = False
+                    stream_aborted = False
                     outgoing = await self._before_model(
                         [*messages, *transient], active_tools, model, input.thread_id
                     )
@@ -1584,6 +1596,9 @@ class _ReactAgent:
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
+                                    continue
+                                if isinstance(item, _StreamAborted):
+                                    stream_aborted = True
                                     continue
                                 emitted = True
                                 if item.event == "text_delta":
@@ -1618,7 +1633,7 @@ class _ReactAgent:
                             continue
                     break
 
-                if result is None and input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                if stream_aborted:
                     # Stop arrived mid-stream, so the stream ended without its result. Without
                     # this the fallback below asked the model again in full: a second, billed
                     # answer that was not the one on screen, stored as complete, whose tool
@@ -1629,6 +1644,7 @@ class _ReactAgent:
                     produced.extend(partial)
                     if partial:
                         final = partial[0]
+                    stopped_mid_reply = True
                     await self._append_produced(input.thread_id, partial, status="aborted")
                     if emit_events:
                         yield Event(event="aborted", data={"thread_id": input.thread_id})
@@ -1799,7 +1815,10 @@ class _ReactAgent:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
                 await release_side_events(input.thread_id)
-        await self._maybe_capture_memory(input, final, model)
+        if not stopped_mid_reply:
+            # Not from a reply cut off by Stop: that is two more model calls the person did not
+            # want, extracting facts from half a sentence.
+            await self._maybe_capture_memory(input, final, model)
 
         output = InvokeOutput(messages=produced, final=final, stop_reason=last_stop)
         if emit_events:

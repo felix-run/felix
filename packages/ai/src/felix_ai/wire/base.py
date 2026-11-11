@@ -79,7 +79,17 @@ async def iter_sse_json(resp: Any, end: SseEnd | None = None) -> AsyncIterator[d
 
 # An error sent inside a 200 stream carries no HTTP status, so it is given the one the
 # provider answers the same failure with up front. Retry and fallback read the status.
-_STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429}
+# The 4xx types matter as much as the 5xx: read as 500, a request that is wrong for every model
+# looked like this provider's fault, and a fallback chain advanced past it.
+_STREAM_ERROR_STATUS = {
+    "overloaded_error": 529,
+    "rate_limit_error": 429,
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "request_too_large": 413,
+}
 
 
 def stream_error(label: str, error: Any) -> ModelGatewayError:
