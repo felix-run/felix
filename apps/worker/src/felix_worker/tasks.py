@@ -98,7 +98,11 @@ async def _stop_fiber_loop() -> None:
     if _fiber_loop is None or _fiber_loop_stop is None:
         return
     _fiber_loop_stop.set()
-    await _fiber_loop
+    try:
+        await _fiber_loop
+    except Exception:
+        # A loop that had already died must not take the flush behind it down as well.
+        logger.warning("fiber loop ended with an error", exc_info=True)
     _fiber_loop, _fiber_loop_stop = None, None
 
 

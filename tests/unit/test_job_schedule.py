@@ -115,14 +115,16 @@ async def test_put_job_refuses_a_schedule_it_cannot_read(settings: Settings) -> 
     assert await jobs_store.get_job(settings, "default", "j") is None
 
 
+@pytest.mark.parametrize(("stored", "reason"), [("every tuesday", "cron"), ("0", "at least 1")])
 async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, stored: str, reason: str
 ) -> None:
     """A row written before validation existed. It fired every minute; now it sits, with a
-    reason, and the operator's record of its last real run and due time is left alone."""
+    reason, and the operator's record of its last real run and due time is left alone. `0` is
+    the one such row that can really be in a database: it was accepted, as one second."""
     await jobs_store.put_job(settings, "default", "j", schedule="@daily")
     row = jobs_store._memory_jobs[("default", "j")]
-    row.update(schedule="every tuesday", last_run_at=1_000, next_run_at=2_000)
+    row.update(schedule=stored, last_run_at=1_000, next_run_at=2_000)
 
     writes: list[dict] = []
     real_touch = jobs_store.touch_run
@@ -138,7 +140,7 @@ async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
     assert len(writes) == 1, "the reason is recorded once, not on every tick"
     (job,) = await jobs_store.list_jobs(settings, "default")
     assert job["last_status"] == "error"
-    assert "cron" in job["last_error"]
+    assert reason in job["last_error"]
     assert (job["last_run_at"], job["next_run_at"]) == (1_000, 2_000)
     assert await jobs_store.list_runs(settings, "default", "j") == []
 

@@ -1325,8 +1325,8 @@ test that fails on the current tree. In queue order:
 #### 1. Unblock and stop the bleeding
 
 - [x] **`make check` fails on a checkout with a `.env`.** Three `test_connections.py` cases expect
-      `FELIX_CONNECTION_TOKEN_KEY` and `FELIX_GITHUB_TOKEN_KEY` unset; `scripts/test.sh` blanked the
-      model keys but not these, and now blanks both.
+      `FELIX_CONNECTION_TOKEN_KEY` and `FELIX_GITHUB_TOKEN_KEY` unset, and `make_settings` read the
+      developer's `.env`. It no longer reads the file, so no `.env` field reaches a test.
 - [!] **A durable run cannot survive a worker crash on defaults (H1).** The resume-token lifetime
       and the fiber lease are both 300 s, so the reclaim writes `expired`. Held for a decision:
       `expires_at` is also the bound on the caller's recorded authority, clamped to their token's

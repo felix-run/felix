@@ -14,7 +14,8 @@ Accepted:
   `schedule` defaults to empty -- fired 1,440 times a day on its one thread, its context
   growing with every run, until someone noticed the bill.
 * integer seconds -- ``300``
-* an interval -- ``every:30s``, ``every:5m``, ``@every 2h``
+* an interval -- ``every:30s``, ``every:5m``, ``@every 2h``. Zero is refused in either
+  spelling (`_interval_ms`); off is the empty schedule.
 * a macro -- ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, ``@yearly``
 * five-field cron -- ``minute hour day-of-month month day-of-week``, each field ``*``, ``N``,
   ``A-B``, a ``/step`` on either, or a comma list of those. Day-of-week is 0-6 with Sunday as 0
