@@ -1370,13 +1370,26 @@ test that fails on the current tree. In queue order:
 
 #### 3. Durable execution
 
-- [ ] **The cron backstop over-claims and a stale claim can clear a live one (H3).** Claim only what
-      will start; scope release and renew to the claim, not the process. Not reproduced.
-- [ ] **Cancel releases the lease while the step keeps running (H2).** Also set Taskiq's shutdown
-      timeouts explicitly; its default is unverified.
-- [ ] **Smaller holes (M11, M12, M18).** An in-progress `Idempotency-Key` claim lives 24 h after a
-      hard kill; a run that kills its worker is never charged an attempt; a Stop sent before a
-      durable run starts is erased.
+- [x] **The cron backstop over-claims and a stale claim can clear a live one (H3).** Reproduced.
+      A claim is taken only for a free slot, from one table the loop and the sweep share; each
+      claim writes its own name into `lease_owner` (`<replica id>#<token>`), and renew, release
+      and attempt recording match that alone. Still to run: the Postgres arm of
+      `tests/conformance/test_fiber_claim.py`, which no local run has executed.
+- [x] **Cancel releases the lease while the step keeps running (H2).** The step is stopped and
+      then the claim is given back. Taskiq's defaults were the larger half: it gave the shutdown
+      handler 5 s against a 30 s drain, so in production nothing drained and the usage and audit
+      flush never ran. The worker now passes both timeouts (5 s + 85 s, held under the 120 s
+      grace by a test), drains cron tasks beside durable runs, and a job cut off at shutdown
+      records a cancelled run instead of holding its `running` mark for six hours.
+- [~] **Smaller holes (M11, M12, M18).** Done: a run that keeps losing its worker is counted at
+      the claim and buried at `FELIX_FIBER_MAX_ATTEMPTS` lost workers with no movement in its
+      thread's log, or four times that whatever the log did (M12). Open: an in-progress
+      `Idempotency-Key` claim lives 24 h after a hard kill (M11); a Stop sent before a durable run
+      starts is erased (M18).
+- [ ] **Left by the reviews of the above.** `react.py` cancels its tool batch without awaiting it,
+      so a claim can be released a few milliseconds before the old process's last append lands; a
+      claim transaction stuck in the store past the drain is not interruptible; the shutdown
+      flush has an allowance but no bound of its own; the 4x backstop is a constant, not a setting.
 
 #### 4. Composite patterns (user-visible capability, not hardening)
 
