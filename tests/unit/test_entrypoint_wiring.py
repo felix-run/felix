@@ -304,10 +304,19 @@ def test_the_worker_tells_taskiq_how_long_its_shutdown_takes() -> None:
     from felix_worker.main import worker_args
 
     args = worker_args()
-    drain = fibers.FIBER_LOOP_DRAIN_S + fibers.FIBER_LOOP_STOP_S
+    fiber_drain = fibers.FIBER_LOOP_DRAIN_S + fibers.FIBER_LOOP_STOP_S
+    cron_drain = shutdown.CRON_DRAIN_S + shutdown.CRON_STOP_S
+    # The handler drains the fibers and the cron tasks side by side, so it waits for the longer
+    # of the two and no more: a budget that added them would not fit the grace period, and one
+    # that covered only the fibers would cancel the handler while a job recorded its cancel.
+    drain = shutdown.WORK_DRAIN_BUDGET_S
+    assert drain >= fiber_drain and drain >= cron_drain
+    assert drain < fiber_drain + cron_drain
 
     # A cancelled fiber has time to stop its step and then to give its claim back.
     assert fibers.FIBER_LOOP_STOP_S > fibers.FIBER_CANCEL_RELEASE_S
+    # A cron task gets a window to finish by itself, and then time to act on its cancel.
+    assert shutdown.CRON_DRAIN_S > 0 and shutdown.CRON_STOP_S > 0
     # The handler outlasts the drain and the flush behind it, with room to spare: a timeout
     # that lands in the drain's last wait is a second cancel on fibers releasing their claims.
     assert args.shutdown_timeout >= drain + shutdown.FLUSH_ALLOWANCE_S + shutdown.SHUTDOWN_MARGIN_S

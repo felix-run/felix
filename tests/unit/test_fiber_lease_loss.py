@@ -423,3 +423,124 @@ async def test_a_step_that_ignores_its_cancel_does_not_hold_the_worker(
         let_go.set()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.wait_for(sweep, timeout=5)
+
+
+# --- a worker that has begun to stop starts nothing more ---------------------------------------
+
+
+async def test_a_sweep_claims_nothing_once_the_drain_is_over(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "Draining" was cleared when the drain returned, and a sweep still running took that as
+    leave to claim: a fresh fiber, started seconds before the process exits, cut off mid-turn
+    with its lease held and half a turn in its log."""
+    settings = make_settings(host="127.0.0.1", fiber_poll_seconds=0, fiber_concurrency=2)
+    for _ in range(3):
+        await F.create_fiber(
+            settings, "t", status="pending", state={"steps": [{"op": "invoke"}], "cursor": 0, "stash": {}}
+        )
+    step = _Step()
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+    monkeypatch.setattr(F, "FIBER_LOOP_DRAIN_S", 0.05)
+    sweep = asyncio.create_task(F.resume_due_fibers(settings))
+    await asyncio.wait_for(step.started.wait(), timeout=5)
+
+    await asyncio.wait_for(F.drain_fibers(), timeout=5)
+    await asyncio.wait_for(sweep, timeout=5)
+    await asyncio.sleep(0.02)
+
+    *_, third = F._memory_fibers.values()
+    assert (third["status"], third.get("lease_until")) == ("pending", None), "claimed after the drain"
+    versions = [row["version"] for row in F._memory_fibers.values()]
+    assert await F._start_due(settings) == ({}, []), "and by nothing else in this process either"
+    assert [row["version"] for row in F._memory_fibers.values()] == versions, (
+        "claimed and handed back, when nothing need have been touched"
+    )
+
+
+async def test_fibers_claimed_across_the_stop_are_handed_straight_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The claim was already at the store when the worker began to stop. Started, those fibers
+    would miss a drain that had counted what it was waiting for before they existed."""
+    settings = _settings()
+    await F.create_fiber(
+        settings, "t", status="pending", state={"steps": [{"op": "invoke"}], "cursor": 0, "stash": {}}
+    )
+    real = F._claim_and_settle
+    step = _Step()
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+
+    async def stopped_meanwhile(*args: Any) -> Any:
+        claimed = await real(*args)
+        F.stop_claiming()
+        return claimed
+
+    monkeypatch.setattr(F, "_claim_and_settle", stopped_meanwhile)
+
+    started, _ = await F._start_due(settings)
+    await asyncio.sleep(0.02)
+
+    assert started == {} and not step.started.is_set(), "a fiber was started by a worker on its way out"
+    (stored,) = F._memory_fibers.values()
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("running", "", None)
+
+
+async def test_a_stopping_worker_reads_no_logs_for_fibers_it_will_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Up to five seconds a row, for rows about to be handed back unrun, out of a shutdown that
+    has no time set aside for it."""
+    settings = _settings()
+    clock = {"now": F.now_ms()}
+    monkeypatch.setattr(F, "now_ms", lambda: clock["now"])
+    await _claimed(settings)
+    clock["now"] += F.FIBER_LEASE_MS + 1  # its holder is gone: the next claim would settle it
+    reads: list[str] = []
+
+    async def _read(settings: Any, row: dict[str, Any]) -> int | None:
+        reads.append(row["id"])
+        return 0
+
+    monkeypatch.setattr(F, "_log_head", _read)
+    F.stop_claiming()
+
+    claimed, buried = await F._claim_and_settle(settings)
+
+    assert (len(claimed), buried, reads) == (1, [], [])
+
+
+async def test_two_callers_share_one_drain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worker's shutdown drains, and so does the loop on its way out. Two drains each cancel
+    what is still running when their own window ends -- the second on top of a fiber that is
+    stopping its step, or giving its claim back."""
+    settings = make_settings(host="127.0.0.1", fiber_poll_seconds=0)
+    await F.create_fiber(
+        settings, "t", status="pending", state={"steps": [{"op": "invoke"}], "cursor": 0, "stash": {}}
+    )
+    started = asyncio.Event()
+    cancels = 0
+
+    async def slow_to_stop(settings: Any, row: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+        nonlocal cancels
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancels += 1
+            try:
+                await asyncio.sleep(0.15)  # a tool call winding down
+            except asyncio.CancelledError:
+                cancels += 1
+            raise
+        return row
+
+    monkeypatch.setattr(F, "_run_fiber_step", slow_to_stop)
+    monkeypatch.setattr(F, "FIBER_LOOP_DRAIN_S", 0.05)
+    sweep = asyncio.create_task(F.resume_due_fibers(settings))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    first = asyncio.create_task(F.drain_fibers())
+    await asyncio.sleep(0.06)  # the first has cancelled; a second begins its own window
+    await asyncio.wait_for(asyncio.gather(first, F.drain_fibers()), timeout=5)
+    await asyncio.wait_for(sweep, timeout=5)
+
+    assert cancels == 1

@@ -2112,10 +2112,15 @@ A worker that stops gracefully is not a lost worker. Runs in flight get thirty s
 reach their next suspension; a step still running then is cancelled, and once it has stopped
 its claim is given back, so another worker continues the run from its log at once. Only if
 that write fails, or the step ignores its cancel for fifteen seconds more, does the lease run
-out. The worker asks Taskiq for the time this takes (`felix_worker/shutdown.py`: five seconds
-for running tasks, then eighty-five for the drain, the flush of buffered usage and audit rows,
-and a margin), and both Compose and the Helm chart give the container 120. Shorten that grace
-period below ninety seconds and a stopping worker is killed mid-drain.
+out. The cron tasks still running get the same two windows, beside the runs and not after
+them: thirty seconds to finish, then a cancel and fifteen to act on it. A scheduled job
+cancelled this way records a run with error `cancelled` and clears its `running` mark, so its
+next firing is not held off; a job killed with the process instead is held for six hours
+(`RUNNING_STALE_MS`). The worker asks Taskiq for the time this takes
+(`felix_worker/shutdown.py`: five seconds for running tasks, then eighty-five for the drains,
+the flush of buffered usage and audit rows, and a margin), and both Compose and the Helm chart
+give the container 120. Shorten that grace period below ninety seconds and a stopping worker
+is killed mid-drain.
 
 `lease_owner` on a claimed fiber is `<replica id>#<claim>`: the part before the `#` is the
 worker, the rest names the one claim, so a worker's earlier claim on the same fiber can never

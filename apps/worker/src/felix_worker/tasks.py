@@ -6,7 +6,8 @@ import asyncio
 import contextlib
 import functools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from typing import Any
 
 from felix.config import get_settings
 from felix.observability.tracing import (
@@ -47,6 +48,29 @@ _fiber_loop_stop: asyncio.Event | None = None
 # `GET /health/worker` reads this beat; it starts last, so a startup that raised never sends one.
 _beat: asyncio.Task[None] | None = None
 _beat_stop: asyncio.Event | None = None
+# The cron tasks running now, each with its name. Taskiq does not cancel a task still running
+# when the worker stops: it stops waiting, and the task dies with the process. What a task would
+# have done on its way out then never happens -- a scheduled job's `running` mark stays, and
+# holds the job for hours -- so the shutdown hook ends them itself (`_stop_cron_tasks`).
+_cron_in_flight: dict[asyncio.Task[Any], str] = {}
+# Not cancelled by that hook. The sweep's fibers are stopped by the fiber drain, each cancelled
+# once, and the sweep ends when they have; cancelling the sweep as well would have it cancel
+# them a second time, on top of the release each is making.
+_ENDS_WITH_ITS_FIBERS = frozenset({"fiber_scheduler"})
+
+
+@contextlib.contextmanager
+def _in_flight(task_name: str) -> Iterator[None]:
+    """Note the running task as a cron task of this worker's, for as long as the block lasts."""
+    task = asyncio.current_task()
+    if task is None:
+        yield
+        return
+    _cron_in_flight[task] = task_name
+    try:
+        yield
+    finally:
+        _cron_in_flight.pop(task, None)
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
@@ -72,6 +96,9 @@ async def _on_worker_startup(_state: object) -> None:
     _settings.validate_runtime(serves_sign_in=False)
     await hydrate_secrets(_settings)
     _register_plugin_cron_tasks()
+    from felix.durability.fibers import resume_claiming
+
+    resume_claiming()
     _start_fiber_loop()
     _start_beat()
     logger.info(
@@ -93,17 +120,71 @@ def _start_fiber_loop() -> None:
 
 
 async def _stop_fiber_loop() -> None:
-    """Stop claiming, and give fibers already running the loop's drain window to finish."""
+    """Stop claiming, and give fibers already running the drain window to finish.
+
+    Every fiber this process is running, a cron sweep's as well as the loop's, which is all
+    there is when the loop is off (`FELIX_FIBER_POLL_SECONDS=0`). The drain does not wait for
+    the loop: the loop may be in the middle of a claim, which reads thread logs and runs burial
+    hooks with nothing bounding the sum, and waiting on it first spent the handler's time before
+    the drain had begun. The loop is waited on beside the drain, for no longer than the drain
+    may take; whatever it claims meanwhile it hands straight back (`fibers._start_due`).
+    """
     global _fiber_loop, _fiber_loop_stop
-    if _fiber_loop is None or _fiber_loop_stop is None:
+    from felix.durability.fibers import drain_fibers, stop_claiming
+
+    from felix_worker.shutdown import WORK_DRAIN_BUDGET_S
+
+    stop_claiming()
+    loop, _fiber_loop = _fiber_loop, None
+    if _fiber_loop_stop is not None:
+        _fiber_loop_stop.set()
+    _fiber_loop_stop = None
+
+    async def _loop_exit() -> None:
+        if loop is None:
+            return
+        done, _ = await asyncio.wait({loop}, timeout=WORK_DRAIN_BUDGET_S)
+        if not done:
+            logger.warning("fiber loop did not stop in %ss; leaving it", WORK_DRAIN_BUDGET_S)
+        elif not loop.cancelled() and loop.exception() is not None:
+            # A loop that had already died must not take the flush behind it down as well.
+            logger.warning("fiber loop ended with an error", exc_info=loop.exception())
+
+    for outcome in await asyncio.gather(drain_fibers(), _loop_exit(), return_exceptions=True):
+        if isinstance(outcome, Exception):
+            logger.warning("fiber drain failed", exc_info=outcome)
+
+
+async def _stop_cron_tasks() -> None:
+    """End the cron tasks still running: time to finish, then a cancel, then time to act on it.
+
+    A task a few seconds from done finishes, as it always could. One that is not is cancelled,
+    which is the only way its own way out runs -- for a scheduled job, the record of a cancelled
+    run and the end of its `running` mark (`jobs/scheduler.py:fire_job`). Bounded on both sides:
+    a task that ignores its cancel is left to the exit, as before.
+    """
+    from felix_worker.shutdown import CRON_DRAIN_S, CRON_STOP_S
+
+    me = asyncio.current_task()
+    running = {task for task in _cron_in_flight if not task.done() and task is not me}
+    if not running:
         return
-    _fiber_loop_stop.set()
-    try:
-        await _fiber_loop
-    except Exception:
-        # A loop that had already died must not take the flush behind it down as well.
-        logger.warning("fiber loop ended with an error", exc_info=True)
-    _fiber_loop, _fiber_loop_stop = None, None
+    _, pending = await asyncio.wait(running, timeout=CRON_DRAIN_S)
+    for task in pending:
+        if _cron_in_flight.get(task) not in _ENDS_WITH_ITS_FIBERS:
+            task.cancel()
+    if pending:
+        _, stuck = await asyncio.wait(pending, timeout=CRON_STOP_S)
+        if stuck:
+            names = sorted(_cron_in_flight.get(task, "?") for task in stuck)
+            logger.warning("cron tasks did not stop: %s", ", ".join(names))
+
+
+async def _stop_work() -> None:
+    """The fibers and the cron tasks, side by side: one window for both, not one after the other."""
+    for outcome in await asyncio.gather(_stop_fiber_loop(), _stop_cron_tasks(), return_exceptions=True):
+        if isinstance(outcome, Exception):
+            logger.warning("worker drain failed", exc_info=outcome)
 
 
 def _start_beat() -> None:
@@ -133,14 +214,8 @@ async def _stop_beat() -> None:
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def _on_worker_shutdown(_state: object) -> None:
     await _stop_beat()
-    await _stop_fiber_loop()
-    # And whatever a cron sweep is still running, which is all there is when the loop is off
-    # (`FELIX_FIBER_POLL_SECONDS=0`). Nothing to do when the loop's own drain covered them.
-    from felix.durability.fibers import drain_fibers
-
-    with contextlib.suppress(Exception):
-        await drain_fibers()
-    # After the drain, so what the last runs recorded goes too. The minute cron is the worker's
+    await _stop_work()
+    # After the drains, so what the last runs and jobs recorded goes too. The minute cron is the worker's
     # only other flush: without this every restart dropped up to a minute of usage and audit
     # rows for durable runs and jobs -- the unattended work, which is the spend nobody watched.
     from felix.flush import flush_all
@@ -188,14 +263,15 @@ def _instrumented(task_name: str) -> Callable[[Callable[[], Awaitable[None]]], C
     def decorate(fn: Callable[[], Awaitable[None]]) -> Callable[[], Awaitable[None]]:
         @functools.wraps(fn)
         async def wrapped() -> None:
-            async with timed_span(
-                f"worker {task_name}",
-                {"felix.worker.task": task_name},
-                metric="felix_worker_task_seconds",
-                counter="felix_worker_task",
-                labels={"task": task_name},
-            ):
-                await fn()
+            with _in_flight(task_name):
+                async with timed_span(
+                    f"worker {task_name}",
+                    {"felix.worker.task": task_name},
+                    metric="felix_worker_task_seconds",
+                    counter="felix_worker_task",
+                    labels={"task": task_name},
+                ):
+                    await fn()
 
         return wrapped
 
@@ -222,7 +298,8 @@ def _register_plugin_cron_tasks() -> None:
                 continue
 
             async def _runner(_run=run, _name=name) -> None:
-                await _run()
+                with _in_flight(_name):
+                    await _run()
                 logger.info("plugin_cron name=%s", _name)
 
             broker.register_task(

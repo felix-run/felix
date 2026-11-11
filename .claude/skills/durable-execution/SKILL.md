@@ -184,8 +184,10 @@ stored as `mode: durable` and a resend reattaches via `durable_run_gen`. The key
 ## Worker, cron, jobs
 
 `felix_worker/main.py:main` consumes (`worker_args` sets Taskiq's `shutdown_timeout` and
-`wait_tasks_timeout` from `felix_worker/shutdown.py`; the shutdown hook stops the loop, then
-`drain_fibers` for whatever a sweep still holds, then flushes); `felix_worker/main.py:scheduler_main` enqueues labelled tasks.
+`wait_tasks_timeout` from `felix_worker/shutdown.py`; the shutdown hook runs `_stop_work` --
+`stop_claiming` + `drain_fibers` (sticky: nothing is started again until `resume_claiming` at
+startup) beside `_stop_cron_tasks`, which gives the cron tasks `_instrumented` tracks a window
+to finish and then cancels them, all but `fiber_scheduler` -- and then flushes); `felix_worker/main.py:scheduler_main` enqueues labelled tasks.
 No scheduler, no cron; no worker, nothing runs, `run_fiber_loop` included. Each task's schedule
 is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SCHEDULES` in
 `tests/unit/test_worker_cron_tasks.py` pins the whole table — read it there rather than from a copy.

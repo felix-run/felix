@@ -36,11 +36,12 @@ def reset_memory_fibers() -> None:
     The slots a worker's fibers hold are process state of the same kind: a test that leaves a
     fiber mid-step would otherwise leave the next one a worker with no room.
     """
-    global _draining
+    global _drain
     _memory_fibers.clear()
     _slots_held.clear()
     _advancing.clear()
-    _draining = False
+    _drain = None
+    resume_claiming()
 
 
 # How long a claim is held. Longer than any realistic single step, short enough that a
@@ -1344,6 +1345,12 @@ async def _claim_and_settle(
     claimed: list[dict[str, Any]] = []
     buried: list[dict[str, Any]] = []
     for row in written:
+        if _stopping:
+            # The worker began to stop while this claim was being made. These rows are about
+            # to be handed back unrun (`_start_due`), so there is nothing to decide about them,
+            # and a log read each is time the shutdown does not have.
+            claimed.append(row)
+            continue
         try:
             outcome = await _settle_lapsed_claim(settings, row)
         except Exception:
@@ -1393,10 +1400,27 @@ def _last_error(row: dict[str, Any]) -> str:
 # claimers -- `run_fiber_loop` and the cron sweep. Each kept a count of its own, so together
 # they ran twice the setting.
 _slots_held: dict[asyncio.Task[Any], int] = {}
-# The fiber tasks among them, whoever started each: what a stopping worker has to drain. And
-# whether it is doing so, during which nothing new is claimed (`drain_fibers`).
+# The fiber tasks among them, whoever started each: what a stopping worker has to drain.
 _advancing: set[asyncio.Task[None]] = set()
-_draining = False
+# Whether this process has begun to stop. From then on it starts no fiber, and it stays so:
+# cleared when the drain ended, a sweep still running claimed a fresh fiber the moment the drain
+# returned, to be cut off mid-turn by the exit with its lease held.
+_stopping = False
+# The drain in progress, so that two callers -- the worker's shutdown and the loop's own exit --
+# share one: a second drain would cancel fibers a second time, on top of their release.
+_drain: asyncio.Task[None] | None = None
+
+
+def stop_claiming() -> None:
+    """This process is stopping: start no more fibers. Stays set until `resume_claiming`."""
+    global _stopping
+    _stopping = True
+
+
+def resume_claiming() -> None:
+    """A worker starting up (and a test starting over): fibers may be started again."""
+    global _stopping
+    _stopping = False
 
 
 def _free_slots(settings: Settings) -> int:
@@ -1422,13 +1446,21 @@ async def _start_due(
     """
     me = asyncio.current_task()
     want = min(_free_slots(settings), limit)
-    if want <= 0 or me is None or _draining:
+    if want <= 0 or me is None or _stopping:
         return {}, []
     # Held across the claim's await, so two claimers cannot both count the same free slots.
     _slots_held[me] = _slots_held.get(me, 0) + want
     try:
         due, buried = await _claim_and_settle(settings, want, only)
         started: dict[asyncio.Task[None], dict[str, Any]] = {}
+        if _stopping:
+            # Claimed across the moment the worker began to stop. Started now, a fiber would
+            # miss the drain, which has already counted what it has to wait for; so each is
+            # handed straight back, claimable by a worker that is staying.
+            for row in due:
+                with contextlib.suppress(Exception):
+                    await _release_fiber(settings, row)
+            due = []
         for row in due:
             task = asyncio.create_task(_advance_claimed(settings, row))
             _slots_held[task] = 1
@@ -1518,6 +1550,8 @@ async def resume_due_fibers(settings: Settings) -> int:
         while True:
             started: dict[asyncio.Task[None], dict[str, Any]] = {}
             buried: list[dict[str, Any]] = []
+            if _stopping:
+                todo.clear()  # what is left is for a worker that is staying
             if todo:
                 try:
                     started, buried = await _start_due(settings, len(todo), frozenset(todo))
@@ -1609,30 +1643,37 @@ async def drain_fibers() -> None:
 
     Every one of them, the cron sweep's as well as the loop's: a sweep still holding a fiber
     when the worker stops is cut off with the process, and its fiber was left under a lease.
-    Nothing new is claimed meanwhile. Each fiber gets `FIBER_LOOP_DRAIN_S` to reach its next
-    suspension; one still in its step is then cancelled, which stops the step and gives the
-    claim back (`_step_with_lease`), and gets `FIBER_LOOP_STOP_S` to do that. Bounded, and
-    cancelled once only: a second cancel would land on the release itself.
+    Nothing new is started from here on (`stop_claiming`), by this drain or after it. Each
+    fiber gets `FIBER_LOOP_DRAIN_S` to reach its next suspension; one still in its step is then
+    cancelled, which stops the step and gives the claim back (`_step_with_lease`), and gets
+    `FIBER_LOOP_STOP_S` to do that. Bounded, and cancelled once only: a second cancel would land
+    on the release itself.
     """
-    global _draining
+    global _drain
+    stop_claiming()
+    loop = asyncio.get_running_loop()
+    if _drain is None or _drain.done() or _drain.get_loop() is not loop:
+        _drain = asyncio.create_task(_drain_fibers())
+    # Shielded: a caller cut off mid-drain (the handler's own timeout) must not become a
+    # second cancel on the fibers, and the other caller is still waiting on the same drain.
+    await asyncio.shield(_drain)
+
+
+async def _drain_fibers() -> None:
     loop = asyncio.get_running_loop()
     running = {task for task in _advancing if not task.done() and task.get_loop() is loop}
     if not running:
         return
-    _draining = True
-    try:
-        _, pending = await asyncio.wait(running, timeout=FIBER_LOOP_DRAIN_S)
-        for task in pending:
-            task.cancel()
-        if pending:
-            # Until each has stopped its step and let go of its claim: returning sooner left
-            # the step running with nothing behind it. What it was doing is in the log, for
-            # whoever claims it next.
-            _, stuck = await asyncio.wait(pending, timeout=FIBER_LOOP_STOP_S)
-            if stuck:
-                logger.warning("fiber_loop left %d fibers that would not stop; leases will lapse", len(stuck))
-    finally:
-        _draining = False
+    _, pending = await asyncio.wait(running, timeout=FIBER_LOOP_DRAIN_S)
+    for task in pending:
+        task.cancel()
+    if pending:
+        # Until each has stopped its step and let go of its claim: returning sooner left
+        # the step running with nothing behind it. What it was doing is in the log, for
+        # whoever claims it next.
+        _, stuck = await asyncio.wait(pending, timeout=FIBER_LOOP_STOP_S)
+        if stuck:
+            logger.warning("fiber_loop left %d fibers that would not stop; leases will lapse", len(stuck))
 
 
 def _park(row: dict[str, Any], delay_ms: int) -> None:
@@ -2105,9 +2146,11 @@ __all__ = [
     "fiber_thread_id",
     "get_fiber",
     "now_ms",
+    "resume_claiming",
     "resume_due_fibers",
     "run_fiber_loop",
     "run_in_flight",
     "save_fiber",
+    "stop_claiming",
     "stop_fiber",
 ]
