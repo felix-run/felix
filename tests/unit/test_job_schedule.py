@@ -65,6 +65,13 @@ def test_an_empty_schedule_never_fires_on_its_own(schedule: str) -> None:
     assert next_run_at_ms(schedule, SAT_1030) is None
 
 
+@pytest.mark.parametrize("schedule", ["0", "00", "every:0s", "every:0m", "@every 0h"])
+def test_a_zero_interval_is_refused_not_read_as_one_second(schedule: str) -> None:
+    """`0` was clamped to one second, so a job an operator meant to switch off fired on every sweep."""
+    with pytest.raises(ScheduleError, match="at least 1"):
+        next_run_at_ms(schedule, SAT_1030)
+
+
 def test_a_cron_firing_is_strictly_after_the_moment_it_is_asked_from() -> None:
     """The scheduler advances from the slot it just claimed; returning that slot would re-fire it."""
     assert next_run_at_ms("30 10 * * *", SAT_1030) == _ms(2026, 10, 11, 10, 30)
@@ -108,14 +115,16 @@ async def test_put_job_refuses_a_schedule_it_cannot_read(settings: Settings) -> 
     assert await jobs_store.get_job(settings, "default", "j") is None
 
 
+@pytest.mark.parametrize(("stored", "reason"), [("every tuesday", "cron"), ("0", "at least 1")])
 async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, stored: str, reason: str
 ) -> None:
     """A row written before validation existed. It fired every minute; now it sits, with a
-    reason, and the operator's record of its last real run and due time is left alone."""
+    reason, and the operator's record of its last real run and due time is left alone. `0` is
+    the one such row that can really be in a database: it was accepted, as one second."""
     await jobs_store.put_job(settings, "default", "j", schedule="@daily")
     row = jobs_store._memory_jobs[("default", "j")]
-    row.update(schedule="every tuesday", last_run_at=1_000, next_run_at=2_000)
+    row.update(schedule=stored, last_run_at=1_000, next_run_at=2_000)
 
     writes: list[dict] = []
     real_touch = jobs_store.touch_run
@@ -131,7 +140,7 @@ async def test_a_stored_unreadable_schedule_does_not_fire_and_says_why_once(
     assert len(writes) == 1, "the reason is recorded once, not on every tick"
     (job,) = await jobs_store.list_jobs(settings, "default")
     assert job["last_status"] == "error"
-    assert "cron" in job["last_error"]
+    assert reason in job["last_error"]
     assert (job["last_run_at"], job["next_run_at"]) == (1_000, 2_000)
     assert await jobs_store.list_runs(settings, "default", "j") == []
 

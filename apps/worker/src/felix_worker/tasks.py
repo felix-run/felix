@@ -98,7 +98,11 @@ async def _stop_fiber_loop() -> None:
     if _fiber_loop is None or _fiber_loop_stop is None:
         return
     _fiber_loop_stop.set()
-    await _fiber_loop
+    try:
+        await _fiber_loop
+    except Exception:
+        # A loop that had already died must not take the flush behind it down as well.
+        logger.warning("fiber loop ended with an error", exc_info=True)
     _fiber_loop, _fiber_loop_stop = None, None
 
 
@@ -130,6 +134,12 @@ async def _stop_beat() -> None:
 async def _on_worker_shutdown(_state: object) -> None:
     await _stop_beat()
     await _stop_fiber_loop()
+    # After the drain, so what the last runs recorded goes too. The minute cron is the worker's
+    # only other flush: without this every restart dropped up to a minute of usage and audit
+    # rows for durable runs and jobs -- the unattended work, which is the spend nobody watched.
+    from felix.flush import flush_all
+
+    await flush_all(_settings)
     from felix_ai.wire.transport import aclose_shared_transports
 
     with contextlib.suppress(Exception):
