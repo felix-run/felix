@@ -8,6 +8,11 @@ consulted.
 
 The claim is where it shows: a fiber found `running` under a lease that lapsed was let go of by
 nobody. Each such claim is counted in the fiber's state, and at the limit the fiber is `dead`.
+
+Counting alone buried healthy runs: one parked on an approval through five worker restarts, and
+every fiber sharing a worker with one that kept killing it. So the limit is on lost workers with
+nothing done between them -- the thread's log is where a run's work lands -- with a larger bound
+on every loss whatever the log did, for a step that logs its way to the same death each time.
 """
 
 from __future__ import annotations
@@ -116,6 +121,66 @@ async def test_a_fiber_nobody_was_running_is_not_charged(clock: dict[str, int], 
     claimed = await _worker_dies(settings, clock)
 
     assert [(row["status"], _lapses(row)) for row in claimed] == [("running", 0)]
+
+
+THREAD = "t:thread-1"
+
+
+async def _the_run_does_some_work(settings: Settings) -> None:
+    from felix.session.store import get_session_store
+    from felix.session.types import AppendableEvent
+
+    session = get_session_store(settings, tenant_id=TENANT).open(THREAD)
+    await session.append(AppendableEvent(kind="message", role="assistant", content="a step further"))
+
+
+async def test_a_run_whose_log_moves_between_lost_workers_is_not_buried(clock: dict[str, int]) -> None:
+    """Parked on an approval through a morning of deploys, or beside a fiber that keeps killing
+    the worker they share: it loses its worker again and again, and it is not the cause."""
+    settings = _settings(fiber_max_attempts=2)
+    await _fiber(settings, thread_id=THREAD)
+    await F._claim_due(settings)
+
+    for _ in range(2 * settings.fiber_max_attempts + 1):
+        await _the_run_does_some_work(settings)
+        claimed = await _worker_dies(settings, clock)
+        assert [(row["status"], _lapses(row)) for row in claimed] == [("running", 1)]
+
+
+async def test_a_run_whose_log_stopped_moving_is_buried_after_all(clock: dict[str, int]) -> None:
+    settings = _settings(fiber_max_attempts=2)
+    fiber_id = await _fiber(settings, thread_id=THREAD)
+    await F._claim_due(settings)
+    await _the_run_does_some_work(settings)
+    await _worker_dies(settings, clock)
+    await _the_run_does_some_work(settings)
+    (claimed,) = await _worker_dies(settings, clock)
+    assert _lapses(claimed) == 1
+
+    assert await _worker_dies(settings, clock) == [], "two lost workers with nothing done between them"
+
+    stored = await F.get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None and stored["status"] == "dead"
+    assert run_view(stored)["error"] == "step lost its worker 2 times; not run again"
+
+
+async def test_a_run_that_logs_its_way_to_the_same_death_is_still_bounded(clock: dict[str, int]) -> None:
+    """Movement is not progress. A step that kills its worker inside a tool call logs the call
+    again on every attempt, and would otherwise be claimed until its `expires_at`."""
+    settings = _settings(fiber_max_attempts=2)
+    fiber_id = await _fiber(settings, thread_id=THREAD)
+    await F._claim_due(settings)
+    bound = settings.fiber_max_attempts * F.FIBER_LAPSE_BACKSTOP
+
+    for lost in range(1, bound):
+        await _the_run_does_some_work(settings)
+        assert len(await _worker_dies(settings, clock)) == 1, f"buried at {lost} lost workers"
+    await _the_run_does_some_work(settings)
+    assert await _worker_dies(settings, clock) == []
+
+    stored = await F.get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None
+    assert run_view(stored)["error"] == f"step lost its worker {bound} times; not run again"
 
 
 async def test_a_claim_that_was_let_go_ends_the_streak(clock: dict[str, int]) -> None:

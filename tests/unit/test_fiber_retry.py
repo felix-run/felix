@@ -223,6 +223,51 @@ async def test_a_save_that_raises_leaves_the_holder_its_claim(monkeypatch: Any) 
     assert (row["lease_owner"], row["lease_until"], row["version"]) == ("worker-a", 1234, 3)
 
 
+async def test_a_step_that_saved_unheard_gives_its_claim_up(settings: Settings, monkeypatch: Any) -> None:
+    """The step's save committed and its answer was lost, so the step raised.
+
+    The store's row is then a version ahead of the one the holder carries, under the holder's own
+    lease. The retry write lost its compare-and-set -- which was reported as saved -- and neither
+    fallback ran, so the fiber sat under that lease until it lapsed and was then counted as a
+    worker lost. The holder lets go instead, and the fiber goes on from what the step saved.
+    """
+    created = await create_fiber(
+        settings, TENANT, state={"steps": [{"op": "stash", "data": {}}, {"op": "complete"}], "cursor": 0}
+    )
+    fiber_id = str(created["id"])
+    real = fibers._run_fiber_step
+
+    async def saves_unheard(s: Any, row: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        await real(s, dict(row), **kw)  # lands in the store; the holder's own row never hears
+        raise ConnectionError("the answer was lost")
+
+    monkeypatch.setattr(fibers, "_run_fiber_step", saves_unheard)
+    (row,) = await fibers._claim_due(settings)
+    await fibers._advance_claimed(settings, row)
+
+    stored = await get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("running", "", None), (
+        "the fiber was stranded under a lease nobody holds"
+    )
+    assert (stored["state_json"]["cursor"], stored["attempts"]) == (1, 0), "the step that landed was undone"
+
+
+async def test_a_retry_write_that_was_discarded_is_not_reported_saved(settings: Settings) -> None:
+    """`_save_fiber` reports a lost compare-and-set by returning. Read as "saved", an unsaved
+    `dead` was announced as the run's end while the store held something else."""
+    created = await create_fiber(settings, TENANT, state={"steps": [{"op": "complete"}], "cursor": 0})
+    fiber_id = str(created["id"])
+    (row,) = await fibers._claim_due(settings)
+    await fibers.stop_fiber(settings, TENANT, fiber_id, "stopped by its workflow")
+
+    saved = await fibers._retry_or_dead(settings, row, settings.fiber_max_attempts, RuntimeError("boom"))
+
+    stored = await get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None
+    assert (saved, row["status"], stored["status"]) == (False, "dead", "failed")
+
+
 async def test_a_transient_save_failure_keeps_the_step_done(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:

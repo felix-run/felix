@@ -346,7 +346,8 @@ class Settings(BaseSettings):
     # Consecutive step failures (outside the invoke's own handler) before a fiber is
     # marked `dead` instead of retried. Retries back off 1m, 2m, 4m … up to an hour.
     # Also how many claims in a row may find the fiber `running` under a lapsed lease --
-    # its worker lost mid-step -- before it is `dead` rather than claimed again.
+    # its worker lost mid-step -- with nothing logged between them, before it is `dead`
+    # rather than claimed again (`durability/fibers.py:_settle_lapsed_claim`).
     fiber_max_attempts: int = Field(default=5, ge=1)
     # How often each worker checks for durable runs to start or resume, in seconds. The
     # minute cron was the only thing that did, so a new run waited up to a minute before its

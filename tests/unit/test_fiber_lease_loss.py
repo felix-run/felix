@@ -138,18 +138,30 @@ async def test_a_lease_that_cannot_be_renewed_stops_the_step_before_it_lapses(
 # --- a claim cut short by the worker stopping ----------------------------------------------------
 
 
-async def test_a_cancelled_claim_stops_its_step_and_keeps_its_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_cancelled_claim_stops_its_step_and_then_gives_the_fiber_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The worker's drain ran out and the fiber's task was cancelled.
 
     The cancel landed on the wait *for* the step, which cancels nothing it waits on: the step
     ran on with no task behind it, and the claim was released on the way out -- so another worker
-    took the fiber at once and ran the same turn beside it. Now the step is stopped and the lease
-    is left to lapse, which is what the comment on `FIBER_LOOP_DRAIN_S` always said happened.
+    took the fiber at once and ran the same turn beside it. Keeping the lease instead was no
+    answer: every run in flight at a worker's stop then sat out a whole lease, and was counted as
+    a worker lost. The step is stopped first, and the claim given back once it has.
     """
     settings = _settings()
     row = await _claimed(settings)
-    held = (row["lease_owner"], row["lease_until"])
-    step = _Step()
+    held = row["lease_until"]
+    lease_when_the_step_ended: list[Any] = []
+
+    class _Watched(_Step):
+        async def __call__(self, settings: Any, row: dict[str, Any], **kw: Any) -> dict[str, Any]:
+            try:
+                return await super().__call__(settings, row, **kw)
+            finally:
+                lease_when_the_step_ended.append(_stored(row)["lease_until"])
+
+    step = _Watched()
     monkeypatch.setattr(F, "_run_fiber_step", step)
 
     advancing = asyncio.create_task(F._advance_claimed(settings, row))
@@ -159,15 +171,19 @@ async def test_a_cancelled_claim_stops_its_step_and_keeps_its_lease(monkeypatch:
         await asyncio.wait_for(advancing, timeout=5)
 
     assert step.cancelled, "the step outlived the task that was running it"
+    assert lease_when_the_step_ended == [held], "the claim was given up under a step still running"
     stored = _stored(row)
-    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("running", *held), (
-        "the claim was released under a step that had not finished"
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("running", "", None), (
+        "the fiber was left under a lease nobody will renew"
     )
-    assert await F._claim_due(settings) == [], "another worker could take the fiber at once"
+    # Claimable at once, and not as a fiber whose worker was lost.
+    (again,) = await F._claim_due(settings)
+    assert again["id"] == row["id"] and F.FIBER_LAPSES_KEY not in again["state_json"]
 
 
 async def test_a_worker_that_stops_mid_step_leaves_no_step_running(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The same, through the loop that does the cancelling: when it returns, the step has ended."""
+    """The same, through the loop that does the cancelling: when it returns, the step has ended
+    and the run is another worker's to pick up."""
     settings = make_settings(host="127.0.0.1", fiber_poll_seconds=0.01)
     await F.create_fiber(
         settings, "t", status="pending", state={"steps": [{"op": "invoke"}], "cursor": 0, "stash": {}}
@@ -184,4 +200,83 @@ async def test_a_worker_that_stops_mid_step_leaves_no_step_running(monkeypatch: 
 
     assert step.cancelled, "the worker stopped with a step still running"
     (stored,) = F._memory_fibers.values()
-    assert stored["status"] == "running" and stored["lease_until"] is not None, "its claim was released"
+    assert (stored["status"], stored["lease_until"]) == ("running", None), "its claim was not given back"
+
+
+async def test_a_cancelled_claim_that_cannot_be_given_back_is_left_to_lapse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store is down as the worker stops. The cancel still goes through as a cancel, and the
+    lease is what it always was for a worker that vanished: it runs out."""
+    settings = _settings()
+    row = await _claimed(settings)
+    held = (row["lease_owner"], row["lease_until"])
+    step = _Step()
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+
+    async def store_down(*_a: Any, **_k: Any) -> None:
+        raise ConnectionError("store down")
+
+    monkeypatch.setattr(F, "_release_fiber", store_down)
+    advancing = asyncio.create_task(F._advance_claimed(settings, row))
+    await asyncio.wait_for(step.started.wait(), timeout=5)
+    advancing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(advancing, timeout=5)
+
+    assert step.cancelled
+    stored = _stored(row)
+    assert (stored["lease_owner"], stored["lease_until"]) == held
+
+
+# --- a renewal that landed, and whose answer never came back -------------------------------------
+
+
+async def test_a_renewal_whose_answer_was_lost_does_not_stop_the_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The write committed and the client raised. The holder went on knowing only the lease it
+    had before, so its next renewal matched no row, read that as the fiber taken, and cancelled a
+    healthy step mid-turn -- leaving the store naming it owner of a fresh lease nobody renewed."""
+    settings = _settings()
+    row = await _claimed(settings)
+    step = _Step()
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+    monkeypatch.setattr(F, "FIBER_LEASE_RENEW_MS", 10)
+    real = F._write_lease
+    calls = 0
+    renewed_after = asyncio.Event()
+
+    async def lands_unheard_once(settings: Any, row: dict[str, Any], *args: Any) -> bool:
+        nonlocal calls
+        calls += 1
+        landed = await real(settings, row, *args)
+        if calls == 1:
+            assert landed
+            raise ConnectionError("the answer was lost")
+        if landed:
+            renewed_after.set()
+        return landed
+
+    monkeypatch.setattr(F, "_write_lease", lands_unheard_once)
+    # Renewals a millisecond apart would all ask for the same lease; the clock moves between them.
+    clock = {"now": F.now_ms()}
+
+    def tick() -> int:
+        clock["now"] += 1000
+        return clock["now"]
+
+    monkeypatch.setattr(F, "now_ms", tick)
+
+    advancing = asyncio.create_task(F._advance_claimed(settings, row))
+    await asyncio.wait_for(step.started.wait(), timeout=5)
+    await asyncio.wait(
+        {advancing, asyncio.create_task(renewed_after.wait())}, timeout=5, return_when=asyncio.FIRST_COMPLETED
+    )
+    cancelled = step.cancelled
+    step.release.set()
+    await asyncio.wait_for(advancing, timeout=5)
+
+    assert not cancelled, "a claim the store still held was read as taken"
+    assert renewed_after.is_set(), "the holder never renewed its own lease again"
+    assert F._LEASE_TRIED not in _stored(row), "a holder's note reached the store"

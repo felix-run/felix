@@ -108,3 +108,38 @@ async def test_a_stale_holder_runs_nothing_and_leaves_the_live_claim_alone(
 
     assert run["status"] == "completed" and run["final"]["content"] == "It is 4."
     assert calls == one_run, "the turn ran exactly once"
+
+
+async def test_a_claim_the_store_could_not_confirm_is_retried_not_failed(boot: Any) -> None:
+    """Every invoke asks the store whether the row is still its claim's. A store that could not
+    answer ended the run `failed`, with the driver's own words as the run's error."""
+    from felix.durability import fibers as F
+
+    async with boot([ScriptedTurn(content="It is 4.")], manifests=REACT) as app:
+        resp = await app.client.post(
+            "/chat", json={"manifest": "e2e-stale", "messages": [{"role": "user", "content": REQUEST}]}
+        )
+        token = resp.json()["resume_token"]
+        real = F._checkpoint_state
+
+        async def store_down(settings: Any, row: dict[str, Any]) -> bool:
+            raise ConnectionError("connection to 10.0.0.7 refused")
+
+        F._checkpoint_state = store_down
+        try:
+            await F.resume_due_fibers(app.settings)
+        finally:
+            F._checkpoint_state = real
+        parked = await F.get_fiber(app.settings, "default", token)
+        run = (await app.client.get(f"/chat/runs/{token}")).json()
+        assert len(app.spy.prompts) == 0, "nothing ran under a claim nobody confirmed"
+
+        # Back when the store is: the same run, answered once.
+        assert parked is not None
+        F._memory_fibers[("default", token)]["wake_at"] = 0
+        await F.resume_due_fibers(app.settings)
+        done = (await app.client.get(f"/chat/runs/{token}")).json()
+
+    assert (parked["status"], parked["attempts"]) == ("sleeping", 1)
+    assert "10.0.0.7" not in str(run), "the store's error reached the caller"
+    assert done["status"] == "completed" and done["final"]["content"] == "It is 4."

@@ -2098,11 +2098,19 @@ before.
 A step that takes its worker down with it — an out-of-memory kill, a `SIGKILL` — raises
 nothing, so the same setting bounds it from the claim instead. A fiber found `running` under
 a lease that lapsed was let go of by nobody; each such claim is counted in the run's state,
-and after `FELIX_FIBER_MAX_ATTEMPTS` of them in a row the fiber is `dead` with `step lost its
-worker N times; not run again` as its error, rather than claimed again every five minutes
-until `expires_at`. A claim that ends with its step saved and the fiber released resets the
-count. A worker that stops mid-step after its drain window leaves its lease to lapse, so
-that counts as one.
+and after `FELIX_FIBER_MAX_ATTEMPTS` of them in a row *with nothing appended to the run's
+thread between them* the fiber is `dead` with `step lost its worker N times; not run again`
+as its error, rather than claimed again every five minutes until `expires_at`. A run whose
+log moved since the last lost worker starts the count again, so one that merely shared a
+worker with the run that kept killing it is not buried with it; a run that logs its way to
+the same death each time is bounded at four times the setting. A run that writes to no log
+the deployment's session store can read (`memory.checkpointer: none`, or one of its own)
+shows no movement, so every lost worker counts. A claim that ends with its step saved and
+the fiber released clears both counts.
+
+A worker that stops gracefully is not a lost worker. A step still running when the drain
+window ends is cancelled, and once it has stopped its claim is given back, so another worker
+continues the run from its log at once; only if that write fails does the lease run out.
 
 ## Run budgets
 

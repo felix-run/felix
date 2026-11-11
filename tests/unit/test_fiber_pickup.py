@@ -136,16 +136,16 @@ async def test_the_loop_claims_no_more_than_it_has_slots_for(blocking: dict[str,
 async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """A store that is down is retried with backoff, not a crashed loop."""
     settings = _settings()
-    original = fibers._claim_due
+    original = fibers._claim_and_settle
     calls = {"n": 0}
 
-    async def _flaky(s: Settings, *args: Any) -> list[dict[str, Any]]:
+    async def _flaky(s: Settings, *args: Any) -> Any:
         calls["n"] += 1
         if calls["n"] == 1:
             raise ConnectionError("store unavailable")
         return await original(s, *args)
 
-    monkeypatch.setattr(fibers, "_claim_due", _flaky)
+    monkeypatch.setattr(fibers, "_claim_and_settle", _flaky)
     fiber_id = await _fiber(settings)
     stop = asyncio.Event()
     loop = asyncio.create_task(run_fiber_loop(settings, stop))
@@ -251,3 +251,78 @@ async def test_a_fiber_that_arrives_during_a_sweep_is_not_that_sweeps(blocking: 
         blocking["release"].set()
     assert await asyncio.wait_for(sweep, timeout=1) == 1
     assert _status(late) == "pending"
+
+
+# --- the cron sweep and a fiber the claim buries -----------------------------------
+
+
+async def _lost_for_good(settings: Settings) -> str:
+    """A fiber one lost worker short of its limit, its last holder's lease run out."""
+    fiber_id = await _fiber(settings)
+    fibers._memory_fibers[("default", fiber_id)].update(
+        status="running",
+        lease_owner="a-worker-that-died",
+        lease_until=fibers.now_ms() - 1,
+        state_json={
+            "steps": [{"op": "complete"}],
+            "cursor": 0,
+            fibers.FIBER_LAPSES_KEY: settings.fiber_max_attempts - 1,
+        },
+    )
+    return fiber_id
+
+
+async def test_a_sweep_goes_on_past_a_claim_that_only_buried() -> None:
+    """A buried fiber starts nothing, and "nothing started" was how the sweep knew it was done:
+    it stopped with due fibers it had not tried."""
+    settings = _settings(fiber_concurrency=1)
+    buried = await _lost_for_good(settings)
+    behind = await _fiber(settings)
+
+    assert await asyncio.wait_for(resume_due_fibers(settings), timeout=1) == 1
+
+    assert (_status(buried), _status(behind)) == ("dead", "completed")
+
+
+async def test_what_follows_a_burial_waits_for_the_fibers_claimed_beside_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run-finished hook may take ten seconds. Run before the claimed fibers were started, it
+    held each of them under a lease nobody was renewing yet."""
+    settings = _settings()
+    buried = await _lost_for_good(settings)
+    beside = await _fiber(settings)
+    original = fibers._after_terminal
+    beside_when_the_hook_ended: list[str] = []
+
+    async def slow_hook(s: Settings, row: dict[str, Any]) -> None:
+        if row["id"] == buried:
+            await asyncio.sleep(0.05)
+            beside_when_the_hook_ended.append(_status(beside))
+        await original(s, row)
+
+    monkeypatch.setattr(fibers, "_after_terminal", slow_hook)
+
+    await asyncio.wait_for(resume_due_fibers(settings), timeout=2)
+
+    assert beside_when_the_hook_ended == ["completed"]
+
+
+async def test_a_burials_follow_up_that_raises_orphans_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It raised out of the claim, after the claim had committed: every fiber claimed in that
+    transaction was left leased with no task to run it."""
+    settings = _settings()
+    buried = await _lost_for_good(settings)
+    beside = await _fiber(settings)
+    original = fibers._after_terminal
+
+    async def broken(s: Settings, row: dict[str, Any]) -> None:
+        if row["id"] == buried:
+            raise RuntimeError("a run view that could not be built")
+        await original(s, row)
+
+    monkeypatch.setattr(fibers, "_after_terminal", broken)
+
+    assert await asyncio.wait_for(resume_due_fibers(settings), timeout=2) == 1
+
+    assert (_status(buried), _status(beside)) == ("dead", "completed")
