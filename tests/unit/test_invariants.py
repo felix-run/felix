@@ -1148,10 +1148,25 @@ def test_governance_wrappers_declare_their_config_type() -> None:
 #
 # So the exemption is "this module holds clients", not "nothing here needs to meter".
 _UNMETERED_BY_DESIGN = {"model.py", "model_composites.py"}
+# Outside patterns/: a function that wraps a model call and hands the result back to a caller
+# that meters it. Each is `module: function`, so a second function in the same file is not let off.
+_METERED_BY_THE_CALLER = {
+    # `model.chat` with the model hooks around it; every caller of it is scanned as reaching a model.
+    "hooks.py": {"chat_with_model_hooks"},
+    # A summariser client: `session/compaction.py` meters what it returns (`meter_summarizer`).
+    "governance/summary_screening.py": {"chat"},
+}
+# What counts as recording: `record_usage`, its client-shaped spelling the loops call, and the
+# summarisers' helper, which is `record_model_usage` with the compaction reason attached.
+_METERING_NAMES = {"record_usage", "record_model_usage", "meter_summarizer"}
 
 
-def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
+def test_a_function_that_reaches_a_model_records_the_usage() -> None:
     """Structural, because per-pattern tests cannot cover the next pattern someone adds.
+
+    It scanned `patterns/` only, and the calls it could not see were the ones that went
+    unmetered: memory extraction (two a turn, on the turn's own model) and the branch summary.
+    It now walks the whole harness.
 
     This defect has now shipped twice. `patterns/model.py:stream_turn` records the first:
     a streamed turn followed by a second `chat()` for the real answer billed the input
@@ -1170,12 +1185,15 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
     reaching_model = 0
     offenders: list[str] = []
 
-    for path in sorted(patterns.glob("*.py")):
-        if path.name in _UNMETERED_BY_DESIGN:
+    for path in sorted(HARNESS.rglob("*.py")):
+        relative = path.relative_to(HARNESS).as_posix()
+        if path.parent == patterns and path.name in _UNMETERED_BY_DESIGN:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if node.name in _METERED_BY_THE_CALLER.get(relative, ()):
                 continue
             # `chat_with_model_hooks` is `model.chat` with the model hooks around it, and does
             # not meter — so a call through it counts as reaching the model, here as anywhere.
@@ -1193,11 +1211,11 @@ def test_a_pattern_that_reaches_a_model_records_the_usage() -> None:
             names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
             # `record_model_usage` is the client-shaped spelling of `record_usage` and
             # is what the pattern loops call; either one feeds `limit_state`.
-            if not names & {"record_usage", "record_model_usage"}:
-                offenders.append(f"{path.name}:{node.lineno} {node.name}")
+            if not names & _METERING_NAMES:
+                offenders.append(f"{relative}:{node.lineno} {node.name}")
 
-    assert reaching_model >= 3, (
-        f"only {reaching_model} pattern functions appear to reach a model — the `chat` / "
+    assert reaching_model >= 10, (
+        f"only {reaching_model} functions appear to reach a model — the `chat` / "
         "`stream_turn` match has broken, and an unmetered pattern would pass unnoticed"
     )
     assert offenders == [], (

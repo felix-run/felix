@@ -1060,7 +1060,11 @@ class _ReactAgent:
                     {"system_prompt": self.system_prompt, "model": model},
                 )
             except Exception:
-                logger.debug("session render failed; using incoming messages", exc_info=True)
+                # The run goes on with the incoming messages alone: the model answers as if the
+                # thread were new, and that answer is appended to the real one. At debug nobody
+                # could tell that had happened, so it is a warning and a counter.
+                logger.warning("session render failed; answering without history", exc_info=True)
+                record_counter("felix_session_render_failed", {"manifest_id": self.manifest_id})
 
         messages = self._with_prelude(messages)
 
@@ -1591,7 +1595,23 @@ class _ReactAgent:
                             continue
                     break
 
+                if result is None and input.thread_id and await is_aborted(tenant_id, input.thread_id):
+                    # Stop arrived mid-stream, so the stream ended without its result. Without
+                    # this the fallback below asked the model again in full: a second, billed
+                    # answer that was not the one on screen, stored as complete, whose tool
+                    # calls then ran. What was shown is what is kept.
+                    shown = "".join(chunks)
+                    partial = [ChatMessage(role="assistant", content=shown)] if shown else []
+                    messages.extend(partial)
+                    produced.extend(partial)
+                    if partial:
+                        final = partial[0]
+                    await self._append_produced(input.thread_id, partial, status="aborted")
+                    if emit_events:
+                        yield Event(event="aborted", data={"thread_id": input.thread_id})
+                    break
                 if result is None:
+                    # A provider with only `stream()` reports no tool calls or usage from it.
                     result = await model.chat(outgoing, active_tools, turn_opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
