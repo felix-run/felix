@@ -133,3 +133,55 @@ async def test_a_lease_that_cannot_be_renewed_stops_the_step_before_it_lapses(
 
     assert step.cancelled
     assert F.now_ms() - started < 300, "the step outlived the lease it could not renew"
+
+
+# --- a claim cut short by the worker stopping ----------------------------------------------------
+
+
+async def test_a_cancelled_claim_stops_its_step_and_keeps_its_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worker's drain ran out and the fiber's task was cancelled.
+
+    The cancel landed on the wait *for* the step, which cancels nothing it waits on: the step
+    ran on with no task behind it, and the claim was released on the way out -- so another worker
+    took the fiber at once and ran the same turn beside it. Now the step is stopped and the lease
+    is left to lapse, which is what the comment on `FIBER_LOOP_DRAIN_S` always said happened.
+    """
+    settings = _settings()
+    row = await _claimed(settings)
+    held = (row["lease_owner"], row["lease_until"])
+    step = _Step()
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+
+    advancing = asyncio.create_task(F._advance_claimed(settings, row))
+    await asyncio.wait_for(step.started.wait(), timeout=5)
+    advancing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(advancing, timeout=5)
+
+    assert step.cancelled, "the step outlived the task that was running it"
+    stored = _stored(row)
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("running", *held), (
+        "the claim was released under a step that had not finished"
+    )
+    assert await F._claim_due(settings) == [], "another worker could take the fiber at once"
+
+
+async def test_a_worker_that_stops_mid_step_leaves_no_step_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same, through the loop that does the cancelling: when it returns, the step has ended."""
+    settings = make_settings(host="127.0.0.1", fiber_poll_seconds=0.01)
+    await F.create_fiber(
+        settings, "t", status="pending", state={"steps": [{"op": "invoke"}], "cursor": 0, "stash": {}}
+    )
+    step = _Step()
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+    monkeypatch.setattr(F, "FIBER_LOOP_DRAIN_S", 0.01)
+    stop = asyncio.Event()
+    loop = asyncio.create_task(F.run_fiber_loop(settings, stop))
+    await asyncio.wait_for(step.started.wait(), timeout=5)
+
+    stop.set()
+    await asyncio.wait_for(loop, timeout=5)
+
+    assert step.cancelled, "the worker stopped with a step still running"
+    (stored,) = F._memory_fibers.values()
+    assert stored["status"] == "running" and stored["lease_until"] is not None, "its claim was released"

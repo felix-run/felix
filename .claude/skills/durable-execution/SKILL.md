@@ -25,22 +25,34 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
    `durability/fibers.py:create_fiber` (`exclusive_on_thread=True`) takes a per-thread advisory
    lock and raises `RunInProgress` → `409 run_in_progress:<token>` if the thread has a run in
    flight. Webhook ids are checked here (`endpoints_for_run`), not after the run.
-3. **Claim.** `durability/fibers.py:_claim_due` has two callers: `run_fiber_loop`, started by the
-   worker's startup hook and polling every `FELIX_FIBER_POLL_SECONDS` (1; 0 disables), and the
-   `fiber_scheduler` cron (`resume_due_fibers`) as backstop. `FOR UPDATE SKIP LOCKED` under
-   `rls_bypass`; sets `running`, `lease_owner` (replica id), `lease_until` (+`FIBER_LEASE_MS`, 5 min).
-   `FELIX_FIBER_CONCURRENCY` (8) fibers per worker; one parked on an approval holds its slot.
+3. **Claim.** `durability/fibers.py:_claim_due` has two callers, both through `_start_due`:
+   `run_fiber_loop`, started by the worker's startup hook and polling every
+   `FELIX_FIBER_POLL_SECONDS` (1; 0 disables), and the `fiber_scheduler` cron (`resume_due_fibers`)
+   as backstop, which lists what is due (`_due_keys`) and claims from that list as slots free.
+   `FOR UPDATE SKIP LOCKED` under `rls_bypass`; sets `running`, `lease_owner` (replica id),
+   `lease_until` (+`FIBER_LEASE_MS`, 5 min). `FELIX_FIBER_CONCURRENCY` (8) fibers per worker, loop
+   and sweep together (`_slots_held`); one parked on an approval holds its slot. A fiber is never
+   claimed to wait: only one in its step renews its lease. A claim that finds a fiber `running`
+   under a lapsed lease counts it in `state_json.lease_lapses` (`_charge_lapsed_claim`) and at
+   `FELIX_FIBER_MAX_ATTEMPTS` in a row buries it `dead` instead.
 4. **Step.** `_advance_claimed` → `_step_with_lease` renews the lease every `FIBER_LEASE_RENEW_MS`
    and runs `_run_fiber_step` (`sleep`, `stash`, `invoke`, `workflow`, `complete`) until the fiber suspends, at
-   most one `invoke` per claim. The invoke runs as principal `fiber`, `on_behalf_of` the starter,
+   most one `invoke` per claim. Renew, release and `_record_attempt` match the claim, not the
+   worker: release and `_record_attempt` by `lease_owner` and the `version` the holder carries
+   (`_claim_is`), renew by the `lease_until` it last wrote. A holder whose claim lapsed cannot
+   touch the next one. Cancelled (the worker's drain ran out),
+   it stops its step and keeps the lease. The invoke runs as principal `fiber`, `on_behalf_of` the starter,
    with the recorded scopes; resolves the manifest inside a `RequestContext` so RLS binds; and
    checks `assert_resume_pin`, forcing `pin_compile` when authority was recorded.
-5. **Resume point.** `_invoke_resume_point` notes the log head as `invoke_began`. A retry at that
+5. **Resume point.** `_invoke_resume_point` ends every branch by asking `_checkpoint_state` whether
+   the row is still this claim's (`lost` if not: no invoke). It notes the log head as `invoke_began`. A retry at that
    cursor looks for this request's user turn since then: absent → run fresh; a final assistant
    reply → take it, call nothing; else continue from the log with no new user turn. Only `react` /
    `deep` with a non-`semantic` strategy and a checkpointer qualify; everything else re-sends.
-6. **Save.** `_save_fiber` compare-and-sets `version`, clears the lease, and `_announce_fiber`
-   wakes the thread (`session/notify.py:notify_appended`).
+6. **Save.** `_save_fiber` compare-and-sets `version`, clears the lease (with `hold_claim` it
+   leaves the lease columns to the heartbeat), and `_announce_fiber` wakes the thread
+   (`session/notify.py:notify_appended`). A discarded save ends the claim as `FiberLeaseLost`:
+   nothing acts on the row's unsaved status.
 7. **Fail.** An exception inside the invoke ends the run `failed`. One outside it (save, store)
    goes to `_retry_or_dead`: `retry_delay_ms` 1m, 2m, 4m … 1h, `dead` after
    `FELIX_FIBER_MAX_ATTEMPTS` (5). A screener 503 parks the step 60 s, up to 10 times. Expiry is

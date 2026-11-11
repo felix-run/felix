@@ -193,6 +193,36 @@ async def test_a_save_that_keeps_failing_is_still_bounded(
     assert run is not None and run["status"] == "dead" and "step failed 3 times" in run["error"]
 
 
+async def test_a_save_that_raises_leaves_the_holder_its_claim(monkeypatch: Any) -> None:
+    """What the test above cannot see, because it replaces the save whole.
+
+    The fallbacks that run when a save raises -- `_record_attempt`, then `_release_fiber` -- are
+    scoped to the claim the row was handed, which is its `lease_until`. A save that cleared the
+    row's lease before writing would leave them a row naming no claim: nothing recorded, nothing
+    released, and the fiber stranded under its lease with the failure uncounted.
+    """
+
+    def store_down(**_kw: Any) -> Any:
+        raise ConnectionError("store down")
+
+    monkeypatch.setattr(fibers, "get_session_factory", store_down)
+    on_postgres = make_settings(database_url="postgresql+psycopg://u@127.0.0.1:9/none")
+    row = {
+        "tenant_id": TENANT,
+        "id": "f",
+        "status": "sleeping",
+        "state_json": {},
+        "version": 3,
+        "lease_owner": "worker-a",
+        "lease_until": 1234,
+    }
+
+    with pytest.raises(ConnectionError):
+        await fibers._save_fiber(on_postgres, row)
+
+    assert (row["lease_owner"], row["lease_until"], row["version"]) == ("worker-a", 1234, 3)
+
+
 async def test_a_transient_save_failure_keeps_the_step_done(
     settings: Settings, clock: _Clock, monkeypatch: Any
 ) -> None:

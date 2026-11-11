@@ -31,8 +31,12 @@ def reset_memory_fibers() -> None:
     Every other `memory://` twin has one and `tests/conftest.py` calls it. This did not, so
     fibers leaked between tests: `_claim_due_memory` returns *every* due row, so a test that
     asserted on how many fibers came back passed alone and failed in the suite.
+
+    The slots a worker's fibers hold are process state of the same kind: a test that leaves a
+    fiber mid-step would otherwise leave the next one a worker with no room.
     """
     _memory_fibers.clear()
+    _slots_held.clear()
 
 
 # How long a claim is held. Longer than any realistic single step, short enough that a
@@ -71,6 +75,9 @@ FIBER_TERMINAL_STATUSES = frozenset({"completed", "failed", "expired", "dead"})
 # above any shape the harness itself builds — a durable chat has one step — because the real
 # bound on wall-clock is the one below it: at most one `invoke` per claim.
 FIBER_MAX_OPS_PER_CLAIM = 64
+# Where a fiber's `state_json` counts the claims in a row that found it `running` under a lease
+# nobody renewed: its holder died mid-step. See `_charge_lapsed_claim`.
+FIBER_LAPSES_KEY = "lease_lapses"
 
 
 def _claim_owner(settings: Any) -> str:
@@ -340,25 +347,36 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
     state = row.get("state_json") or {}
     safe = redact_json(state)
     row["state_json"] = safe if isinstance(safe, dict) else {}
-    if not hold_claim:
-        # The claim covers the duration of one step, not the life of the fiber. Every
-        # _save_fiber call ends a step transition, so release it here: a still-runnable
-        # fiber must be claimable again on the next tick, and a sleeping one when it wakes.
-        #
-        # `hold_claim` is for the one caller that runs several steps under a single claim
-        # (`_step_with_lease`) and releases once at the end. It cannot be the default: a
-        # released claim is what lets the *next* tick pick the fiber up, and a save that
-        # kept it would strand a runnable fiber for the whole `FIBER_LEASE_MS` window.
-        row["lease_owner"] = ""
-        row["lease_until"] = None
+    # The claim covers the duration of one step, not the life of the fiber. Every
+    # _save_fiber call ends a step transition, so it releases the claim: a still-runnable
+    # fiber must be claimable again on the next tick, and a sleeping one when it wakes.
+    #
+    # `hold_claim` is for the one caller that runs several steps under a single claim
+    # (`_step_with_lease`) and releases once at the end. It cannot be the default: a
+    # released claim is what lets the *next* tick pick the fiber up, and a save that
+    # kept it would strand a runnable fiber for the whole `FIBER_LEASE_MS` window.
+    #
+    # `row` gives its lease up only once the write has landed. Cleared first, a save that
+    # raised left the holder with no claim to name, and the fallbacks that run next
+    # (`_record_attempt`, `_release_fiber`) are scoped to exactly that.
 
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
         if stored is not None and int(stored.get("version") or 0) != int(row.get("version") or 0):
             logger.warning("fiber version conflict id=%s; discarding stale write", row.get("id"))
             return
+        if not hold_claim:
+            row["lease_owner"] = ""
+            row["lease_until"] = None
+        elif stored is not None:
+            # The lease is the heartbeat's to write, as on Postgres below.
+            row["lease_owner"] = stored.get("lease_owner", "")
+            row["lease_until"] = stored.get("lease_until")
         row["version"] = int(row.get("version") or 0) + 1
-        _memory_fibers[(row["tenant_id"], row["id"])] = row
+        # A copy, as a database row is one. Stored by reference, the holder's dict *was* the
+        # row: a later claim wrote its version and lease straight into a stale holder's hands,
+        # and every predicate that asks "is this still my claim" answered yes.
+        _memory_fibers[(row["tenant_id"], row["id"])] = dict(row)
         await _announce_fiber(row)
         return
 
@@ -367,6 +385,20 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
     from felix.db.session import rls_bypass
 
     expected = int(row.get("version") or 0)
+    values: dict[str, Any] = {
+        "status": row["status"],
+        "state_json": row.get("state_json") or {},
+        "wake_at": row.get("wake_at"),
+        "updated_at": row["updated_at"],
+        "version": expected + 1,
+        "attempts": int(row.get("attempts") or 0),
+    }
+    if not hold_claim:
+        # A save that keeps the claim leaves the lease columns alone: they are the heartbeat's
+        # to write. This wrote `row["lease_until"]` back -- the claim-time value, which no
+        # renewal had touched -- so the closing save of a long claim could leave a `running`
+        # row whose lease had already lapsed, free for another worker mid-claim.
+        values.update(lease_owner="", lease_until=None)
     with rls_bypass():
         factory = get_session_factory(settings=settings)
         async with factory() as db:
@@ -379,16 +411,7 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
                     Fiber.id == row["id"],
                     Fiber.version == expected,
                 )
-                .values(
-                    status=row["status"],
-                    state_json=row.get("state_json") or {},
-                    wake_at=row.get("wake_at"),
-                    updated_at=row["updated_at"],
-                    lease_owner=row.get("lease_owner", ""),
-                    lease_until=row.get("lease_until"),
-                    version=expected + 1,
-                    attempts=int(row.get("attempts") or 0),
-                )
+                .values(**values)
             )
             await db.commit()
             if not getattr(result, "rowcount", 0):
@@ -399,6 +422,9 @@ async def _save_fiber(settings: Settings, row: dict[str, Any], *, hold_claim: bo
                 )
                 return
     row["version"] = expected + 1
+    if not hold_claim:
+        row["lease_owner"] = ""
+        row["lease_until"] = None
     await _announce_fiber(row)
 
 
@@ -509,6 +535,29 @@ async def _invoke_resume_point(
 ) -> tuple[str, dict[str, Any] | None]:
     """Where this `invoke` starts: `fresh`, `resume`, `done` (with the final message), or `lost`.
 
+    `lost` is asked on every path, by one write under the version this claim read. It was asked
+    only where a marker was being recorded, so a pattern that cannot resume, a manifest with no
+    log and a retry that found its marker all went on to invoke without knowing whether the row
+    was still theirs -- and a holder whose claim had lapsed ran the whole turn beside the worker
+    that now held it.
+    """
+    point, logged = await _resume_point_from_log(settings, row, state, cursor, manifest, thread, request)
+    if not await _checkpoint_state(settings, row):
+        return "lost", None
+    return point, logged
+
+
+async def _resume_point_from_log(
+    settings: Settings,
+    row: dict[str, Any],
+    state: dict[str, Any],
+    cursor: int,
+    manifest: Any,
+    thread: str,
+    request: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """What the thread's log says about this `invoke`: `fresh`, `resume`, or `done` and the reply.
+
     The thread's session log already journals the run as it goes — each model turn and each
     tool result is appended when it happens. So a step re-run after a crash does not need a
     journal of its own; it needs to know which part of the log is its own. Before the first
@@ -563,9 +612,6 @@ async def _invoke_resume_point(
         # the run, which would make a transient store error terminal.
         logger.warning("fiber resume point unavailable id=%s; re-sending", row.get("id"), exc_info=True)
         state.pop("invoke_began", None)
-        return "fresh", None
-    if not await _checkpoint_state(settings, row):
-        return "lost", None
     return "fresh", None
 
 
@@ -1006,19 +1052,103 @@ async def _notify_run_finished(settings: Settings, row: dict[str, Any]) -> None:
             logger.warning("run_finished_hook_failed id=%s", row.get("id"), exc_info=True)
 
 
-async def _claim_due_memory(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
+def _charge_lapsed_claim(
+    status: str, lease_until: int | None, state: dict[str, Any] | None, max_attempts: int
+) -> tuple[dict[str, Any], bool]:
+    """The `state_json` a claim writes, and whether the fiber is buried instead of claimed.
+
+    For a row the claim has already found due. `running` with a lease still on it means the last
+    holder never let go: it was killed mid-step, or it stopped and left the lease to lapse. A
+    step that kills its worker raises nothing, so `attempts` never moved and the fiber was
+    claimed again every lease until its `expires_at` -- a day of five-minute reclaims at the
+    longest `resume_token_ttl_seconds`. Each such claim is counted here, and at `max_attempts`
+    in a row the fiber is dead, with an error the caller can read. A pending fiber, one woken
+    from a sleep, and one released after a step are not lapses, and end the streak.
+    """
+    state = dict(state or {})
+    if status != "running" or lease_until is None:
+        state.pop(FIBER_LAPSES_KEY, None)
+        return state, False
+    lapses = int(state.get(FIBER_LAPSES_KEY) or 0) + 1
+    state[FIBER_LAPSES_KEY] = lapses
+    if lapses < max_attempts:
+        return state, False
+    stash = dict(state.get("stash") or {})
+    last = dict(stash.get("last") or {})
+    last["error"] = f"step lost its worker {lapses} times; not run again"
+    stash["last"] = last
+    state["stash"] = stash
+    return state, True
+
+
+FiberKey = tuple[str, str]  # (tenant_id, id)
+
+
+def _due_memory(row: dict[str, Any], ts: int) -> bool:
+    lease_until = row.get("lease_until")
+    if lease_until is not None and lease_until > ts:
+        return False  # someone else holds the claim
+    due_sleep = row["status"] == "sleeping" and row.get("wake_at") is not None and row["wake_at"] <= ts
+    return due_sleep or row["status"] in {"running", "pending"}
+
+
+def _due_postgres(ts: int) -> tuple[Any, ...]:
+    """The claim's WHERE, shared with `_due_keys` so the two cannot mean different fibers."""
+    return (
+        Fiber.status.in_(("running", "pending", "sleeping")),
+        # sleeping fibers are only due once their timer fires
+        (Fiber.status != "sleeping") | (Fiber.wake_at.is_not(None) & (Fiber.wake_at <= ts)),
+        # unclaimed, or the previous claim expired (crashed worker)
+        Fiber.lease_until.is_(None) | (Fiber.lease_until <= ts),
+        # No `backend` filter. Rows an earlier version handed to Temporal carry
+        # `backend: temporal`; their state is all here, so this scheduler picks
+        # them up rather than leaving them stranded with no worker to drive them.
+    )
+
+
+async def _due_keys(settings: Settings, limit: int = FIBER_BATCH) -> list[FiberKey]:
+    """Which fibers are due now, oldest first, claiming none of them.
+
+    What a sweep is *over*: it claims from this list as it has room to start them
+    (`resume_due_fibers`), where it used to claim the list.
+    """
+    ts = now_ms()
+    if _use_memory(settings):
+        return [key for key, row in _memory_fibers.items() if _due_memory(row, ts)][:limit]
+    from felix.db.session import rls_bypass
+
+    with rls_bypass():
+        factory = get_session_factory(settings=settings)
+        async with factory() as db:
+            stmt = (
+                select(Fiber.tenant_id, Fiber.id)
+                .where(*_due_postgres(ts))
+                .order_by(Fiber.updated_at, Fiber.tenant_id, Fiber.id)
+                .limit(limit)
+            )
+            return [(str(tenant), str(fiber)) for tenant, fiber in (await db.execute(stmt)).all()]
+
+
+async def _claim_due_memory(
+    settings: Settings,
+    ts: int,
+    limit: int = FIBER_BATCH,
+    only: frozenset[FiberKey] | None = None,
+) -> list[dict[str, Any]]:
+    """Every row this claim wrote: the claimed (`running`) and the buried (`dead`)."""
     claimed: list[dict[str, Any]] = []
-    for row in _memory_fibers.values():
-        lease_until = row.get("lease_until")
-        if lease_until is not None and lease_until > ts:
-            continue  # someone else holds the claim
-        due_sleep = row["status"] == "sleeping" and row.get("wake_at") is not None and row["wake_at"] <= ts
-        if not (due_sleep or row["status"] in {"running", "pending"}):
+    if limit <= 0:
+        return claimed
+    for key, row in _memory_fibers.items():
+        if (only is not None and key not in only) or not _due_memory(row, ts):
             continue
-        row["status"] = "running"
+        row["state_json"], buried = _charge_lapsed_claim(
+            row["status"], row.get("lease_until"), row.get("state_json"), settings.fiber_max_attempts
+        )
+        row["status"] = "dead" if buried else "running"
         row["wake_at"] = None
-        row["lease_owner"] = _claim_owner(settings)
-        row["lease_until"] = ts + FIBER_LEASE_MS
+        row["lease_owner"] = "" if buried else _claim_owner(settings)
+        row["lease_until"] = None if buried else ts + FIBER_LEASE_MS
         # Bumped the way the Postgres claim bumps them. `updated_at` is not bookkeeping here:
         # the claim orders by it, so a re-claimed fiber goes to the back of the queue. Leaving
         # it alone kept the twin re-picking the same fiber ahead of everything else, which is
@@ -1031,44 +1161,47 @@ async def _claim_due_memory(settings: Settings, ts: int, limit: int = FIBER_BATC
     return claimed
 
 
-async def _claim_due_postgres(settings: Settings, ts: int, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
+async def _claim_due_postgres(
+    settings: Settings,
+    ts: int,
+    limit: int = FIBER_BATCH,
+    only: frozenset[FiberKey] | None = None,
+) -> list[dict[str, Any]]:
     """Claim a bounded batch of due fibers, skipping rows another worker holds.
 
     ``FOR UPDATE SKIP LOCKED`` plus a lease column is what stops the same step running
     twice: the row lock serializes concurrent claimers within the transaction, and the
     lease keeps the fiber claimed for the duration of the step, which outlives it.
+
+    Returns every row it wrote, like the twin: the claimed and the buried.
     """
+    from sqlalchemy import tuple_
+
     from felix.db.session import rls_bypass
 
+    if limit <= 0 or (only is not None and not only):
+        return []
     owner = _claim_owner(settings)
     factory = get_session_factory(settings=settings)
     # The sweep is cross-tenant maintenance, like retention: without a bypass this runs
     # with no app.tenant_id GUC and RLS silently returns nothing, stalling durability.
     with rls_bypass():
         async with factory() as db:
-            stmt = (
-                select(Fiber)
-                .where(
-                    Fiber.status.in_(("running", "pending", "sleeping")),
-                    # sleeping fibers are only due once their timer fires
-                    (Fiber.status != "sleeping") | (Fiber.wake_at.is_not(None) & (Fiber.wake_at <= ts)),
-                    # unclaimed, or the previous claim expired (crashed worker)
-                    Fiber.lease_until.is_(None) | (Fiber.lease_until <= ts),
-                    # No `backend` filter. Rows an earlier version handed to Temporal carry
-                    # `backend: temporal`; their state is all here, so this scheduler picks
-                    # them up rather than leaving them stranded with no worker to drive them.
-                )
-                .order_by(Fiber.updated_at)
-                .limit(limit)
-                .with_for_update(skip_locked=True)
-            )
+            stmt = select(Fiber).where(*_due_postgres(ts))
+            if only is not None:
+                stmt = stmt.where(tuple_(Fiber.tenant_id, Fiber.id).in_(sorted(only)))
+            stmt = stmt.order_by(Fiber.updated_at).limit(limit).with_for_update(skip_locked=True)
             rows = (await db.scalars(stmt)).all()
             claimed: list[dict[str, Any]] = []
             for row in rows:
-                row.status = "running"
+                # Assigned, not edited in place: a JSON column only notices a new value.
+                row.state_json, buried = _charge_lapsed_claim(
+                    row.status, row.lease_until, row.state_json, settings.fiber_max_attempts
+                )
+                row.status = "dead" if buried else "running"
                 row.wake_at = None
-                row.lease_owner = owner
-                row.lease_until = ts + FIBER_LEASE_MS
+                row.lease_owner = "" if buried else owner
+                row.lease_until = None if buried else ts + FIBER_LEASE_MS
                 row.updated_at = ts
                 row.version = int(row.version or 0) + 1
                 claimed.append(_fiber_dict(row))
@@ -1076,18 +1209,85 @@ async def _claim_due_postgres(settings: Settings, ts: int, limit: int = FIBER_BA
             return claimed
 
 
-async def _claim_due(settings: Settings, limit: int = FIBER_BATCH) -> list[dict[str, Any]]:
-    """Claim up to `limit` due fibers from whichever store this process uses."""
+async def _claim_due(
+    settings: Settings, limit: int = FIBER_BATCH, only: frozenset[FiberKey] | None = None
+) -> list[dict[str, Any]]:
+    """Claim up to `limit` due fibers from whichever store this process uses.
+
+    `only` narrows the claim to those fibers, for a sweep (`_due_keys`). A fiber the claim
+    buried instead (`_charge_lapsed_claim`) is finished here and not returned: nobody is to
+    run it.
+    """
     ts = now_ms()
     if _use_memory(settings):
-        claimed = await _claim_due_memory(settings, ts, limit)
+        written = await _claim_due_memory(settings, ts, limit, only)
     else:
-        claimed = await _claim_due_postgres(settings, ts, limit)
+        written = await _claim_due_postgres(settings, ts, limit, only)
     # After the claim commits: a stream reports `running` when the run starts, not when it next
     # polls, which on a backed-up queue could be most of a minute later.
-    for row in claimed:
+    claimed: list[dict[str, Any]] = []
+    for row in written:
         await _announce_fiber(row)
+        if row.get("status") == "running":
+            claimed.append(row)
+            continue
+        logger.warning("fiber buried id=%s: %s", row.get("id"), _last_error(row))
+        await _after_terminal(settings, row)
     return claimed
+
+
+def _last_error(row: dict[str, Any]) -> str:
+    return str((((row.get("state_json") or {}).get("stash") or {}).get("last") or {}).get("error") or "")
+
+
+# The fibers this process is advancing, and the slots each task holds: one per fiber in its
+# step, and for a task that is claiming, as many as it asked the store for. One table for the
+# whole process because `fiber_concurrency` is a promise about the worker, and a worker runs two
+# claimers -- `run_fiber_loop` and the cron sweep. Each kept a count of its own, so together
+# they ran twice the setting.
+_slots_held: dict[asyncio.Task[Any], int] = {}
+
+
+def _free_slots(settings: Settings) -> int:
+    """How many more fibers this process may start now."""
+    loop = asyncio.get_running_loop()
+    # A task that ended frees its slots itself; one stranded on a loop that is gone cannot.
+    for task in [t for t in _slots_held if t.done() or t.get_loop() is not loop]:
+        del _slots_held[task]
+    return max(settings.fiber_concurrency - sum(_slots_held.values()), 0)
+
+
+async def _start_due(
+    settings: Settings, limit: int = FIBER_BATCH, only: frozenset[FiberKey] | None = None
+) -> dict[asyncio.Task[None], dict[str, Any]]:
+    """Claim as many due fibers as this process can start now, and start them.
+
+    A claim is a lease, and only a fiber in its step renews one (`_step_with_lease`). So nothing
+    is claimed to wait: the sweep took a batch of fifty and ran `fiber_concurrency` of them, and
+    the rest held a claim that lapsed after five minutes with its holder still queued behind a
+    slot -- to be claimed again and run by someone else, and then run by the first holder too.
+    """
+    me = asyncio.current_task()
+    want = min(_free_slots(settings), limit)
+    if want <= 0 or me is None:
+        return {}
+    # Held across the claim's await, so two claimers cannot both count the same free slots.
+    _slots_held[me] = _slots_held.get(me, 0) + want
+    try:
+        due = await _claim_due(settings, want, only)
+        started: dict[asyncio.Task[None], dict[str, Any]] = {}
+        for row in due:
+            task = asyncio.create_task(_advance_claimed(settings, row))
+            _slots_held[task] = 1
+            task.add_done_callback(lambda done: _slots_held.pop(done, None))
+            started[task] = row
+        return started
+    finally:
+        left = _slots_held.get(me, 0) - want
+        if left > 0:
+            _slots_held[me] = left
+        else:
+            _slots_held.pop(me, None)
 
 
 async def _advance_claimed(settings: Settings, row: dict[str, Any]) -> None:
@@ -1144,17 +1344,48 @@ async def resume_due_fibers(settings: Settings) -> int:
     `write_file` approval made a sweep take 89 seconds. Each fiber holds its own lease and
     renews it itself, so nothing they share needs the order.
 
+    A fiber is claimed when there is a slot to start it in, never before (`_start_due`), and the
+    slots are the worker's: what `run_fiber_loop` is running in this process counts against the
+    sweep too. The sweep is over the fibers due when it began, up to `FIBER_BATCH` (`_due_keys`),
+    and claims from them as slots free. So it is the same sweep it was: each fiber gets one claim
+    -- a second `invoke` still waits for the next -- and one that arrives meanwhile is the next
+    sweep's, or the loop's.
+
     This is the backstop. `run_fiber_loop` is what picks a new run up within a second.
     """
-    due = await _claim_due(settings)
-    gate = asyncio.Semaphore(settings.fiber_concurrency)
-
-    async def _bounded(row: dict[str, Any]) -> None:
-        async with gate:
-            await _advance_claimed(settings, row)
-
-    await asyncio.gather(*(_bounded(row) for row in due))
-    return len(due)
+    todo = set(await _due_keys(settings))
+    stepped = 0
+    running: set[asyncio.Task[None]] = set()
+    try:
+        while True:
+            started: dict[asyncio.Task[None], dict[str, Any]] = {}
+            if todo:
+                try:
+                    started = await _start_due(settings, len(todo), frozenset(todo))
+                except Exception:
+                    if not running:
+                        raise  # nothing of this sweep's is in flight: the caller hears it, as before
+                    # Fibers already started are not abandoned over a claim that failed.
+                    logger.warning("fiber sweep claim failed; finishing what it started", exc_info=True)
+                    todo.clear()
+            todo -= {(str(row["tenant_id"]), str(row["id"])) for row in started.values()}
+            stepped += len(started)
+            running.update(started)
+            if started:
+                continue  # there may be more due, and slots left to start them in
+            if not running:
+                break
+            done, running = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()  # `_advance_claimed` raises nothing; what does escape is not ours to hide
+    except BaseException:
+        # Cancelled, or a step died of something no handler is meant to catch. A fiber left
+        # running would be a step with no sweep behind it; cancelled, it keeps its lease.
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
+        raise
+    return stepped
 
 
 # How long a stopping worker waits for in-flight fibers before cancelling them. A cancelled
@@ -1180,30 +1411,26 @@ async def run_fiber_loop(settings: Settings, stop: asyncio.Event) -> None:
     so the two cannot run one fiber twice; whichever claims first owns it.
 
     Unlike the sweep it does not wait for a batch to finish. Each claimed fiber runs as its
-    own task, and the loop claims only as many as it has free slots for, out of
-    `fiber_concurrency`, so one fiber waiting minutes on an approval occupies one slot and
-    delays nothing else.
+    own task, and the loop claims only as many as the worker has free slots for, out of
+    `fiber_concurrency` (`_start_due`; the cron sweep draws on the same slots), so one fiber
+    waiting minutes on an approval occupies one slot and delays nothing else.
     """
     interval = settings.fiber_poll_seconds
-    capacity = settings.fiber_concurrency
     in_flight: set[asyncio.Task[None]] = set()
     delay = interval
-    logger.info("fiber_loop started interval=%ss concurrency=%d", interval, capacity)
+    logger.info("fiber_loop started interval=%ss concurrency=%d", interval, settings.fiber_concurrency)
     try:
         while not stop.is_set():
-            free = capacity - len(in_flight)
-            if free > 0:
-                try:
-                    due = await _claim_due(settings, min(free, FIBER_BATCH))
-                    delay = interval
-                except Exception:
-                    due = []
-                    delay = min(max(delay * 2, interval), FIBER_LOOP_MAX_BACKOFF_S)
-                    logger.warning("fiber_loop claim failed; next attempt in %ss", delay, exc_info=True)
-                for row in due:
-                    task = asyncio.create_task(_advance_claimed(settings, row))
-                    in_flight.add(task)
-                    task.add_done_callback(in_flight.discard)
+            try:
+                started = await _start_due(settings)
+                delay = interval
+            except Exception:
+                started = {}
+                delay = min(max(delay * 2, interval), FIBER_LOOP_MAX_BACKOFF_S)
+                logger.warning("fiber_loop claim failed; next attempt in %ss", delay, exc_info=True)
+            for task in started:
+                in_flight.add(task)
+                task.add_done_callback(in_flight.discard)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=delay)
     finally:
@@ -1211,6 +1438,9 @@ async def run_fiber_loop(settings: Settings, stop: asyncio.Event) -> None:
             _, pending = await asyncio.wait(in_flight, timeout=FIBER_LOOP_DRAIN_S)
             for task in pending:
                 task.cancel()
+            # Until each has stopped its step: returning sooner left the step running with
+            # nothing behind it. What it was doing is in the log, for whoever claims it next.
+            await asyncio.gather(*pending, return_exceptions=True)
         logger.info("fiber_loop stopped")
 
 
@@ -1276,6 +1506,31 @@ async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int,
     return False
 
 
+def _holds_claim(stored: dict[str, Any] | None, owner: str, row: dict[str, Any]) -> bool:
+    """Whether the stored row is still under the claim `row` was handed -- the twin's `_claim_is`."""
+    if stored is None or stored.get("lease_owner") != owner:
+        return False
+    return int(stored.get("version") or 0) == int(row.get("version") or 0)
+
+
+def _claim_is(owner: str, row: dict[str, Any]) -> Any:
+    """The predicate for "this row is still under the claim `row` was handed".
+
+    Not `lease_owner` alone. That names the process, and a process claims a fiber more than
+    once: the loop and the sweep share it, and so do two ticks. A holder whose claim had lapsed
+    matched the claim taken after it, and its release cleared a lease someone was working under.
+
+    A claim is told from the next by `version`: the claim bumps it, and after that only this
+    holder's own saves do, each of which leaves the new value in `row`. So a row that has been
+    claimed again never has the version a stale holder is carrying. For the two writes made
+    when no step is running (`_release_fiber`, `_record_attempt`); `_renew_lease` runs *beside*
+    a step, whose save moves the version under it, and tells its claim by the lease instead.
+    """
+    from sqlalchemy import and_
+
+    return and_(Fiber.lease_owner == owner, Fiber.version == int(row.get("version") or 0))
+
+
 async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     """Write status, wake_at and attempts — and nothing else — releasing the claim.
 
@@ -1283,29 +1538,27 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     this is the write that still lands. The run view derives the error from `attempts`
     when `dead` carries none.
 
-    Scoped to this worker's claim, like `_release_fiber` and `_renew_lease`. It is the last
-    write in the module that was not, and it clears the lease *and* overwrites `status` --
-    so on a worker that has lost its claim it would take the row out from under whoever now
-    owns it. No compare-and-set, deliberately: this path exists because the versioned write
-    is what failed.
+    Scoped to this claim (`_claim_is`), like `_release_fiber` and `_renew_lease`, or to a row
+    nobody holds. It clears the lease *and* overwrites `status` -- so on a worker that has lost
+    its claim it would take the row out from under whoever now owns it. No compare-and-set,
+    deliberately: this path exists because the versioned write is what failed.
     """
     owner = _claim_owner(settings)
     row["updated_at"] = now_ms()
-    row["lease_owner"] = ""
-    row["lease_until"] = None
-    fields = {
-        k: row.get(k) for k in ("status", "wake_at", "attempts", "updated_at", "lease_owner", "lease_until")
-    }
+    fields = {k: row.get(k) for k in ("status", "wake_at", "attempts", "updated_at")}
+    fields.update(lease_owner="", lease_until=None)
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
-        if stored is not None and stored.get("lease_owner") in (owner, ""):
+        if stored is not None and (_holds_claim(stored, owner, row) or stored.get("lease_owner") == ""):
             stored.update(fields)
+            row.update(fields)
             await _announce_fiber(row)
         return
-    from sqlalchemy import update
+    from sqlalchemy import or_, update
 
     from felix.db.session import rls_bypass
 
+    mine = _claim_is(owner, row)
     with rls_bypass():
         factory = get_session_factory(settings=settings)
         async with factory() as db:
@@ -1314,7 +1567,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
                 .where(
                     Fiber.tenant_id == row["tenant_id"],
                     Fiber.id == row["id"],
-                    Fiber.lease_owner.in_((owner, "")),
+                    or_(mine, Fiber.lease_owner == ""),
                 )
                 .values(**fields)
             )
@@ -1322,6 +1575,7 @@ async def _record_attempt(settings: Settings, row: dict[str, Any]) -> None:
     # The fallback when `_save_fiber` itself failed, and it writes `status` -- `dead` among
     # them -- so it announces like the save it stands in for.
     if getattr(result, "rowcount", 0):
+        row.update(fields)
         await _announce_fiber(row)
 
 
@@ -1332,15 +1586,24 @@ async def _renew_lease(settings: Settings, row: dict[str, Any]) -> bool:
     worker took it -- looked exactly like a renewal, and the step went on running beside the
     new owner's (felix-run/felix#531).
     """
-    until = now_ms() + FIBER_LEASE_MS
     owner = _claim_owner(settings)
+    # The claim is told from a later one by the lease it last wrote. The owner alone is the
+    # process, and the same process may hold the claim taken after this one lapsed; a stale
+    # holder told `True` here keeps its step running beside the live one. Not `version`
+    # (`_claim_is`): this runs beside the step, whose own save moves that. Nothing but the
+    # claim and this function writes `lease_until` while a claim is held (`_save_fiber`), and
+    # a later claim's is always past any this one wrote, since it waits for this one to lapse.
+    held = row.get("lease_until")
+    if held is None:
+        return False  # not a claimed row: there is no claim here to renew
+    until = max(now_ms() + FIBER_LEASE_MS, int(held))
     if _use_memory(settings):
-        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
         # Only if we still hold it: a lease we already lost must not be stolen back mid-step.
-        if stored is not None and stored.get("lease_owner") == owner:
-            stored["lease_until"] = until
-            return True
-        return False
+        stored = _memory_fibers.get((row["tenant_id"], row["id"]))
+        if stored is None or stored.get("lease_owner") != owner or stored.get("lease_until") != held:
+            return False
+        stored["lease_until"] = row["lease_until"] = until
+        return True
     from sqlalchemy import update
 
     from felix.db.session import rls_bypass
@@ -1354,11 +1617,18 @@ async def _renew_lease(settings: Settings, row: dict[str, Any]) -> bool:
                     Fiber.tenant_id == row["tenant_id"],
                     Fiber.id == row["id"],
                     Fiber.lease_owner == owner,
+                    Fiber.lease_until == int(held),
                 )
                 .values(lease_until=until)
             )
             await db.commit()
-            return int(getattr(result, "rowcount", 0) or 0) > 0
+            if not int(getattr(result, "rowcount", 0) or 0):
+                return False
+    # Only once it has landed: `row` carries what the store is known to hold. A renewal that
+    # landed and whose answer was lost therefore reads as a claim lost, and the step stops --
+    # the safe way round, since the other is a stale holder renewing a claim that is not its.
+    row["lease_until"] = until
+    return True
 
 
 class FiberLeaseLost(Exception):
@@ -1448,6 +1718,8 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
     beat = asyncio.create_task(_heartbeat())
     landed = 0
     failure: Exception | None = None
+    discarded = False
+    interrupted = False
     try:
         invokes = 0
         for _ in range(FIBER_MAX_OPS_PER_CLAIM):
@@ -1463,6 +1735,16 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
             gone = asyncio.create_task(lost.wait())
             try:
                 await asyncio.wait({step, gone}, return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                # The worker is stopping and the drain ran out. `asyncio.wait` does not cancel
+                # what it waits on, so the step ran on with nobody behind it -- and the release
+                # below then freed the fiber for another worker to run beside it. Stop the step,
+                # and keep the lease: it lapses, and the next claim picks the run up from its log.
+                interrupted = True
+                step.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await step
+                raise
             finally:
                 gone.cancel()
             if not step.done():
@@ -1490,6 +1772,8 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
                 # never be persisted. One step per claim made this self-limiting; a loop
                 # does not. The next sweep re-reads the row and starts from the truth.
                 logger.warning("fiber write was discarded id=%s; yielding the claim", row.get("id"))
+                discarded = True
+                landed -= 1
                 break
             if row.get("status") != "running":
                 break  # terminal, or suspended on a sleep — either way this claim is done
@@ -1514,18 +1798,26 @@ async def _step_with_lease(settings: Settings, row: dict[str, Any]) -> tuple[int
         # the loop existed the failure path never reached a release at all; `_retry_or_dead`
         # wrote status, `wake_at` and the lease clear in one `UPDATE`, atomically, and it
         # still does. So the failure path keeps its claim until that write releases it.
-        if failure is None:
+        #
+        # Nor when the claim was cut short by a cancel: see above.
+        if failure is None and not interrupted:
             with contextlib.suppress(Exception):
                 await _release_fiber(settings, row)
+    if discarded:
+        # Released above, if it is still this claim's to release. But `row` is what the step
+        # meant to write, not what the store holds, so nothing may act on its status: a
+        # `completed` that was never saved announced a run its real holder would announce again.
+        failure = FiberLeaseLost(f"write discarded on fiber {row.get('id')}")
     return landed, failure
 
 
 async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
     """Drop the claim so a failed step is retried rather than stranded until expiry.
 
-    Scoped to this worker's own claim, matching `_renew_lease`. It used to clear the lease
+    Scoped to this claim (`_claim_is`), matching `_renew_lease`. It used to clear the lease
     columns unconditionally, which was harmless while the only caller was the failure path of
-    a claim it certainly held; it is not harmless now that a claim spans several steps.
+    a claim it certainly held; it is not harmless now that a claim spans several steps. Then
+    it was scoped to the worker, which is not the claim: see `_claim_is`.
 
     **This is a second line of defence, not the first.** What keeps two workers off one fiber
     is the claim itself (`lease_until` plus `FOR UPDATE SKIP LOCKED`), and inside a multi-step
@@ -1541,7 +1833,7 @@ async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
     owner = _claim_owner(settings)
     if _use_memory(settings):
         stored = _memory_fibers.get((row["tenant_id"], row["id"]))
-        if stored is not None and stored.get("lease_owner") == owner:
+        if stored is not None and _holds_claim(stored, owner, row):
             stored["lease_owner"] = ""
             stored["lease_until"] = None
         return
@@ -1554,11 +1846,7 @@ async def _release_fiber(settings: Settings, row: dict[str, Any]) -> None:
         async with factory() as db:
             await db.execute(
                 update(Fiber)
-                .where(
-                    Fiber.tenant_id == row["tenant_id"],
-                    Fiber.id == row["id"],
-                    Fiber.lease_owner == owner,
-                )
+                .where(Fiber.tenant_id == row["tenant_id"], Fiber.id == row["id"], _claim_is(owner, row))
                 .values(lease_owner="", lease_until=None)
             )
             await db.commit()

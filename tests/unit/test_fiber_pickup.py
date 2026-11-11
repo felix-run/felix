@@ -139,11 +139,11 @@ async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPa
     original = fibers._claim_due
     calls = {"n": 0}
 
-    async def _flaky(s: Settings, limit: int = fibers.FIBER_BATCH) -> list[dict[str, Any]]:
+    async def _flaky(s: Settings, *args: Any) -> list[dict[str, Any]]:
         calls["n"] += 1
         if calls["n"] == 1:
             raise ConnectionError("store unavailable")
-        return await original(s, limit)
+        return await original(s, *args)
 
     monkeypatch.setattr(fibers, "_claim_due", _flaky)
     fiber_id = await _fiber(settings)
@@ -188,3 +188,66 @@ async def test_the_sweep_advances_its_batch_concurrently(blocking: dict[str, Any
         blocking["release"].set()
     assert await sweep == 2
     assert _status(parked) == "completed"
+
+
+# --- the cron sweep: it claims what it can start, out of the worker's slots --------
+
+
+async def test_the_sweep_claims_no_more_than_it_can_start(blocking: dict[str, Any]) -> None:
+    """A claim is a lease, and only a fiber in its step renews one.
+
+    The sweep claimed its whole batch and started `fiber_concurrency` of it, so the rest held a
+    lease from the moment they were queued behind a slot: five minutes later it had lapsed under
+    a holder that had not begun, and the fiber was claimed and run by someone else as well.
+    """
+    settings = _settings(fiber_concurrency=1)
+    parked = await _fiber(settings)
+    waiting = await _fiber(settings)
+    blocking["held"].add(parked)
+    sweep = asyncio.create_task(resume_due_fibers(settings))
+    try:
+        await asyncio.wait_for(blocking["started"].wait(), timeout=1)
+        await asyncio.sleep(0.02)
+        row = fibers._memory_fibers[("default", waiting)]
+        assert (row["status"], row.get("lease_until")) == ("pending", None), "claimed with no slot to run in"
+    finally:
+        blocking["release"].set()
+    # And it is not left for the next tick: the sweep claims it once the slot is free.
+    assert await asyncio.wait_for(sweep, timeout=1) == 2
+    assert (_status(parked), _status(waiting)) == ("completed", "completed")
+
+
+async def test_the_sweep_and_the_loop_share_one_workers_slots(blocking: dict[str, Any]) -> None:
+    """`fiber_concurrency` is per worker. The loop and the sweep each counted their own, so a
+    worker whose loop was full still started that many again from the sweep."""
+    settings = _settings(fiber_concurrency=1)
+    parked = await _fiber(settings)
+    blocking["held"].add(parked)
+    stop = asyncio.Event()
+    loop = asyncio.create_task(run_fiber_loop(settings, stop))
+    try:
+        await asyncio.wait_for(blocking["started"].wait(), timeout=1)
+        waiting = await _fiber(settings)
+        assert await asyncio.wait_for(resume_due_fibers(settings), timeout=1) == 0
+        row = fibers._memory_fibers[("default", waiting)]
+        assert (row["status"], row.get("lease_until")) == ("pending", None), "the sweep ran a second fiber"
+    finally:
+        blocking["release"].set()
+        stop.set()
+        await loop
+
+
+async def test_a_fiber_that_arrives_during_a_sweep_is_not_that_sweeps(blocking: dict[str, Any]) -> None:
+    """The sweep is over what was due when it began. A workflow's orchestrator starts its step's
+    fiber mid-sweep; claimed by the same sweep, a step waiting on a person would hold it open."""
+    settings = _settings()
+    parked = await _fiber(settings)
+    blocking["held"].add(parked)
+    sweep = asyncio.create_task(resume_due_fibers(settings))
+    try:
+        await asyncio.wait_for(blocking["started"].wait(), timeout=1)
+        late = await _fiber(settings)
+    finally:
+        blocking["release"].set()
+    assert await asyncio.wait_for(sweep, timeout=1) == 1
+    assert _status(late) == "pending"

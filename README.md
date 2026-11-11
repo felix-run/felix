@@ -1022,9 +1022,11 @@ Storage and execution:
   rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber and returns `202` with a
-  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`.
+  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`,
+  as is one that has lost its worker mid-step that many times in a row.
   Each worker polls for due fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 leaves only the
   once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,
+  the poll and the sweep together,
   so a new run starts within about a second and one parked on an approval holds up no other
 - `spec.network.credentials: [github]` lets `http_fetch` call an authenticated API without the model
   ever holding the key: the operator registers it in `FELIX_EGRESS_CREDENTIALS` (a JSON map of id →

@@ -2095,6 +2095,15 @@ a store that is entirely down leaves the fiber released for the next tick, as be
 step that completes resets the count. An `invoke` that fails is `failed` in one tick, as
 before.
 
+A step that takes its worker down with it — an out-of-memory kill, a `SIGKILL` — raises
+nothing, so the same setting bounds it from the claim instead. A fiber found `running` under
+a lease that lapsed was let go of by nobody; each such claim is counted in the run's state,
+and after `FELIX_FIBER_MAX_ATTEMPTS` of them in a row the fiber is `dead` with `step lost its
+worker N times; not run again` as its error, rather than claimed again every five minutes
+until `expires_at`. A claim that ends with its step saved and the fiber released resets the
+count. A worker that stops mid-step after its drain window leaves its lease to lapse, so
+that counts as one.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each
