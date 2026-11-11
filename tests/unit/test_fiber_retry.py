@@ -108,7 +108,9 @@ async def test_at_the_ceiling_the_fiber_is_dead_and_never_claimed_again(
     run = await get_durable_run(settings, TENANT, fiber_id)
     assert run is not None
     assert run["status"] == "dead"
-    assert "step failed 3 times" in run["error"] and "connection refused" in run["error"]
+    # The count, and not the exception's text: this is what a poll of the run returns.
+    assert "step failed 3 times" in run["error"]
+    assert "connection refused" not in run["error"] and "RuntimeError" not in run["error"]
 
 
 async def test_a_step_that_completes_resets_the_count(
@@ -381,3 +383,29 @@ def test_retention_sweeps_every_status_the_store_calls_terminal() -> None:
 
     assert TERMINAL_FIBER_STATUSES == FIBER_TERMINAL_STATUSES
     assert "dead" in TERMINAL_FIBER_STATUSES
+
+
+async def test_a_failed_invoke_stores_a_written_error_not_the_exceptions_text(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run's error is returned on its poll and its stream, posted to webhooks and channels,
+    and handed to a parent agent. It was `str(exc)`: a database or proxy error put the host it
+    could not reach in front of all of them."""
+    import felix.runtime as runtime
+
+    async def _unreachable(*_a: Any, **_kw: Any) -> Any:
+        raise ConnectionError('connection to server at "10.9.9.9", port 5432 failed: SENTINEL')
+
+    monkeypatch.setattr(runtime, "resolve_tenant_manifest", _unreachable)
+    created = await create_fiber(
+        settings,
+        TENANT,
+        state={"steps": [{"op": "invoke", "manifest_id": "quick", "prompt": "hi"}], "cursor": 0},
+    )
+
+    await resume_due_fibers(settings)
+
+    run = await get_durable_run(settings, TENANT, str(created["id"]))
+    assert run is not None and run["status"] == "failed"
+    assert run["error"], "a failed run says that it failed"
+    assert "10.9.9.9" not in run["error"] and "SENTINEL" not in run["error"]

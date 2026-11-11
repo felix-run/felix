@@ -1404,8 +1404,10 @@ test that fails on the current tree. In queue order:
 
 #### 5. Governance
 
-- [ ] **Durable-run exception text (M1).** The entry under Harness, with the full list of sinks;
-      `eval/runner.py` and `jobs/scheduler.py` have the same shape.
+- [~] **Durable-run exception text (M1).** A failed or dead run now stores
+      `client_safe_message(exc)`, so the poll, the stream, webhooks, channels and a parent agent
+      get a written error. Open: `eval/runner.py` stores `str(exc)` in a run's `scores`, read
+      under `eval:read`. The entry under Harness can go once that is done.
 - [ ] **Plan tools are also reachable over MCP and workflow steps (M5).** Widens the OWASP entry
       above, which names only the model as a caller.
 - [ ] **An agent can write `AGENTS.override.md` into its tenant's system prompt (M3)** from a

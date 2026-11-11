@@ -966,7 +966,13 @@ async def _run_fiber_step(
                     await _save_fiber(settings, row, hold_claim=hold_claim)
                     return row
                 logger.exception("fiber_invoke_failed id=%s", row["id"])
-                error = str(exc)
+                # Written, never forwarded: this text is returned on the run's poll and its
+                # stream, posted to webhooks and channels, and handed to a parent agent. A
+                # driver error names a host, a path or a statement; a refusal written for a
+                # caller (`felix.errors`) still reads as itself.
+                from felix.errors import client_safe_message
+
+                error = client_safe_message(exc)
         stash["last"] = {
             "answer": answer,
             "final": final,
@@ -1707,10 +1713,11 @@ async def _retry_or_dead(settings: Settings, row: dict[str, Any], attempts: int,
         state = dict(row.get("state_json") or {})
         stash = dict(state.get("stash") or {})
         last = dict(stash.get("last") or {})
-        # The first line only: a driver error's later lines echo the statement and its
-        # parameters, which is the run's own state — not something to hand back on a poll.
-        detail = (str(exc).splitlines() or [""])[0][:200]
-        last["error"] = f"step failed {attempts} times; last: {type(exc).__name__}: {detail}"
+        # Not the exception's text, not even its first line: that named the database host on
+        # a connection error, and this is handed back on a poll. The exception is in the log.
+        from felix.errors import client_safe_message
+
+        last["error"] = f"step failed {attempts} times; last: {client_safe_message(exc)}"
         stash["last"] = last
         state["stash"] = stash
         row["state_json"] = state
