@@ -37,6 +37,11 @@ def _manifest(name: str, **spec: Any) -> Any:
     )
 
 
+def _process(row: dict[str, Any]) -> str:
+    """The replica a claim was made by: `lease_owner` is that, `#`, and the claim's own name."""
+    return str(row["lease_owner"]).partition("#")[0]
+
+
 REACT = {"e2e-stale": _manifest("e2e-stale")}
 # A composite reads the request to route, so it never resumes from the log -- the branch of
 # `_invoke_resume_point` that returned before anything checked the claim.
@@ -88,7 +93,7 @@ async def test_a_stale_holder_runs_nothing_and_leaves_the_live_claim_alone(
         (stale,) = await F._claim_due(app.settings, 1)
         clock["now"] += F.FIBER_LEASE_MS + 1
         (live,) = await F._claim_due(app.settings, 1)
-        assert live["lease_owner"] == stale["lease_owner"], "one process took both claims"
+        assert _process(live) == _process(stale), "one process took both claims"
 
         await F._advance_claimed(app.settings, stale)
 

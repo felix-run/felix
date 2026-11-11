@@ -134,6 +134,12 @@ async def _stop_beat() -> None:
 async def _on_worker_shutdown(_state: object) -> None:
     await _stop_beat()
     await _stop_fiber_loop()
+    # And whatever a cron sweep is still running, which is all there is when the loop is off
+    # (`FELIX_FIBER_POLL_SECONDS=0`). Nothing to do when the loop's own drain covered them.
+    from felix.durability.fibers import drain_fibers
+
+    with contextlib.suppress(Exception):
+        await drain_fibers()
     # After the drain, so what the last runs recorded goes too. The minute cron is the worker's
     # only other flush: without this every restart dropped up to a minute of usage and audit
     # rows for durable runs and jobs -- the unattended work, which is the spend nobody watched.

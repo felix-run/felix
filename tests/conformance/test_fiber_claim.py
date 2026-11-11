@@ -242,8 +242,13 @@ async def _lapsed_then_reclaimed(settings: Any) -> tuple[dict[str, Any], dict[st
     t0 = fibers.now_ms()
     (stale,) = await _claim(settings, ts=t0)
     (live,) = await _claim(settings, ts=t0 + fibers.FIBER_LEASE_MS + 1)
-    assert live["lease_owner"] == stale["lease_owner"] and live["lease_until"] > stale["lease_until"]
+    assert _process(live) == _process(stale) and live["lease_until"] > stale["lease_until"]
     return stale, live
+
+
+def _process(row: dict[str, Any]) -> str:
+    """The replica a claim was made by: `lease_owner` is that, `#`, and the claim's own name."""
+    return str(row["lease_owner"]).partition("#")[0]
 
 
 async def _lease(settings: Any, row: dict[str, Any]) -> tuple[str, int | None]:
@@ -468,36 +473,58 @@ async def test_a_claim_narrowed_to_some_fibers_takes_no_others(fiber_settings: A
 async def test_a_renewal_that_landed_unheard_is_still_this_claims_to_renew_and_release(
     fiber_settings: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The store holds the lease a renewal tried to write; the holder knows the one before it.
-
-    With only that, the holder's next renewal matched no row and its release could not let go.
-    It also carries what it tried, and either names the claim.
-    """
+    """The store holds a lease the holder never heard it had written. A claim told by its lease
+    was then lost to its own holder: the next renewal matched no row, and the release could not
+    let go. It is told by its name, which no renewal changes."""
     await fibers.create_fiber(fiber_settings, TENANT, status="pending")
     t0 = fibers.now_ms()
     (mine,) = await _claim(fiber_settings, ts=t0)
     monkeypatch.setattr(fibers, "now_ms", lambda: t0 + fibers.FIBER_LEASE_RENEW_MS)
-    attempted = t0 + fibers.FIBER_LEASE_RENEW_MS + fibers.FIBER_LEASE_MS
-    # The renewal lands; the holder's own row never hears, and keeps only the note it made.
+    # The renewal lands; the holder's own row never hears.
     assert await fibers._renew_lease(fiber_settings, dict(mine)) is True
-    unheard = {**mine, fibers._LEASE_TRIED: [attempted]}
+    assert (await _lease(fiber_settings, mine))[1] != mine["lease_until"]
 
-    assert await fibers._renew_lease(fiber_settings, dict(mine)) is False, "the claim-time lease alone"
-    assert await fibers._renew_lease(fiber_settings, unheard) is True
-    assert fibers._LEASE_TRIED not in unheard, "an answered renewal leaves no note behind"
-
-    await fibers._release_fiber(fiber_settings, {**mine, fibers._LEASE_TRIED: [unheard["lease_until"]]})
+    assert await fibers._renew_lease(fiber_settings, mine) is True
+    assert await fibers._release_fiber(fiber_settings, mine) is True
     assert await _lease(fiber_settings, mine) == ("", None)
+    assert await fibers._release_fiber(fiber_settings, mine) is False, "there was nothing left to release"
 
 
 @parametrized
-async def test_what_a_renewal_tried_never_names_a_later_claim(fiber_settings: Any) -> None:
+async def test_two_claims_by_one_process_in_one_millisecond_are_still_two_claims(fiber_settings: Any) -> None:
+    """Everything a lapsed holder could know about the lease -- the process, and the very
+    `lease_until` the next claim wrote, which a renewal tried in the same millisecond also
+    computes -- and it is still not that claim's holder."""
     stale, live = await _lapsed_then_reclaimed(fiber_settings)
-    stale[fibers._LEASE_TRIED] = [stale["lease_until"] + 1, live["lease_until"] - 1]
+    twin = {**stale, "lease_until": live["lease_until"]}
 
-    assert await fibers._renew_lease(fiber_settings, stale) is False
-    await fibers._release_fiber(fiber_settings, stale)
-    assert await _lease(fiber_settings, live) == (live["lease_owner"], live["lease_until"])
+    assert await fibers._renew_lease(fiber_settings, twin) is False
+    assert await fibers._release_fiber(fiber_settings, twin) is False
+    await fibers._record_attempt(fiber_settings, {**twin, "status": "sleeping", "attempts": 3})
+    stored = await fibers.get_fiber(fiber_settings, TENANT, live["id"])
+    assert stored is not None
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == (
+        "running",
+        live["lease_owner"],
+        live["lease_until"],
+    )
+
+
+@parametrized
+async def test_a_claim_is_named_for_the_process_that_made_it(fiber_settings: Any) -> None:
+    """`lease_owner` still says which worker holds a fiber; it also says which of its claims."""
+    settings = fiber_settings.model_copy(update={"replica_id": "worker-a"})
+    await fibers.create_fiber(settings, TENANT, status="pending")
+    await fibers.create_fiber(settings, TENANT, status="pending")
+
+    first, second = await _claim(settings)
+
+    assert _process(first) == _process(second) == "worker-a"
+    assert first["lease_owner"] != second["lease_owner"]
+    # Another worker holding the row cannot act on it, whatever the row says.
+    other = settings.model_copy(update={"replica_id": "worker-b"})
+    assert await fibers._renew_lease(other, first) is False
+    assert await fibers._release_fiber(other, first) is False
 
 
 # --- what the store holds is what was saved ---------------------------------------------------

@@ -2108,9 +2108,18 @@ the deployment's session store can read (`memory.checkpointer: none`, or one of 
 shows no movement, so every lost worker counts. A claim that ends with its step saved and
 the fiber released clears both counts.
 
-A worker that stops gracefully is not a lost worker. A step still running when the drain
-window ends is cancelled, and once it has stopped its claim is given back, so another worker
-continues the run from its log at once; only if that write fails does the lease run out.
+A worker that stops gracefully is not a lost worker. Runs in flight get thirty seconds to
+reach their next suspension; a step still running then is cancelled, and once it has stopped
+its claim is given back, so another worker continues the run from its log at once. Only if
+that write fails, or the step ignores its cancel for fifteen seconds more, does the lease run
+out. The worker asks Taskiq for the time this takes (`felix_worker/shutdown.py`: five seconds
+for running tasks, then eighty-five for the drain, the flush of buffered usage and audit rows,
+and a margin), and both Compose and the Helm chart give the container 120. Shorten that grace
+period below ninety seconds and a stopping worker is killed mid-drain.
+
+`lease_owner` on a claimed fiber is `<replica id>#<claim>`: the part before the `#` is the
+worker, the rest names the one claim, so a worker's earlier claim on the same fiber can never
+be mistaken for its current one.
 
 ## Run budgets
 

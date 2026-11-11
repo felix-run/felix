@@ -496,8 +496,8 @@ class Settings(BaseSettings):
     scale_out: bool = False
     # Who this process is, in a lease row and a log line. It has to be unique per *process*,
     # because `durability/fibers.py` compares it to decide whether a claim is its own —
-    # `_release_fiber`, `_renew_lease` and `_record_attempt` all carry a
-    # `lease_owner == replica_id` predicate.
+    # `_release_fiber`, `_renew_lease` and `_record_attempt` all match a `lease_owner` that
+    # begins with it (`replica_id#<a name for the claim>`).
     #
     # It was `"local"`, and nothing set it: not the Helm chart, not a Compose overlay, and
     # `validate_runtime()` did not ask for it under `scale_out`. So every worker in a scaled

@@ -183,6 +183,38 @@ async def test_a_run_that_logs_its_way_to_the_same_death_is_still_bounded(clock:
     assert run_view(stored)["error"] == f"step lost its worker {bound} times; not run again"
 
 
+async def test_a_log_that_does_not_answer_does_not_hold_the_claim(
+    clock: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claimed fibers' leases are running while the claim reads a log, and none has a
+    heartbeat yet. A read that does not come back is no evidence of progress: the lapse counts."""
+    import asyncio
+
+    import felix.session.store as session_store
+
+    settings = _settings(fiber_max_attempts=2)
+    fiber_id = await _fiber(settings, thread_id=THREAD)
+    await F._claim_due(settings)
+    await _the_run_does_some_work(settings)
+    await _worker_dies(settings, clock)
+    await _the_run_does_some_work(settings)  # progress, if only the log could be read
+
+    class _Hung:
+        def open(self, _thread: str) -> _Hung:
+            return self
+
+        async def head(self) -> dict[str, int]:
+            await asyncio.Event().wait()
+            return {}
+
+    monkeypatch.setattr(session_store, "get_session_store", lambda *_a, **_k: _Hung())
+    monkeypatch.setattr(F, "FIBER_LOG_HEAD_TIMEOUT_S", 0.05)
+
+    assert await asyncio.wait_for(_worker_dies(settings, clock), timeout=2) == []
+    stored = await F.get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None and stored["status"] == "dead"
+
+
 async def test_a_claim_that_was_let_go_ends_the_streak(clock: dict[str, int]) -> None:
     """Consecutive, like `attempts`: a worker that finished its step and released the fiber was
     not lost, so a long run is not buried by losses spread across its life."""

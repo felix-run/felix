@@ -29,7 +29,7 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
    `run_fiber_loop`, started by the worker's startup hook and polling every
    `FELIX_FIBER_POLL_SECONDS` (1; 0 disables), and the `fiber_scheduler` cron (`resume_due_fibers`)
    as backstop, which lists what is due (`_due_keys`) and claims from that list as slots free.
-   `FOR UPDATE SKIP LOCKED` under `rls_bypass`; sets `running`, `lease_owner` (replica id),
+   `FOR UPDATE SKIP LOCKED` under `rls_bypass`; sets `running`, `lease_owner` (`replica_id#<claim>`, `_mint_claim`),
    `lease_until` (+`FIBER_LEASE_MS`, 5 min). `FELIX_FIBER_CONCURRENCY` (8) fibers per worker, loop
    and sweep together (`_slots_held`); one parked on an approval holds its slot. A fiber is never
    claimed to wait: only one in its step renews its lease. A claim that finds a fiber `running`
@@ -40,10 +40,10 @@ claimed like any other (`tests/conformance/test_fiber_claim.py`).
 4. **Step.** `_advance_claimed` → `_step_with_lease` renews the lease every `FIBER_LEASE_RENEW_MS`
    and runs `_run_fiber_step` (`sleep`, `stash`, `invoke`, `workflow`, `complete`) until the fiber suspends, at
    most one `invoke` per claim. Renew, release and `_record_attempt` match the claim, not the
-   worker (`_claim_is`): `lease_owner` and a `lease_until` among `_claim_tokens`, the one the
-   holder last confirmed plus any a renewal tried and never heard back about. A holder whose
-   claim lapsed cannot touch the next one. Cancelled (the worker's drain ran out), it stops its
-   step and then releases the claim; the lease lapses only if that write fails. The invoke runs as principal `fiber`, `on_behalf_of` the starter,
+   worker (`_claim_is`): the `lease_owner` the claim minted, which no other claim ever writes. A
+   holder whose claim lapsed cannot touch the next one. Cancelled (`drain_fibers`, at the
+   worker's stop), it stops its step and then releases the claim; the lease lapses only if
+   that write fails. The invoke runs as principal `fiber`, `on_behalf_of` the starter,
    with the recorded scopes; resolves the manifest inside a `RequestContext` so RLS binds; and
    checks `assert_resume_pin`, forcing `pin_compile` when authority was recorded.
 5. **Resume point.** `_invoke_resume_point` ends every branch by asking `_checkpoint_state` whether
@@ -183,7 +183,9 @@ stored as `mode: durable` and a resend reattaches via `durable_run_gen`. The key
 
 ## Worker, cron, jobs
 
-`felix_worker/main.py:main` consumes; `felix_worker/main.py:scheduler_main` enqueues labelled tasks.
+`felix_worker/main.py:main` consumes (`worker_args` sets Taskiq's `shutdown_timeout` and
+`wait_tasks_timeout` from `felix_worker/shutdown.py`; the shutdown hook stops the loop, then
+`drain_fibers` for whatever a sweep still holds, then flushes); `felix_worker/main.py:scheduler_main` enqueues labelled tasks.
 No scheduler, no cron; no worker, nothing runs, `run_fiber_loop` included. Each task's schedule
 is its `@broker.task(schedule=...)` in `felix_worker/tasks.py`, and `EXPECTED_SCHEDULES` in
 `tests/unit/test_worker_cron_tasks.py` pins the whole table — read it there rather than from a copy.

@@ -3,21 +3,32 @@
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 
-def main() -> None:
-    """Start the Taskiq worker process (consumes queued tasks)."""
+def worker_args() -> Any:
+    """What the worker hands Taskiq. A function so a test can read what production passes."""
     from taskiq.cli.common_args import LogLevel
     from taskiq.cli.worker.args import WorkerArgs
-    from taskiq.cli.worker.run import run_worker
 
-    args = WorkerArgs(
+    from felix_worker.shutdown import SHUTDOWN_TIMEOUT_S, WAIT_TASKS_TIMEOUT_S
+
+    return WorkerArgs(
         broker="felix_worker.tasks:broker",
         modules=["felix_worker.tasks"],
         workers=1,
         log_level=LogLevel.INFO,
+        # Both of Taskiq's defaults cut the shutdown handler off: see `felix_worker.shutdown`.
+        shutdown_timeout=SHUTDOWN_TIMEOUT_S,
+        wait_tasks_timeout=WAIT_TASKS_TIMEOUT_S,
     )
-    sys.exit(run_worker(args) or 0)
+
+
+def main() -> None:
+    """Start the Taskiq worker process (consumes queued tasks)."""
+    from taskiq.cli.worker.run import run_worker
+
+    sys.exit(run_worker(worker_args()) or 0)
 
 
 def scheduler_main() -> None:

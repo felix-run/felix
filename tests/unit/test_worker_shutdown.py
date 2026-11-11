@@ -10,15 +10,13 @@ from pathlib import Path
 import pytest
 import yaml
 from felix.audit import store as audit_store
-from felix.durability.fibers import FIBER_LOOP_DRAIN_S
 from felix.usage import store as usage_store
+from felix_worker.main import worker_args
 
 from tests.support.compose_yaml import load_compose
 from tests.support.factories import make_settings
 
 DEPLOY = Path(__file__).resolve().parents[2] / "deploy"
-# What the flush after the drain may take: it is bounded by the database timeouts, not the drain.
-FLUSH_ALLOWANCE_S = 30
 
 
 async def test_shutdown_writes_what_the_worker_still_holds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -87,5 +85,11 @@ def _helm_worker_grace() -> int:
 @pytest.mark.parametrize("grace", [_compose_worker_grace, _helm_worker_grace], ids=["compose", "helm"])
 def test_the_worker_is_given_longer_than_its_drain_and_flush(grace: Callable[[], int]) -> None:
     """The worker gives running durable runs `FIBER_LOOP_DRAIN_S` to finish and then flushes;
-    killed before that, the runs are lost and so are their rows. Compose had no grace period at all."""
-    assert grace() >= FIBER_LOOP_DRAIN_S + FLUSH_ALLOWANCE_S
+    killed before that, the runs are lost and so are their rows. Compose had no grace period at all.
+
+    Measured against what the worker asks Taskiq for (`felix_worker.shutdown`), which is the
+    drain, the stop, the flush and a margin: a container killed inside the time its own worker
+    was told it had is the same loss by another route.
+    """
+    args = worker_args()
+    assert grace() > args.wait_tasks_timeout + args.shutdown_timeout
