@@ -14,7 +14,8 @@ Accepted:
   `schedule` defaults to empty -- fired 1,440 times a day on its one thread, its context
   growing with every run, until someone noticed the bill.
 * integer seconds -- ``300``
-* an interval -- ``every:30s``, ``every:5m``, ``@every 2h``
+* an interval -- ``every:30s``, ``every:5m``, ``@every 2h``. Zero is refused in either
+  spelling (`_interval_ms`); off is the empty schedule.
 * a macro -- ``@hourly``, ``@daily``, ``@weekly``, ``@monthly``, ``@yearly``
 * five-field cron -- ``minute hour day-of-month month day-of-week``, each field ``*``, ``N``,
   ``A-B``, a ``/step`` on either, or a comma list of those. Day-of-week is 0-6 with Sunday as 0
@@ -312,11 +313,22 @@ def _parse(schedule: str) -> Schedule:
     if s.startswith(_AT_PREFIX):
         return Schedule(at_ms=_parse_at(s.removeprefix(_AT_PREFIX).strip()))
     if s.isdigit():
-        return Schedule(interval_ms=max(int(s), 1) * 1000)
+        return Schedule(interval_ms=_interval_ms(int(s), _UNIT_MS["s"]))
     m = _INTERVAL.match(s)
     if m:
-        return Schedule(interval_ms=max(int(m.group(1)), 1) * _UNIT_MS[m.group(2)])
+        return Schedule(interval_ms=_interval_ms(int(m.group(1)), _UNIT_MS[m.group(2)]))
     return Schedule(cron=_parse_cron(_MACROS.get(s, s)))
+
+
+def _interval_ms(count: int, unit_ms: int) -> int:
+    """An interval of `count` units. Zero is refused: it was read as one second, so `0` -- an
+    operator's natural spelling of "off" -- fired on every sweep, 1,440 runs a day. Off is the
+    empty schedule, or `enabled: false`."""
+    if count < 1:
+        raise ScheduleError(
+            "schedule: an interval must be at least 1; leave the schedule empty for a job run by hand"
+        )
+    return count * unit_ms
 
 
 # How many of a cron's next firings `shortest_gap_ms` walks. Enough to cross a week of a

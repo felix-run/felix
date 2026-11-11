@@ -1,9 +1,9 @@
 """Builders for the objects nearly every test makes: settings, and a client into the app.
 
-`make_settings` pins what makes a test independent of the repo `.env` — the `memory://` stores
-and no inbound auth — and takes everything else as an override, so a test that cares about a
-setting still names it at the call site. It leans on `scripts/test.sh` for the rest of the
-baseline: the dead Redis port, blank vendor credentials, the loopback host and no embedder.
+`make_settings` does not read the repo `.env`, pins the `memory://` stores and no inbound auth,
+and takes everything else as an override, so a test that cares about a setting still names it at
+the call site. It leans on `scripts/test.sh`'s environment for the rest of the baseline: the
+dead Redis port, blank vendor credentials, the loopback host and no embedder.
 """
 
 from __future__ import annotations
@@ -29,7 +29,11 @@ def make_settings(**overrides: Any) -> Settings:
         "allow_insecure": True,
         "environment": "development",
     }
-    return Settings(**(base | overrides))
+    # `_env_file=None`: the repo `.env` is a developer's working configuration, and a field it
+    # sets reached every test of "this is not configured". Three `test_connections.py` cases
+    # failed on any checkout with a sealing key in `.env` and passed in CI, which has none.
+    # Environment variables still apply, so `scripts/test.sh`'s baseline does too.
+    return Settings(_env_file=None, **(base | overrides))
 
 
 def app_client(settings: Settings | None = None) -> AsyncClient:

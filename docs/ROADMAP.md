@@ -1315,6 +1315,104 @@ per-principal thread ownership above. Dependencies: `pip-audit` clean on the loc
       approver's `edited_args` on `save_workflow` should still leave the agent holding it; say in
       `deploy/GOVERNANCE.md` that the shell prefix allowlist does not constrain arguments.
 
+### Full audit (2026-11-11)
+
+Feature, completeness, hardening and security against `main` at #767, read-only, six reviewers.
+No critical finding and no cross-tenant path. The ids below (H1, M7) are the audit report's,
+which is kept out of the repo. Almost all of it was found by reading, so each fix starts with a
+test that fails on the current tree. In queue order:
+
+#### 1. Unblock and stop the bleeding
+
+- [x] **`make check` fails on a checkout with a `.env`.** Three `test_connections.py` cases expect
+      `FELIX_CONNECTION_TOKEN_KEY` and `FELIX_GITHUB_TOKEN_KEY` unset, and `make_settings` read the
+      developer's `.env`. It no longer reads the file, so no `.env` field reaches a test.
+- [!] **A durable run cannot survive a worker crash on defaults (H1).** The resume-token lifetime
+      and the fiber lease are both 300 s, so the reclaim writes `expired`. Held for a decision:
+      `expires_at` is also the bound on the caller's recorded authority, clamped to their token's
+      `exp` (`durability/runs.py:record_caller`). A longer default does not fix it either, since a
+      step that outruns `ttl - lease` is still expired on reclaim; the real fix lets a step that
+      had begun resume past `expires_at`, a bounded number of times, which is authority outliving
+      its stated end. Decide that before writing it.
+- [x] **Compose kills the worker at 10 s (H2).** The worker had no `stop_grace_period` against a
+      30 s drain, and never flushed its usage and audit buffers on shutdown (M7). It now has 120 s
+      and flushes after the drain. The cancel path and Taskiq's own timeouts are under 3 below.
+- [x] **A job schedule of `"0"` is every second (M9).** Sibling of the 2026-10-12 empty-schedule
+      runaway. A zero interval is now refused where it is written, and a stored one stops firing
+      with a reason. Left open: an interval under a minute is accepted and fires once per sweep.
+- [~] **`continuous_eval` spends on a timer and cannot fail (M10).** It no longer sends a paid
+      `ping` when a tenant has no samples. Still open: it scores `min_chars: 1`, so any reply
+      passes; it replays real prompts with live tools; and it re-scores the same samples every tick.
+- [!] **Valkey evicts with `allkeys-lru` at 64 MB (M13)** while holding the queue, leases and
+      idempotency records. Held for a decision: the audit's `volatile-lru` protects only the queue
+      list, since leases and idempotency records carry TTLs and stay evictable. `noeviction` protects
+      all three and turns a full store into write errors instead, which is a change to how
+      production fails.
+- [ ] **Live eval red since 2026-10-04 (M24).** The key secret is missing; the entry under Deploy
+      also says smoke is red, which it no longer is.
+
+#### 2. Agent-loop correctness
+
+- [ ] **Stop mid-stream makes a second, billed model call (H4)**, whose tool calls can run after Stop.
+- [ ] **A truncated stream is recorded as a clean finish (H5)**; a half-received tool call is
+      dispatched with `{}`.
+- [ ] **`windowed:N` and `semantic:N` break tool-call pairing (H6).** One shared pairing repair for
+      every strategy.
+- [ ] **Unmetered model calls (M8).** Memory extraction and branch summaries; the metering
+      invariant scans `patterns/` only.
+- [ ] **Silent degradations in `react.py` (M14, M15, M17, M19).** A failed session render answers
+      with no history; a `max_tokens` stop is terminal; silent-overflow recovery discards a billed
+      result; interrupted tool results land after the new user turn.
+
+#### 3. Durable execution
+
+- [ ] **The cron backstop over-claims and a stale claim can clear a live one (H3).** Claim only what
+      will start; scope release and renew to the claim, not the process. Not reproduced.
+- [ ] **Cancel releases the lease while the step keeps running (H2).** Also set Taskiq's shutdown
+      timeouts explicitly; its default is unverified.
+- [ ] **Smaller holes (M11, M12, M18).** An in-progress `Idempotency-Key` claim lives 24 h after a
+      hard kill; a run that kills its worker is never charged an attempt; a Stop sent before a
+      durable run starts is erased.
+
+#### 4. Composite patterns (user-visible capability, not hardening)
+
+- [ ] **`spec.limits` is inert on `router`, `parallel` and `groupchat` (H7).** The anonymous
+      `hybrid-router` cap is not enforced. Needs an e2e case first.
+- [ ] **`parallel`, `groupchat` and `plan_execute` never write the session log (H8).** `travel` has
+      no thread history. Needs an e2e case first.
+- [ ] **`session.strategy` accepts any string (H9).** `windowed:abc` passes `validate-manifest
+      --strict` and raises at compile; `compact` silently becomes full replay.
+- [ ] **`execution.mode: durable` is honoured on some doors only (M21).** Not on `/v1`, A2A, the MCP
+      entry or job firings; document the matrix, then wire or refuse.
+
+#### 5. Governance
+
+- [ ] **Durable-run exception text (M1).** The entry under Harness, with the full list of sinks;
+      `eval/runner.py` and `jobs/scheduler.py` have the same shape.
+- [ ] **Plan tools are also reachable over MCP and workflow steps (M5).** Widens the OWASP entry
+      above, which names only the model as a caller.
+- [ ] **An agent can write `AGENTS.override.md` into its tenant's system prompt (M3)** from a
+      `deployment`-scope workspace.
+- [ ] **Steer, follow-up and in-context custom entries skip inbound screening (M2)**, and the steer
+      queue has no size cap.
+- [ ] **Workspace reads are never content-screened (M4)**; the model picks an A2A peer's manifest (M6).
+
+#### 6. Deploy and release
+
+- [ ] **Compose delivers 86 of 212 settings (H10).** No `env_file`; the trusted-proxy, rate-limit,
+      RLS and retention settings never reach a container.
+- [ ] **A pushed tag can publish an image production rolls to (H11).** The settings
+      `RELEASING.md` lists as owed, plus `cosign verify` in `roll.sh`.
+- [ ] **Gating and hardening (M25–M29).** `conformance` and `changelog` not required; the Helm
+      migrate Job's plaintext database URL; no seccomp profile or NetworkPolicy; no Compose
+      `cap_drop` or log rotation; nothing watches `/health/scheduler`.
+
+- [ ] **Decisions.** Is steer text the person's own turn or operator-grade input; should workspace
+      reads be untrusted by default; may the model pick a peer's manifest at all; should an
+      approval with no `ttl_seconds` stay a standing grant; is `FELIX_TRUSTED_CLIENT_IP_HEADER`
+      set on api.felix.run.
+- [ ] **Tidy this file.** The audit lists eleven entries here that are stale.
+
 ### Harness
 
 - [x] **Memory is per agent, not per person (prod audit, 2026-10-22).** *Landed

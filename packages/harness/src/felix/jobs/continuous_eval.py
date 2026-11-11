@@ -30,6 +30,10 @@ async def run_continuous_eval(settings: Settings, *, tenant_id: str = "default")
         if (e.get("payload") or e.get("payload_json") or {}).get("user_input")
     ]
     samples = [s for s in samples if s][:5]
+    if not samples:
+        # Nothing to score. This used to send a literal "ping" instead: a paid model call per
+        # canary every ten minutes, for as long as the tenant was idle, that measured nothing.
+        return {"runs": 0, "samples": 0, "reason": "no_samples"}
 
     await eval_store.put_dataset(
         settings,
@@ -43,9 +47,7 @@ async def run_continuous_eval(settings: Settings, *, tenant_id: str = "default")
                 "rubric": {"min_chars": 1},
             }
             for i, s in enumerate(samples)
-        ]
-        if samples
-        else [{"item_id": "ping", "user_input": "ping", "rubric": {"min_chars": 1}}],
+        ],
     )
 
     tools = default_tool_provider()

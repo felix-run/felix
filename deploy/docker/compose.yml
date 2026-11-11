@@ -224,6 +224,9 @@ services:
   worker:
     <<: *felix-build
     command: ["felix-worker"]
+    # Compose's default of 10s killed the worker a third of the way through its drain: it gives
+    # running durable runs 30s to finish (`FIBER_LOOP_DRAIN_S`) and then flushes usage and audit.
+    stop_grace_period: 120s
     environment:
       <<: *felix-env
       FELIX_OBJECT_STORE: ${FELIX_OBJECT_STORE:-fs}
