@@ -65,6 +65,13 @@ def test_an_empty_schedule_never_fires_on_its_own(schedule: str) -> None:
     assert next_run_at_ms(schedule, SAT_1030) is None
 
 
+@pytest.mark.parametrize("schedule", ["0", "00", "every:0s", "every:0m", "@every 0h"])
+def test_a_zero_interval_is_refused_not_read_as_one_second(schedule: str) -> None:
+    """`0` was clamped to one second, so a job an operator meant to switch off fired on every sweep."""
+    with pytest.raises(ScheduleError, match="at least 1"):
+        next_run_at_ms(schedule, SAT_1030)
+
+
 def test_a_cron_firing_is_strictly_after_the_moment_it_is_asked_from() -> None:
     """The scheduler advances from the slot it just claimed; returning that slot would re-fire it."""
     assert next_run_at_ms("30 10 * * *", SAT_1030) == _ms(2026, 10, 11, 10, 30)

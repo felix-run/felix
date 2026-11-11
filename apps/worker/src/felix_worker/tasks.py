@@ -130,6 +130,12 @@ async def _stop_beat() -> None:
 async def _on_worker_shutdown(_state: object) -> None:
     await _stop_beat()
     await _stop_fiber_loop()
+    # After the drain, so what the last runs recorded goes too. The minute cron is the worker's
+    # only other flush: without this every restart dropped up to a minute of usage and audit
+    # rows for durable runs and jobs -- the unattended work, which is the spend nobody watched.
+    from felix.flush import flush_all
+
+    await flush_all(_settings)
     from felix_ai.wire.transport import aclose_shared_transports
 
     with contextlib.suppress(Exception):

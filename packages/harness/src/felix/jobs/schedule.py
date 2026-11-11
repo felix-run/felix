@@ -312,11 +312,22 @@ def _parse(schedule: str) -> Schedule:
     if s.startswith(_AT_PREFIX):
         return Schedule(at_ms=_parse_at(s.removeprefix(_AT_PREFIX).strip()))
     if s.isdigit():
-        return Schedule(interval_ms=max(int(s), 1) * 1000)
+        return Schedule(interval_ms=_interval_ms(int(s), _UNIT_MS["s"]))
     m = _INTERVAL.match(s)
     if m:
-        return Schedule(interval_ms=max(int(m.group(1)), 1) * _UNIT_MS[m.group(2)])
+        return Schedule(interval_ms=_interval_ms(int(m.group(1)), _UNIT_MS[m.group(2)]))
     return Schedule(cron=_parse_cron(_MACROS.get(s, s)))
+
+
+def _interval_ms(count: int, unit_ms: int) -> int:
+    """An interval of `count` units. Zero is refused: it was read as one second, so `0` -- an
+    operator's natural spelling of "off" -- fired on every sweep, 1,440 runs a day. Off is the
+    empty schedule, or `enabled: false`."""
+    if count < 1:
+        raise ScheduleError(
+            "schedule: an interval must be at least 1; leave the schedule empty for a job run by hand"
+        )
+    return count * unit_ms
 
 
 # How many of a cron's next firings `shortest_gap_ms` walks. Enough to cross a week of a

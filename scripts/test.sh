@@ -49,6 +49,11 @@ export FELIX_OPENAI_API_KEY=""
 export FELIX_MARKET_API_KEY=""
 export FELIX_SEARCH_API_KEY=""
 export FELIX_MODEL_PROVIDER_OPTIONS=""
+# The two keys that seal stored tokens. Not paid credentials, but a developer's .env sets them
+# and the tests of "no key configured" then read that key: three cases in
+# `test_connections.py` failed on any checkout with a working .env and passed in CI, which has none.
+export FELIX_CONNECTION_TOKEN_KEY=""
+export FELIX_GITHUB_TOKEN_KEY=""
 # `auto` would load the local embedding model wherever the extra is installed — a download on
 # first use. Tests that need a vector channel set their own embedder.
 export FELIX_MEMORY_EMBEDDER=none
