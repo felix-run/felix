@@ -115,6 +115,13 @@ class DurableBuffer:
                     return 0
                 self.requeue(batch)
                 raise
+        except BaseException:
+            # Cancelled mid-write, as a stopping worker cancels a flush that has run too long.
+            # The batch was out of the buffer and not known to be written, so without this it
+            # was in neither place, and the shutdown flush that follows found nothing to write.
+            # The stores' writes are idempotent by event id, so one that did land is not doubled.
+            self.requeue(batch)
+            raise
         written = 0
         for i, event in enumerate(batch):
             try:

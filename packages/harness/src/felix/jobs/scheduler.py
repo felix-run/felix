@@ -745,6 +745,12 @@ async def run_due_jobs(settings: Settings, *, tenant_id: str = "default") -> int
                 last_run_at=ts,
                 next_run_at=following,
             )
+        except asyncio.CancelledError:
+            # The claim may have landed before the cancel did, and nothing after this point
+            # would clear its `running` mark: `fire_job` is what clears it, and it never starts.
+            # Matched on the start time, so it changes nothing if the claim did not land.
+            await asyncio.shield(_clear_running(settings, tenant_id, job, ts, "cancelled"))
+            raise
         except Exception:
             logger.warning("job_claim_failed name=%s", job.get("name"), exc_info=True)
             continue

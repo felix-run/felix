@@ -157,6 +157,17 @@ async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPa
     assert calls["n"] >= 2
 
 
+async def test_a_loop_that_ends_without_being_stopped_does_not_stop_the_process_claiming() -> None:
+    """Draining is what a stop does, and it is sticky: the cron sweep stops claiming too. A loop
+    that died some other way must not do that to a worker that is still beating."""
+    loop = asyncio.create_task(run_fiber_loop(_settings(), asyncio.Event()))
+    await asyncio.sleep(0)
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+    assert fibers._stopping is False
+
+
 async def test_stopping_lets_a_running_fiber_finish(blocking: dict[str, Any]) -> None:
     settings = _settings()
     parked = await _fiber(settings)

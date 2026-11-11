@@ -1634,8 +1634,13 @@ async def run_fiber_loop(settings: Settings, stop: asyncio.Event) -> None:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=delay)
     finally:
-        await drain_fibers()
-        logger.info("fiber_loop stopped")
+        if stop.is_set():
+            await drain_fibers()
+            logger.info("fiber_loop stopped")
+        else:
+            # Not a shutdown. Draining would stop this process claiming for good, the cron
+            # sweep included, and cancel healthy runs, while the worker went on beating.
+            logger.error("fiber_loop ended without being asked to; the cron sweep is now the only pickup")
 
 
 async def drain_fibers() -> None:
