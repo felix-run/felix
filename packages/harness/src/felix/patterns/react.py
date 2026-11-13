@@ -177,6 +177,36 @@ def _interrupted_tool_results(messages: list[ChatMessage], tool_map: dict[str, T
     return results
 
 
+class _StreamAborted:
+    """What `_stream_one_turn` yields last when Stop ended the stream, so the loop knows the
+    missing result is an abort and not a provider that only implements `stream()`. Told, not
+    inferred from a second read of the flag: that read can miss a Stop raised on another
+    replica when the shared store hiccups, and the loop would then ask the model again."""
+
+
+def _place_interrupted(messages: list[ChatMessage], interrupted: list[ChatMessage]) -> None:
+    """Put each closing result under the assistant message that made its call, in place.
+
+    After the results that message already has, and ahead of whatever came next. Appended at
+    the end they followed the new user turn -- `assistant(call)`, `user`, `tool(result)` --
+    which a provider rejects; the log, written in the right order, only fixed the retry.
+    """
+    closing = {m.tool_call_id: m for m in interrupted}
+    placed: list[ChatMessage] = []
+    i = 0
+    while i < len(messages):
+        message = messages[i]
+        placed.append(message)
+        i += 1
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        while i < len(messages) and messages[i].role == "tool":
+            placed.append(messages[i])
+            i += 1
+        placed.extend(closing.pop(call.id) for call in message.tool_calls if call.id in closing)
+    messages[:] = placed
+
+
 def _clamp(value: int, ceiling: int) -> int:
     return min(max(value, 1), ceiling)
 
@@ -586,8 +616,9 @@ class _ReactAgent:
         thread_id: str | None,
         tenant_id: str,
         opts: ModelChatOptions | None = None,
-    ) -> AsyncIterator[Event | ModelChatResult]:
-        """Run one streamed turn, yielding display events and then the result.
+    ) -> AsyncIterator[Event | ModelChatResult | _StreamAborted]:
+        """Run one streamed turn, yielding display events and then the result, or a
+        `_StreamAborted` in its place when Stop ended the stream first.
 
         Extracted so the caller can retry the whole turn after compacting, which it can
         only do while nothing has been emitted.
@@ -602,6 +633,7 @@ class _ReactAgent:
                     yield item
                     continue
                 if poll is not None and await poll.aborted():
+                    yield _StreamAborted()
                     return
                 if item.kind == "text":
                     yield Event(
@@ -639,6 +671,7 @@ class _ReactAgent:
         # Plugin-supplied clients land here.
         async for delta in model.stream(messages, active_tools, opts):
             if poll is not None and await poll.aborted():
+                yield _StreamAborted()
                 return
             yield Event(event="text_delta", data={"chunk": {"content": delta}, "delta": delta})
             yield Event(
@@ -1060,7 +1093,11 @@ class _ReactAgent:
                     {"system_prompt": self.system_prompt, "model": model},
                 )
             except Exception:
-                logger.debug("session render failed; using incoming messages", exc_info=True)
+                # The run goes on with the incoming messages alone: the model answers as if the
+                # thread were new, and that answer is appended to the real one. At debug nobody
+                # could tell that had happened, so it is a warning and a counter.
+                logger.warning("session render failed; answering without history", exc_info=True)
+                record_counter("felix_session_render_failed", {"manifest_id": self.manifest_id})
 
         messages = self._with_prelude(messages)
 
@@ -1407,7 +1444,7 @@ class _ReactAgent:
                     "felix_interrupted_tool_calls",
                     {"manifest_id": self.manifest_id},
                 )
-                messages.extend(interrupted)
+                _place_interrupted(messages, interrupted)
                 await self._append_produced(input.thread_id, interrupted)
                 await self._close_interrupted_gates(input.thread_id, tenant_id, interrupted)
 
@@ -1493,6 +1530,7 @@ class _ReactAgent:
             raise
         try:
             stop_continuations = 0
+            stopped_mid_reply = False
             for _step in range(self.recursion_limit):
                 if fatal is not None or preamble.all_terminate:
                     break
@@ -1547,6 +1585,7 @@ class _ReactAgent:
                 for attempt in (0, 1):
                     chunks = []
                     emitted = False
+                    stream_aborted = False
                     outgoing = await self._before_model(
                         [*messages, *transient], active_tools, model, input.thread_id
                     )
@@ -1557,6 +1596,9 @@ class _ReactAgent:
                             ):
                                 if isinstance(item, ModelChatResult):
                                     result = item
+                                    continue
+                                if isinstance(item, _StreamAborted):
+                                    stream_aborted = True
                                     continue
                                 emitted = True
                                 if item.event == "text_delta":
@@ -1591,7 +1633,24 @@ class _ReactAgent:
                             continue
                     break
 
+                if stream_aborted:
+                    # Stop arrived mid-stream, so the stream ended without its result. Without
+                    # this the fallback below asked the model again in full: a second, billed
+                    # answer that was not the one on screen, stored as complete, whose tool
+                    # calls then ran. What was shown is what is kept.
+                    shown = "".join(chunks)
+                    partial = [ChatMessage(role="assistant", content=shown)] if shown else []
+                    messages.extend(partial)
+                    produced.extend(partial)
+                    if partial:
+                        final = partial[0]
+                    stopped_mid_reply = True
+                    await self._append_produced(input.thread_id, partial, status="aborted")
+                    if emit_events:
+                        yield Event(event="aborted", data={"thread_id": input.thread_id})
+                    break
                 if result is None:
+                    # A provider with only `stream()` reports no tool calls or usage from it.
                     result = await model.chat(outgoing, active_tools, turn_opts)
 
                 usage_block = record_model_usage(result, model, manifest_id=self.manifest_id) or None
@@ -1756,7 +1815,10 @@ class _ReactAgent:
             if input.thread_id:
                 await release_run_queue(tenant_id, input.thread_id)
                 await release_side_events(input.thread_id)
-        await self._maybe_capture_memory(input, final, model)
+        if not stopped_mid_reply:
+            # Not from a reply cut off by Stop: that is two more model calls the person did not
+            # want, extracting facts from half a sentence.
+            await self._maybe_capture_memory(input, final, model)
 
         output = InvokeOutput(messages=produced, final=final, stop_reason=last_stop)
         if emit_events:

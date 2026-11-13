@@ -111,3 +111,39 @@ async def test_the_branch_summary_sees_both_ends() -> None:
     await summarize_abandoned_branch(session, old_leaf_id=ids[-1], new_leaf_id=ids[0], model=model)
 
     _both_ends(model.transcript(), "a", "b")
+
+
+async def test_the_branch_summary_is_metered() -> None:
+    """Its usage was kept on the summary event and recorded nowhere, so the call was in no
+    usage row and outside every budget."""
+    from felix.session.branch import summarize_abandoned_branch
+    from felix.session.store import InMemorySessionStore
+    from felix.session.tree import annotate_and_append
+    from felix.session.types import AppendableEvent
+    from felix.usage import store as usage_store
+
+    from tests.support.factories import make_settings
+
+    class _Billed(_Summarizer):
+        async def chat(
+            self, messages: list[ChatMessage], tools: list[Any], opts: Any = None
+        ) -> ModelChatResult:
+            result = await super().chat(messages, tools, opts)
+            result.usage = TokenUsage(input=1200, output=80)
+            return result
+
+    session = InMemorySessionStore(tenant_id="default").open("default:branch-metered")
+    ids = await annotate_and_append(
+        session,
+        [
+            AppendableEvent(kind="message", role="user", content="kept"),
+            AppendableEvent(kind="message", role="assistant", content="abandoned"),
+        ],
+    )
+
+    await summarize_abandoned_branch(session, old_leaf_id=ids[-1], new_leaf_id=ids[0], model=_Billed())
+
+    settings = make_settings()
+    await usage_store.flush_pending(settings)
+    rows, _ = await usage_store.query(settings, "default")
+    assert [(r["meta_json"]["kind"], r["tokens_input"]) for r in rows] == [("branch_summary", 1200)]

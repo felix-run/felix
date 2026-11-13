@@ -1353,16 +1353,20 @@ test that fails on the current tree. In queue order:
 
 #### 2. Agent-loop correctness
 
-- [ ] **Stop mid-stream makes a second, billed model call (H4)**, whose tool calls can run after Stop.
-- [ ] **A truncated stream is recorded as a clean finish (H5)**; a half-received tool call is
-      dispatched with `{}`.
-- [ ] **`windowed:N` and `semantic:N` break tool-call pairing (H6).** One shared pairing repair for
-      every strategy.
-- [ ] **Unmetered model calls (M8).** Memory extraction and branch summaries; the metering
-      invariant scans `patterns/` only.
-- [ ] **Silent degradations in `react.py` (M14, M15, M17, M19).** A failed session render answers
-      with no history; a `max_tokens` stop is terminal; silent-overflow recovery discards a billed
-      result; interrupted tool results land after the new user turn.
+- [x] **Stop mid-stream makes a second, billed model call (H4)**, whose tool calls can run after
+      Stop. Reproduced by a run; the run now ends there and keeps what was shown as an aborted turn.
+- [x] **A truncated stream is recorded as a clean finish (H5)**; a half-received tool call was
+      dispatched with `{}`. Both wires now raise on an in-band error or a stream with no
+      terminator. Left open: the error reads "provider returned HTTP 502", and an OpenAI stream
+      cut after `finish_reason` but before its usage chunk is metered as zero.
+- [x] **`windowed:N` and `semantic:N` break tool-call pairing (H6).** One shared `repair_pairing`.
+      `SummarizingSessionStrategy` has the same slice and is reachable only from tests.
+- [x] **Unmetered model calls (M8).** Memory extraction and branch summaries are metered, and the
+      metering invariant walks the whole harness instead of `patterns/`.
+- [~] **Silent degradations in `react.py` (M14, M15, M17, M19).** Done: a failed session render is
+      a warning and `felix_session_render_failed` (it still answers without history; failing the
+      run instead is a decision), and interrupted tool results are placed under their call. Open:
+      a `max_tokens` stop is terminal; silent-overflow recovery discards a billed result.
 
 #### 3. Durable execution
 

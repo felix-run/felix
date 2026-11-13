@@ -114,7 +114,7 @@ async def summarize_abandoned_branch(
             prompt = STRUCTURED_SUMMARY_PROMPT + UNTRUSTED_NOTICE
             if instructions:
                 prompt = f"{prompt}\n\nFocus: {instructions}"
-            from felix.patterns.model import ModelChatOptions
+            from felix.patterns.model import ModelChatOptions, record_model_usage
 
             result = await model.chat(
                 [
@@ -125,6 +125,9 @@ async def summarize_abandoned_branch(
                 ModelChatOptions(isolate_cache=True),
             )
             summary_text = result.message.content
+            # The usage kept on the summary event below is a note; this is the metering. After
+            # the answer is taken, so a result it cannot read costs the row and not the summary.
+            record_model_usage(result, model, meta={"kind": "branch_summary"})
             if getattr(result, "usage", None):
                 u = result.usage
                 usage = {

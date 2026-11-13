@@ -36,18 +36,27 @@ from felix_ai.types import (
     is_image_part,
     split_file_ref,
 )
-from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S, typed_transport_errors
+from felix_ai.wire.transport import DEFAULT_CONNECT_TIMEOUT_S, ModelGatewayError, typed_transport_errors
 
 logger = logging.getLogger("felix_ai.wire.base")
 
 
-async def iter_sse_json(resp: Any) -> AsyncIterator[dict[str, Any]]:
+@dataclass(slots=True)
+class SseEnd:
+    """How a stream ended: `done` once `[DONE]` arrived, as opposed to the body just stopping."""
+
+    done: bool = False
+
+
+async def iter_sse_json(resp: Any, end: SseEnd | None = None) -> AsyncIterator[dict[str, Any]]:
     """Decoded SSE payloads from a streaming response, framing handled once.
 
     Every wire format frames the same way — `data:` prefix, a bare `{` for servers that
     omit it, `[DONE]` to stop, undecodable lines skipped rather than fatal — and each used
     to carry its own copy. What differs is what the decoded object *means*, which stays in
     the caller.
+
+    `end`, when given, records whether `[DONE]` was what stopped it.
     """
     async for line in resp.aiter_lines():
         if not line:
@@ -59,11 +68,48 @@ async def iter_sse_json(resp: Any) -> AsyncIterator[dict[str, Any]]:
         else:
             continue
         if payload == "[DONE]":
+            if end is not None:
+                end.done = True
             return
         try:
             yield json.loads(payload)
         except json.JSONDecodeError:
             continue
+
+
+# An error sent inside a 200 stream carries no HTTP status, so it is given the one the
+# provider answers the same failure with up front. Retry and fallback read the status.
+# The 4xx types matter as much as the 5xx: read as 500, a request that is wrong for every model
+# looked like this provider's fault, and a fallback chain advanced past it.
+_STREAM_ERROR_STATUS = {
+    "overloaded_error": 529,
+    "rate_limit_error": 429,
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "request_too_large": 413,
+}
+
+
+def stream_error(label: str, error: Any) -> ModelGatewayError:
+    """The error for a provider's in-band `error` event: a failed turn, not a finished one."""
+    detail = error if isinstance(error, dict) else {}
+    code = detail.get("code")
+    status = _STREAM_ERROR_STATUS.get(str(detail.get("type") or ""))
+    if status is None:
+        status = code if isinstance(code, int) and 400 <= code <= 599 else 500
+    return ModelGatewayError(label, status, json.dumps(error, default=str))
+
+
+def stream_truncated(label: str, missing: str) -> ModelGatewayError:
+    """The error for a stream that closed before saying the turn was over.
+
+    What had arrived is half an answer, or a tool call whose arguments stop mid-JSON and
+    parse to `{}`; `map_stop` would label either a clean finish. 502, since the upstream's
+    response was invalid, which a fallback chain advances past like any other 5xx.
+    """
+    return ModelGatewayError(label, 502, f"stream ended without {missing}")
 
 
 def map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) -> StopReason:
@@ -75,7 +121,8 @@ def map_stop(raw: Any, table: dict[str, StopReason], *, had_tool_calls: bool) ->
     if key:
         logger.debug("unrecognised stop_reason %r from provider", key)
         return "unknown"
-    # Provider omitted it — preserve the previous behaviour rather than guess.
+    # Provider omitted it — preserve the previous behaviour rather than guess. A streamed
+    # turn reaches this only once its wire has seen the stream end properly.
     return "tool_use" if had_tool_calls else "end_turn"
 
 
@@ -90,7 +137,8 @@ def parse_tool_arguments(raw: str) -> dict[str, Any]:
     A fragment that is still unparseable yields `{}` rather than raising: the call is
     surfaced to the loop, where a tool invoked with the wrong arguments is refused by
     schema validation, which is a better failure than an exception that loses the turn.
-    Genuinely truncated calls are caught earlier, by the `max_tokens` quarantine.
+    Genuinely truncated calls are caught earlier: by the `max_tokens` quarantine, and by
+    the wires refusing a stream that ended without its terminator.
     """
     text = (raw or "").strip()
     if not text:
@@ -518,6 +566,7 @@ class HttpModelClient(ABC):
 
 __all__ = [
     "HttpModelClient",
+    "SseEnd",
     "canonical_inline_url",
     "data_url",
     "inline_parts",
@@ -525,6 +574,8 @@ __all__ = [
     "map_stop",
     "parse_tool_arguments",
     "split_data_url",
+    "stream_error",
+    "stream_truncated",
     "tool_images",
     "tool_json_schema",
     "tool_label",

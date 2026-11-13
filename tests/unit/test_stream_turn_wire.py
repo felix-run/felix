@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from felix.patterns.model import ModelChatResult, StreamDelta
 from felix.patterns.types import ChatMessage
 from felix_ai.wire.base import _repair_json
@@ -161,6 +162,99 @@ async def test_openai_stream_asks_for_usage(monkeypatch: Any) -> None:
     assert _FakeAsyncClient.sent["stream_options"] == {"include_usage": True}
 
 
+# --- a stream that did not finish -----------------------------------------------
+#
+# A stream cut off after a 200 used to be stored as a finished turn: half an answer as
+# `end_turn`, and a tool call whose arguments had not all arrived dispatched with `{}`.
+
+
+async def _fails(client) -> tuple[list[StreamDelta], Any]:
+    """Drain `stream_turn`, expecting it to raise: (the deltas shown, the error)."""
+    from felix_ai import ModelGatewayError
+
+    items: list[Any] = []
+    with pytest.raises(ModelGatewayError) as caught:
+        async for item in client.stream_turn([ChatMessage(role="user", content="hi")], []):
+            items.append(item)
+    assert not [i for i in items if isinstance(i, ModelChatResult)], "a cut stream yielded a result"
+    return items, caught.value
+
+
+def _advances_a_fallback(err: Any) -> bool:
+    from felix.patterns.model_composites import _is_provider_error
+
+    return _is_provider_error(err)
+
+
+async def test_anthropic_text_cut_mid_answer_is_not_a_finished_turn(monkeypatch: Any) -> None:
+    shown, err = await _fails(_client(monkeypatch, ANTHROPIC_LINES[:6], "anthropic"))
+    assert [d.text for d in shown if d.kind == "text"] == ["Look"]
+    assert _advances_a_fallback(err)
+
+
+async def test_anthropic_tool_call_cut_mid_json_is_not_dispatched(monkeypatch: Any) -> None:
+    """Ends on `{"q":` -- unparseable, so the call would have run with `{}`."""
+    _, err = await _fails(_client(monkeypatch, ANTHROPIC_LINES[:9], "anthropic"))
+    assert _advances_a_fallback(err)
+
+
+async def test_anthropic_in_band_error_event_raises(monkeypatch: Any) -> None:
+    lines = [
+        *ANTHROPIC_LINES[:7],
+        "event: error",
+        'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    ]
+    _, err = await _fails(_client(monkeypatch, lines, "anthropic"))
+    assert err.status == 529
+    assert "Overloaded" in err.body and "Overloaded" not in str(err)
+
+
+async def test_anthropic_error_after_the_stop_reason_still_raises(monkeypatch: Any) -> None:
+    """An error event is not outranked by a stop reason that arrived ahead of it."""
+    lines = [*ANTHROPIC_LINES[:11], 'data: {"type":"error","error":{"type":"api_error"}}']
+    _, err = await _fails(_client(monkeypatch, lines, "anthropic"))
+    assert err.status == 500
+
+
+async def test_openai_text_cut_mid_answer_is_not_a_finished_turn(monkeypatch: Any) -> None:
+    shown, err = await _fails(_client(monkeypatch, OPENAI_LINES[:1], "openai"))
+    assert [d.text for d in shown] == ["Hel"]
+    assert _advances_a_fallback(err)
+
+
+async def test_openai_tool_call_cut_mid_json_is_not_dispatched(monkeypatch: Any) -> None:
+    _, err = await _fails(_client(monkeypatch, OPENAI_LINES[:3], "openai"))
+    assert _advances_a_fallback(err)
+
+
+async def test_openai_in_band_error_chunk_raises(monkeypatch: Any) -> None:
+    lines = [
+        *OPENAI_LINES[:2],
+        'data: {"error":{"message":"upstream went away","code":502},"choices":[{"delta":{},"finish_reason":"error"}]}',
+        "data: [DONE]",
+    ]
+    _, err = await _fails(_client(monkeypatch, lines, "openai"))
+    assert err.status == 502
+    assert "upstream went away" in err.body and "upstream went away" not in str(err)
+
+
+async def test_openai_stream_may_end_on_either_terminator(monkeypatch: Any) -> None:
+    """Compatible servers omit one or the other; only a stream with neither was cut."""
+    without_done = [line for line in OPENAI_LINES if "[DONE]" not in line]
+    _, result = await _collect(_client(monkeypatch, without_done, "openai"))
+    assert result is not None and result.stop_reason == "tool_use"
+
+    without_finish = [line for line in OPENAI_LINES[:2]] + ["data: [DONE]"]
+    _, result = await _collect(_client(monkeypatch, without_finish, "openai"))
+    assert result is not None and (result.message.content, result.stop_reason) == ("Hello", "end_turn")
+
+
+async def test_anthropic_stream_may_end_on_its_stop_reason(monkeypatch: Any) -> None:
+    """`message_stop` carries nothing: a turn whose stop reason arrived is whole without it."""
+    _, result = await _collect(_client(monkeypatch, ANTHROPIC_LINES[:-1], "anthropic"))
+    assert result is not None and result.stop_reason == "tool_use"
+
+
 # --- argument repair ------------------------------------------------------------
 
 
@@ -197,3 +291,23 @@ def test_non_object_arguments_are_rejected() -> None:
 
 def test_repair_leaves_structure_outside_strings_alone() -> None:
     assert _repair_json('{"a": 1,\n "b": 2}') == '{"a": 1,\n "b": 2}'
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        ({"type": "overloaded_error"}, 529),
+        ({"type": "rate_limit_error"}, 429),
+        # A request wrong for every model: as a 500 it read as this provider's fault, and a
+        # fallback chain advanced past it.
+        ({"type": "invalid_request_error"}, 400),
+        ({"type": "authentication_error"}, 401),
+        ({"code": 503, "message": "upstream"}, 503),
+        ({"code": "rate_limited"}, 500),
+        (None, 500),
+    ],
+)
+def test_an_in_band_error_takes_the_status_the_provider_gives_it_up_front(error: Any, status: int) -> None:
+    from felix_ai.wire.base import stream_error
+
+    assert stream_error("p", error).status == status

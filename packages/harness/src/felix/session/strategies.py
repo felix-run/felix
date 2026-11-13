@@ -24,6 +24,49 @@ def is_pinned(event: SessionEvent) -> bool:
     return bool((event.metadata or {}).get("pinned"))
 
 
+def repair_pairing(selected: list[SessionEvent], all_events: list[SessionEvent]) -> list[SessionEvent]:
+    """`selected`, with every tool call and its results kept or dropped together, in `seq` order.
+
+    A strategy that picks events one at a time -- the last N, the N most relevant -- can open
+    on a tool result or keep a call without its results, and a provider rejects either
+    history. Compaction's `_find_cut` avoids it by never cutting on a tool result; a selection
+    with gaps cannot, so it is repaired from `all_events`, the branch it was picked from:
+
+    - a kept tool result brings the assistant event that made its call;
+    - a kept assistant event brings every result of its calls that the branch holds;
+    - a tool result with no call ahead of it in the branch is dropped.
+
+    A call whose result was never logged stays as it is: the run closes it as interrupted.
+    """
+    # Paired by position, not by id alone: ids repeat. Some compatible servers number calls per
+    # response (`call_0` every turn), and matching on the id across the branch tied a result
+    # to the last call that reused it -- and every earlier result to that call.
+    open_calls: dict[str, SessionEvent] = {}
+    owner_of: dict[int, SessionEvent] = {}
+    results_of: dict[int, list[SessionEvent]] = {}
+    for e in sorted(all_events, key=lambda e: e.seq):
+        if e.role == "assistant":
+            for call in e.tool_calls or []:
+                if call.get("id"):
+                    open_calls[str(call["id"])] = e
+        elif e.role == "tool" and e.tool_call_id and e.tool_call_id in open_calls:
+            owner = open_calls[e.tool_call_id]
+            owner_of[e.seq] = owner
+            results_of.setdefault(owner.seq, []).append(e)
+
+    kept: dict[int, SessionEvent] = {}
+    for e in selected:
+        if e.role == "tool":
+            owner = owner_of.get(e.seq)
+            if owner is None:
+                continue
+            e = owner
+        kept[e.seq] = e
+        for result in results_of.get(e.seq, []):
+            kept[result.seq] = result
+    return [kept[seq] for seq in sorted(kept)]
+
+
 class FullReplaySessionStrategy:
     async def render(
         self,
@@ -63,7 +106,7 @@ class WindowedSessionStrategy:
         pinned = [e for e in filtered if is_pinned(e)]
         unpinned = [e for e in filtered if not is_pinned(e)]
         windowed = unpinned[-self.max_turns :] if self.max_turns > 0 else []
-        merged = sorted([*pinned, *windowed], key=lambda e: e.seq)
+        merged = repair_pairing([*pinned, *windowed], filtered)
         return [
             ChatMessage(role="system", content=system_prompt),
             *[event_to_chat_message(e) for e in merged],
@@ -258,7 +301,7 @@ class SemanticSessionStrategy:
                 return len(tokens & words)
 
             ranked = sorted(unpinned, key=score, reverse=True)[: self.top_n]
-        merged = sorted([*pinned, *ranked], key=lambda e: e.seq)
+        merged = repair_pairing([*pinned, *ranked], candidates)
         kind = "embeddings" if used_embeddings else "keyword overlap, not embeddings"
         note = ChatMessage(
             role="system",
@@ -401,4 +444,5 @@ __all__ = [
     "is_pinned",
     "list_session_strategies",
     "register_session_strategy",
+    "repair_pairing",
 ]
