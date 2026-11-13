@@ -228,3 +228,329 @@ async def test_claiming_advances_the_field_the_queue_is_ordered_by(fiber_setting
     assert [row["id"] for row in claimed] == [created["id"]]
     assert claimed[0]["updated_at"] == later, (created, claimed)
     assert claimed[0]["version"] > int(created["version"] or 0), (created, claimed)
+
+
+# --- one claim is not the next one ------------------------------------------------------------
+
+
+async def _lapsed_then_reclaimed(settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A claim nobody renewed, and the claim the *same* process took once it had lapsed.
+
+    A worker claims from two places, its loop and the cron sweep, under one `lease_owner`.
+    """
+    await fibers.create_fiber(settings, TENANT, status="pending")
+    t0 = fibers.now_ms()
+    (stale,) = await _claim(settings, ts=t0)
+    (live,) = await _claim(settings, ts=t0 + fibers.FIBER_LEASE_MS + 1)
+    assert _process(live) == _process(stale) and live["lease_until"] > stale["lease_until"]
+    return stale, live
+
+
+def _process(row: dict[str, Any]) -> str:
+    """The replica a claim was made by: `lease_owner` is that, `#`, and the claim's own name."""
+    return str(row["lease_owner"]).partition("#")[0]
+
+
+async def _lease(settings: Any, row: dict[str, Any]) -> tuple[str, int | None]:
+    stored = await fibers.get_fiber(settings, TENANT, row["id"])
+    assert stored is not None
+    return stored["lease_owner"], stored["lease_until"]
+
+
+@parametrized
+async def test_a_lapsed_claims_holder_cannot_release_the_next_claim(fiber_settings: Any) -> None:
+    """Scoped to the worker, the release matched any claim that worker held: the stale holder
+    cleared a lease a step was running under, and the fiber was free for a third claim."""
+    stale, live = await _lapsed_then_reclaimed(fiber_settings)
+
+    await fibers._release_fiber(fiber_settings, stale)
+    assert await _lease(fiber_settings, live) == (live["lease_owner"], live["lease_until"])
+
+    await fibers._release_fiber(fiber_settings, live)
+    assert await _lease(fiber_settings, live) == ("", None), "the holder itself could not release"
+
+
+@parametrized
+async def test_a_lapsed_claims_holder_cannot_renew_the_next_claim(fiber_settings: Any) -> None:
+    """A stale holder told `True` keeps its step running beside the live one."""
+    stale, live = await _lapsed_then_reclaimed(fiber_settings)
+
+    assert await fibers._renew_lease(fiber_settings, stale) is False
+    assert await _lease(fiber_settings, live) == (live["lease_owner"], live["lease_until"])
+    assert await fibers._renew_lease(fiber_settings, live) is True
+
+
+@parametrized
+async def test_a_lapsed_claims_holder_cannot_park_the_next_claim(fiber_settings: Any) -> None:
+    """`_record_attempt` writes `status` and clears the lease with no compare-and-set."""
+    stale, live = await _lapsed_then_reclaimed(fiber_settings)
+
+    await fibers._record_attempt(fiber_settings, {**stale, "status": "sleeping", "attempts": 3})
+    stored = await fibers.get_fiber(fiber_settings, TENANT, live["id"])
+    assert stored is not None
+    assert (stored["status"], stored["attempts"], stored["lease_until"]) == (
+        "running",
+        0,
+        live["lease_until"],
+    )
+
+    await fibers._record_attempt(fiber_settings, {**live, "status": "sleeping", "attempts": 3})
+    stored = await fibers.get_fiber(fiber_settings, TENANT, live["id"])
+    assert stored is not None
+    assert (stored["status"], stored["attempts"], stored["lease_until"]) == ("sleeping", 3, None)
+
+
+@parametrized
+async def test_a_lapsed_claims_holder_is_told_before_it_does_work(fiber_settings: Any) -> None:
+    """The write a step makes before an `invoke`: refused, the row is someone else's."""
+    stale, live = await _lapsed_then_reclaimed(fiber_settings)
+
+    assert await fibers._checkpoint_state(fiber_settings, stale) is False
+    assert await fibers._checkpoint_state(fiber_settings, live) is True
+
+
+@parametrized
+async def test_a_save_that_keeps_the_claim_leaves_the_lease_to_the_heartbeat(
+    fiber_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step's save wrote back the `lease_until` it was claimed with, undoing every renewal
+    since: a long claim's closing save could leave a `running` row whose lease was already past."""
+    await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    t0 = fibers.now_ms()
+    (mine,) = await _claim(fiber_settings, ts=t0)
+    monkeypatch.setattr(fibers, "now_ms", lambda: t0 + fibers.FIBER_LEASE_RENEW_MS)
+    # The heartbeat's renewal, which the step's own copy of the row has not seen.
+    assert await fibers._renew_lease(fiber_settings, dict(mine)) is True
+    renewed = t0 + fibers.FIBER_LEASE_RENEW_MS + fibers.FIBER_LEASE_MS
+
+    await fibers._save_fiber(fiber_settings, mine, hold_claim=True)
+
+    assert await _lease(fiber_settings, mine) == (mine["lease_owner"], renewed)
+    await fibers._save_fiber(fiber_settings, mine)
+    assert await _lease(fiber_settings, mine) == ("", None), "an ordinary save releases the claim"
+
+
+# --- a holder that never let go ---------------------------------------------------------------
+
+
+def _lapses(row: dict[str, Any]) -> int:
+    return int((row["state_json"] or {}).get(fibers.FIBER_LAPSES_KEY) or 0)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    at = {"now": fibers.now_ms()}
+    monkeypatch.setattr(fibers, "now_ms", lambda: at["now"])
+    return at
+
+
+async def _worker_is_lost(settings: Any, clock: dict[str, int]) -> list[dict[str, Any]]:
+    """The holder is gone and its lease runs out; then the next claim, as a worker makes it."""
+    clock["now"] += fibers.FIBER_LEASE_MS + 1
+    return await fibers._claim_due(settings)
+
+
+@parametrized
+async def test_a_fiber_whose_worker_was_lost_is_charged_and_then_buried(
+    fiber_settings: Any, clock: dict[str, int]
+) -> None:
+    """A step that kills its worker raises nothing, so only the claim can count it."""
+    settings = fiber_settings.model_copy(update={"fiber_max_attempts": 2})
+    created = await fibers.create_fiber(settings, TENANT, status="pending")
+
+    (first,) = await fibers._claim_due(settings)
+    (second,) = await _worker_is_lost(settings, clock)
+    assert (_lapses(first), _lapses(second), second["status"]) == (0, 1, "running")
+    stored = await fibers.get_fiber(settings, TENANT, created["id"])
+    assert stored is not None and _lapses(stored) == 1, "the count is in the claimed row only"
+
+    assert await _worker_is_lost(settings, clock) == [], "a buried fiber was handed out"
+    stored = await fibers.get_fiber(settings, TENANT, created["id"])
+    assert stored is not None
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("dead", "", None)
+    assert stored["state_json"]["stash"]["last"]["error"] == "step lost its worker 2 times; not run again"
+    assert stored["version"] > second["version"], "a holder still out there could write over the burial"
+    assert await _worker_is_lost(settings, clock) == []
+
+
+@parametrized
+async def test_a_fiber_whose_log_moved_between_lost_workers_is_not_buried(
+    fiber_settings: Any, clock: dict[str, int]
+) -> None:
+    """The log is read from the store the claim runs against, with the fiber's tenant bound."""
+    from felix.session.store import get_session_store
+    from felix.session.types import AppendableEvent
+
+    settings = fiber_settings.model_copy(update={"fiber_max_attempts": 2})
+    thread = f"{TENANT}:lapses-{fibers.now_ms()}"
+    await fibers.create_fiber(settings, TENANT, status="pending", thread_id=thread)
+    session = get_session_store(settings, tenant_id=TENANT).open(thread)
+    await fibers._claim_due(settings)
+
+    for n in range(4):
+        await session.append(AppendableEvent(kind="message", role="assistant", content=f"step {n}"))
+        claimed = await _worker_is_lost(settings, clock)
+        assert [(row["status"], _lapses(row)) for row in claimed] == [("running", 1)]
+
+    assert await _worker_is_lost(settings, clock) == [], "nothing was logged since the last one"
+
+
+@parametrized
+@pytest.mark.parametrize("status", ["pending", "sleeping", "running"])
+async def test_a_fiber_nobody_was_holding_is_not_charged(fiber_settings: Any, status: str) -> None:
+    """Queued, asleep, or released between steps: no worker was lost on any of them."""
+    settings = fiber_settings.model_copy(update={"fiber_max_attempts": 1})
+    now = fibers.now_ms()
+    await fibers.create_fiber(
+        settings, TENANT, status=status, wake_at=now + 1000 if status == "sleeping" else None
+    )
+
+    (claimed,) = await _claim(settings, ts=now + fibers.FIBER_LEASE_MS + 1)
+
+    assert (claimed["status"], _lapses(claimed)) == ("running", 0)
+
+
+@parametrized
+async def test_a_claim_that_was_released_ends_the_streak(fiber_settings: Any) -> None:
+    settings = fiber_settings.model_copy(update={"fiber_max_attempts": 3})
+    await fibers.create_fiber(settings, TENANT, status="pending")
+    t0 = fibers.now_ms()
+    await _claim(settings, ts=t0)
+    (lost,) = await _claim(settings, ts=t0 + fibers.FIBER_LEASE_MS + 1)
+    assert _lapses(lost) == 1
+
+    await fibers._release_fiber(settings, lost)
+    (again,) = await _claim(settings, ts=t0 + fibers.FIBER_LEASE_MS + 2)
+
+    assert _lapses(again) == 0
+    stored = await fibers.get_fiber(settings, TENANT, again["id"])
+    assert stored is not None and _lapses(stored) == 0
+
+
+# --- what a sweep is over ---------------------------------------------------------------------
+
+
+@parametrized
+async def test_the_due_list_names_what_a_claim_would_take_and_claims_nothing(fiber_settings: Any) -> None:
+    import asyncio
+
+    first = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    await asyncio.sleep(0.01)
+    second = await fibers.create_fiber(fiber_settings, "other", status="pending")
+    await fibers.create_fiber(fiber_settings, TENANT, status="sleeping", wake_at=fibers.now_ms() + 60_000)
+    done = await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    await fibers._save_fiber(fiber_settings, {**done, "status": "completed"})
+
+    due = await fibers._due_keys(fiber_settings)
+
+    assert due == [(TENANT, first["id"]), ("other", second["id"])]
+    assert await fibers._due_keys(fiber_settings, 1) == [(TENANT, first["id"])]
+    stored = await fibers.get_fiber(fiber_settings, TENANT, first["id"])
+    assert stored is not None and (stored["status"], stored.get("lease_until")) == ("pending", None)
+
+
+@parametrized
+async def test_a_claim_narrowed_to_some_fibers_takes_no_others(fiber_settings: Any) -> None:
+    """How a sweep leaves a fiber that arrived after it began to the next one."""
+    from felix.db.session import _use_memory
+
+    await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    wanted = await fibers.create_fiber(fiber_settings, "other", status="pending")
+    only = frozenset({("other", wanted["id"]), (TENANT, wanted["id"]), ("other", "no-such-fiber")})
+    arm = fibers._claim_due_memory if _use_memory(fiber_settings) else fibers._claim_due_postgres
+
+    claimed = await arm(fiber_settings, fibers.now_ms(), fibers.FIBER_BATCH, only)
+    assert [(row["tenant_id"], row["id"]) for row in claimed] == [("other", wanted["id"])]
+
+    assert await arm(fiber_settings, fibers.now_ms(), fibers.FIBER_BATCH, frozenset()) == []
+    assert len(await arm(fiber_settings, fibers.now_ms(), fibers.FIBER_BATCH, None)) == 1
+
+
+# --- a write whose answer was lost ------------------------------------------------------------
+
+
+@parametrized
+async def test_a_renewal_that_landed_unheard_is_still_this_claims_to_renew_and_release(
+    fiber_settings: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store holds a lease the holder never heard it had written. A claim told by its lease
+    was then lost to its own holder: the next renewal matched no row, and the release could not
+    let go. It is told by its name, which no renewal changes."""
+    await fibers.create_fiber(fiber_settings, TENANT, status="pending")
+    t0 = fibers.now_ms()
+    (mine,) = await _claim(fiber_settings, ts=t0)
+    monkeypatch.setattr(fibers, "now_ms", lambda: t0 + fibers.FIBER_LEASE_RENEW_MS)
+    # The renewal lands; the holder's own row never hears.
+    assert await fibers._renew_lease(fiber_settings, dict(mine)) is True
+    assert (await _lease(fiber_settings, mine))[1] != mine["lease_until"]
+
+    assert await fibers._renew_lease(fiber_settings, mine) is True
+    assert await fibers._release_fiber(fiber_settings, mine) is True
+    assert await _lease(fiber_settings, mine) == ("", None)
+    assert await fibers._release_fiber(fiber_settings, mine) is False, "there was nothing left to release"
+
+
+@parametrized
+async def test_two_claims_by_one_process_in_one_millisecond_are_still_two_claims(fiber_settings: Any) -> None:
+    """Everything a lapsed holder could know about the lease -- the process, and the very
+    `lease_until` the next claim wrote, which a renewal tried in the same millisecond also
+    computes -- and it is still not that claim's holder."""
+    stale, live = await _lapsed_then_reclaimed(fiber_settings)
+    twin = {**stale, "lease_until": live["lease_until"]}
+
+    assert await fibers._renew_lease(fiber_settings, twin) is False
+    assert await fibers._release_fiber(fiber_settings, twin) is False
+    await fibers._record_attempt(fiber_settings, {**twin, "status": "sleeping", "attempts": 3})
+    stored = await fibers.get_fiber(fiber_settings, TENANT, live["id"])
+    assert stored is not None
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == (
+        "running",
+        live["lease_owner"],
+        live["lease_until"],
+    )
+
+
+@parametrized
+async def test_a_claim_is_named_for_the_process_that_made_it(fiber_settings: Any) -> None:
+    """`lease_owner` still says which worker holds a fiber; it also says which of its claims."""
+    settings = fiber_settings.model_copy(update={"replica_id": "worker-a"})
+    await fibers.create_fiber(settings, TENANT, status="pending")
+    await fibers.create_fiber(settings, TENANT, status="pending")
+
+    first, second = await _claim(settings)
+
+    assert _process(first) == _process(second) == "worker-a"
+    assert first["lease_owner"] != second["lease_owner"]
+    # Another worker holding the row cannot act on it, whatever the row says.
+    other = settings.model_copy(update={"replica_id": "worker-b"})
+    assert await fibers._renew_lease(other, first) is False
+    assert await fibers._release_fiber(other, first) is False
+
+
+# --- what the store holds is what was saved ---------------------------------------------------
+
+
+@parametrized
+async def test_a_holders_unsaved_edits_are_not_in_the_store(fiber_settings: Any) -> None:
+    """A step edits its state in place and then saves. The twin kept the holder's own dicts, so
+    the edit was in the "store" before any save -- and a save the store discarded had landed."""
+    created = await fibers.create_fiber(
+        fiber_settings, TENANT, status="pending", state={"steps": [], "stash": {"last": {"answer": "old"}}}
+    )
+    (mine,) = await _claim(fiber_settings)
+
+    async def stored_answer() -> str:
+        stored = await fibers.get_fiber(fiber_settings, TENANT, created["id"])
+        assert stored is not None
+        return stored["state_json"]["stash"]["last"]["answer"]
+
+    mine["state_json"]["stash"]["last"]["answer"] = "claimed, unsaved"
+    assert await stored_answer() == "old"
+
+    assert await fibers._checkpoint_state(fiber_settings, mine) is True
+    mine["state_json"]["stash"]["last"]["answer"] = "after a checkpoint"
+    assert await stored_answer() == "claimed, unsaved"
+
+    await fibers._save_fiber(fiber_settings, mine, hold_claim=True)
+    mine["state_json"]["stash"]["last"]["answer"] = "after a save"
+    assert await stored_answer() == "after a checkpoint"

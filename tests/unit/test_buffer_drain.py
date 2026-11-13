@@ -87,3 +87,21 @@ async def test_a_single_refused_event_is_quarantined_without_a_second_try() -> N
 
     assert await buffer.drain(write) == 0
     assert calls == [1] and len(buffer) == 0 and buffer.quarantined == 1
+
+
+async def test_a_flush_cancelled_mid_write_puts_its_batch_back() -> None:
+    """A stopping worker cancels a flush that has run too long. The batch was out of the buffer
+    and not known to be written, so it was in neither place, and the flush the worker runs on
+    its way out found nothing to write."""
+    import asyncio
+
+    buffer = DurableBuffer("t")
+    for e in _events("a", "b"):
+        buffer.append(e)
+
+    async def write(batch: list[dict[str, Any]]) -> None:
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await buffer.drain(write)
+    assert len(buffer) == 2

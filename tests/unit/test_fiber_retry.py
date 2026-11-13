@@ -108,7 +108,9 @@ async def test_at_the_ceiling_the_fiber_is_dead_and_never_claimed_again(
     run = await get_durable_run(settings, TENANT, fiber_id)
     assert run is not None
     assert run["status"] == "dead"
-    assert "step failed 3 times" in run["error"] and "connection refused" in run["error"]
+    # The count, and not the exception's text: this is what a poll of the run returns.
+    assert "step failed 3 times" in run["error"]
+    assert "connection refused" not in run["error"] and "RuntimeError" not in run["error"]
 
 
 async def test_a_step_that_completes_resets_the_count(
@@ -191,6 +193,81 @@ async def test_a_save_that_keeps_failing_is_still_bounded(
     assert await resume_due_fibers(settings) == 0
     run = await get_durable_run(settings, TENANT, fiber_id)
     assert run is not None and run["status"] == "dead" and "step failed 3 times" in run["error"]
+
+
+async def test_a_save_that_raises_leaves_the_holder_its_claim(monkeypatch: Any) -> None:
+    """What the test above cannot see, because it replaces the save whole.
+
+    The fallbacks that run when a save raises -- `_record_attempt`, then `_release_fiber` -- are
+    scoped to the claim the row was handed, which is its `lease_until`. A save that cleared the
+    row's lease before writing would leave them a row naming no claim: nothing recorded, nothing
+    released, and the fiber stranded under its lease with the failure uncounted.
+    """
+
+    def store_down(**_kw: Any) -> Any:
+        raise ConnectionError("store down")
+
+    monkeypatch.setattr(fibers, "get_session_factory", store_down)
+    on_postgres = make_settings(database_url="postgresql+psycopg://u@127.0.0.1:9/none")
+    row = {
+        "tenant_id": TENANT,
+        "id": "f",
+        "status": "sleeping",
+        "state_json": {},
+        "version": 3,
+        "lease_owner": "worker-a",
+        "lease_until": 1234,
+    }
+
+    with pytest.raises(ConnectionError):
+        await fibers._save_fiber(on_postgres, row)
+
+    assert (row["lease_owner"], row["lease_until"], row["version"]) == ("worker-a", 1234, 3)
+
+
+async def test_a_step_that_saved_unheard_gives_its_claim_up(settings: Settings, monkeypatch: Any) -> None:
+    """The step's save committed and its answer was lost, so the step raised.
+
+    The store's row is then a version ahead of the one the holder carries, under the holder's own
+    lease. The retry write lost its compare-and-set -- which was reported as saved -- and neither
+    fallback ran, so the fiber sat under that lease until it lapsed and was then counted as a
+    worker lost. The holder lets go instead, and the fiber goes on from what the step saved.
+    """
+    created = await create_fiber(
+        settings, TENANT, state={"steps": [{"op": "stash", "data": {}}, {"op": "complete"}], "cursor": 0}
+    )
+    fiber_id = str(created["id"])
+    real = fibers._run_fiber_step
+
+    async def saves_unheard(s: Any, row: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        await real(s, dict(row), **kw)  # lands in the store; the holder's own row never hears
+        raise ConnectionError("the answer was lost")
+
+    monkeypatch.setattr(fibers, "_run_fiber_step", saves_unheard)
+    (row,) = await fibers._claim_due(settings)
+    await fibers._advance_claimed(settings, row)
+
+    stored = await get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None
+    assert (stored["status"], stored["lease_owner"], stored["lease_until"]) == ("running", "", None), (
+        "the fiber was stranded under a lease nobody holds"
+    )
+    assert (stored["state_json"]["cursor"], stored["attempts"]) == (1, 0), "the step that landed was undone"
+
+
+async def test_a_retry_write_that_was_discarded_is_not_reported_saved(settings: Settings) -> None:
+    """`_save_fiber` reports a lost compare-and-set by returning. Read as "saved", an unsaved
+    `dead` was announced as the run's end while the store held something else."""
+    created = await create_fiber(settings, TENANT, state={"steps": [{"op": "complete"}], "cursor": 0})
+    fiber_id = str(created["id"])
+    (row,) = await fibers._claim_due(settings)
+    await fibers.stop_fiber(settings, TENANT, fiber_id, "stopped by its workflow")
+
+    saved = await fibers._retry_or_dead(settings, row, settings.fiber_max_attempts, RuntimeError("boom"))
+
+    stored = await get_fiber(settings, TENANT, fiber_id)
+    assert stored is not None
+    assert (saved, row["status"], stored["status"]) == (False, "dead", "failed")
 
 
 async def test_a_transient_save_failure_keeps_the_step_done(
@@ -306,3 +383,29 @@ def test_retention_sweeps_every_status_the_store_calls_terminal() -> None:
 
     assert TERMINAL_FIBER_STATUSES == FIBER_TERMINAL_STATUSES
     assert "dead" in TERMINAL_FIBER_STATUSES
+
+
+async def test_a_failed_invoke_stores_a_written_error_not_the_exceptions_text(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run's error is returned on its poll and its stream, posted to webhooks and channels,
+    and handed to a parent agent. It was `str(exc)`: a database or proxy error put the host it
+    could not reach in front of all of them."""
+    import felix.runtime as runtime
+
+    async def _unreachable(*_a: Any, **_kw: Any) -> Any:
+        raise ConnectionError('connection to server at "10.9.9.9", port 5432 failed: SENTINEL')
+
+    monkeypatch.setattr(runtime, "resolve_tenant_manifest", _unreachable)
+    created = await create_fiber(
+        settings,
+        TENANT,
+        state={"steps": [{"op": "invoke", "manifest_id": "quick", "prompt": "hi"}], "cursor": 0},
+    )
+
+    await resume_due_fibers(settings)
+
+    run = await get_durable_run(settings, TENANT, str(created["id"]))
+    assert run is not None and run["status"] == "failed"
+    assert run["error"], "a failed run says that it failed"
+    assert "10.9.9.9" not in run["error"] and "SENTINEL" not in run["error"]

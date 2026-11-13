@@ -290,6 +290,43 @@ def test_every_module_reference_in_an_entrypoint_module_resolves() -> None:
     )
 
 
+def test_the_worker_tells_taskiq_how_long_its_shutdown_takes() -> None:
+    """Two arguments no import mentions, and both of Taskiq's defaults were wrong here.
+
+    `shutdown_timeout` is what the shutdown handler runs under, and it defaulted to five seconds
+    against a thirty-second drain: the handler was cancelled inside the drain, so no run was
+    stopped or handed back, and the flush behind it never ran. `wait_tasks_timeout` defaulted to
+    no limit, so a cron sweep holding one run parked on an approval kept the worker from reaching
+    its handler at all. Held to the pieces they are made of, not to numbers.
+    """
+    from felix.durability import fibers
+    from felix_worker import shutdown
+    from felix_worker.main import worker_args
+
+    args = worker_args()
+    fiber_drain = fibers.FIBER_LOOP_DRAIN_S + fibers.FIBER_LOOP_STOP_S
+    cron_drain = shutdown.CRON_DRAIN_S + shutdown.CRON_STOP_S
+    # The handler drains the fibers and the cron tasks side by side, so it waits for the longer
+    # of the two and no more: a budget that added them would not fit the grace period, and one
+    # that covered only the fibers would cancel the handler while a job recorded its cancel.
+    drain = shutdown.WORK_DRAIN_BUDGET_S
+    assert drain >= fiber_drain and drain >= cron_drain
+    assert drain < fiber_drain + cron_drain
+
+    # A cancelled fiber has time to stop its step and then to give its claim back.
+    assert fibers.FIBER_LOOP_STOP_S > fibers.FIBER_CANCEL_RELEASE_S
+    # A cron task gets a window to finish by itself, and then time to act on its cancel.
+    assert shutdown.CRON_DRAIN_S > 0 and shutdown.CRON_STOP_S > 0
+    # The handler outlasts the drain and the flush behind it, with room to spare: a timeout
+    # that lands in the drain's last wait is a second cancel on fibers releasing their claims.
+    assert args.shutdown_timeout >= drain + shutdown.FLUSH_ALLOWANCE_S + shutdown.SHUTDOWN_MARGIN_S
+    assert shutdown.SHUTDOWN_MARGIN_S >= fibers.FIBER_CANCEL_RELEASE_S
+    # Running tasks are waited on, briefly: the handler is what drains their fibers.
+    assert args.wait_tasks_timeout is not None
+    assert 0 < args.wait_tasks_timeout < fibers.FIBER_LOOP_DRAIN_S
+    # `tests/unit/test_worker_shutdown.py` holds the sum inside the container's grace period.
+
+
 def test_the_containers_run_a_console_script_that_exists() -> None:
     """Every `CMD` and `command:` in deploy/, Compose and Helm alike.
 

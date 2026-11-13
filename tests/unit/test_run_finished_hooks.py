@@ -153,6 +153,81 @@ async def test_a_run_that_finishes_in_the_worker_reaches_the_hook_once(
     ]
 
 
+async def test_a_step_whose_save_was_discarded_announces_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`row` holds what the step meant to write, not what the store kept. Its `completed` was
+    announced anyway, and then again by the worker whose write did land."""
+    from felix.durability import fibers as F
+
+    seen: list[RunFinished] = []
+    get_registry().register_run_finished(_recorder(seen), origin="p")
+
+    async def step(settings: Any, row: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        # Someone else wrote the row first, so this save loses its compare-and-set.
+        F._memory_fibers[(row["tenant_id"], row["id"])]["version"] += 1
+        row["status"] = "completed"
+        await F._save_fiber(settings, row, hold_claim=True)
+        return row
+
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+    settings = make_settings()
+    run_id = await _start(settings)
+    await F.resume_due_fibers(settings)
+
+    stored = await F.get_fiber(settings, "acme", run_id)
+    assert stored is not None and stored["status"] == "running", "the discarded write landed"
+    assert seen == []
+
+
+async def test_a_death_the_store_never_took_is_not_announced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The step raised for the last time allowed just as the run was stopped. The `dead` this
+    holder wrote lost its compare-and-set; the run ended `failed`, by the stop, and that is not
+    this worker's to announce as a death."""
+    from felix.durability import fibers as F
+
+    seen: list[RunFinished] = []
+    get_registry().register_run_finished(_recorder(seen), origin="p")
+
+    async def step(settings: Any, row: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        await F.stop_fiber(settings, row["tenant_id"], row["id"], "stopped")
+        raise RuntimeError("the store blinked")
+
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+    settings = make_settings(fiber_max_attempts=1)
+    run_id = await _start(settings)
+    await F.resume_due_fibers(settings)
+
+    stored = await F.get_fiber(settings, "acme", run_id)
+    assert stored is not None and stored["status"] == "failed"
+    assert [f.status for f in seen] == []
+
+
+async def test_a_completion_whose_save_landed_unheard_is_announced_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The step's save of `completed` committed and its answer was lost, so the step raised.
+    The store holds a finished run; the holder's row never did, so nothing announced it."""
+    from felix.durability import fibers as F
+
+    seen: list[RunFinished] = []
+    get_registry().register_run_finished(_recorder(seen), origin="p")
+
+    async def step(settings: Any, row: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        landed = {**row, "status": "completed", "state_json": dict(row["state_json"])}
+        landed["state_json"]["stash"] = {"last": {"final": {"role": "assistant", "content": "ok"}}}
+        await F._save_fiber(settings, landed, hold_claim=True)
+        raise ConnectionError("the answer was lost")
+
+    monkeypatch.setattr(F, "_run_fiber_step", step)
+    settings = make_settings()
+    run_id = await _start(settings)
+    for _ in range(3):
+        await F.resume_due_fibers(settings)
+
+    stored = await F.get_fiber(settings, "acme", run_id)
+    assert stored is not None and (stored["status"], stored["lease_until"]) == ("completed", None)
+    assert [(f.run_id, f.status, f.answer) for f in seen] == [(run_id, "completed", "ok")]
+
+
 async def test_a_run_that_dies_after_its_retries_is_announced(monkeypatch: pytest.MonkeyPatch) -> None:
     """The other way a run ends: its step keeps raising until the retry budget buries it."""
     from felix.durability import fibers as F
