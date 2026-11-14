@@ -145,8 +145,47 @@ stores, registers only scripted model routes, and starts the built companion TUI
 answers the real harness approval and the separate terminal command confirmation, verifies a
 file was not created before either decision, checks the file content and completed run over HTTP,
 and verifies the shell output reached the next model prompt. The final answer is observed in
-the terminal and `/quit` exits successfully. Two scripted model calls; zero vendor calls.
+the terminal and `/quit` exits successfully. Four scripted model calls; zero vendor calls.
+The first two calls now verify the connected client's native-shell capability and ordered root
+and nested repository instructions before requesting the command.
 
 Run with `uv run python scripts/smoke-code-tui.py` after building the sibling companion TUI,
 or pass `--tui /path/to/felix.js`. All processes and files belong to a temporary test setup;
 this does not exercise deployment storage or change an existing deployment.
+
+## Coding workflow follow-up
+
+The `code` manifest is now version 1.1.0 and uses the existing `deep` pattern's persisted
+plan tools. Authenticated HTTP tests verify a later durable run can retrieve the earlier run's
+plan and notes. Plan mode explicitly permits client capability checks, instruction discovery,
+listing, reading and search, while refusing writes and commands before client dispatch.
+
+The companion implements `local_info` in the browser and terminal. It distinguishes virtual
+and mounted folders from a terminal directory, and emulated commands from opted-in native
+execution. Older clients can still use the existing file tools; the manifest instructs the
+agent to fall back when either new tool is unknown.
+
+`local_instructions` is shared by both clients. It reads only `AGENTS.md` and `CLAUDE.md`
+along a target file's ancestors, including for new files. Output is bounded to 16,000 characters
+per file and 48,000 combined, with explicit continuation offsets and a completeness flag.
+Unreadable instructions fail the call rather than appearing absent; traversal and excessive
+depth are refused. Terminal tests cover an instruction symlink escaping the workspace.
+
+Edits carry their original content to the filesystem adapter. The terminal checks it after
+confirmation; mounted browser writes check before staging and before committing. Concurrent
+changes return an error so the agent can reread and reconcile instead of replacing newer work.
+These are optimistic checks, not filesystem locks or transactions across other programs.
+
+Terminal delete and rename recheck the source after confirmation. Rename creates an exclusive
+hard link before unlinking the source, refusing an existing destination even if it appeared
+during approval. Filesystems without hard links and cross-filesystem moves are refused. A
+failure after destination creation can retain both names. Browser rename retains a source whose
+bytes changed during copying; browser destination creation remains a non-atomic platform operation.
+
+Verification during this follow-up: shared client **460 passed**, browser filesystem **215
+passed**, full TUI **396 passed**, and web chat **1,659 passed**. Harness coding, permission and
+plan regressions passed **58 tests**. Repository-wide companion types, web and TUI builds,
+protocol parity, API drift, and payload shape checks passed. The final web first-load budget
+passed at **448.4 kB gzipped / 450 kB**. The real API/TUI smoke passed with zero vendor calls.
+The complete harness suite was not rerun for this manifest-only runtime change. No production
+deployment was performed for these follow-up changes.
