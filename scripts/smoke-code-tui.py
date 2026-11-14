@@ -147,6 +147,8 @@ async def main(directory):
             XDG_CONFIG_HOME=directory,
             XDG_STATE_HOME=directory,
             FELIX_NO_NOTIFY="1",
+            PAGER="cat",
+            TMPDIR=directory,
         )
         process = await asyncio.create_subprocess_exec(
             BUN,
@@ -221,6 +223,9 @@ async def main(directory):
             await until(lambda: b"Real stack smoke passed." in captured, "final answer on terminal")
             await until(lambda: b"Workspace results" in captured, "coding result summary on terminal")
             await asyncio.sleep(0.2)
+            os.write(master, b"/work\r")
+            await until(lambda: b"loaded thread history" in captured, "thread coding report in pager")
+            await asyncio.sleep(0.2)
             os.write(master, b"/quit\r")
             await asyncio.wait_for(process.wait(), timeout=5)
             assert process.returncode == 0, process.returncode
@@ -237,6 +242,7 @@ async def main(directory):
                         "client_capabilities_verified": True,
                         "repository_instructions_verified": True,
                         "coding_summary_verified": True,
+                        "coding_work_report_verified": True,
                         "model_calls": len(spy.prompts),
                         "vendor_calls": 0,
                         "tui_exit_code": process.returncode,

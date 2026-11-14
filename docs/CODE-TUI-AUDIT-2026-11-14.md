@@ -206,3 +206,13 @@ keep their existing transcript layout, and live coding turns do not show a final
 The summary-only companion change was validated independently of concurrent checkout work:
 **405 TUI tests passed**, type checks and Bun build passed, and the isolated build passed the
 real API/durable-worker smoke with `coding_summary_verified: true` and zero vendor calls.
+
+The read-only `/work` command opens a report of loaded thread history in the terminal pager.
+It combines operation and command-attempt history across turns, retains failed attempts after
+retries, and lists unfinished steps from each plan's latest observed state. It makes no model
+call and does not alter project files; the existing pager uses a private temporary report file.
+Large sections are capped with an explicit remainder count, and terminal control bytes are
+neutralized. The reusable smoke invokes `/work` with a noninteractive pager before exiting.
+The report-only follow-up passed **410 isolated TUI tests**, type checks and the build;
+the real API/TUI smoke passed with `coding_work_report_verified: true`, four scripted model
+calls, zero vendor calls and a clean terminal exit.
