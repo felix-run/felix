@@ -37,6 +37,42 @@ entries between them. Anything under **Removed** or **Changed** is where an upgr
 
 ---
 
+## 0.19.3: coding agent, durable recovery, and client discovery
+
+No migration and no new required setting. The existing production Compose rollout can take this
+release automatically.
+
+**Give the worker its shutdown budget.** Compose now sets `stop_grace_period: 120s`, matching the
+Helm chart. Custom deployments need a stop grace period of at least 120 seconds: Taskiq gets
+90 seconds to drain runs, stop cron tasks and flush usage and audit. A stopping worker returns
+unfinished durable runs for immediate recovery, and claims are scoped to each claim rather than
+the process id. A lost worker no longer counts as an ordinary step failure; repeated losses
+without log progress are bounded by `FELIX_FIBER_MAX_ATTEMPTS` (default five).
+
+**The `code` agent is bundled.** It uses the connected client's workspace and requires
+authentication and approvals for file mutations and shell commands. With the updated companion
+TUI, start from the project directory using `--manifest code --shell` to enable confirmed native
+commands. Its resume lifetime is two hours, shortened by the caller token's expiry; cowork's
+manifest is unchanged. `uv run python scripts/smoke-code-tui.py` tests the built terminal against
+the real local API and fiber loop with temporary memory stores and a scripted model.
+
+**Usage now includes previously unmetered calls.** Memory extraction, memory verification and
+branch summaries have usage rows and count toward `limits.max_cost_usd`. Reported spend for agents
+with memory capture can rise without a change in the number of provider calls.
+
+**Stored zero-interval jobs stop firing.** `0`, `every:0s` and equivalent schedules are refused on
+write, and an existing job with one records the reason in `last_error`. Use an empty schedule or
+`enabled: false` to disable it. Continuous eval does not start a run without a recent user turn.
+
+**Discovery for chat-ui's Heartbeats and Connections pages is available.**
+`GET /connections/providers` and `felix.heartbeat` on `GET /v1/models` supply those pages. Turning a
+heartbeat off works after its manifest is removed, and turning it back on waits for the next slot.
+`POST /connections/ics` refuses a feed named only with dots (`label_invalid`); a previously stored
+feed with such a name remains and still cannot be disconnected from a client.
+
+**Dependency security updates:** the `otel` extra uses OpenTelemetry 1.45.2 / contrib 0.66b2, and
+all installs pick up dnspython 2.9.2 from the lockfile.
+
 ## 0.19.2: `GET /health/worker`, and the roll waits for a live worker
 
 Nothing to do but roll. The worker now sends a heartbeat once its startup has passed, and
