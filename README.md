@@ -270,7 +270,7 @@ Client → Ingress (Caddy / Traefik / nginx / Cloudflare DNS+CDN)
 | `packages/ai` | Model layer: wire formats, catalog, turn types. Imports nothing from `felix` |
 | `packages/harness` | Manifests, patterns, tools, session, governance, auth, plugins |
 | `apps/cli` | `felix migrate \| eval \| mint-jwt \| login \| ingest-docs \| skills \| workspace \| sessions \| bundle-manifests \| validate-manifest \| doctor \| version` |
-| `manifests/` | Bundled agents: `quick`, `assistant`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `governed`, `contributor`, `triage` |
+| `manifests/` | Bundled agents: `quick`, `assistant`, `deep`, `router`, `oss-only`, `hybrid-router`, `support`, `decider-support`, `cowork`, `code`, `governed`, `contributor`, `triage` |
 
 ### Vendor independence
 
@@ -566,11 +566,32 @@ manifest lists it; the bundled manifests that bind `write_file` bind both, gated
 same pair as client tools; the bundled `cowork` manifest's are `local_delete` and `local_rename`,
 behind the same `workspace-write` approval as `local_write` and `local_edit`.
 
+The bundled `code` agent builds on cowork for coding tasks: it reads repository instructions,
+preserves uncommitted work, makes focused changes, and verifies results. Its file tools work in the
+connected client's folder, and file mutations and shell commands require approval. With a running
+harness and an API key configured, build the companion TUI (`pnpm tui:build` in `felix-web`) and
+start it **from the project directory**:
+
+```sh
+bun /path/to/felix-web/apps/tui/dist/felix.js --manifest code --shell
+```
+
+`--shell` enables real, noninteractive commands and asks locally before each command, including
+under `--yes`. An approved command has your account's access; the initial working directory is
+checked, but the command is not sandboxed. Without `--shell`, the terminal and browser emulate a
+small set of file commands. The `code` agent's durable run lifetime is two hours; a caller token's
+expiry can shorten it. Cowork remains a separate agent.
+
+To verify the built terminal against the real API and durable fiber loop with temporary in-memory
+stores and a scripted model, run `uv run python scripts/smoke-code-tui.py` in this repository.
+`--tui /path/to/felix.js` selects a build outside the default sibling `felix-web` checkout.
+
 A dropped stream is recoverable: structural SSE frames carry an `id:` cursor (token-level frames do
 not, which per the SSE spec leaves the client's `lastEventId` on the last one it saw), and
 `GET /chat/stream/{thread_id}` replays what was missed (or opens with a `snapshot` frame) and then
-tails the thread. The run itself is still torn down on disconnect, so what you get back is the
-thread, not the abandoned turn.
+tails the thread. A foreground run ends on disconnect, so reattachment recovers its thread log.
+A durable run, including `code` and `cowork`, continues in the worker; reconnecting resumes status
+and pending approvals or client-tool requests. A client must be connected to answer those requests.
 
 Management surfaces: `/audit`, `/approvals`, `/plans`, `/workflows`, `/jobs`, `/heartbeats`,
 `/manifests`, `/eval`, `/usage`, `/memory`, `/skill-library`. A job's `schedule` is seconds,
@@ -1022,9 +1043,11 @@ Storage and execution:
   rest with `read_artifact`, sized by `default_window_chars` / `max_window_chars`
 - Durable facts via `spec.memory.capture`; how-tos via `spec.procedural_memory`
 - `spec.execution.mode: durable` enqueues a fiber and returns `202` with a
-  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`.
+  `resume_token`; a step that keeps failing backs off and is `dead` after `FELIX_FIBER_MAX_ATTEMPTS`,
+  as is one that has lost its worker mid-step that many times in a row.
   Each worker polls for due fibers every `FELIX_FIBER_POLL_SECONDS` (1.0; 0 leaves only the
   once-a-minute `fiber_scheduler` sweep) and advances up to `FELIX_FIBER_CONCURRENCY` (8) at once,
+  the poll and the sweep together,
   so a new run starts within about a second and one parked on an approval holds up no other
 - `spec.network.credentials: [github]` lets `http_fetch` call an authenticated API without the model
   ever holding the key: the operator registers it in `FELIX_EGRESS_CREDENTIALS` (a JSON map of id →

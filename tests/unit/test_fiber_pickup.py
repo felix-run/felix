@@ -136,16 +136,16 @@ async def test_the_loop_claims_no_more_than_it_has_slots_for(blocking: dict[str,
 async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     """A store that is down is retried with backoff, not a crashed loop."""
     settings = _settings()
-    original = fibers._claim_due
+    original = fibers._claim_and_settle
     calls = {"n": 0}
 
-    async def _flaky(s: Settings, limit: int = fibers.FIBER_BATCH) -> list[dict[str, Any]]:
+    async def _flaky(s: Settings, *args: Any) -> Any:
         calls["n"] += 1
         if calls["n"] == 1:
             raise ConnectionError("store unavailable")
-        return await original(s, limit)
+        return await original(s, *args)
 
-    monkeypatch.setattr(fibers, "_claim_due", _flaky)
+    monkeypatch.setattr(fibers, "_claim_and_settle", _flaky)
     fiber_id = await _fiber(settings)
     stop = asyncio.Event()
     loop = asyncio.create_task(run_fiber_loop(settings, stop))
@@ -155,6 +155,17 @@ async def test_the_loop_survives_a_claim_that_fails(monkeypatch: pytest.MonkeyPa
         stop.set()
         await loop
     assert calls["n"] >= 2
+
+
+async def test_a_loop_that_ends_without_being_stopped_does_not_stop_the_process_claiming() -> None:
+    """Draining is what a stop does, and it is sticky: the cron sweep stops claiming too. A loop
+    that died some other way must not do that to a worker that is still beating."""
+    loop = asyncio.create_task(run_fiber_loop(_settings(), asyncio.Event()))
+    await asyncio.sleep(0)
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+    assert fibers._stopping is False
 
 
 async def test_stopping_lets_a_running_fiber_finish(blocking: dict[str, Any]) -> None:
@@ -188,3 +199,141 @@ async def test_the_sweep_advances_its_batch_concurrently(blocking: dict[str, Any
         blocking["release"].set()
     assert await sweep == 2
     assert _status(parked) == "completed"
+
+
+# --- the cron sweep: it claims what it can start, out of the worker's slots --------
+
+
+async def test_the_sweep_claims_no_more_than_it_can_start(blocking: dict[str, Any]) -> None:
+    """A claim is a lease, and only a fiber in its step renews one.
+
+    The sweep claimed its whole batch and started `fiber_concurrency` of it, so the rest held a
+    lease from the moment they were queued behind a slot: five minutes later it had lapsed under
+    a holder that had not begun, and the fiber was claimed and run by someone else as well.
+    """
+    settings = _settings(fiber_concurrency=1)
+    parked = await _fiber(settings)
+    waiting = await _fiber(settings)
+    blocking["held"].add(parked)
+    sweep = asyncio.create_task(resume_due_fibers(settings))
+    try:
+        await asyncio.wait_for(blocking["started"].wait(), timeout=1)
+        await asyncio.sleep(0.02)
+        row = fibers._memory_fibers[("default", waiting)]
+        assert (row["status"], row.get("lease_until")) == ("pending", None), "claimed with no slot to run in"
+    finally:
+        blocking["release"].set()
+    # And it is not left for the next tick: the sweep claims it once the slot is free.
+    assert await asyncio.wait_for(sweep, timeout=1) == 2
+    assert (_status(parked), _status(waiting)) == ("completed", "completed")
+
+
+async def test_the_sweep_and_the_loop_share_one_workers_slots(blocking: dict[str, Any]) -> None:
+    """`fiber_concurrency` is per worker. The loop and the sweep each counted their own, so a
+    worker whose loop was full still started that many again from the sweep."""
+    settings = _settings(fiber_concurrency=1)
+    parked = await _fiber(settings)
+    blocking["held"].add(parked)
+    stop = asyncio.Event()
+    loop = asyncio.create_task(run_fiber_loop(settings, stop))
+    try:
+        await asyncio.wait_for(blocking["started"].wait(), timeout=1)
+        waiting = await _fiber(settings)
+        assert await asyncio.wait_for(resume_due_fibers(settings), timeout=1) == 0
+        row = fibers._memory_fibers[("default", waiting)]
+        assert (row["status"], row.get("lease_until")) == ("pending", None), "the sweep ran a second fiber"
+    finally:
+        blocking["release"].set()
+        stop.set()
+        await loop
+
+
+async def test_a_fiber_that_arrives_during_a_sweep_is_not_that_sweeps(blocking: dict[str, Any]) -> None:
+    """The sweep is over what was due when it began. A workflow's orchestrator starts its step's
+    fiber mid-sweep; claimed by the same sweep, a step waiting on a person would hold it open."""
+    settings = _settings()
+    parked = await _fiber(settings)
+    blocking["held"].add(parked)
+    sweep = asyncio.create_task(resume_due_fibers(settings))
+    try:
+        await asyncio.wait_for(blocking["started"].wait(), timeout=1)
+        late = await _fiber(settings)
+    finally:
+        blocking["release"].set()
+    assert await asyncio.wait_for(sweep, timeout=1) == 1
+    assert _status(late) == "pending"
+
+
+# --- the cron sweep and a fiber the claim buries -----------------------------------
+
+
+async def _lost_for_good(settings: Settings) -> str:
+    """A fiber one lost worker short of its limit, its last holder's lease run out."""
+    fiber_id = await _fiber(settings)
+    fibers._memory_fibers[("default", fiber_id)].update(
+        status="running",
+        lease_owner="a-worker-that-died",
+        lease_until=fibers.now_ms() - 1,
+        state_json={
+            "steps": [{"op": "complete"}],
+            "cursor": 0,
+            fibers.FIBER_LAPSES_KEY: settings.fiber_max_attempts - 1,
+        },
+    )
+    return fiber_id
+
+
+async def test_a_sweep_goes_on_past_a_claim_that_only_buried() -> None:
+    """A buried fiber starts nothing, and "nothing started" was how the sweep knew it was done:
+    it stopped with due fibers it had not tried."""
+    settings = _settings(fiber_concurrency=1)
+    buried = await _lost_for_good(settings)
+    behind = await _fiber(settings)
+
+    assert await asyncio.wait_for(resume_due_fibers(settings), timeout=1) == 1
+
+    assert (_status(buried), _status(behind)) == ("dead", "completed")
+
+
+async def test_what_follows_a_burial_waits_for_the_fibers_claimed_beside_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run-finished hook may take ten seconds. Run before the claimed fibers were started, it
+    held each of them under a lease nobody was renewing yet."""
+    settings = _settings()
+    buried = await _lost_for_good(settings)
+    beside = await _fiber(settings)
+    original = fibers._after_terminal
+    beside_when_the_hook_ended: list[str] = []
+
+    async def slow_hook(s: Settings, row: dict[str, Any]) -> None:
+        if row["id"] == buried:
+            await asyncio.sleep(0.05)
+            beside_when_the_hook_ended.append(_status(beside))
+        await original(s, row)
+
+    monkeypatch.setattr(fibers, "_after_terminal", slow_hook)
+
+    await asyncio.wait_for(resume_due_fibers(settings), timeout=2)
+
+    assert beside_when_the_hook_ended == ["completed"]
+
+
+async def test_a_burials_follow_up_that_raises_orphans_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It raised out of the claim, after the claim had committed: every fiber claimed in that
+    transaction was left leased with no task to run it."""
+    settings = _settings()
+    buried = await _lost_for_good(settings)
+    beside = await _fiber(settings)
+    original = fibers._after_terminal
+
+    async def broken(s: Settings, row: dict[str, Any]) -> None:
+        if row["id"] == buried:
+            raise RuntimeError("a run view that could not be built")
+        await original(s, row)
+
+    monkeypatch.setattr(fibers, "_after_terminal", broken)
+
+    assert await asyncio.wait_for(resume_due_fibers(settings), timeout=2) == 1
+
+    assert (_status(buried), _status(beside)) == ("dead", "completed")

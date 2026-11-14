@@ -29,10 +29,13 @@ from felix_ai.types import (
 )
 from felix_ai.wire.base import (
     HttpModelClient,
+    SseEnd,
     inline_parts,
     iter_sse_json,
     map_stop,
     parse_tool_arguments,
+    stream_error,
+    stream_truncated,
     tool_images,
     tool_json_schema,
     tool_label,
@@ -444,6 +447,7 @@ class OpenAICompletionsClient(HttpModelClient):
         args_parts: dict[int, list[str]] = {}
         usage = TokenUsage()
         raw_stop: str | None = None
+        end = SseEnd()
 
         async with (
             model_http_client(self._timeout()) as client,
@@ -460,7 +464,10 @@ class OpenAICompletionsClient(HttpModelClient):
                 raise ModelGatewayError(
                     self.route.provider, resp.status_code, raw.decode("utf-8", errors="replace")
                 )
-            async for data in iter_sse_json(resp):
+            async for data in iter_sse_json(resp, end):
+                if data.get("error"):
+                    # Sent after the 200; some gateways pair it with `finish_reason: "error"`.
+                    raise stream_error(self.route.provider, data["error"])
                 if data.get("usage"):
                     usage = _openai_usage(data["usage"])
                 for choice in data.get("choices") or []:
@@ -480,6 +487,11 @@ class OpenAICompletionsClient(HttpModelClient):
                             entry["name"] = str(fn["name"])
                         if fn.get("arguments"):
                             args_parts.setdefault(index, []).append(str(fn["arguments"]))
+
+        # Compatible servers omit one terminator or the other, so either is enough; a stream
+        # with neither a `finish_reason` nor `[DONE]` was cut off mid-turn.
+        if raw_stop is None and not end.done:
+            raise stream_truncated(self.route.provider, "a finish_reason or [DONE]")
 
         for index, pieces in args_parts.items():
             tools_by_index[index]["json"] = "".join(pieces)

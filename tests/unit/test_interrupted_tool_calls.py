@@ -161,6 +161,13 @@ async def test_a_resumed_run_answers_every_outstanding_call() -> None:
     called = {c.id for m in model.seen if m.role == "assistant" for c in (m.tool_calls or [])}
     answered = {m.tool_call_id for m in model.seen if m.role == "tool"}
     assert called and called <= answered, f"unanswered tool calls reached the provider: {called - answered}"
+    # And answered in place: a result after the new user turn is a history the provider rejects.
+    assert [(m.role, m.tool_call_id) for m in model.seen[1:]] == [
+        ("user", None),
+        ("assistant", None),
+        ("tool", "c1"),
+        ("user", None),
+    ]
 
 
 # --- a run that dies mid-batch leaves the call in the log ------------------------
@@ -478,6 +485,15 @@ async def test_a_call_that_finished_before_the_run_died_keeps_its_result() -> No
     assert seen["call_write"] == "wrote notes.md", "the finished write is not distrusted"
     assert "may have already taken effect" in seen["call_hang"].lower()
     assert "may have already taken effect" in seen["call_read"].lower()
+    # The closing results join the one that landed, under the call, ahead of the new user turn.
+    assert [(m.role, m.tool_call_id or m.content) for m in model.seen[1:]] == [
+        ("user", "go"),
+        ("assistant", ""),
+        ("tool", "call_write"),
+        ("tool", "call_hang"),
+        ("tool", "call_read"),
+        ("user", "[continue]"),
+    ]
 
 
 async def test_a_parallel_call_that_finished_is_kept_while_its_sibling_runs() -> None:

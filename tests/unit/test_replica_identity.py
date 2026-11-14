@@ -92,7 +92,7 @@ async def test_one_worker_cannot_renew_another_workers_claim() -> None:
     claimed = await fibers._claim_due_memory(worker_a, fibers.now_ms())
     assert len(claimed) == 1, claimed
     row = claimed[0]
-    assert row["lease_owner"] == "worker-a", row["lease_owner"]
+    assert row["lease_owner"].startswith("worker-a#"), row["lease_owner"]
 
     stored = fibers._memory_fibers[("acme", str(created["id"]))]
     held_until = stored["lease_until"]

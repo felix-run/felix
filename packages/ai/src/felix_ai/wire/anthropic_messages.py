@@ -33,6 +33,8 @@ from felix_ai.wire.base import (
     map_stop,
     parse_tool_arguments,
     split_data_url,
+    stream_error,
+    stream_truncated,
     tool_images,
     tool_json_schema,
 )
@@ -610,6 +612,7 @@ class AnthropicMessagesClient(HttpModelClient):
         parts: dict[tuple[int, str], list[str]] = {}
         usage = TokenUsage()
         raw_stop: str | None = None
+        stopped = False
 
         async with (
             model_http_client(self._timeout()) as client,
@@ -671,6 +674,16 @@ class AnthropicMessagesClient(HttpModelClient):
                     out = (data.get("usage") or {}).get("output_tokens")
                     if out is not None:
                         usage.output = int(out)
+                elif kind == "message_stop":
+                    stopped = True
+                elif kind == "error":
+                    # Sent after the 200, e.g. `overloaded_error` mid-answer.
+                    raise stream_error(self.route.provider, data.get("error"))
+
+        # `message_stop` carries nothing, so a stream that delivered its stop reason and then
+        # closed is whole. One with neither was cut off mid-turn.
+        if not stopped and raw_stop is None:
+            raise stream_truncated(self.route.provider, "message_stop")
 
         for (index, key), pieces in parts.items():
             target = tools_by_index[index] if key == "json" else thinking_by_index[index]

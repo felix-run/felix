@@ -1,0 +1,310 @@
+# yaml-language-server: $schema=../schemas/manifest.schema.json
+apiVersion: felix/v1
+kind: Agent
+metadata:
+  name: code
+  version: 1.0.0
+  description: Felix coding agent — inspect, implement, build, test, and review in your project.
+  tags: [react, workspace, coding, durable]
+  greeting:
+    headline: "What should we build or fix?"
+    subtitle: "code reads your project, makes focused changes, and checks the results. Writes and commands require approval."
+  starters:
+    - title: "List the workspace"
+      prompt: "List the top-level files and folders in the workspace."
+    - title: "Find TODOs"
+      prompt: "Search the workspace for TODO and summarize the matches by file."
+    - title: "Write a note"
+      prompt: "Create notes/todo.md with three short tasks for today, then read the file back to confirm it."
+    - title: "Draft a README"
+      prompt: "Read the workspace, draft a one-paragraph README for it, and write it to README.md (I will approve the write)."
+    - title: "Fix a failing test"
+      prompt: "Read the repository instructions and test commands, reproduce a failing test, make the smallest fix, then run the relevant checks and report the results."
+    - title: "Review this project"
+      prompt: "Read the repository instructions and inspect the project for bugs and incomplete features. Report concrete findings with file paths and distinguish verified failures from code-reading observations."
+
+spec:
+  pattern: react
+
+  model:
+    temperature: 0
+    cache: true
+
+  system_prompt:
+    inline: |
+      You are Felix, a coding agent working in the user's project.
+      The workspace is the user's own folder, open in their browser or terminal.
+      Reach it only through the local_* tools: local_list, local_read and
+      local_search to look, local_write and local_edit to change files,
+      local_rename to move or rename one, local_delete to remove one,
+      local_shell for commands, and local_open to show the user a file or a
+      link. Paths are relative to the folder's root. Open a URL only when the
+      user asked for that page.
+      Writes, renames, deletes and commands pause for the user's approval.
+      A delete cannot be undone: delete only a file the user asked you to.
+      Prefer small, reversible changes. Summarize what you did when finished.
+      For coding tasks, first read repository instructions (including AGENTS.md)
+      and identify the project's build and test commands. Inspect existing code
+      before editing it. Preserve the user's uncommitted work. Implement the
+      requested change, run the relevant checks, and report what changed and
+      what was actually verified. Do not claim a build or test passed unless
+      its tool result confirms success.
+      Client capabilities vary. A browser or a terminal without --shell only
+      emulates a few local_shell commands; a terminal started with --shell can
+      run real commands after confirmation. If a tool reports unsupported,
+      explain the limitation instead of treating the command as successful.
+      Always refer to yourself as Felix, never as Claude or any other name.
+
+  # The workspace tools (`list_dir`, `read_file`, ...) are not bound here. They act on a folder
+  # on the server, and the folder this agent is for is the user's: bound beside the `local_*`
+  # tools below, the model listed the server's empty workspace and told the user theirs was
+  # empty while their folder sat open in the sidebar.
+  tools:
+    - calculator
+    - list_skills
+    - activate_skill
+    - deactivate_skill
+
+  # The user's folder. Each runs in the connected client — the browser's mounted folder or
+  # in-tab files, or the terminal client's working directory — and a durable run reaches it
+  # through the stream (`felix.tools.client_requests`). Argument names follow the workspace
+  # tools', so a client reads `path` off either.
+  client_tools:
+    - name: local_list
+      description: List the entries of a directory in the user's folder. Directories end in "/".
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Directory relative to the folder's root. Defaults to the root.
+          recursive:
+            type: boolean
+            description: List everything below the directory too, not only its direct entries.
+        additionalProperties: false
+      timeout_seconds: 60
+    - name: local_read
+      description: Read a text file from the user's folder.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+          offset:
+            type: integer
+            minimum: 0
+            description: Character offset to start reading from.
+          limit:
+            type: integer
+            minimum: 1
+            description: Maximum characters to return.
+        required: [path]
+        additionalProperties: false
+      timeout_seconds: 60
+    - name: local_search
+      description: Search the text files in the user's folder for a string. Returns matching lines as path:line:text.
+      args_schema:
+        type: object
+        properties:
+          query:
+            type: string
+            description: Text to find (case-sensitive), or a regular expression when regex is true.
+          path:
+            type: string
+            description: Directory to search, relative to the folder's root. Defaults to the root.
+          regex:
+            type: boolean
+            description: Treat query as a regular expression.
+          max_hits:
+            type: integer
+            minimum: 1
+            maximum: 200
+            description: Stop after this many matching lines. Defaults to 20.
+        required: [query]
+        additionalProperties: false
+      timeout_seconds: 120
+    - name: local_write
+      description: Create or overwrite a text file in the user's folder.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+          content:
+            type: string
+            description: The file's full new text.
+          append:
+            type: boolean
+            description: Append to the file instead of overwriting it.
+        required: [path, content]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_edit
+      description: Replace exact text in a file in the user's folder.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+          old_string:
+            type: string
+            description: Exact text to find. Include enough surrounding lines to appear once.
+          new_string:
+            type: string
+            description: Text to put in its place. Empty deletes the match.
+          replace_all:
+            type: boolean
+            description: Replace every occurrence instead of requiring exactly one.
+        required: [path, old_string, new_string]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_delete
+      description: Delete one file from the user's folder. Files only, never a folder. There is no undo.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: File path relative to the folder's root.
+        required: [path]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_rename
+      description: >-
+        Move or rename one file in the user's folder. Never overwrites: refused when to_path
+        already exists. Folders on the way to to_path are created.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: The file to move, relative to the folder's root.
+          to_path:
+            type: string
+            description: Its new path, relative to the folder's root. Must not exist yet.
+        required: [path, to_path]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_shell
+      description: Run a shell command in the user's local environment.
+      args_schema:
+        type: object
+        properties:
+          command:
+            type: string
+            description: Shell command to run.
+          cwd:
+            type: string
+            description: Optional working directory.
+        required: [command]
+        additionalProperties: false
+      timeout_seconds: 300
+    - name: local_open
+      description: >-
+        Show the user a file from their folder by opening it in the editor pane beside this
+        conversation, where they can read and edit it; or open an http(s) URL in a new browser
+        tab. Use it whenever the user asks to open, show or view a file. It does not read the
+        file for you: use local_read for that.
+      args_schema:
+        type: object
+        properties:
+          target:
+            type: string
+            description: A path relative to the user's folder, or an http(s) URL.
+        required: [target]
+        additionalProperties: false
+      timeout_seconds: 60
+
+  skills:
+    - name: calculator-help
+
+  approvals:
+    # Every tool that changes a file in the user's folder. A delete is never gated less than a
+    # write: it cannot be undone, and a rename can take a file out from under its name.
+    - id: workspace-write
+      description: Confirm changes to files in your folder
+      tools: [local_write, local_edit, local_delete, local_rename]
+      ttl_seconds: 600
+    - id: client-shell
+      description: Confirm local shell commands
+      tools: [local_shell]
+      ttl_seconds: 600
+
+  # `local_shell` and `local_open` run on the user's own machine through the client bridge,
+  # so their output is attacker-reachable in the ordinary way: a file, a page or a command
+  # result can carry injected instructions back into the transcript. Approval gates whether
+  # the command runs; screening is what looks at what comes back. Marker-only — no `model`,
+  # so this is a substring scan and costs nothing per call.
+  content_screening:
+    enabled: true
+    on_flag: quarantine
+    # Every `local_*` tool is `transport: client`, which the untrusted-tool default already
+    # screens, so nothing is named here. `read_file`, `search_files` and `list_dir` were, while
+    # this manifest bound them; memory tools are screened by default too.
+
+  # `local_open` is deliberately ungated: it is how the user asks to see a file, and an
+  # approval on every view is noise. Its URL form is still an outbound channel the model picks,
+  # and the prompt asking for restraint is a request, not a control. Gating only that form needs
+  # the client contract to carry the URL as its own argument, which `when_args` could then match.
+  limits:
+    max_tool_calls: 200
+    max_wall_clock_seconds: 3600
+
+  # Steps the react loop may take; `max_turns` is for the multi-agent patterns and bounds
+  # nothing on a react agent.
+  recursion_limit: 40
+
+  execution:
+    mode: durable
+    # Outlive the hour-long work budget, ten-minute approvals and a worker lease
+    # recovery. The generic five-minute default expires before any of these.
+    # Caller-token expiry still clamps the authority recorded on each run.
+    resume_token_ttl_seconds: 7200
+
+  session:
+    strategy: compacting
+    reserve_tokens: 16384
+    keep_recent_tokens: 20000
+    compaction_enabled: true
+
+  memory:
+    checkpointer: postgres
+    store: pgvector
+    capture:
+      # Extraction runs once per turn on `model` — a small, mechanical job that must
+      # not be billed to the turn's model. Conservative caps: memory that grows fast
+      # is memory that goes stale fast.
+      enabled: true
+      model: claude-haiku
+      max_facts: 3
+      min_chars: 200
+    recall:
+      # Governed recall. Memory tools count as untrusted (`source: memory`), so a recalled
+      # memory is screened by the default above: capture runs over turns that include
+      # client-tool output, and a string quarantined on the way in must not come back as a
+      # plain fact. The automatic fact prelude is not a tool call and is not screened either way.
+      tools: true
+      limit: 5
+
+  # A tool result over 8000 characters is stored rather than inlined; the model gets a preview
+  # and pages through the rest with `read_artifact`, so one large file or page is not re-sent
+  # on every later turn.
+  artifacts:
+    enabled: true
+
+  auth:
+    inbound:
+      # This manifest binds a shell on the developer's own machine. The approval rule
+      # above is what stands between a caller and that shell, and under
+      # FELIX_AUTH_MODE=none the approvals API is anonymous too — so the same caller
+      # could approve their own command. The runtime already confines `none` to
+      # loopback; this keeps the manifest honest anywhere else. The Compose stack mints
+      # a key; `make dev` runs with FELIX_AUTH_MODE=none, so drive cowork through Compose
+      # (or set FELIX_AUTH_MODE=api_key with a key).
+      allow_anonymous: false
+
+  observability:
+    trace: true

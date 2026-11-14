@@ -2095,6 +2095,37 @@ a store that is entirely down leaves the fiber released for the next tick, as be
 step that completes resets the count. An `invoke` that fails is `failed` in one tick, as
 before.
 
+A step that takes its worker down with it — an out-of-memory kill, a `SIGKILL` — raises
+nothing, so the same setting bounds it from the claim instead. A fiber found `running` under
+a lease that lapsed was let go of by nobody; each such claim is counted in the run's state,
+and after `FELIX_FIBER_MAX_ATTEMPTS` of them in a row *with nothing appended to the run's
+thread between them* the fiber is `dead` with `step lost its worker N times; not run again`
+as its error, rather than claimed again every five minutes until `expires_at`. A run whose
+log moved since the last lost worker starts the count again, so one that merely shared a
+worker with the run that kept killing it is not buried with it; a run that logs its way to
+the same death each time is bounded at four times the setting. A run that writes to no log
+the deployment's session store can read (`memory.checkpointer: none`, or one of its own)
+shows no movement, so every lost worker counts. A claim that ends with its step saved and
+the fiber released clears both counts.
+
+A worker that stops gracefully is not a lost worker. Runs in flight get thirty seconds to
+reach their next suspension; a step still running then is cancelled, and once it has stopped
+its claim is given back, so another worker continues the run from its log at once. Only if
+that write fails, or the step ignores its cancel for fifteen seconds more, does the lease run
+out. The cron tasks still running get the same two windows, beside the runs and not after
+them: thirty seconds to finish, then a cancel and fifteen to act on it. A scheduled job
+cancelled this way records a run with error `cancelled` and clears its `running` mark, so its
+next firing is not held off; a job killed with the process instead is held for six hours
+(`RUNNING_STALE_MS`). The worker asks Taskiq for the time this takes
+(`felix_worker/shutdown.py`: five seconds for running tasks, then eighty-five for the drains,
+the flush of buffered usage and audit rows, and a margin), and both Compose and the Helm chart
+give the container 120. Shorten that grace period below ninety seconds and a stopping worker
+is killed mid-drain.
+
+`lease_owner` on a claimed fiber is `<replica id>#<claim>`: the part before the `#` is the
+worker, the rest names the one claim, so a worker's earlier claim on the same fiber can never
+be mistaken for its current one.
+
 ## Run budgets
 
 `spec.limits` bounds a single run. Every field is enforced at two points — before each

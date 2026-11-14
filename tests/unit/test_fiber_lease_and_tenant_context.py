@@ -180,8 +180,8 @@ async def test_resume_renews_the_lease_while_a_step_is_actually_running(monkeypa
     at_claim: list[int] = []
     real_claim = F._claim_due_memory
 
-    async def _record(settings_, ts, limit=F.FIBER_BATCH):
-        claimed = await real_claim(settings_, ts, limit)
+    async def _record(settings_, ts, *args):
+        claimed = await real_claim(settings_, ts, *args)
         at_claim.extend(c["lease_until"] for c in claimed)
         return claimed
 

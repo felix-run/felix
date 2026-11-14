@@ -223,8 +223,8 @@ def merge(*groups: list[ExtractedMemory]) -> list[ExtractedMemory]:
     return list(seen.values())
 
 
-async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) -> str:
-    from felix.patterns.model import ModelChatOptions
+async def _ask(model: Any, system: str, user: str, *, kind: str, max_tokens: int = 2048) -> str:
+    from felix.patterns.model import ModelChatOptions, record_model_usage
     from felix.patterns.types import ChatMessage
 
     result = await model.chat(
@@ -237,6 +237,9 @@ async def _ask(model: Any, system: str, user: str, *, max_tokens: int = 2048) ->
         # different prefix, so it must not spend the conversation's prompt cache.
         ModelChatOptions(isolate_cache=True, max_tokens=max_tokens),
     )
+    # Capture defaults to the turn's own model, so these are up to two more calls per turn at
+    # its price. Unrecorded, they were in no usage row and outside `limits.max_cost_usd`.
+    record_model_usage(result, model, meta={"kind": kind})
     return result.message.content or ""
 
 
@@ -309,7 +312,7 @@ async def extract_memories(
     block = known_block(known or [])
     try:
         prompt = f"{excerpt}\n\n{block}" if block else excerpt
-        parsed = parse_memories(await _ask(model, EXTRACT_SYSTEM, prompt))
+        parsed = parse_memories(await _ask(model, EXTRACT_SYSTEM, prompt, kind="memory_extract"))
     except Exception:
         logger.debug("memory extraction call failed", exc_info=True)
         return None
@@ -331,7 +334,12 @@ async def extract_memories(
     try:
         payload = json.dumps([m.model_dump() for m in proposed])
         checked = parse_memories(
-            await _ask(model, VERIFY_SYSTEM, f"Excerpt:\n{excerpt}\n\nProposed:\n{payload}")
+            await _ask(
+                model,
+                VERIFY_SYSTEM,
+                f"Excerpt:\n{excerpt}\n\nProposed:\n{payload}",
+                kind="memory_verify",
+            )
         )
     except Exception:
         logger.debug("memory verification failed; keeping the unverified set", exc_info=True)

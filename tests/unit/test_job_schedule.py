@@ -296,3 +296,27 @@ async def test_a_one_shot_with_no_due_time_is_never_swept(settings: Settings) ->
 
     assert await run_due_jobs(settings) == 0
     assert await jobs_store.list_runs(settings, "default", "once") == []
+
+
+async def test_a_cancel_that_lands_on_the_claim_does_not_leave_the_job_marked_running(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim marks the job `running` and `fire_job` is what clears it. Cancelled between
+    the two -- a worker stopping as the claim commits -- the mark stood, and the job was
+    refused for six hours."""
+    import asyncio
+
+    await jobs_store.put_job(settings, "default", "j", schedule="every:5m")
+    real_claim = jobs_store.claim_run
+
+    async def _claim_then_cancelled(*args, **kwargs):  # type: ignore[no-untyped-def]
+        assert await real_claim(*args, **kwargs) is True
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(jobs_store, "claim_run", _claim_then_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_due_jobs(settings)
+
+    (job,) = await jobs_store.list_jobs(settings, "default")
+    assert (job["last_status"], job["last_error"]) == ("error", "cancelled")

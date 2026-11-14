@@ -200,6 +200,30 @@ async def test_an_unparseable_verification_keeps_the_unverified_set() -> None:
     assert [m.content for m in out] == ["Kept."]
 
 
+async def test_both_passes_are_metered() -> None:
+    """Capture runs on the turn's own model by default, so these are two more calls a turn at
+    its price. Neither was recorded: no usage row, and nothing counted toward `max_cost_usd`."""
+    from felix.patterns.model import TokenUsage
+    from felix.usage import store as usage_store
+
+    class _Billed(_ScriptedModel):
+        async def chat(self, messages, tools, opts=None):
+            result = await super().chat(messages, tools, opts)
+            result.usage = TokenUsage(input=900, output=40)
+            return result
+
+    settings = _settings()
+    model = _Billed(_payload({"content": "Supported."}), _payload({"content": "Supported."}))
+    await extract_memories(model, "excerpt", max_facts=3, verify=True)
+
+    await usage_store.flush_pending(settings)
+    rows, _ = await usage_store.query(settings, "default")
+    assert sorted((r["meta_json"]["kind"], r["tokens_input"]) for r in rows) == [
+        ("memory_extract", 900),
+        ("memory_verify", 900),
+    ]
+
+
 async def test_verification_is_off_unless_asked_for() -> None:
     """It doubles the calls, so it stays opt-in."""
     model = _ScriptedModel(_payload({"content": "Kept."}))

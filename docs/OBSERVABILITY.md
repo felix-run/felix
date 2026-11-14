@@ -96,6 +96,7 @@ replica among live ones does not show here (`felix/worker_beat.py`).
 | --- | --- | --- |
 | `felix_tokens` | `manifest_id`, `model`, `kind` | Tokens billed this turn; `kind` is `input` or `output`. |
 | `felix_model_unmetered` | `manifest_id`, `model` | **Watch this.** A turn reported no usage, so it counted against no budget — `limits.max_cost_usd` and the token limits fail *open* for it. Usually a streamed response missing `stream_options.include_usage`. |
+| `felix_session_render_failed` | `manifest_id` | A thread's history could not be read, so the turn was answered from the incoming message alone and that reply was appended to the thread. A database error at render time is the usual cause. |
 | `felix_model_unpriced` | `manifest_id`, `model` | **Watch this.** A turn reported usage but Felix has no rate for the wire model and the manifest sets no `spec.model.price`, so it was metered at `$0` — the token limits hold, `limits.max_cost_usd` fails *open* for it. Add the rate to the catalog or the manifest. |
 | `felix_model_call_seconds` | `model`, `status` | Provider call latency, one observation per attempt. |
 | `felix_model_switch` | `from`, `to`, `reason` | A fallback or escalation changed model mid-run, or a call carrying an image went to the vision route (`reason=vision`, counted per call: a thread shown one picture counts on every later turn). |
