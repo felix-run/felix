@@ -219,6 +219,7 @@ async def main(directory):
             ], instructions
             assert len(spy.prompts) == 4, f"unexpected model calls: {len(spy.prompts)}"
             await until(lambda: b"Real stack smoke passed." in captured, "final answer on terminal")
+            await until(lambda: b"Workspace results" in captured, "coding result summary on terminal")
             await asyncio.sleep(0.2)
             os.write(master, b"/quit\r")
             await asyncio.wait_for(process.wait(), timeout=5)
@@ -235,6 +236,7 @@ async def main(directory):
                         "tool_result_reached_model": True,
                         "client_capabilities_verified": True,
                         "repository_instructions_verified": True,
+                        "coding_summary_verified": True,
                         "model_calls": len(spy.prompts),
                         "vendor_calls": 0,
                         "tui_exit_code": process.returncode,

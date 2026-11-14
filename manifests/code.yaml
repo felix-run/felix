@@ -77,6 +77,9 @@ spec:
       A failed rename may leave both source and destination present. Inspect
       both paths and explain the partial result before deciding how to recover;
       never report a move as finished when its tool returned an error.
+      Finish with a concise account of changed files, commands and checks run,
+      failures, and remaining work. Distinguish a command completing from its
+      output confirming that a particular test or build passed.
       Client capabilities vary. A browser or a terminal without --shell only
       emulates a few local_shell commands; a terminal started with --shell can
       run real commands after confirmation. If a tool reports unsupported,

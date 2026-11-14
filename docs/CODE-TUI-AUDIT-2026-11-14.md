@@ -189,3 +189,20 @@ protocol parity, API drift, and payload shape checks passed. The final web first
 passed at **448.4 kB gzipped / 450 kB**. The real API/TUI smoke passed with zero vendor calls.
 The complete harness suite was not rerun for this manifest-only runtime change. No production
 deployment was performed for these follow-up changes.
+
+### Same-release scope
+
+Keep the manifest, shared workspace tools, concurrent-change protections and TUI coding
+results together in the current companion PRs. Complete the coding feature work before the
+release rollout; do not use an intermediate production deployment as a gate for building it.
+
+The terminal's `code` transcript now adds a Workspace results block after a turn completes.
+It separates observed file operations, completed commands, issues, unconfirmed operations
+and unfinished plan steps. It does not infer passing tests from model prose or command exit
+alone, and does not count pending approvals or missing outputs as successful operations.
+Groups are bounded to six displayed entries with an explicit remainder count. Other agents
+keep their existing transcript layout, and live coding turns do not show a final summary.
+
+The summary-only companion change was validated independently of concurrent checkout work:
+**405 TUI tests passed**, type checks and Bun build passed, and the isolated build passed the
+real API/durable-worker smoke with `coding_summary_verified: true` and zero vendor calls.
