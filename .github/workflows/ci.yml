@@ -1,5 +1,11 @@
 name: CI
 
+# The pull request and main gate. `changes` decides which jobs run; a path-filtered job that
+# is skipped reports as passing, which is why `changes` is itself a required check.
+# Required on main: changes, pre-commit, lint, typecheck, test, eval, lean, toolkit, docker,
+# helm (plus security.yml's three and felix-boundary). Not required: conformance, gateway.
+# A job id is its required-check name: renaming one needs the branch protection changed too.
+
 on:
   push:
     branches: [main]
@@ -17,7 +23,7 @@ concurrency:
 # but that lives in Settings, is invisible to anyone reading this workflow, and flipping
 # it would silently grant write to every job below. `security.yml` already declares this;
 # CodeQL's `actions/missing-workflow-permissions` flagged the workflows that did not.
-# A job needing more overrides it locally, as `changes` and the review job already do.
+# A job needing more overrides it locally, as `changes` does.
 permissions:
   contents: read
 
@@ -168,8 +174,9 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
       # Lean install plus only the extras that gate tests. `--all-extras` would drag in
-      # playwright, boto3 and presidio for no coverage; these three are the ones whose
-      # absence silently deletes tests (see tests/support/optional_deps.py).
+      # playwright, boto3 and presidio for no coverage; the ones listed are those whose
+      # absence silently deletes tests (see tests/support/optional_deps.py), and
+      # test_ci_installs_every_extra_the_tests_gate_on holds this line to that set.
       - name: Install dependencies
         run: uv sync --locked --dev --extra warehouse --extra sandbox --extra otel --extra image --extra channels --extra connectors --extra google-connectors --extra icloud-connectors --extra ics-connectors
       - name: Bundle manifests
@@ -381,9 +388,9 @@ jobs:
       - name: Date for the apt layer
         id: apt
         run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v3.9.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build lean image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v6.9.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/docker/Dockerfile
@@ -417,7 +424,7 @@ jobs:
       # brings (a dependency that fails to install, a CVE only it pulls in) fails a pull request
       # rather than the release.
       - name: Build gcp image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v6.9.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/docker/Dockerfile
