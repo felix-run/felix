@@ -108,8 +108,8 @@ A test that needs an optional extra gates on `tests/support/optional_deps.py:req
 extra)`, never a bare `pytest.importorskip` — an invariant enforces this. A module-level
 `importorskip` collapses a whole file into one collect-time skip, so it vanishes from the run
 without touching the skip count; that is how six Temporal tests went unexecuted in CI. CI installs
-`--extra warehouse --extra sandbox --extra otel` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`, which turns a
-missing extra into a failure. Locally, without that variable, these still skip as before.
+the extras on the test job's `uv sync` line in `ci.yml` and sets `FELIX_REQUIRE_OPTIONAL_EXTRAS=1`,
+which turns a missing extra into a failure. Locally, without that variable, these still skip as before.
 
 End-to-end (`tests/e2e/`) boots the zero-argument `create_application()` production uses, sends
 real HTTP through it, and points the model at `felix_ai.providers.scripted`. Nothing between the
