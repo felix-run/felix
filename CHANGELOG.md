@@ -10,6 +10,68 @@ Each release section is written from the `## Changelog` sections of the pull req
 
 ## [Unreleased]
 
+## [0.19.3] — 2026-11-14
+
+### Added
+
+- **`GET /connections/providers`** lists what a person can connect on this deployment: each provider's `label`, its `method` (`oauth`, `app_password` or `feed_link`) and the `scopes` it can ask for. It follows the deployment's settings and plugins, and is empty without `FELIX_CONNECTION_TOKEN_KEY`. A plugin offers a provider with `connections.add_connect_offer`. (#763)
+
+- **`felix.heartbeat` on `GET /v1/models`** is the `schedule` and `timezone` of a manifest's `spec.heartbeat`, or `null` when nobody can enrol. The checklist is not included. (#763)
+
+- **`felix_session_render_failed` counter.** A thread's history could not be read and the turn was answered without it; it used to be logged at debug only. (#770)
+
+- **Coding agent:** select `code` to inspect repositories, make focused changes and verify results with authenticated, approved client tools and a two-hour durable-run lifetime. (#775)
+
+- **Terminal smoke check:** run `uv run python scripts/smoke-code-tui.py` against a built sibling TUI to verify approvals, durable execution and local command results without invoking a vendor model. (#775)
+
+### Fixed
+
+- **A calendar feed can no longer be named only with dots.** `POST /connections/ics` refuses such a name with `label_invalid`. A client resolves `.` and `..` out of a URL, so a feed with that name could not be disconnected. (#764)
+
+- A person can always turn off a heartbeat they have, even after its manifest dropped the heartbeat, closed to them, or was removed. (#765)
+
+- Turning a heartbeat back on waits for its next scheduled slot instead of firing on the next sweep. (#765)
+
+- **The API reference lists each collection route once.** The OpenAPI document no longer carries a second entry for the trailing-slash spelling of `/a2a`, `/approvals`, `/audit`, `/chat`, `/documents`, `/files`, `/jobs`, `/manifests`, `/memory` and `/plans`. Both spellings are still served. (#766)
+
+- **Worker shutdown keeps its usage and audit rows.** A stopping worker now writes what it has buffered, after running durable runs finish. Before, each restart lost up to a minute of rows for durable runs and jobs. (#769)
+
+- **Compose gives the worker time to stop.** The `worker` service has `stop_grace_period: 120s`; it was killed after 10s, mid-drain. (#769)
+
+- **A job schedule of `0` is refused.** `PUT /jobs` answers 422 for `0`, `every:0s` and the like, which used to run the job on every sweep. A job already stored with one stops firing and shows the reason in `last_error`; set an empty schedule or `enabled: false` to switch a job off. (#769)
+
+- **Continuous eval no longer bills an idle tenant.** With no recent user turn to replay, it starts no run. (#769)
+
+- **Stop during a streamed reply ends the run.** The model is not asked again, no tool runs after Stop, and the thread keeps the text that was shown as an aborted turn. (#770)
+
+- **A model stream that is cut off, or carries an error, fails the turn.** It was stored as a finished answer, and a half-received tool call could run with empty arguments. A fallback route advances as it would for the same error sent up front. (#770)
+
+- **`windowed:N` and `semantic:N` sessions keep tool calls with their results.** A thread using tools on either strategy could be refused by the provider. (#770)
+
+- **A resumed run answers interrupted tool calls in place.** Its first request was refused when a new message arrived with it; only the retry worked. (#770)
+
+- **Memory capture and branch summaries appear in usage.** Their model calls now have usage rows (`memory_extract`, `memory_verify`, `branch_summary`) and count toward `limits.max_cost_usd`. Expect reported spend to rise for agents with `memory.capture` on. (#770)
+
+- **A durable run is resumed only by the worker claim that owns it.** A worker restarted under the same replica id can no longer renew or release a claim from before the restart. (#773)
+
+- **A worker that is stopping hands its durable runs back at once.** Another worker resumes them right away instead of after the 300 s lease. A worker no longer claims more runs than it has slots for. (#773)
+
+- **A durable run is not buried because workers running it were killed.** A lost worker counts as a lapse, not a failed attempt. The run is marked dead only after the configured number of consecutive lapses with no log progress (`FELIX_FIBER_MAX_ATTEMPTS`, default five). (#773)
+
+- **Worker shutdown completes.** The worker now has 90 s to drain runs, stop cron tasks and flush audit and usage rows, inside Compose's 120 s `stop_grace_period`. Before this, Taskiq stopped it after 5 s and the shutdown flush added in #769 never finished. The Helm chart already allows 120 s; any other deployment needs a stop grace period of at least that. (#773)
+
+- **A scheduled job interrupted at shutdown is not left `running`.** (#773)
+
+- **A failed durable run reports a written error.** It used to store and return the exception's text. (#773)
+
+- **Reconnect documentation:** distinguish foreground runs that end on disconnect from durable runs that continue in the worker. (#775)
+
+### Security
+
+- **OpenTelemetry updated to 1.45.2** (contrib 0.66b2) for CVE-2026-126360 in `opentelemetry-api`. This affects installs with the `otel` extra. (#772)
+
+- **dnspython updated to 2.9.2** for CVE-2026-128089. (#774)
+
 ## [0.19.2] — 2026-10-30
 
 ### Added
@@ -5508,3 +5570,4 @@ A hotfix on 0.4.0, branched from its tag, carrying one fix. Everything else unde
 [0.19.0]: https://github.com/felix-run/felix/releases/tag/v0.19.0
 [0.19.1]: https://github.com/felix-run/felix/releases/tag/v0.19.1
 [0.19.2]: https://github.com/felix-run/felix/releases/tag/v0.19.2
+[0.19.3]: https://github.com/felix-run/felix/releases/tag/v0.19.3

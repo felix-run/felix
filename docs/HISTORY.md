@@ -12,6 +12,25 @@ not fail. Keep that habit: a wave entry that lists only wins is not worth writin
 
 ## Waves
 
+### v0.19.3: recovery belongs to a claim, completion belongs to the wire (Nov 2026)
+
+Worker shutdown and recovery were covered separately, while production crosses both at once.
+Compose allowed ten seconds, Taskiq allowed five, and the fiber drain needed thirty before its
+flush even started. The release aligns those budgets, gives a cancelled run's claim back, and
+names each claim independently of its worker process. A run's log progress now distinguishes
+healthy work surviving restarts from a step that repeatedly kills its worker.
+
+A streamed answer has a similar boundary: receiving text is not proof of completion. The wire
+adapters now refuse cut-off and error-bearing streams, Stop ends the run inside the stream, and
+session strategies retain tool calls with their results. Memory and branch-summary model calls
+are metered rather than disappearing from reported usage.
+
+The new `code` manifest keeps cowork separate and gives coding work a two-hour authority window,
+still clamped to the initiating credential. Its terminal smoke check crosses the real HTTP API,
+durable fiber loop, harness approval and client confirmation before a local command can run.
+A temporary workspace and scripted model made that path reproducible without production data or
+a vendor call; separate API/worker deployment and live-model behavior remain distinct checks.
+
 ### Roadmap tidy: completed items folded in (Oct 2026)
 
 Moved here verbatim from `ROADMAP.md`, which had reached 2,100 lines, half of them `[x]` items.
