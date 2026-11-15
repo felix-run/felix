@@ -582,6 +582,23 @@ checked, but the command is not sandboxed. Without `--shell`, the terminal and b
 small set of file commands. The `code` agent's durable run lifetime is two hours; a caller token's
 expiry can shorten it. Cowork remains a separate agent.
 
+For multi-step tasks, `code` records a persisted plan and updates it as work finishes; the browser
+and TUI display these plan calls. In plan mode it can list, read, and search project files while
+file changes and shell commands remain blocked until the user approves leaving plan mode.
+The read-only `local_info` tool reports the connected client's workspace and native or emulated
+shell support before the agent chooses commands. Update the companion client to use this tool;
+older clients can still use the file tools.
+`local_instructions` finds `AGENTS.md` and `CLAUDE.md` along a target file's parent directories,
+including for new files, with explicit continuation offsets for truncated instructions.
+Client `local_edit` checks the contents used to construct its replacement again before writing.
+If the file changed while terminal confirmation was pending or a browser write was staged, the
+edit fails so the agent can reread and reconcile the newer work. This check does not lock out
+other programs writing to the project.
+Terminal delete and rename recheck the approved source. Rename uses an exclusive hard link
+before unlinking the source, so it cannot replace a destination created during approval;
+cross-filesystem moves are refused. A partial move can retain both names. Browser rename
+also retains its source if its contents changed during the copy.
+
 To verify the built terminal against the real API and durable fiber loop with temporary in-memory
 stores and a scripted model, run `uv run python scripts/smoke-code-tui.py` in this repository.
 `--tui /path/to/felix.js` selects a build outside the default sibling `felix-web` checkout.

@@ -44,8 +44,25 @@ async def main(directory):
     )
     from tests.support.factories import make_settings
 
+    Path(directory, "AGENTS.md").write_text("Root smoke instructions.")
+    Path(directory, "src").mkdir()
+    Path(directory, "src", "CLAUDE.md").write_text("Nested smoke instructions.")
     spy = ProviderSpy(
         queue=[
+            ScriptedTurn(
+                content="",
+                tool_calls=[ToolCall(id="real-smoke-info", name="local_info", args={})],
+                stop_reason="tool_use",
+            ),
+            ScriptedTurn(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="real-smoke-instructions", name="local_instructions", args={"path": "src/new.py"}
+                    )
+                ],
+                stop_reason="tool_use",
+            ),
             ScriptedTurn(
                 content="",
                 tool_calls=[ToolCall(id="real-smoke-command", name="local_shell", args={"command": COMMAND})],
@@ -130,6 +147,8 @@ async def main(directory):
             XDG_CONFIG_HOME=directory,
             XDG_STATE_HOME=directory,
             FELIX_NO_NOTIFY="1",
+            PAGER="cat",
+            TMPDIR=directory,
         )
         process = await asyncio.create_subprocess_exec(
             BUN,
@@ -185,8 +204,27 @@ async def main(directory):
                 row.get("status") == "approved" and row.get("tool_name") == "local_shell" for row in rows
             ), approvals
             assert "real smoke ok" in str(spy.prompts[-1]), "shell output did not reach the real agent loop"
-            assert len(spy.prompts) == 2, f"unexpected model calls: {len(spy.prompts)}"
+            info_text = next(message.content for message in spy.prompts[1] if '{"client"' in message.content)
+            capabilities, _ = json.JSONDecoder().raw_decode(info_text[info_text.index('{"client"') :])
+            assert capabilities["shell"]["mode"] == "native", capabilities
+            assert capabilities["workspace"]["root"] == str(Path(directory).resolve()), capabilities
+            instruction_text = next(
+                message.content for message in spy.prompts[2] if '{"target"' in message.content
+            )
+            instructions, _ = json.JSONDecoder().raw_decode(
+                instruction_text[instruction_text.index('{"target"') :]
+            )
+            assert instructions["complete"], instructions
+            assert [file["content"] for file in instructions["instructions"]] == [
+                "Root smoke instructions.",
+                "Nested smoke instructions.",
+            ], instructions
+            assert len(spy.prompts) == 4, f"unexpected model calls: {len(spy.prompts)}"
             await until(lambda: b"Real stack smoke passed." in captured, "final answer on terminal")
+            await until(lambda: b"Workspace results" in captured, "coding result summary on terminal")
+            await asyncio.sleep(0.2)
+            os.write(master, b"/work\r")
+            await until(lambda: b"loaded thread history" in captured, "thread coding report in pager")
             await asyncio.sleep(0.2)
             os.write(master, b"/quit\r")
             await asyncio.wait_for(process.wait(), timeout=5)
@@ -201,6 +239,10 @@ async def main(directory):
                         "local_confirmation": True,
                         "file_content_verified": True,
                         "tool_result_reached_model": True,
+                        "client_capabilities_verified": True,
+                        "repository_instructions_verified": True,
+                        "coding_summary_verified": True,
+                        "coding_work_report_verified": True,
                         "model_calls": len(spy.prompts),
                         "vendor_calls": 0,
                         "tui_exit_code": process.returncode,

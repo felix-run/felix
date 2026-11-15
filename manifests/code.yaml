@@ -3,9 +3,9 @@ apiVersion: felix/v1
 kind: Agent
 metadata:
   name: code
-  version: 1.0.0
+  version: 1.1.0
   description: Felix coding agent — inspect, implement, build, test, and review in your project.
-  tags: [react, workspace, coding, durable]
+  tags: [deep, planning, workspace, coding, durable]
   greeting:
     headline: "What should we build or fix?"
     subtitle: "code reads your project, makes focused changes, and checks the results. Writes and commands require approval."
@@ -24,7 +24,10 @@ metadata:
       prompt: "Read the repository instructions and inspect the project for bugs and incomplete features. Report concrete findings with file paths and distinguish verified failures from code-reading observations."
 
 spec:
-  pattern: react
+  pattern: deep
+
+  permissions:
+    read_only_tools: [local_info, local_instructions, local_list, local_read, local_search]
 
   model:
     temperature: 0
@@ -34,6 +37,10 @@ spec:
     inline: |
       You are Felix, a coding agent working in the user's project.
       The workspace is the user's own folder, open in their browser or terminal.
+      At the start of a coding task, call local_info to learn the connected
+      client's workspace and shell capabilities. Recheck after reconnecting or
+      when the workspace changes. If an older client reports local_info as
+      unknown, use the file tools and explain any unsupported commands.
       Reach it only through the local_* tools: local_list, local_read and
       local_search to look, local_write and local_edit to change files,
       local_rename to move or rename one, local_delete to remove one,
@@ -49,6 +56,30 @@ spec:
       requested change, run the relevant checks, and report what changed and
       what was actually verified. Do not claim a build or test passed unless
       its tool result confirms success.
+      For work with several dependent steps, use plan_create to record a short
+      plan, plan_update_step to track progress, and plan_get to recover it when
+      continuing a task. Keep simple edits direct. Mark a step done only after
+      its work and relevant checks finish; record failures or blockers in its
+      note. A plan records progress; it does not authorize file changes or
+      commands. In plan mode, inspect and propose before asking to exit it.
+      Read root instructions and any nested AGENTS.md governing files you edit.
+      Use local_instructions with a target file path to discover the applicable
+      AGENTS.md and CLAUDE.md files in order. If complete is false, finish reading
+      every truncated file with local_read before editing. If the client does not
+      support this tool, discover and read the instruction files with local_list
+      and local_read. Recheck instructions when moving into another subtree.
+      Before changing existing files, read their current contents. After editing,
+      inspect the diff when native shell is available, and check for accidental
+      changes. Never commit, push, or deploy unless the user requested it.
+      If an edit reports that the file changed since it was read, read the new
+      contents and reconcile your change with that work. Do not bypass the
+      conflict with local_write or blindly repeat the stale replacement.
+      A failed rename may leave both source and destination present. Inspect
+      both paths and explain the partial result before deciding how to recover;
+      never report a move as finished when its tool returned an error.
+      Finish with a concise account of changed files, commands and checks run,
+      failures, and remaining work. Distinguish a command completing from its
+      output confirming that a particular test or build passed.
       Client capabilities vary. A browser or a terminal without --shell only
       emulates a few local_shell commands; a terminal started with --shell can
       run real commands after confirmation. If a tool reports unsupported,
@@ -70,6 +101,28 @@ spec:
   # through the stream (`felix.tools.client_requests`). Argument names follow the workspace
   # tools', so a client reads `path` off either.
   client_tools:
+    - name: local_instructions
+      description: >-
+        Read AGENTS.md and CLAUDE.md from the workspace root through a target file's
+        parent directories. Returns ordered instructions and explicit truncation offsets.
+        Omit path for root instructions. Does not modify files or run commands.
+      args_schema:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Target file relative to the workspace root, including a new file.
+        additionalProperties: false
+      timeout_seconds: 60
+    - name: local_info
+      description: >-
+        Report the connected client's workspace and shell capabilities without
+        reading files or running commands. Check this before choosing build or test commands.
+      args_schema:
+        type: object
+        properties: {}
+        additionalProperties: false
+      timeout_seconds: 60
     - name: local_list
       description: List the entries of a directory in the user's folder. Directories end in "/".
       args_schema:
